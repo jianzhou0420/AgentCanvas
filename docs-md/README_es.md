@@ -1,6 +1,27 @@
 [English](../README.md) | [中文](README_zh.md) | **Español** | [日本語](README_ja.md) | [한국어](README_ko.md)
 
+<div align="center">
+
 # AgentCanvas
+
+### Automating the Design of Embodied Agent Architectures
+
+**Jian Zhou · Sihao Lin · Jin Li · Shuai Fu · Gengze Zhou · Qi Wu**
+
+Australian Institute for Machine Learning, University of Adelaide
+
+<p>
+  <a href="https://arxiv.org/abs/2606.30111"><img src="https://img.shields.io/badge/arXiv-2606.30111-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
+  <a href="#9-citación"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+</p>
+
+<img src="../assets/readme/editor-hero.gif" alt="Editor de AgentCanvas: el ejecutor MapGPT se carga como un grafo de nodos y cables, luego un episodio R2R en vivo se ejecuta de extremo a extremo" width="760">
+
+<sub><em>Grabado en vivo en el editor — el ejecutor MapGPT se carga, luego un episodio real de R2R se ejecuta de extremo a extremo.</em></sub>
+
+</div>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](../LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
@@ -8,11 +29,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **Una plataforma visual de diseño de agentes para la investigación en IA encarnada.** Un grafo tipado, dos roles: un *banco de pruebas* que ejecuta agentes encarnados, y un *andamiaje* que los agentes de programación editan y verifican.
-
-<p align="center">
-  <img src="../assets/readme/editor-hero.gif" alt="Editor de AgentCanvas: el ejecutor MapGPT se carga como un grafo de nodos y cables, luego un episodio R2R en vivo se ejecuta de extremo a extremo" width="720">
-  <br><sub><em>Grabado en vivo en el editor — el ejecutor MapGPT se carga, luego un episodio real de R2R se ejecuta de extremo a extremo.</em></sub>
-</p>
 
 AgentCanvas permite a los investigadores prototipar agentes encarnados — para VLN, EQA, VLA y tareas adyacentes — dibujando grafos de nodos que se ejecutan en tiempo real contra simuladores (Habitat-Sim, MatterSim, SAPIEN/ManiSkill2, MuJoCo/robosuite) o, en principio, configuraciones del mundo real. *Un JSON = un agente = un grafo*: el comportamiento del agente es un grafo de flujo de datos, no código imperativo; el grafo es la fuente de verdad, guardado como un único archivo JSON y cargado como un agente completo.
 

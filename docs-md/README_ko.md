@@ -1,6 +1,27 @@
 [English](../README.md) | [中文](README_zh.md) | [Español](README_es.md) | [日本語](README_ja.md) | **한국어**
 
+<div align="center">
+
 # AgentCanvas
+
+### Automating the Design of Embodied Agent Architectures
+
+**Jian Zhou · Sihao Lin · Jin Li · Shuai Fu · Gengze Zhou · Qi Wu**
+
+Australian Institute for Machine Learning, University of Adelaide
+
+<p>
+  <a href="https://arxiv.org/abs/2606.30111"><img src="https://img.shields.io/badge/arXiv-2606.30111-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
+  <a href="#9-인용"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+</p>
+
+<img src="../assets/readme/editor-hero.gif" alt="AgentCanvas 에디터: MapGPT executor가 노드-와이어 그래프로 로드된 뒤, 실시간 R2R 에피소드가 엔드투엔드로 실행된다" width="760">
+
+<sub><em>에디터에서 실시간으로 녹화 — MapGPT executor가 로드된 뒤, 실제 R2R 에피소드가 엔드투엔드로 실행됩니다.</em></sub>
+
+</div>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](../LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
@@ -8,11 +29,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **임바디드 AI 연구를 위한 비주얼 에이전트 설계 플랫폼.** 하나의 타입이 지정된 그래프, 두 가지 역할: 임바디드 에이전트를 실행하는 *하네스(harness)*, 그리고 코딩 에이전트가 편집하고 검증하는 *스캐폴드(scaffold)*.
-
-<p align="center">
-  <img src="../assets/readme/editor-hero.gif" alt="AgentCanvas 에디터: MapGPT executor가 노드-와이어 그래프로 로드된 뒤, 실시간 R2R 에피소드가 엔드투엔드로 실행된다" width="720">
-  <br><sub><em>에디터에서 실시간으로 녹화 — MapGPT executor가 로드된 뒤, 실제 R2R 에피소드가 엔드투엔드로 실행됩니다.</em></sub>
-</p>
 
 AgentCanvas는 연구자가 노드 그래프를 그리는 것만으로 임바디드 에이전트 — VLN, EQA, VLA 및 인접 태스크용 — 를 프로토타이핑할 수 있게 해줍니다. 이 그래프는 시뮬레이터 (Habitat-Sim, MatterSim, SAPIEN/ManiSkill2, MuJoCo/robosuite) 에 대해, 또는 원리적으로는 실세계 환경에 대해 실시간으로 실행됩니다. *하나의 JSON = 하나의 에이전트 = 하나의 그래프*: 에이전트의 동작은 명령형 코드가 아니라 데이터플로 그래프이며, 그래프가 곧 진실의 원천(source of truth)으로서 단일 JSON 파일로 저장되고 완전한 에이전트로 로드됩니다.
 

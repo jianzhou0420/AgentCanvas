@@ -1,6 +1,27 @@
 [English](../README.md) | [中文](README_zh.md) | [Español](README_es.md) | **日本語** | [한국어](README_ko.md)
 
+<div align="center">
+
 # AgentCanvas
+
+### Automating the Design of Embodied Agent Architectures
+
+**Jian Zhou · Sihao Lin · Jin Li · Shuai Fu · Gengze Zhou · Qi Wu**
+
+Australian Institute for Machine Learning, University of Adelaide
+
+<p>
+  <a href="https://arxiv.org/abs/2606.30111"><img src="https://img.shields.io/badge/arXiv-2606.30111-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
+  <a href="#9-引用"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+</p>
+
+<img src="../assets/readme/editor-hero.gif" alt="AgentCanvas エディタ: MapGPT executor がノードとワイヤのグラフとして読み込まれ、続いてライブの R2R エピソードがエンドツーエンドで実行される様子" width="760">
+
+<sub><em>エディタ上でライブ収録 — MapGPT executor が読み込まれ、続いて実際の R2R エピソードがエンドツーエンドで実行されます。</em></sub>
+
+</div>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](../LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
@@ -8,11 +29,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **身体性 AI 研究のためのビジュアルなエージェント設計プラットフォーム。** 1 つの型付きグラフに 2 つの役割を持たせます。すなわち、身体性エージェントを実行する *ハーネス (harness)* と、コーディングエージェントが編集・検証する *スキャフォールド (scaffold)* です。
-
-<p align="center">
-  <img src="../assets/readme/editor-hero.gif" alt="AgentCanvas エディタ: MapGPT executor がノードとワイヤのグラフとして読み込まれ、続いてライブの R2R エピソードがエンドツーエンドで実行される様子" width="720">
-  <br><sub><em>エディタ上でライブ収録 — MapGPT executor が読み込まれ、続いて実際の R2R エピソードがエンドツーエンドで実行されます。</em></sub>
-</p>
 
 AgentCanvas を使うと、研究者は VLN・EQA・VLA やその周辺タスク向けの身体性エージェントを、ノードグラフを描くことでプロトタイピングできます。これらのグラフは、シミュレータ (Habitat-Sim、MatterSim、SAPIEN/ManiSkill2、MuJoCo/robosuite)、あるいは原理的には実世界のセットアップに対してリアルタイムに実行されます。*1 つの JSON = 1 つのエージェント = 1 つのグラフ*。エージェントの振る舞いは命令型コードではなくデータフローグラフであり、グラフこそが信頼できる唯一の情報源 (source of truth) として、単一の JSON ファイルに保存され、完全なエージェントとして読み込まれます。
 

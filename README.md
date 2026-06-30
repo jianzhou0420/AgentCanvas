@@ -1,6 +1,27 @@
 **English** | [中文](docs-md/README_zh.md) | [Espanol](docs-md/README_es.md) | [日本語](docs-md/README_ja.md) | [한국어](docs-md/README_ko.md)
 
+<div align="center">
+
 # AgentCanvas
+
+### Automating the Design of Embodied Agent Architectures
+
+**Jian Zhou · Sihao Lin · Jin Li · Shuai Fu · Gengze Zhou · Qi Wu**
+
+Australian Institute for Machine Learning, University of Adelaide
+
+<p>
+  <a href="https://arxiv.org/abs/2606.30111"><img src="https://img.shields.io/badge/arXiv-2606.30111-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
+  <a href="#9-citation"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+</p>
+
+<img src="assets/readme/editor-hero.gif" alt="AgentCanvas editor: the MapGPT executor loads as a node-and-wire graph, then a live R2R episode runs end-to-end" width="760">
+
+<sub><em>Recorded live in the editor — the MapGPT executor loads, then a real R2R episode runs end-to-end.</em></sub>
+
+</div>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
@@ -8,11 +29,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **A visual agent-design platform for embodied AI research.** One typed graph, two roles: a *harness* that runs embodied agents, and a *scaffold* that coding agents edit and verify.
-
-<p align="center">
-  <img src="assets/readme/editor-hero.gif" alt="AgentCanvas editor: the MapGPT executor loads as a node-and-wire graph, then a live R2R episode runs end-to-end" width="720">
-  <br><sub><em>Recorded live in the editor — the MapGPT executor loads, then a real R2R episode runs end-to-end.</em></sub>
-</p>
 
 AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, and adjacent tasks — by drawing node graphs that execute in real time against simulators (Habitat-Sim, MatterSim, SAPIEN/ManiSkill2, MuJoCo/robosuite) or, in principle, real-world setups. *One JSON = one agent = one graph*: agent behaviour is a dataflow graph, not imperative code; the graph is the source of truth, saved as a single JSON file and loaded as a complete agent.
 

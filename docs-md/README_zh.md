@@ -1,6 +1,27 @@
 [English](../README.md) | **中文** | [Español](README_es.md) | [日本語](README_ja.md) | [한국어](README_ko.md)
 
+<div align="center">
+
 # AgentCanvas
+
+### Automating the Design of Embodied Agent Architectures
+
+**Jian Zhou · Sihao Lin · Jin Li · Shuai Fu · Gengze Zhou · Qi Wu**
+
+Australian Institute for Machine Learning, University of Adelaide
+
+<p>
+  <a href="https://arxiv.org/abs/2606.30111"><img src="https://img.shields.io/badge/arXiv-2606.30111-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
+  <a href="#9-引用"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+</p>
+
+<img src="../assets/readme/editor-hero.gif" alt="AgentCanvas 编辑器：MapGPT executor 以节点-连线图的形式加载，随后一个真实的 R2R episode 端到端运行" width="760">
+
+<sub><em>在编辑器中实时录制 —— MapGPT executor 加载完成，随后一个真实的 R2R episode 端到端运行。</em></sub>
+
+</div>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](../LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
@@ -8,11 +29,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **面向具身 AI 研究的可视化智能体设计平台。** 一张类型化的图，两种角色：既是运行具身智能体的*运行框架（harness）*，也是供编程智能体（coding agent）编辑与验证的*脚手架（scaffold）*。
-
-<p align="center">
-  <img src="../assets/readme/editor-hero.gif" alt="AgentCanvas 编辑器：MapGPT executor 以节点-连线图的形式加载，随后一个真实的 R2R episode 端到端运行" width="720">
-  <br><sub><em>在编辑器中实时录制 —— MapGPT executor 加载完成，随后一个真实的 R2R episode 端到端运行。</em></sub>
-</p>
 
 AgentCanvas 让研究者通过绘制节点图来快速搭建具身智能体 —— 面向 VLN、EQA、VLA 及相邻任务 —— 这些图可以实时地在仿真器（Habitat-Sim、MatterSim、SAPIEN/ManiSkill2、MuJoCo/robosuite）上执行，原则上也可在真实世界的配置上执行。*一个 JSON = 一个智能体 = 一张图*：智能体的行为是一张数据流图，而非命令式代码；图就是唯一的真相来源，保存为单个 JSON 文件，并作为一个完整的智能体加载。
 
