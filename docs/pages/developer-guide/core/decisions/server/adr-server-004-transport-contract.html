@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-server-004 — AgentCanvas</title>
+<meta name="description" content="Server-mode transport contract — msgpack codec, only-passive-data-crosses, reverse log/error channel">
+<meta property="og:title" content="ADR-server-004 — AgentCanvas">
+<meta property="og:description" content="Server-mode transport contract — msgpack codec, only-passive-data-crosses, reverse log/error channel">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/server/adr-server-004-transport-contract.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/server/adr-server-004-transport-contract.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Server</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-server-004</span>
+  </div>
+  <div class="last-updated">2026-06-15</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-server);">ADR-server-004</h1>
+  <p class="tagline">Server-mode transport contract — msgpack codec, only-passive-data-crosses, reverse log/error channel</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-06-15</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>server</code></a></dd>
+</dl>
+
+<h2 id='context'>Context</h2>
+<p>Server mode (<a href="adr-server-001-auto-server-app.html">ADR-server-001</a>) cuts a process boundary through the middle of a graph: some nodesets run in their own subprocess (env isolation, e.g. Habitat on Py3.8; and the reserved cross-machine capability), and the framework talks to them over HTTP. Three things that are <em>free</em> inside one process break at that boundary — any Python object passed by reference, data handed node-to-node in memory, and a State Container shared by all nodes — but they share one root: the single-process shared-memory assumption is severed. The wire codec was the most broken facet: <code>serialize_value</code> → <code>_make_json_safe</code> (<code>serialization.py</code>) only converted <code>ndarray</code> / numpy scalars / <code>dict</code> / <code>list</code>; a <code>torch.Tensor</code>, <code>PIL.Image</code>, <code>bytes</code>, <code>set</code>, or custom object on an <code>ANY</code> port reached the JSON encoder and 500'd (<a href="../../roadmap.html">TODO #67</a>). The same graph ran fine local (by-reference) but crashed server — a position-dependence bug. Two adjacent gaps shared the root: subprocess logs/errors had no return path (a handler exception became <code>HTTPException 500</code> → the proxy demoted it to a swallowed <code>{"error": ...}</code> value the canvas never saw — TODO #54), and a <code>shared</code> server owning a <em>mutable</em> state container (a race under <code>worker_count&gt;1</code>) had no guardrail (TODO #68). A prior prototype (<code>0fd2df90</code>) had landed cross-process container access (broker + <code>RemoteContainerProxy</code>) but on JSON, synchronous, single-worker. The contract for "what may cross a server boundary, and how" was undefined. This ADR is the formalization of that GAPS-flow design.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Adopt one principle — <strong>only passive data crosses the process boundary</strong> — and realize it as three moves plus one explicit non-goal, all under the invariant of <strong>position transparency</strong> (the graph must behave identically whether a nodeset runs local / local-server / remote-server).</p>
+<ul>
+<li><strong>Move 1 — msgpack data codec (transport, #67).</strong> <code>pack_body</code> / <code>unpack_body</code> (<code>serialization.py</code>) encode the whole <code>{"inputs", "config"}</code> body in one shot. A single <code>blob</code> ExtType — framed <code>[tag:u8][meta_len:u32][meta(msgpack)][raw bytes]</code> — carries the binary types JSON can't hold (<code>ndarray</code>, <code>torch.Tensor</code>, <code>PIL.Image</code>) as raw bytes (no base64); <code>bytes</code> ride msgpack's native bin type. Decoding is <strong>type-driven</strong> with <strong>receiver-side degrade</strong>: a torch/PIL blob decoded in an env lacking that type comes back as <code>ndarray</code> rather than crashing (cross-boundary = cross-env; rebuilding a wrapper type is not free across envs). <code>/call</code> negotiates by <code>Content-Type</code> and still accepts the legacy JSON encoding during a migration window. The container reverse-channel uses the same codec.</li>
+<li><strong>Move 2 — state stays home, reachable cross-process (state, #17/#68).</strong> Mutable state has exactly two legal homes: the executor's <code>graph_state</code> / home container, or a <code>replicated</code> server subprocess's per-worker private copy (a <code>shared</code> server must be stateless). Other processes reach a container transparently through the executor <strong>broker</strong> + <code>RemoteContainerProxy</code> (<code>ctx.containers["x"].read/write</code> unchanged) — the <code>0fd2df90</code> prototype, normalized: broker forwarding async, payload msgpack, executor URL from Settings (<code>resolve_executor_url</code>), and a load-time <strong>#68 guardrail</strong> (<code>registry._check_container_ownership</code>, warn) against a <code>shared</code> server owning state.</li>
+<li><strong>Move 3 — reverse channel for logs/errors (observability, #54).</strong> Subprocesses POST structured events to the executor's <code>POST /api/internal/events</code> (<code>internal_events.py</code>), which republishes them on the <code>ErrorBus</code> → <code>error_event</code> WebSocket frame, so server-node logs/errors surface on the canvas like local ones. Handler exceptions are first-classed (node/execution scope + traceback) instead of swallowed.</li>
+<li><strong>Non-goal — no co-location transport optimization.</strong> All wire data round-trips through the executor even when producer and consumer share a subprocess. Wire data is light (≤ a few MB); the heavy state already stays home (Move 2); and short-circuiting the executor would make the values invisible to the canvas — directly against AgentCanvas's "see the data flow" premise.</li>
+</ul>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <em>Document + enforce "<code>ANY</code> across a server boundary = JSON-safe-after-numpy; opaque objects stay subprocess-local"</em> (#67 option a). Punts the 500 onto the node author. Kept only as the pre-landing stopgap, not the fix.</p>
+<p>(b) <em>Extend <code>_make_json_safe</code> with a JSON codec table (torch/PIL → base64)</em> (#67 option b, JSON variant). Still base64 (+33%) and still text-parse on a big array. msgpack subsumes it with raw bytes and a cleaner ExtType, so the codec-table idea was kept but moved onto msgpack.</p>
+<p>(c) <em>A handle/pointer wire type for objects that must stay process-local</em> (#67 option c). <strong>Rejected.</strong> A handle valid only in one process re-introduces position-dependence — the opposite of ADR-server-001's "deployment topology is a config decision". Live objects already stay home by <em>ownership</em> (a nodeset holds its simulator/model/planner and only emits passive outputs); no wire type is needed to express that.</p>
+<p><em>pickle / cloudpickle for cross-process objects.</em> Rejected — cross-boundary = cross-env (different Python / library versions); only version-neutral, self-describing bytes are safe.</p>
+<p><em>Co-located data relay</em> (skip the executor for same-subprocess edges). Rejected as the non-goal above: conflicts with observability and the savings are marginal once heavy state stays home.</p>
+<p><em>WebSocket long-connection for log push.</em> Rejected for v1 — the executor would hold N persistent connections + reconnection logic; a POST endpoint mirrors the already-working container reverse channel with no long-lived state.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>One boundary deserves one contract. Reframing the problem from "how do we ship objects across processes" to "<em>what</em> may cross" (only passive data) collapses the whole transport question into "how do we encode bytes" — and msgpack answers that with version-neutral, self-describing, raw-binary encoding plus a clean degrade story for types a receiving env lacks. Routing log/error events through the existing <code>/api/internal</code> reverse channel into the <code>ErrorBus</code> reuses infrastructure instead of inventing a parallel one. Position transparency is the invariant every move preserves: the proxy node always exposes <code>forward(inputs) → outputs</code> and the graph never learns where a nodeset runs. The non-goal protects clean, observable execution over a marginal transport saving.</p>
+<p><strong>Verified.</strong> 63 backend unit tests (codec round-trip incl. torch-degrade, <code>/call</code> + <code>/containers</code> Content-Type negotiation, #68 guardrail, URL resolver, event push); a real auto-host subprocess E2E (msgpack <code>/call</code> + JSON migration window + container state persistence); and a 10-episode / 10-worker explore-eqa run (SR 0.4 ≈ 0.42 verified baseline, zero <code>500</code>s, all 21 fresh-spawned servers across shared + replicated nodesets).</p>
+<p><strong>Residual</strong> (surfaced, not hidden): cross-nodeset access to a <code>replicated</code> nodeset's containers under <code>worker_count&gt;1</code> is not yet routable — the home registry resolves an untagged URL and the broker can't disambiguate N executors in the eval topology. Emitted as a load-time warning rather than a silent 404; tracked under TODO #17. Owner-local container access (the common case, e.g. <code>explore_eqa_tsdf</code>) is unaffected.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<ul>
+<li><code>core/decisions/server/index.html</code> — add ADR-server-004 row</li>
+<li><code>core/decisions/index.html</code> — bump <code>server</code> count + total</li>
+<li><code>design-docs/operations/plugin-servers.html</code> — §7.1 rewritten to msgpack; new §7.3 reverse log/error channel; changelog</li>
+<li><code>core/roadmap.html</code> — #67 (✅) / #68 (✅) / #54 / #17 update notes</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

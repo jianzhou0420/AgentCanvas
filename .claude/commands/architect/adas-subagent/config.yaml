@@ -1,0 +1,117 @@
+variant_name:  adas-subagent
+variant_label: "adas-subagent — coding-agent-era ADAS port (sub-agent Reflexion)"
+
+understand:
+  archive_path:          outputs/design_runs/adas-subagent/{graph}/v{N}/archive.jsonl
+  archive_entry_types:   [initial, reference, evolved]
+  archive_preview:       simple
+  exp_yaml_required:     ["smoke_<graph>", "perf_<graph>"]
+  exp_yaml_extra_blocks: []
+  layer1_emphasis:       null
+  bootstrap_hint:        "/architect:adas-subagent:loop --skip-understand"
+
+evaluator:
+  profile_key:  "perf_<graph>"
+  artifacts:    []
+
+implementer:
+  smoke_profile_key:    "smoke_<graph>"
+  retry_executor:       subagent_spawn          # only option in common
+  retry_max:            3
+  artifacts:            []
+  # No patch_applier — patch DSL retired 2026-05-20. The implementer
+  # sub-agent edits the overlay natively; seeding goes through the
+  # fixed shared helper _common/lib/overlay.py.
+
+# === FILES MANIFEST (per _common/files-contract.md § 4) ===
+# Verified 2026-05-20 against loop.md / proposer.md / _common/implementer.md
+# / _common/evaluator.md (file set + writers read straight from skill bodies).
+manifest:
+
+  lineage:
+    model: implicit_linear            # single-population hill-climb: the parent of
+                                      # iter_n is always the prior committed iter
+                                      # (the archive head proposer reads from).
+                                      # adas writes NO parent.txt — proposal.md
+                                      # frontmatter carries an informational
+                                      # `parent:` field, not a lineage mechanism.
+
+  metrics_payload: metrics.json       # eval-output; loop's Atomic Writer enriches it with fitness_str
+
+  files:
+    # --- vN-scoped ---
+    archive.jsonl:
+      type: working-memory
+      purpose: "Per-vN append-only meta-LLM working memory; injected verbatim into each generation's prompt."
+      mutation: append-only
+      written_by: [loop]
+      read_by: [proposer, understand]
+    trace.md:
+      type: rollup
+      purpose: "One row per committed iter — metrics table."
+      mutation: append-only
+      written_by: [loop]
+      read_by: [understand]
+    lineage.md:
+      type: rollup
+      purpose: "Narrative log, one section per committed iter."
+      mutation: append-only
+      written_by: [loop]
+      read_by: [understand]
+
+    # --- per-iter ---
+    active_workspace/:
+      type: mutation
+      purpose: "This iter's complete workspace overlay vs frozen."
+      written_by: [implementer]
+      read_by: [loop, evaluator]
+    proposal.md:
+      type: phase-artifact
+      purpose: "Proposer 3-call Reflexion output — thought / name / `# Change` spec ({intent,targets}) / Reflexion chain."
+      written_by: [proposer]
+      read_by: [implementer, loop]
+    debug_log.md:
+      type: phase-artifact
+      purpose: "Implementer native-edit + smoke + debug-retry history."
+      written_by: [implementer]
+      read_by: [loop]
+    graph.json:
+      type: phase-artifact
+      purpose: "Convenience copy of active_workspace/graphs/{graph}.json for analyze/report tooling."
+      written_by: [implementer]
+      read_by: [loop, understand]
+    "{graph}.yaml":
+      type: phase-artifact
+      purpose: "Convenience copy of the frozen eval profile, snapshotted in-iter for reproducibility."
+      written_by: [implementer]
+      read_by: [understand]
+    metrics.json:
+      type: eval-output
+      purpose: "Perf-eval neutral metrics; loop's Atomic Writer adds fitness_str. The metrics payload."
+      written_by: [evaluator, loop]
+      read_by: [loop, proposer, understand]
+    summary.csv:
+      type: eval-output
+      purpose: "Per-episode rows from the perf eval."
+      written_by: [evaluator]
+      read_by: []
+    export.json:
+      type: eval-output
+      purpose: "Full /api/eval/v2/export dump."
+      written_by: [evaluator]
+      read_by: [proposer]
+    eval_run_id.txt:
+      type: eval-output
+      purpose: "Backend run_id of the perf eval."
+      written_by: [evaluator]
+      read_by: []
+    eval_overrides.json:
+      type: phase-artifact
+      purpose: "Resolved eval-profile block handed to /experiment:run."
+      written_by: [evaluator]
+      read_by: []
+
+  phase_sentinels:
+    proposer:    { needs: null,         writes: proposal.md }
+    implementer: { needs: proposal.md,  writes: debug_log.md }
+    evaluator:   { needs: debug_log.md, writes: metrics.json }

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLM Prismatic NodeSet — AgentCanvas</title>
+<meta name="description" content="The VLM Prismatic NodeSet ( VLMPrismaticNodeSet ) wraps the Prismatic VLM (TRI-ML, 2024) as a generic foundation-model nodeset . It exposes domain-agnostic primitives that any method nodeset can wire…">
+<meta property="og:title" content="VLM Prismatic NodeSet — AgentCanvas">
+<meta property="og:description" content="The VLM Prismatic NodeSet ( VLMPrismaticNodeSet ) wraps the Prismatic VLM (TRI-ML, 2024) as a generic foundation-model nodeset . It exposes domain-agnostic primitives that any method nodeset can wire…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/foundation-models/vlm-prismatic.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/common/foundation-models/vlm-prismatic.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Common</a>
+    <span class="sep">/</span>
+    <a href="index.html">Foundation Models</a>
+    <span class="sep">/</span>
+    <span class="here">VLM Prismatic NodeSet</span>
+  </div>
+  <div class="last-updated">2026-05-05</div>
+</div>
+  <header class="page-header guide">
+  <h1>VLM Prismatic NodeSet</h1>
+</header>
+
+<p>The <strong>VLM Prismatic NodeSet</strong> (<code>VLMPrismaticNodeSet</code>) wraps the <a href="https://github.com/TRI-ML/prismatic-vlms">Prismatic VLM</a> (TRI-ML, 2024) as a <strong>generic foundation-model nodeset</strong>. It exposes domain-agnostic primitives that any method nodeset can wire in via canvas wires:</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vlm_prismatic__score_tokens</code></td>
+<td>Token-likelihood scoring: <code>(image, prompt, candidate_tokens) → softmax probs</code>. Building block for multi-choice answering, calibrated frontier scoring, confidence estimation.</td>
+</tr>
+<tr>
+<td><code>vlm_prismatic__generate</code></td>
+<td>Free-form generation: <code>(image, prompt) → text</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Method nodesets stay decoupled from Prismatic</strong> — they only know about generic primitives, so swapping in another open-source VLM that exposes token-likelihoods (LLaVA, Qwen-VL, InternVL, ...) is a one-class change inside this nodeset rather than a method-side rewrite.</p>
+<hr>
+<h2 id="1-why-a-foundation-model-nodeset"><span class="num">1.</span> Why a foundation-model nodeset</h2>
+<p>Method nodesets (e.g. <code>explore_eqa</code>) used to bundle Prismatic loading, prompt formatting, and VLM-specific math inline. Three problems with that:</p>
+<ul>
+<li><strong>Coupling</strong>: replacing the VLM forced a method-side rewrite.</li>
+<li><strong>Duplication</strong>: two methods that need token-likelihood scoring would each load Prismatic separately.</li>
+<li><strong>Boundary leakage</strong>: <code>model.get_loss(...)</code> is a Prismatic-API detail; it leaked into method code that shouldn't care.</li>
+</ul>
+<p>The fix is the same pattern as <code>policy_cma</code> / <code>policy_vla</code> / <code>vlm_llava</code> (future): give the foundation model its own nodeset with a <strong>generic</strong> interface (<code>score_tokens</code>, <code>generate</code>, <code>embed</code>, ...). Method nodesets reach it via canvas wires, not Python imports. The boundary is enforced by the auto-host single-class-per-subprocess constraint — two nodesets can't share Python state, only wire-level data.</p>
+<p>Codified in roadmap <strong>TODO #56</strong> ("Clarify method vs foundation-model boundary in nodeset design").</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<h3 id="vlm_prismatic__score_tokens"><code>vlm_prismatic__score_tokens</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image</code> (IMAGE), <code>prompt</code> (TEXT), <code>tokens</code> (ANY — list of candidate strings)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>probs</code> (ANY — softmax distribution aligned with <code>tokens</code>)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>temperature</code> (float, default 1.0)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td><code>model.get_loss(image, prompt, return_string_probabilities=tokens)</code> then softmax with temperature</td>
+</tr>
+</tbody>
+</table>
+<p>Empty <code>tokens</code> list → empty <code>probs</code>. Missing image / VLM unavailable → uniform distribution (degraded mode — see §5).</p>
+<h3 id="vlm_prismatic__generate"><code>vlm_prismatic__generate</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image</code> (IMAGE), <code>prompt</code> (TEXT)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>text</code> (TEXT)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>max_new_tokens</code> (int, default 128), <code>temperature</code> (float, default 0.2)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td><code>model.generate(image, prompt, do_sample, temperature, max_new_tokens)</code></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p>Auto-routed to server mode by the registry because <code>server_python</code> points at a non-default Python:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">VLMPrismaticNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">):</span>
+    <span class="n">server_python</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+        <span class="s2">&quot;HMEQA_PYTHON&quot;</span><span class="p">,</span> <span class="s2">&quot;python&quot;</span>
+    <span class="p">)</span>
+</code></pre></div>
+<p>The hmeqa env (Python 3.9 + torch 2.2.1 + Prismatic + CUDA bfloat16) is reused — no second conda env required for the VLM.</p>
+<h3 id="singleton-bundle">Singleton bundle</h3>
+<p>Prismatic weights load once per subprocess via <code>_ensure_loaded()</code>, mirroring <code>policy_cma</code> / <code>explore_eqa</code>'s old loader. The <code>initialize()</code> hook warms the weights eagerly (a few minutes for <code>prism-dinosiglip+7b</code> on first call); subsequent <code>score_tokens</code> / <code>generate</code> calls hit the cached bundle.</p>
+<div class="highlight"><pre><span></span><code><span class="n">_VLM_BUNDLE</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="n">_VLM_LOAD_LOCK</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_ensure_loaded</span><span class="p">(</span><span class="n">model_id</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="k">global</span> <span class="n">_VLM_BUNDLE</span>
+    <span class="k">if</span> <span class="n">_VLM_BUNDLE</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="n">_VLM_BUNDLE</span>
+    <span class="k">with</span> <span class="n">_VLM_LOAD_LOCK</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_VLM_BUNDLE</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="n">_VLM_BUNDLE</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">prismatic</span><span class="w"> </span><span class="kn">import</span> <span class="n">load</span>
+        <span class="n">model</span> <span class="o">=</span> <span class="n">load</span><span class="p">(</span><span class="n">mid</span><span class="p">,</span> <span class="n">hf_token</span><span class="o">=</span><span class="n">hf_token</span><span class="p">)</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bfloat16</span><span class="p">)</span>
+        <span class="n">_VLM_BUNDLE</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="n">model</span><span class="p">,</span> <span class="s2">&quot;device&quot;</span><span class="p">:</span> <span class="n">device</span><span class="p">,</span> <span class="s2">&quot;model_id&quot;</span><span class="p">:</span> <span class="n">mid</span><span class="p">}</span>
+    <span class="k">return</span> <span class="n">_VLM_BUNDLE</span>
+</code></pre></div>
+<h3 id="parallelism">Parallelism</h3>
+<p>Default <code>parallelism="shared"</code> (or singleton — one subprocess per Prismatic instance). All <code>worker_count &gt; 1</code> env subprocesses fan into the same VLM via HTTP. Future: bump to <code>"replicated"</code> if the platform grows multi-GPU semantics so each worker can pin its own Prismatic instance to a different GPU.</p>
+<hr>
+<h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HMEQA_PYTHON</code></td>
+<td><code>python</code></td>
+<td>Python interpreter for the subprocess</td>
+</tr>
+<tr>
+<td><code>VLM_PRISMATIC_MODEL_ID</code></td>
+<td><code>prism-dinosiglip+7b</code></td>
+<td>Prismatic model id — see <a href="https://github.com/TRI-ML/prismatic-vlms">Prismatic README</a> for alternatives</td>
+</tr>
+<tr>
+<td><code>HF_TOKEN</code></td>
+<td>(required for gated weights)</td>
+<td>HuggingFace read token — Prismatic weights are gated</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-degraded-mode"><span class="num">5.</span> Degraded Mode</h2>
+<p>When Prismatic isn't importable (e.g. component-registry scan from the agentcanvas env, GPU unavailable, weights download failed), every node falls back to a deterministic stub:</p>
+<ul>
+<li><code>score_tokens</code> → uniform distribution <code>[1/n, 1/n, ...]</code> over the candidate tokens</li>
+<li><code>generate</code> → empty string</li>
+</ul>
+<p>The graph keeps running; downstream methods see "I have no information" semantics and behave as if VLM signal is uninformative. Useful for structural smoke tests without a GPU.</p>
+<hr>
+<h2 id="6-why-not-a-commercial-vlm-api"><span class="num">6.</span> Why Not a Commercial VLM API</h2>
+<p>The <code>score_tokens</code> primitive needs <strong>token-level logits</strong> for candidate strings. Commercial multimodal APIs as of 2026-05 don't expose this:</p>
+<ul>
+<li>GPT-4o, Claude Sonnet/Opus, Gemini multimodal — text-out only, no logprobs for image inputs</li>
+<li>OpenAI text-completion APIs expose <code>top_logprobs</code> but the multimodal path doesn't</li>
+</ul>
+<p>Consequences:</p>
+<ul>
+<li>Methods needing calibrated confidence (explore-eqa style) require an <strong>open-source</strong> VLM — Prismatic, LLaVA, etc.</li>
+<li>A "commercial-VLM" path could only support <code>generate</code> (free-form text), not <code>score_tokens</code>. Those methods would have to redefine "confidence" as parsed-text heuristics ("rate 0-100..."), which is unreliable.</li>
+</ul>
+<p>This is why <code>vlm_prismatic</code> is a server-mode local nodeset rather than an HTTP-API client.</p>
+<hr>
+<h2 id="7-consumers"><span class="num">7.</span> Consumers</h2>
+<ul>
+<li><a href="../../method/explore-eqa.html">ExploreEQA NodeSet</a> — four <code>score_tokens</code> instances per step (pred A/B/C/D, rel Y/N, frontier LSV, frontier GSV)</li>
+<li>(future) other EQA / VLN methods that need calibrated multi-choice scoring or visual-prompted exploration</li>
+</ul>
+<p>See also:</p>
+<ul>
+<li><a href="../../method/policy-cma.html">CMA Policy NodeSet</a> — same singleton-loader pattern for a heavy local model</li>
+<li><a href="../../method/policy-vla.html">VLA Policy NodeSet</a> — generic foundation-model pattern for embodied policy</li>
+</ul>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-05-05: Initial page — extracted from <code>explore_eqa</code> to codify the method vs foundation-model boundary (closes roadmap TODO #50; opens umbrella TODO #56 to audit other nodesets for similar leakage).</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-why-a-foundation-model-nodeset">1. Why a foundation-model nodeset</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#vlm_prismatic__score_tokens">vlm_prismatic__score_tokens</a>
+      <a class="toc-h3" href="#vlm_prismatic__generate">vlm_prismatic__generate</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h3" href="#singleton-bundle">Singleton bundle</a>
+      <a class="toc-h3" href="#parallelism">Parallelism</a>
+      <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
+      <a class="toc-h2" href="#5-degraded-mode">5. Degraded Mode</a>
+      <a class="toc-h2" href="#6-why-not-a-commercial-vlm-api">6. Why Not a Commercial VLM API</a>
+      <a class="toc-h2" href="#7-consumers">7. Consumers</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

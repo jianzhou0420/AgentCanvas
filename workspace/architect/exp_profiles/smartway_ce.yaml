@@ -1,0 +1,49 @@
+# Experiment harness profile for the smartway_ce graph (Phase-2 decomp of smartway_mono).
+# Read by /experiment:run and /architect:experiment.
+# Schema: see .claude/commands/architect/_common/evaluator.md (profile block: split/worker_count/step_budget/per_step_budget_sec/metrics).
+#
+# Identical eval params to smartway_mono_ce.exp.yaml — smartway is an I/O-equivalent
+# refactor (verified by workspace/nodesets/smartway/test_equivalence.py); SR
+# numbers should land in the smartway_mono noise band.
+
+split: rand100
+worker_count: 4
+step_budget: 20
+per_step_budget_sec: 180
+
+primary_metric: success
+secondary_metrics: [spl, nDTW, oracle_success, nav_error]
+
+rationale:
+  decomp_vs_mono: |
+    smartway splits smartway_mono's 3 method nodes (plan_step / decide_action /
+    update_history) into 7 (update_topology / build_action_options /
+    assemble_prompt / build_images / parse_response / resolve_action /
+    update_history). Single-writer-per-state-key achieved; backtrack latch
+    no longer has read-clear-at-top (update_history is the sole writer,
+    backtrack=is_return every step). Equivalence test in
+    workspace/nodesets/smartway/test_equivalence.py byte-compares 10
+    scenarios — all pass.
+
+# -----------------------------------------------------------------------------
+# adas-subagent / aflow / myloop tier profiles (two-tier)
+# -----------------------------------------------------------------------------
+# Required by /architect:{adas-subagent,aflow,myloop}:{loop,implementer,evaluator}:
+#   smoke_<graph>:  cheap gate inside implementer's debug retry loop
+#   perf_<graph>:   paper-comparable eval set; ranking signal for aflow,
+#                   post-implementer final-report for adas/myloop
+# Flat fields above remain authoritative for non-tier skills.
+
+smoke_smartway_ce:
+  episode_count: 5
+  worker_count: 5                          # historical calibration 2026-05-19 (11 smoke runs at wc=5; eval_runs/20260519_104853..)
+  split: rand100
+  step_budget: 20
+  per_step_budget_sec: 180
+
+perf_smartway_ce:
+  episode_count: 100                       # rand100 IS the paper-canonical 100-ep subset of val_unseen
+  worker_count: 15                         # historical calibration 2026-05-19 (19 perf runs at wc=15; eval_runs/20260519_115301..120426). env_vlnce marginal-only — fits 8000MB admission.
+  split: rand100
+  step_budget: 20
+  per_step_budget_sec: 180

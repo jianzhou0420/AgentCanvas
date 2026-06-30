@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-observability-002 — AgentCanvas</title>
+<meta name="description" content="Hook system — pre/post node execution interceptors">
+<meta property="og:title" content="ADR-observability-002 — AgentCanvas">
+<meta property="og:description" content="Hook system — pre/post node execution interceptors">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/observability/adr-observability-002-hook-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/observability/adr-observability-002-hook-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Observability</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-observability-002</span>
+  </div>
+  <div class="last-updated">2026-04-02</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-observability);">ADR-observability-002</h1>
+  <p class="tagline">Hook system — pre/post node execution interceptors</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-02</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>observability</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-016</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>AgentCanvas had no mechanism to intercept graph execution for logging, validation, or policy enforcement. Researchers wanting to debug VLN agent behavior (log LLM outputs, block early stops, export metrics) had to modify node code or the framework itself. Claude Code's hook system (<code>PreToolUse</code>, <code>PostToolUse</code>, <code>Stop</code>) demonstrated that interceptors can be added as external shell commands without modifying the execution engine.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Five hook events: <code>PreNodeExecute</code>, <code>PostNodeExecute</code>, <code>GraphStart</code>, <code>GraphComplete</code>, <code>GraphError</code>. (2) Shell subprocess hooks via <code>asyncio.create_subprocess_exec</code> with stdin/stdout JSON protocol. (3) <code>HookDef</code> dataclass stored in <code>GraphDefinition.hooks</code> — hooks travel with saved graphs. (4) <code>HookRunner</code> indexes by event at init, matches by exact type, <code>"*"</code> wildcard, or <code>"prefix__*"</code> prefix. (5) <code>PreNodeExecute</code> can block (skip node) or modify inputs. <code>PostNodeExecute</code> fires on both success and error paths (try/except wrapping <code>forward()</code>). (6) <code>safe_serialize()</code> converts numpy/PIL/bytes to metadata-only JSON — no full data through hook pipe. (7) Fail-open: timeout, crash, malformed JSON all default to <code>continue</code>. (8) Zero-cost when unused: single <code>has_hooks()</code> boolean check guards all hook logic.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) In-process Python callable hooks — rejected for V1 due to lack of isolation (hook bugs can corrupt executor state), serialization issues (callables not JSON-serializable), and security risk. Can be added as a second hook type later. (b) HTTP webhook hooks — deferred for V1, subprocess covers local use cases.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Subprocess isolation outweighs the ~5-20ms latency per invocation. For a VLN agent with 14 nodes/iteration and 500 iterations, a wildcard hook adds ~140s overhead — significant but acceptable for debugging. The <code>HookRunner</code> abstraction supports adding in-process and HTTP hook types later without changing executor integration points. Hooks separate "what the agent does" (graph) from "what you observe about it" (hooks) — same separation-of-concerns as middleware in web frameworks.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>capabilities/hook-system.md, blueprint.md, architecture.md, glossary.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

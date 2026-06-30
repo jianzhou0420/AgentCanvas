@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-005 — AgentCanvas</title>
+<meta name="description" content="`LIST[T]` wire-type modifier with consumer-side coercion">
+<meta property="og:title" content="ADR-dataflow-005 — AgentCanvas">
+<meta property="og:description" content="`LIST[T]` wire-type modifier with consumer-side coercion">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-005-list-wire-type-modifier.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-005-list-wire-type-modifier.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-005</span>
+  </div>
+  <div class="last-updated">2026-04-15 18:00</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-005</h1>
+  <p class="tagline">`LIST[T]` wire-type modifier with consumer-side coercion</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-15 18:00</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-027</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>VLN methods like MapGPT, MC-GPT, DiscussNav, and VLN-Zero need to attach multiple items to a single LLM call — MapGPT in particular references up to 20 distinct viewpoint images positionally ("Image 3") in one prompt. The existing <code>LLMCallNode.rgb</code> port (<code>agentcanvas/backend/app/agent_loop/builtin_nodes.py:78</code>) carried exactly one <code>IMAGE</code> (<code>np.ndarray (H,W,3)</code>), and no list-valued image primitive existed anywhere in the backend. Prior workarounds (variadic fan-in into a single scalar port, state-container abuse, composite-grid tiling, rgb duck-typing to also accept lists) were all rejected — variadic fan-in violates the static-topology invariant, state-container abuse muddles the wire/memory boundary (ADR-dataflow-004), composite grids resize-destroy the multi-image semantics, and rgb duck-typing makes the port type a lie. A one-off <code>IMAGE_LIST</code> wire type was also rejected as the first step in a <code>*_LIST</code> proliferation chain (DiscussNav needs <code>TEXT_LIST</code>, MC-GPT topo memory needs <code>POSE_LIST</code>, search operators fanning candidate graphs need <code>LIST[GraphDefinition]</code>). Two generalisation shapes were considered and rejected during the design discussion: (a) <strong>auto-batching every array wire</strong> — promote every <code>IMAGE</code>/<code>DEPTH</code> to a leading-N batch dimension with single values stored as N=1, rejected because only 2 of the 10 wire types are ndarray-shaped (TEXT, POSE, BOOL, METRICS are not tensors), so the "uniform" model is leaky, and because MapGPT's 20 viewpoints are heterogeneous in H/W so a 4D tensor would force a lossy resize; (b) <strong>force every wire to be a list by default</strong> — make single values length-1 lists everywhere, rejected because this optimises the 1% multi-item case at the cost of the 99% single-item case, adds <code>[0]</code>/<code>[x]</code> noise to every existing producer/consumer/viewer/reducer, and pushes the system toward a Spark/Beam/dataflow-batch paradigm that contradicts the project's workflow mental model (<code>feedback_workflow_vs_agentloop.md</code> — wires are semantic items moving one-at-a-time through nodes). The need for <code>LIST[T]</code> is real, but the uniform/mandatory shapes were wrong.</p>
+
+<h2 id='decision'>Decision</h2>
+<p><code>LIST[T]</code> is introduced as a <strong>wire-type modifier</strong>, not a new wire type, with <strong>consumer-side coercion</strong>. Five concrete rules, all landing in one change: (1) <strong>Modifier form</strong> — the wire type string <code>LIST[T]</code> for any existing inner type <code>T ∈ WIRE_TYPES</code> (IMAGE, DEPTH, TEXT, POSE, ACTION, BOOL, METRICS, OBSERVATION, STEP_RESULT, ANY). Helpers <code>is_list_type</code>, <code>unwrap_list</code>, <code>wrap_list</code>, <code>is_valid_wire_type</code>, <code>is_valid_list_of</code> in <code>standard/wire_types.py</code>. Nested <code>LIST[LIST[T]]</code> is rejected by <code>is_valid_wire_type</code>. (2) <strong>Producers stay scalar</strong> — existing nodes that fire once and produce one <code>T</code> keep their port type <code>T</code>. Zero churn across the 99% of nodes. A producer only declares <code>LIST[T]</code> when it <strong>semantically produces multiple items per fire</strong> (a future <code>MapViewCollectorNode</code> that renders 20 viewpoints in one <code>forward()</code> call). (3) <strong>Consumer-side coercion at one seam</strong> — the graph executor's port-binding loop (<code>graph_executor.py:311–324</code>) routes edge values through a new <code>_route_value_to_port(target, tgt_handle, value)</code> helper. When the consumer port's declared type is <code>LIST[T]</code>: a single <code>T</code> is wrapped as <code>[value]</code>; an incoming list is passthrough; multiple producers fanning into the same <code>LIST[T]</code> port concatenate in edge declaration order; list producers fanning in are flattened then concatenated. When the consumer port is scalar, write-through as before. A new helper <code>_get_input_port_wire_type</code> honours <code>_resolve_ports</code> (ADR-dataflow-003) so configurable-port nodes (<code>LLMCallNode</code>, IterIn/IterOut) pick up their instance-level overrides. (4) <strong>Edge validation</strong> — <code>graph_def.validate_edge_wire_type(source_type, target_type)</code> implements the compatibility table: equal → allow; <code>ANY</code> on either side → allow; <code>T → LIST[T]</code> → allow; <code>LIST[T] → T</code> → reject (lossy); different inner types → reject. Frontend <code>onConnect</code> in <code>useFlowStore.ts:491</code> looks up both ends via <code>node.data._schema</code> and calls the same rule via <code>isCompatibleWireConnection</code> in <code>layoutUtils.ts</code> — invalid drags snap back without calling <code>addEdge</code>. Server-side validation is the helper; call-sites can wire it in as needed. (5) <strong><code>LLMCallNode.rgb</code> migrates to <code>LIST[IMAGE]</code></strong> — <code>input_ports</code> declares <code>PortDef("rgb", "LIST[IMAGE]", ...)</code>, the <code>port_list</code> ConfigField default uses <code>"LIST[IMAGE]"</code>, and the <code>forward()</code> image-collection loop iterates <code>inputs["rgb"]</code> unconditionally. Existing single-image graphs (Straightforward, NavGPT-CE presets) keep working unchanged — the env's scalar <code>IMAGE</code> producer is auto-wrapped to <code>[ndarray]</code> by the new seam, and <code>vlm_complete()</code> (<code>llm/call.py:194</code>) already takes <code>list[str]</code> and emits one <code>image_url</code> content block per item, so the LiteLLM dispatch is unchanged. The log panel shows <code>LIST[T]</code> payloads as <code>"[N INNER(s)]"</code> (e.g. <code>"[20 IMAGE(s)]"</code>) via a new <code>__type: "list"</code> marker in <code>log_serialize_with_assets</code> — no per-tile thumbnails in v1. <code>PortListEditor.tsx</code> renders the inner type in the existing dropdown plus a new <strong>list</strong> checkbox that toggles <code>LIST[...]</code> wrap/unwrap on the canonical <code>wire_type</code> string. Handles on list-typed ports render with a doubled outer ring to distinguish them visually.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Add <code>IMAGE_LIST</code> only</strong> — rejected for <code>*_LIST</code> proliferation: DiscussNav (<code>TEXT_LIST</code>), MC-GPT (<code>POSE_LIST</code>), search operators (<code>LIST[GraphDefinition]</code>), F6 (<code>TEXT_LIST</code>) would each add their own one-off type. One generic modifier is cheaper than five. (b) <strong>Auto-batch every ndarray wire with a leading N dimension</strong> — rejected: only IMAGE/DEPTH are ndarray-shaped (TEXT, POSE, BOOL, METRICS, OBSERVATION are not tensors), so the rule is leaky; MapGPT's 20 viewpoints are heterogeneous in H/W and a 4D tensor forces a lossy resize; and the viewer/reducer blast radius is enormous. (c) <strong>Force every wire to be a list by default</strong> — rejected: optimises the 1% multi-item case at the cost of the 99% single-item case; every existing producer wraps, every consumer unwraps, every viewer indexes <code>[0]</code>, every reducer chooses between list and unwrapped — death by a thousand <code>[0]</code>s. Contradicts the project's workflow-paradigm stance (<code>feedback_workflow_vs_agentloop.md</code>). (d) <strong>Producer-side wrapping as the default coercion point</strong> — rejected: would force every existing scalar producer to know about downstream list ports, reintroducing the single-item tax that (c) has. Keeping coercion strictly at the consumer-binding seam means producers never need to change. (e) <strong>Support nested <code>LIST[LIST[T]]</code> in v1</strong> — deferred: no current use case needs it; if grouped-views VLN methods surface later, revisit. The parser in <code>is_valid_wire_type</code> explicitly rejects nesting so the feature doesn't sneak in accidentally.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The LIST[T] modifier keeps two good properties of the existing wire system — static topology, strongly typed, one-value-per-fire mental model — and only relaxes the arity at ports that explicitly opt in. The coercion rule collapses the six cases in the dispatch table (scalar↔scalar, scalar↔list, list↔list, fan-in in three flavours) into ~15 LOC at one file location, which is the right shape for a feature that should be invisible to most nodes. Producers stay scalar because that's how the system already works everywhere else, and because forcing producers into <code>[x]</code> would shift the cost from the 1% consumers to the 99% producers for no gain (the coercion is a single wrap regardless of which end does it). Consumer-side coercion also means that a <code>LIST[T]</code> port can later accept multiple data paths — the current scalar→list wrap and a future plugin-provided batching producer — without the consumer caring which. Fan-in determinism is fixed by edge declaration order in the graph JSON (already stable in the executor's adjacency iteration), which gives MapGPT-style positional prompt references a stable contract across runs. The MapGPT unblock is almost trivial at the call site — <code>LLMCallNode.forward()</code> iterates <code>inputs["rgb"]</code> unconditionally, <code>vlm_complete()</code> is already list-shaped, LiteLLM sends one <code>image_url</code> per item — so the total blast radius of the change is the wire type helpers (~30 LOC in <code>wire_types.py</code>), the executor seam + port-schema lookup (~70 LOC in <code>graph_executor.py</code>), the graph validation helper (~40 LOC in <code>graph_def.py</code>), the logger's list-payload marker (~10 LOC in <code>logger.py</code>), the <code>LLMCallNode</code> port switch (~15 LOC in <code>builtin_nodes.py</code>), and the frontend checkbox + compat check + color helper + handle decoration + log formatter (~70 LOC across five tsx files) — all landed together as one conceptually self-contained feature. Graphs never migrate: the on-disk shape stays a single <code>wire_type</code> string, and old graphs with single-image producers auto-coerce on load. The feature generalises cleanly — <code>LIST[TEXT]</code> for DiscussNav debate transcripts, <code>LIST[POSE]</code> for MC-GPT topo memory, <code>LIST[ACTION]</code> for trajectory-replay nodes, and population fan-in into one <code>LIST[T]</code> join for F3/F9/F10 — so the one-time cost amortises across the entire VLN method roadmap and the agent-architecture-search path.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>design-docs/wire-types.md (new "List modifier" section), core/glossary.md (add LIST[T] row), core/roadmap.md (mark as Done), .claude/PROJECT_OVERVIEW.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

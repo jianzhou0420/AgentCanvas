@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Policy Adapter Pipeline (VLA &amp; VLN) — AgentCanvas</title>
+<meta name="description" content="policy_vla · policy_vlnce · CanonicalDict · four adapter stages + one model-forward · singleton manager · ensure_* slices · filename discovery">
+<meta property="og:title" content="Policy Adapter Pipeline (VLA &amp; VLN) — AgentCanvas">
+<meta property="og:description" content="policy_vla · policy_vlnce · CanonicalDict · four adapter stages + one model-forward · singleton manager · ensure_* slices · filename discovery">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-adapters.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Adapter Pipeline">
+<style id="pa-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:760px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#paa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/method/policy-adapters.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Method</a>
+    <span class="sep">/</span>
+    <span class="here">Adapter Pipeline</span>
+  </div>
+  <div class="last-updated">2026-06-28 13:34</div>
+</div>
+  <header class="page-header guide">
+  <h1>Policy Adapter Pipeline (VLA &amp; VLN)</h1>
+</header>
+
+<p class="tagline"><code>policy_vla</code> · <code>policy_vlnce</code> · <code>CanonicalDict</code> · four adapter stages + one model-forward · singleton manager · <code>ensure_*</code> slices · filename discovery</p>
+
+<p class="lede">AgentCanvas runs a neural policy not as one black-box node but as a short <strong>pipeline of adapter stages</strong> mediated by a <code>CanonicalDict</code> lingua franca. Two nodesets are built on this one shape — <code>policy_vla</code> (manipulation: LIBERO / SIMPLER) and <code>policy_vlnce</code> (VLN-CE navigation: Habitat R2R-CE / RxR-CE). <strong>The hard promise: the pipeline shape never changes.</strong> An env-side adapter and a model-side adapter sit on either side of the model, each pipeline stage is exactly one canvas node, and adding a new policy or a new env is <em>always</em> "drop a <code>.py</code> file in a folder, pick it from a dropdown" — never a new node type, never a bypass path. This page documents the shared paradigm and the precise places the two instances diverge. For the VLA-side deep dive (robot/policy triples, the onboarding recipe, RT-1-X) see <a href="policy-vla.html">VLA Policy</a>; for the env contract see <a href="../env/habitat.html">env_habitat</a>.</p>
+
+<svg class="rxsvg" viewBox="0 0 760 270" role="img" aria-label="The shared policy adapter pipeline. A top row of six nodes: env observe feeds adapt_env_to_canonical (stage 1, env-side adapter), then adapt_canonical_to_model (stage 2, model-side adapter), then predict (the GPU policy forward), then adapt_model_to_canonical (stage 3, model-side adapter), then adapt_canonical_to_env (stage 4, env-side adapter), which emits an action back to the env. The four adapter stages bracket the single predict node. The obs half flows left to right through stages 1 and 2; the action half flows back through stages 3 and 4. Beneath, a singleton manager band hosts ensure_env (or ensure_robot), ensure_model, and ensure_policy slices. A recurrent state edge loops from predict's hidden output back to its input via iter_in / iter_out.">
+  <defs><marker id="paa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <!-- env endpoints -->
+  <rect x="8" y="60" width="74" height="40" rx="7" class="box"/><text x="45" y="84" text-anchor="middle" class="mono">env obs</text>
+  <rect x="678" y="60" width="74" height="40" rx="7" class="box"/><text x="715" y="84" text-anchor="middle" class="mono">env step</text>
+
+  <!-- obs-half stages -->
+  <rect x="108" y="54" width="118" height="52" rx="8" class="accent"/><text x="167" y="76" text-anchor="middle" class="at">env→canon</text><text x="167" y="94" text-anchor="middle" class="dim">stage 1 · env-side</text>
+  <rect x="252" y="54" width="118" height="52" rx="8" class="box"/><text x="311" y="76" text-anchor="middle">canon→model</text><text x="311" y="94" text-anchor="middle" class="dim">stage 2 · model-side</text>
+
+  <!-- model forward -->
+  <rect x="396" y="48" width="96" height="64" rx="9" class="accent"/><text x="444" y="76" text-anchor="middle" class="at">predict</text><text x="444" y="94" text-anchor="middle" class="dim">GPU policy</text>
+
+  <!-- action-half stages -->
+  <rect x="518" y="54" width="142" height="52" rx="8" class="box"/><text x="589" y="72" text-anchor="middle">model→canon</text><text x="589" y="88" text-anchor="middle">→ env action</text><text x="589" y="102" text-anchor="middle" class="dim">stages 3 + 4</text>
+
+  <!-- forward edges -->
+  <path class="edge" d="M82,80 H108"/>
+  <path class="edge" d="M226,80 H252"/>
+  <path class="edge" d="M370,80 H396"/>
+  <path class="edge" d="M492,80 H518"/>
+  <path class="edge" d="M660,80 H678"/>
+
+  <!-- recurrent state loop -->
+  <path class="edge" d="M444,112 V150 H300 V112" stroke-dasharray="4 3"/>
+  <text x="300" y="166" text-anchor="middle" class="dim">recurrent state on the wire (iter_in / iter_out): RT-1 policy_state · CMA RNN hidden</text>
+
+  <!-- manager band -->
+  <rect x="108" y="196" width="552" height="58" rx="9" class="ghost"/>
+  <text x="120" y="190" class="dim at">singleton manager — one GPU policy + adapters, idempotent slices</text>
+  <rect x="124" y="210" width="160" height="32" rx="6" class="box"/><text x="204" y="230" text-anchor="middle" class="mono">ensure_env / ensure_robot</text>
+  <rect x="300" y="210" width="120" height="32" rx="6" class="box"/><text x="360" y="230" text-anchor="middle" class="mono">ensure_model</text>
+  <rect x="436" y="210" width="120" height="32" rx="6" class="box"/><text x="496" y="230" text-anchor="middle" class="mono">ensure_policy</text>
+  <path class="edge" d="M204,196 V172" stroke-dasharray="3 3"/>
+  <path class="edge" d="M360,210 V120" stroke-dasharray="3 3"/>
+  <path class="edge" d="M496,242 V250 M444,196 V120" stroke-dasharray="3 3"/>
+</svg>
+
+<hr>
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>A trained policy needs the env's raw observation reshaped into <em>its</em> input tensor, and its raw output reshaped back into <em>the env's</em> action. Rather than bury those two translations inside one opaque "run the policy" node, AgentCanvas splits each forward pass into <strong>four adapter stages bracketing one model-forward node</strong>, and exposes every stage as its own canvas node:</p>
+<ol>
+<li><strong>env → canonical</strong> — the <em>env-side adapter</em> wraps the raw observation into a <code>CanonicalDict[obs]</code>.</li>
+<li><strong>canonical → model</strong> — the <em>model-side adapter</em> packs the canonical obs into the model's input batch.</li>
+<li><strong>predict</strong> — the GPU policy's forward pass (the only heavy node).</li>
+<li><strong>model → canonical</strong> — the <em>model-side adapter</em> unpacks the raw output into a <code>CanonicalDict[action]</code>.</li>
+<li><strong>canonical → env</strong> — the <em>env-side adapter</em> turns the canonical action into an env action.</li>
+</ol>
+<p>The two adapters never know about each other. The env-side adapter knows nothing about which model consumes its canonical; the model-side adapter knows nothing about which env produced it. They communicate only through the <code>CanonicalDict</code> + its <code>info</code> carrier. That decoupling is the whole point: <strong>any env × any model is a valid pair</strong>, and onboarding either side is a local edit that doesn't touch the other.</p>
+<p>Why each stage is its own node rather than a fused "predict" box:</p>
+<ul>
+<li>Each intermediate (<code>canonical</code>, <code>model_batch</code>, <code>model_output</code>, <code>canonical_action</code>) is a real wire — inspectable, interceptable, and a future seam for action-filter / debug-viewer nodes.</li>
+<li>Each stage maps to <strong>one abstract method</strong> on the env-side or model-side adapter base class, so swapping a stage on the canvas is symmetric to swapping a class in code.</li>
+<li>Only <code>predict</code> touches the GPU; the four adapter nodes are pure-CPU dict transforms, cheap to re-run when only config changes.</li>
+</ul>
+<blockquote>
+<p><strong>A note on stage numbering.</strong> <code>policy_vla</code>'s code calls these "4 adapter stages + 1 model forward" (predict is unnumbered); <code>policy_vlnce</code>'s docstring calls it a "5-stage pipeline" (predict is stage 3). Same five nodes either way — this page uses "four adapter stages bracketing predict" to stay neutral. (<code>policy_vlnce</code> earlier shipped a sixth <code>tokenize_instruction</code> node; retired 2026-06-29 when tokenization moved into <code>canonical_to_model</code> — see §7.)</p>
+</blockquote>
+
+<h3 id="11-mental-model"><span class="num">1.1</span> Mental model — standardize, then policy-process</h3>
+<p>The pipeline has one load-bearing division of labour: <strong>the env-side adapter <em>only standardizes</em>; every kind of <em>processing</em> happens after the waist, on the model side.</strong> Standardizing means reformatting the env's raw observation into one uniform shape without changing its content; processing means everything a specific policy needs — resize, normalize, augment, tokenize.</p>
+<svg class="rxsvg" viewBox="0 0 760 190" role="img" aria-label="The standardize-then-process mental model. The env emits raw output to the env-side adapter, which only standardizes it (format conventions, no processing) into the CANONICAL — standardized, physical, model-neutral raw data. The canonical then feeds the model-side adapter, which does all policy-specific processing (resize, normalize, tokenize, augment) before the policy. Left zone (env-side) standardizes; right zone (model-side) processes.">
+  <text x="172" y="30" text-anchor="middle" class="dim at">Standardize zone · env-side</text>
+  <text x="564" y="30" text-anchor="middle" class="dim at">Policy-process zone · model-side</text>
+  <rect x="12" y="74" width="64" height="42" rx="7" class="box"/><text x="44" y="99" text-anchor="middle" class="mono">env</text>
+  <rect x="92" y="66" width="160" height="58" rx="8" class="box"/><text x="172" y="90" text-anchor="middle">env→canonical</text><text x="172" y="108" text-anchor="middle" class="dim">standardize · no processing</text>
+  <rect x="288" y="68" width="152" height="54" rx="9" class="accent"/><text x="364" y="90" text-anchor="middle" class="at">CANONICAL</text><text x="364" y="108" text-anchor="middle" class="dim">standardized raw · physical</text>
+  <rect x="476" y="66" width="176" height="58" rx="8" class="box"/><text x="564" y="90" text-anchor="middle">canonical→model</text><text x="564" y="108" text-anchor="middle" class="dim">resize·norm·tokenize·aug</text>
+  <rect x="676" y="74" width="72" height="42" rx="7" class="box"/><text x="712" y="99" text-anchor="middle" class="mono">policy</text>
+  <path class="edge" d="M76,95 H92"/>
+  <path class="edge" d="M252,95 H288"/>
+  <path class="edge" d="M440,95 H476"/>
+  <path class="edge" d="M652,95 H676"/>
+</svg>
+<table>
+<thead><tr><th>Stage</th><th>Job</th><th>May do</th><th>Must NOT do</th></tr></thead>
+<tbody>
+<tr><td><code>env→canonical</code> (env-side)</td><td><strong>standardize only</strong></td><td>format / convention normalization: RGBA→RGB, add depth channel, dtype, units→metres, HWC layout, key naming — goal: <em>any</em> env yields the same canonical shape, policy-agnostic, content unchanged</td><td>resize, crop, mean/std normalize, noise, augmentation, tokenize</td></tr>
+<tr><td><strong>CANONICAL</strong></td><td>the standardized raw data</td><td>env-native content in one uniform, <strong>physical, model-neutral</strong> format; nothing added or removed</td><td>—</td></tr>
+<tr><td><code>canonical→model</code> (model-side)</td><td><strong>all policy-specific processing</strong></td><td>resize, center/random-crop, normalize, noise, history stacking, action chunking, <strong>instruction tokenize</strong> — each policy's own pipeline</td><td>—</td></tr>
+</tbody>
+</table>
+<p><strong>Six rules that fall out of this:</strong></p>
+<ol>
+<li><strong>Decoupling.</strong> M policies + N sims → write only <strong>M+N</strong> adapters; any pair composes (no M×N glue).</li>
+<li><strong>Standardize ≠ process.</strong> <code>env→canonical</code> reformats only (content unchanged); <code>canonical→model</code> does resize / normalize / tokenize / augment.</li>
+<li><strong>Physical, de-tokenized, neutral.</strong> The canonical carries physical quantities; each model's tokenization / normalization / chunking lives in <em>its own</em> model-side adapter, never in the waist.</li>
+<li><strong>The env stays dumb.</strong> The simulator emits its raw output and knows nothing of the canonical; structure is imposed by the adapter.</li>
+<li><strong><code>info</code> is a plain dict on the wire</strong> (msgpack-safe), never a frozen dataclass.</li>
+<li><strong>Incompatibility is handled elsewhere.</strong> A modality a policy needs but a sim can't produce is not the canonical's concern.</li>
+</ol>
+<blockquote><p><strong>Scope.</strong> The shipped code targets manipulation VLAs (OpenVLA / Pi / Diffusion Policy) on a single arm + gripper in joint-position or eef-pose space; the per-part embodiment registry for other morphologies (dual-arm, mobile base, WAM torque, VLN navigation) is parked until a real second morphology arrives. <code>policy_vlnce</code> follows this split as of 2026-06-29: the env adapter standardizes (raw rgb / depth / raw instruction text), and tokenization + <code>obs_transforms</code> run in <code>canonical_to_model</code> (§7).</p></blockquote>
+
+<h3 id="12-smallest-instance"><span class="num">1.2</span> Smallest instance</h3>
+<p>The minimal pipeline is the five-node chain wired in series between an env's <code>observe</code>/<code>step</code> pair:</p>
+<div class="highlight"><pre><span></span><code>observe ─▶ adapt_env_to_canonical ─▶ adapt_canonical_to_model ─▶ predict
+                                                                      │
+        step ◀─ adapt_canonical_to_env ◀─ adapt_model_to_canonical ◀─┘
+</code></pre></div>
+<p>For <code>policy_vlnce</code> the recurrent CMA/Seq2Seq policy adds two wires (<code>predict.hidden_out → iter_out.hidden</code>, <code>iter_in.iterout_hidden → predict.hidden_in</code>) ; the per-episode instruction text rides in as a raw string through an <code>iter_in</code> init slot (CMA-vocab tokenization happens later, model-side). The verified R2R-CE graph that runs this end-to-end is <code>workspace/graphs/vln/verified/straightforward.json</code> (15 nodes, 27 edges).</p>
+
+<hr>
+<h2 id="2-the-canonicaldict-lingua-franca"><span class="num">2.</span> The CanonicalDict lingua franca</h2>
+<p>Every env maps <strong>to</strong> this format; every model maps <strong>from</strong> it. It is a plain <code>{"data": …, "info": …}</code> dict travelling on an <code>ANY</code>-typed wire — the contract is enforced by dict shape, not by <code>wire_type</code>. The two nodesets carry domain-specific payloads but the same envelope.</p>
+
+<h3 id="21-vla-manipulation-payload"><span class="num">2.1</span> VLA — manipulation payload</h3>
+<p><code>policy_vla/adapters/canonical.py</code> · <code>make_canonical_obs</code>. Multi-camera images + a structured robot state + a language prompt; the <code>info</code> carrier (<code>CanonicalInfo</code>) records rotation representation and key dims so a model adapter can normalise without knowing the robot:</p>
+<pre class="hl">
+<span class="n">CanonicalDict</span><span class="p">[</span><span class="n">obs</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;</span><span class="s2">data</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;</span><span class="s2">images</span><span class="s2">&quot;</span><span class="p">:</span>  <span class="p">{</span><span class="s2">&quot;</span><span class="s2">front</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">wrist</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">}</span><span class="p">,</span>
+        <span class="s2">&quot;</span><span class="s2">state</span><span class="s2">&quot;</span><span class="p">:</span>   <span class="p">{</span><span class="s2">&quot;</span><span class="s2">pos</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">rot</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">gripper</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">joint_position</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">}</span><span class="p">,</span>
+        <span class="s2">&quot;</span><span class="s2">actions</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">pos</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">rot</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">gripper</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">joint_position</span><span class="s2">&quot;</span><span class="p">:</span> <span class="o">.</span><span class="o">.</span><span class="o">.</span><span class="p">}</span><span class="p">,</span>  <span class="c1"># output side</span>
+        <span class="s2">&quot;</span><span class="s2">prompt</span><span class="s2">&quot;</span><span class="p">:</span>  <span class="nb">str</span><span class="p">,</span>
+    <span class="p">}</span><span class="p">,</span>
+    <span class="s2">&quot;</span><span class="s2">info</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">CanonicalInfo</span><span class="p">(</span><span class="n">state_type</span><span class="p">,</span> <span class="n">state_rot_repr</span><span class="p">,</span> <span class="n">action_type</span><span class="p">,</span>
+                          <span class="n">action_rot_repr</span><span class="p">,</span> <span class="n">state_dims</span><span class="p">,</span> <span class="n">action_dims</span><span class="p">)</span><span class="p">,</span>
+<span class="p">}</span>
+</pre>
+
+<h3 id="22-vln-navigation-payload"><span class="num">2.2</span> VLN — navigation payload</h3>
+<p><code>policy_vlnce/adapters/canonical.py</code> · <code>make_canonical_obs</code>. RGB-D frame + the raw instruction (raw text for R2R-CE, precomputed BERT feature for RxR-CE) + step metadata; the <code>info</code> carrier (<code>CanonicalNavInfo</code>) records env family, action cardinality, and instruction kind. The canonical carries standardized raw data only — tokenization is model-side (§1.1):</p>
+<pre class="hl">
+<span class="n">CanonicalDict</span><span class="p">[</span><span class="n">obs</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;</span><span class="s2">data</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">:</span>         <span class="n">ndarray</span> <span class="n">uint8</span>  <span class="p">(</span><span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span><span class="p">,</span>
+        <span class="s2">&quot;</span><span class="s2">depth</span><span class="s2">&quot;</span><span class="p">:</span>       <span class="n">ndarray</span> <span class="nb">float</span>  <span class="p">(</span><span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span><span class="p">,</span>       <span class="c1"># metres</span>
+        <span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">kind</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">raw_text</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">text</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">}</span>                      <span class="c1"># R2R-CE</span>
+                     <span class="o">|</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">kind</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">feat</span><span class="s2">&quot;</span><span class="p">,</span>     <span class="s2">&quot;</span><span class="s2">embedding</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">ndarray</span> <span class="p">(</span><span class="n">T</span><span class="p">,</span> <span class="mi">768</span><span class="p">)</span><span class="p">}</span><span class="p">,</span>   <span class="c1"># RxR-CE</span>
+        <span class="s2">&quot;</span><span class="s2">step_meta</span><span class="s2">&quot;</span><span class="p">:</span>   <span class="p">{</span><span class="s2">&quot;</span><span class="s2">step_index</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">episode_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">}</span><span class="p">,</span>
+    <span class="p">}</span><span class="p">,</span>
+    <span class="c1"># asdict() so a frozen dataclass survives the msgpack ANY-wire</span>
+    <span class="s2">&quot;</span><span class="s2">info</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">asdict</span><span class="p">(</span><span class="n">CanonicalNavInfo</span><span class="p">(</span><span class="n">env_family</span><span class="p">,</span> <span class="n">action_dim</span><span class="p">,</span> <span class="n">image_size</span><span class="p">,</span>
+                                    <span class="n">depth_max</span><span class="p">,</span> <span class="n">instruction_kind</span><span class="p">)</span><span class="p">)</span><span class="p">,</span>
+<span class="p">}</span>
+</pre>
+<p>The <strong>canonical action</strong> mirrors the asymmetry: VLA's is a dict of continuous action components (<code>{"data": {"actions": {pos, rot, gripper, …}}}</code>) that decode to a <code>(K, 7)</code> chunk; VLN's is a single discrete index (<code>{"data": {"action_index": int, "action_dim": int}}</code>).</p>
+
+<hr>
+<h2 id="3-the-stages-as-canvas-nodes"><span class="num">3.</span> The stages as canvas nodes</h2>
+<p>Each stage is one node backed by one abstract method on the env-side or model-side adapter. The node names differ only by the <code>policy_vla__</code> / <code>policy_vlnce__</code> prefix:</p>
+<table>
+<thead>
+<tr><th>Stage</th><th>Node (both prefixes)</th><th>VLA backing method</th><th>VLN backing method</th></tr>
+</thead>
+<tbody>
+<tr><td>1 · env→canonical</td><td><code>adapt_env_to_canonical</code></td><td><code>RobotAdaptor.env_to_canonical</code></td><td><code>VlnEnvAdaptor.env_to_canonical</code></td></tr>
+<tr><td>2 · canonical→model</td><td><code>adapt_canonical_to_model</code></td><td><code>ModelAdaptor.canonical_to_model</code></td><td><code>VlnModelAdaptor.canonical_to_model</code></td></tr>
+<tr><td>— · forward</td><td><code>predict</code></td><td><code>BasePolicy.predict_action</code></td><td><code>VlnPolicy.forward</code></td></tr>
+<tr><td>3 · model→canonical</td><td><code>adapt_model_to_canonical</code></td><td><code>ModelAdaptor.model_to_canonical</code></td><td><code>VlnModelAdaptor.model_to_canonical</code></td></tr>
+<tr><td>4 · canonical→env</td><td><code>adapt_canonical_to_env</code></td><td><code>RobotAdaptor.canonical_to_env</code></td><td><code>VlnEnvAdaptor.canonical_to_env</code></td></tr>
+</tbody>
+</table>
+<p>The two action-side nodes (stages 3 + 4) carry <strong>no config</strong> in either nodeset — they read the already-built adapter slot off the manager singleton, so they auto-follow whatever model/env the obs side selected. The obs-side nodes own the config; see §5 for where exactly it lives in each nodeset.</p>
+
+<hr>
+<h2 id="4-the-singleton-manager"><span class="num">4.</span> The singleton manager and its ensure_* slices</h2>
+<p>Both nodesets run in <strong>server mode</strong> (a dedicated conda env: <code>ac-vla-policy</code> / <code>vlnce</code>) with <code>parallelism="shared"</code>: one subprocess hosts one manager singleton (<code>VlaPolicyManager</code> / <code>VlnceManager</code>), and <em>K</em> eval workers fan in through it. The manager owns the GPU policy and the adapters, and pins all torch/CUDA work to a single-thread executor for CUDA thread-affinity.</p>
+<p>State is built lazily through <strong>idempotent <code>ensure_*</code> slices</strong>, one per config-bearing concern. Each caches a <code>(module, kwargs)</code> key; a cache hit short-circuits, a config change rebuilds <em>only</em> that slice. The slices form a dependency chain — changing the model adapter drops the loaded policy (a Pi0 checkpoint can't load into a SmolVLA net), changing the env adapter or canonical shape invalidates downstream:</p>
+<table>
+<thead>
+<tr><th>Concern</th><th>VLA slice</th><th>VLN slice</th><th>Owned by node</th></tr>
+</thead>
+<tbody>
+<tr><td>env-side adapter</td><td><code>ensure_robot</code></td><td><code>ensure_env_adapter</code></td><td>stage 1</td></tr>
+<tr><td>model-side adapter</td><td><code>ensure_model_adaptor</code></td><td><code>ensure_model_adaptor</code></td><td>stage 2 (VLA) / stage 1 (VLN, see §5)</td></tr>
+<tr><td>GPU policy + checkpoint</td><td><code>ensure_policy</code></td><td><code>ensure_policy</code></td><td>predict (VLA) / stage 1 (VLN, see §5)</td></tr>
+</tbody>
+</table>
+<p>Because the manager is a singleton and the adapter nodes are pure readers of its slots, the heavy work (checkpoint load, GPU placement) happens once and is amortised across every step and every worker.</p>
+
+<hr>
+<h2 id="5-filename-discovery"><span class="num">5.</span> Filename discovery — drop-in extension</h2>
+<p>Neither nodeset hard-codes its variant list. At import time each scans three folders and turns every <code>.py</code> stem (excluding <code>__init__</code>, <code>base_*</code>, <code>_*</code>) into a dropdown option:</p>
+<table>
+<thead>
+<tr><th>Folder</th><th>Base class &amp; module contract</th><th>VLA files</th><th>VLN files</th></tr>
+</thead>
+<tbody>
+<tr><td><code>adapters/robots/</code> (VLA) · <code>adapters/envs/</code> (VLN)</td><td>env-side adapter subclass + <code>DEFAULT_KWARGS</code></td><td><code>libero_robot</code>, <code>libero_robot_absolute</code>, <code>simpler_robot</code></td><td><code>r2rce</code>, <code>rxrce</code></td></tr>
+<tr><td><code>adapters/models/</code></td><td>model-side adapter subclass + <code>DEFAULT_KWARGS</code></td><td><code>pi0_model</code>, <code>smolvla_model</code>, <code>dp_model</code>, <code>rt1_model</code></td><td><code>cma</code>, <code>seq2seq</code></td></tr>
+<tr><td><code>policies/</code></td><td><code>BasePolicy</code> / <code>VlnPolicy</code> subclass + <code>DEFAULT_KWARGS</code></td><td><code>pi0_policy</code>, <code>smolvla_policy</code>, <code>dp_policy</code>, <code>droid_dp_policy</code>, <code>rt1_policy</code></td><td><code>cma_policy</code>, <code>seq2seq_policy</code></td></tr>
+</tbody>
+</table>
+<p>Each file carries its own <code>DEFAULT_KWARGS</code> module constant (transcribed from the upstream Hydra / YAML config), so a variant is fully described by its file — no canvas-side JSON config. Drop a file in or out, then <code>POST /api/components/reload</code>. <strong>Adding a policy is the same recipe in both domains:</strong> one model-side adapter file (both directions) + one policy file, consuming the existing <code>CanonicalDict</code> and emitting a canonical action the env-side adapter can already invert. (The VLA onboarding recipe with the robot×model pairing table is spelled out in <a href="policy-vla.html#33-adding-a-new-policy-the-minimal-contract">VLA Policy §3.3</a>.)</p>
+
+<hr>
+<h2 id="6-vla-vs-vln-the-deltas"><span class="num">6.</span> VLA vs VLN — the deltas</h2>
+<p>Everything above is shared. Here is exactly where the two instances diverge — the domain forces different payloads, action types, and recurrent-state shapes, and the two ports made different config-placement choices:</p>
+<table>
+<thead>
+<tr><th>Aspect</th><th><code>policy_vla</code> (manipulation)</th><th><code>policy_vlnce</code> (VLN-CE navigation)</th></tr>
+</thead>
+<tbody>
+<tr><td>Domain / envs</td><td>LIBERO, SIMPLER (Franka / WidowX / Google robot)</td><td>Habitat R2R-CE, RxR-CE</td></tr>
+<tr><td>Manager</td><td><code>VlaPolicyManager</code></td><td><code>VlnceManager</code></td></tr>
+<tr><td>Env-side adapter base</td><td><code>RobotAdaptor</code></td><td><code>VlnEnvAdaptor</code></td></tr>
+<tr><td>Model-side adapter base</td><td><code>ModelAdaptor</code></td><td><code>VlnModelAdaptor</code></td></tr>
+<tr><td>Canonical obs payload</td><td>images {front, wrist} + structured state + prompt</td><td>rgb + depth + instruction {vocab | feat} + step_meta</td></tr>
+<tr><td><code>info</code> carrier</td><td><code>CanonicalInfo</code> (rot repr, state/action dims) — stored as the dataclass</td><td><code>CanonicalNavInfo</code> (env_family, action_dim, depth_max, instruction_kind) — stored as <code>asdict</code> for the wire</td></tr>
+<tr><td>Canonical action → env</td><td>continuous components → <code>(K,7)</code> chunk (TEXT JSON)</td><td>discrete index → <code>ACTION</code> int (0–3 R2R, 0–5 RxR)</td></tr>
+<tr><td>Composed <code>Adaptor</code></td><td>yes — a robot×model bridge object</td><td>no — env and model adapters stay independent</td></tr>
+<tr><td>Recurrent state on the wire</td><td>RT-1 <code>policy_state</code> (<code>policy_state_in/out</code>); others stateless</td><td>RNN <code>hidden</code> = {rnn_states, prev_actions, not_done_masks}</td></tr>
+<tr><td>Config placement</td><td><strong>distributed</strong>: robot on stage 1, model on stage 2, policy + checkpoint on predict</td><td><strong>bundled</strong>: one <code>variant</code> dropdown on stage 1 (12 R2R-CE baselines) primes all three slices</td></tr>
+<tr><td>Extra node</td><td>—</td><td>none — tokenization folded into <code>canonical_to_model</code> (2026-06-29; was a separate <code>tokenize_instruction</code> node)</td></tr>
+<tr><td><code>predict</code> batching</td><td><code>batched=True</code> — BatchedInferenceServer rendezvous (batch=1 loop; win is GPU memory)</td><td><code>batched=False</code> — see §7</td></tr>
+<tr><td>Shipped models</td><td>Pi0, SmolVLA, Diffusion Policy, DROID-DP, RT-1-X</td><td>CMA, Seq2Seq</td></tr>
+</tbody>
+</table>
+<p>The single biggest structural difference is <strong>config placement</strong>. VLA treats robot, model, and policy as three independent choices on three nodes (because any robot × any model is meant to be mixable). VLN bundles all four strings (model adapter, exp-config YAML, policy module, checkpoint) into one <code>variant</code> selection on the chain-entry node, because a VLN-CE baseline is a fixed (architecture, training-config, checkpoint) tuple — picking "CMA +PM+DA+Aug" must pick all four together or the checkpoint won't load. The <code>variant</code> dropdown is populated from <code>variants.REGISTRY</code> (12 R2R-CE entries; only <code>CMA_PM_DA_Aug</code> and <code>Seq2Seq_DA</code> have released checkpoints — the other 10 are listed for topological completeness with a "(not released by paper authors)" label).</p>
+
+<hr>
+<h2 id="7-where-the-instances-deviate"><span class="num">7.</span> Where the instances deviate from the clean model</h2>
+<p>The shared paradigm is clean; the shipped code carries warts worth naming.</p>
+
+<div class="callout warn">
+<p><strong>VLN config is not distributed — it's bundled on the chain-entry node.</strong> The clean model (and <code>policy_vla</code>) says "each config-bearing node owns one slice." <code>policy_vlnce</code> instead puts a single <code>variant</code> dropdown on stage 1 (<code>adapt_env_to_canonical</code>), and that node eagerly calls <code>ensure_env_adapter</code> + <code>ensure_model_adaptor</code> + <code>ensure_policy</code> up front. Stages 2 and 3 are config-less and just read the primed singleton. <em>(The <code>policy_vlnce/__init__.py</code> module docstring and the stage-2 node description still describe the older distributed-config / "env panel variant" design — that prose is stale; the chain-entry <code>variant</code> is what ships.)</em></p>
+</div>
+
+<div class="callout warn">
+<p><strong>VLN's <code>info</code> crosses the wire as a plain dict, not its dataclass.</strong> <code>CanonicalNavInfo</code> is a frozen dataclass; the msgpack <code>ANY</code>-wire (<code>app/server/serialization.py</code>) can't pack one and returns a 500. <code>make_canonical_obs</code> therefore stores <code>dataclasses.asdict(info)</code>, and <code>validate_canonical_obs</code> accepts either form. No wire consumer reads it back — downstream stages re-derive info via <code>env_adapter.get_canonical_info()</code>, so the wire copy is metadata only. <code>policy_vla</code>'s <code>make_canonical_obs</code> still stores the raw <code>CanonicalInfo</code> dataclass; the two ports are asymmetric here.</p>
+</div>
+
+<div class="callout warn">
+<p><strong>VLN instruction: raw text in, tokenized model-side, required port.</strong> Per §1.1 the env adapter standardizes only — the per-episode instruction rides in as a raw string and the canonical carries it as <code>{"kind":"raw_text","text"}</code>. CMA's vocab tokenization (a faithful replica of the offline <code>VocabDict</code> preprocessing — verified 200/200 vs the dataset's precomputed tokens, self-contained <code>adapters/r2r_instruction_vocab.json</code>) runs in <code>cma.canonical_to_model</code>, memoized per episode. The raw text reaches stage 1 through an <code>iter_in</code> init slot (<code>persist=true</code>); the <code>instruction</code> input is <strong>required, not optional</strong> so the executor waits for it before firing (optional → stage 1 races ahead with <code>instruction=None</code> → 0-step episodes).</p>
+</div>
+
+<div class="callout warn">
+<p><strong>VLN <code>predict</code> runs <code>batched=False</code> despite <code>parallelism="shared"</code>.</strong> This is a workaround, not a design choice: <code>batched=True</code> hits a framework asyncio loop-affinity bug under <code>worker_count&gt;1</code> (<code>BatchedInferenceServer._delayed_flush</code> future attached to the wrong event loop). Per-sample sequential is correct meanwhile — the shared GPU policy serialises forward passes anyway, so the throughput cost is negligible while env steps still parallelise across workers. <code>policy_vla</code> keeps <code>batched=True</code> (its TF SavedModel pins batch=1, so the K-flush is unrolled into a loop; the win there is one model on GPU, not throughput).</p>
+</div>
+
+<div class="callout warn">
+<p><strong>The VLA robot dropdown is a temporary state.</strong> Per <a href="policy-vla.html#3-design-principle-env-side-vs-policy-side-adapter-coupling">VLA Policy §3</a>, the env-side adapter's identity should be locked to whatever the graph's env nodes imply (a LIBERO graph can't use a SIMPLER robot adapter) — the free <code>robot</code> select will eventually be filtered or gated by the env nodeset. VLN sidesteps this by deriving its env module from the variant (<code>r2rce</code> is currently pinned for all 12 R2R-CE variants).</p>
+</div>
+
+<div class="callout">
+<p><strong><code>policy_vlnce</code> now honours the standardize/process split (resolved 2026-06-29).</strong> The env adapter (<code>r2rce</code>) standardizes only — raw rgb / depth / raw instruction text, no <code>_full_raw_obs</code> passthrough; the CMA <code>ModelAdaptor</code> rebuilds its obs dict from the canonical and tokenizes there. The standalone <code>tokenize_instruction</code> node was retired (graph 16→15 nodes). Refactor verified behaviour-preserving: 3-ep val_unseen <strong>bit-identical</strong> to the pre-refactor baseline (success 0.333 / SPL 0.333 / nDTW 0.378 / path 10.33 / steps 56.7).</p>
+</div>
+
+<hr>
+<h2 id="8-provenance"><span class="num">8.</span> Provenance</h2>
+<p>The VLA adapter system (<code>CanonicalDict</code>, <code>CanonicalInfo</code>, the <code>RobotAdaptor</code> / <code>ModelAdaptor</code> base classes, the composed <code>Adaptor</code>) is <strong>vendored verbatim</strong> from the upstream <code>vlaworkspace</code> training repo per AgentCanvas's no-upstream-import policy — source copied with rewritten imports, bug-for-bug parity with the vendoring snapshot, no live import at runtime. <code>policy_vlnce</code> is the <strong>VLN-flavored sibling</strong>: the same envelope and stage shape, re-authored for navigation (the <code>VlnEnvAdaptor</code> / <code>VlnModelAdaptor</code> / <code>VlnPolicy</code> hierarchy is local, the CMA / Seq2Seq nets are vendored from <code>vlnce_baselines</code>). Both nodesets keep <code>workspace/</code> standalone — no runtime dependency on <code>third_party/</code>.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h3" href="#11-mental-model">1.1 Mental model — standardize, then policy-process</a>
+      <a class="toc-h3" href="#12-smallest-instance">1.2 Smallest instance</a>
+      <a class="toc-h2" href="#2-the-canonicaldict-lingua-franca">2. The CanonicalDict lingua franca</a>
+      <a class="toc-h3" href="#21-vla-manipulation-payload">2.1 VLA — manipulation payload</a>
+      <a class="toc-h3" href="#22-vln-navigation-payload">2.2 VLN — navigation payload</a>
+      <a class="toc-h2" href="#3-the-stages-as-canvas-nodes">3. The stages as canvas nodes</a>
+      <a class="toc-h2" href="#4-the-singleton-manager">4. The singleton manager and its ensure_* slices</a>
+      <a class="toc-h2" href="#5-filename-discovery">5. Filename discovery — drop-in extension</a>
+      <a class="toc-h2" href="#6-vla-vs-vln-the-deltas">6. VLA vs VLN — the deltas</a>
+      <a class="toc-h2" href="#7-where-the-instances-deviate">7. Where the instances deviate from the clean model</a>
+      <a class="toc-h2" href="#8-provenance">8. Provenance</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

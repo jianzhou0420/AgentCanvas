@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-003 — AgentCanvas</title>
+<meta name="description" content="Configurable IterIn/IterOut ports via `config.ports`">
+<meta property="og:title" content="ADR-dataflow-003 — AgentCanvas">
+<meta property="og:description" content="Configurable IterIn/IterOut ports via `config.ports`">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-003-configurable-iter-ports.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-003-configurable-iter-ports.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-003</span>
+  </div>
+  <div class="last-updated">2026-04-10</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-003</h1>
+  <p class="tagline">Configurable IterIn/IterOut ports via `config.ports`</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-10</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-024</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>IterIn/IterOut iteration gate nodes had hardcoded domain-specific ports (<code>observation</code>, <code>viewpoint_id</code>, <code>navigable</code>) added ad-hoc for NavGPT graphs. This violated ADR-platform-001 (zero domain knowledge in the framework). Different agent graphs need different iteration data channels (VLN-CE uses <code>rgb</code>/<code>depth</code>/<code>state</code>; NavGPT uses <code>observation</code>/<code>viewpoint_id</code>/<code>navigable</code>), but the class-level port list forced all instances to share the same ports. The runtime already handled arbitrary port names via dict pass-through in <code>forward()</code> and dict-based IterOut→IterIn transfer in GraphExecutor — the problem was purely at the schema/UI layer.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Add <code>_resolve_ports(config)</code> classmethod to <strong>BaseCanvasNode</strong> (returns class-level ports by default). IterIn/IterOut override: when <code>config.ports</code> exists (array of <code>{name, wire_type}</code>), build instance-level PortDef lists — IterIn mirrors to both input+output, IterOut to input only (sink). All generated ports forced <code>optional=True</code>. (2) Remove domain-specific ports from class-level defaults. Keep generic VLN ports (<code>rgb</code>, <code>depth</code>, <code>state</code>, <code>action</code>, <code>response</code>, <code>raw_obs</code>) as defaults for backward compatibility. (3) Add <code>ConfigField("ports", "port_list")</code> to both nodes' <code>ui_config</code> for UI editing. (4) Migrate all 3 graph presets with explicit <code>config.ports</code> matching edge handles. (5) Frontend <code>resolveInstancePorts(schema, config)</code> utility overrides <code>_schema</code> ports at all injection paths. (6) <code>PortListEditor</code> component for the new <code>port_list</code> ConfigField type — add/remove ports with name + wire_type, orphan edge cleanup.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Framework-wide dynamic ports on BaseCanvasNode — rejected: over-engineered for 2 node types; <code>_resolve_ports()</code> on BaseCanvasNode with no-op default provides the extension point for cheap future generalization without changing every node. (b) Minimal ports + generic pass-through (no visible handles) — rejected: defeats the purpose of a visual editor; users can't see what data flows through iterations.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The runtime already works with arbitrary port names — zero changes to <code>graph_executor.py</code>. <code>config.ports</code> as an instance-level override follows the existing freeform <code>NodeDef.config</code> pattern. Placing <code>_resolve_ports()</code> on BaseCanvasNode (not just IterIn/IterOut) makes generalization to a third node type a one-line override rather than a rearchitecture. Critical invariant: all IterIn/IterOut ports must remain <code>optional=True</code> because <code>get_required_inputs()</code> in <code>node_io.py</code> reads class-level ports only — non-optional instance ports would be invisible to <code>_is_ready()</code>, causing premature firing or deadlock.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>roadmap.md, glossary.md, canvas-system.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

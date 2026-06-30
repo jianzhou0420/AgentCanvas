@@ -1,0 +1,1165 @@
+{
+  "name": "ExploreEQA on HM-EQA",
+  "description": "Prismatic-VLM exploration over HM3D scenes for House-Mesh Embodied Question Answering (Ren et al. 2024, explore-eqa). Each step: RGB-D \u2192 TSDF fusion \u2192 VLM answer-probability (A/B/C/D) + relevancy (Y/N) \u2192 visual-prompt frontier points, LSV+GSV VLM score \u2192 frontier-weighted next-pose \u2192 free-pose teleport. Post-hoc weighted vote over the trajectory emits the final letter. The Prismatic VLM is decoupled into the generic ``vlm_prismatic`` foundation-model nodeset (separate hmeqa subprocess); the four per-step VLM calls \u2014 pred A/B/C/D, rel Yes/No, frontier LSV, frontier GSV \u2014 are explicit ``vlm_prismatic__score_tokens`` instances wired between explore_eqa pre/post nodes. step_budget is set per-episode by the framework from the env's env-panel on_load() return: int(sqrt(scene_size)*3) per Ren et al. 2024 \u00a7VI (~85 max for ~800 m\u00b2 scenes). The graph-level step_budget below is a failsafe ceiling; env_hmeqa__step.done now fires only on env-side error (bad action / sim failure).",
+  "nodes": [
+    {
+      "id": "reset",
+      "type": "env_hmeqa__reset",
+      "label": "HM-EQA: Reset",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 280,
+        "y": 600
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": false
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH",
+            "persist": false
+          },
+          {
+            "name": "cam_pose",
+            "wire_type": "ANY",
+            "persist": false
+          },
+          {
+            "name": "pose_normal",
+            "wire_type": "ANY",
+            "persist": false
+          },
+          {
+            "name": "angle",
+            "wire_type": "ANY",
+            "persist": false
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "episode_id",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "step_index",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "cam_intr",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "tsdf_bnds",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "choices",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "answer_gt",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "tsdf_update",
+      "type": "explore_eqa_tsdf__integrate",
+      "label": "TSDF: Integrate",
+      "position": {
+        "x": 560,
+        "y": 440
+      },
+      "config": {
+        "voxel_size": 0.1,
+        "init_clearance": 0.5,
+        "margin_h_ratio": 0.6,
+        "margin_w_ratio": 0.25,
+        "black_pixel_ratio": 0.5
+      }
+    },
+    {
+      "id": "build_question",
+      "type": "explore_eqa__build_question",
+      "label": "Build VLM Question",
+      "position": {
+        "x": 560,
+        "y": 120
+      },
+      "config": {}
+    },
+    {
+      "id": "vlm_score_pre",
+      "type": "explore_eqa__vlm_score_pre",
+      "label": "VLM Score (Pre)",
+      "position": {
+        "x": 840,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "vlm_score_pred",
+      "type": "vlm_prismatic__score_tokens",
+      "label": "VLM: Score Pred (A/B/C/D)",
+      "position": {
+        "x": 1080,
+        "y": 120
+      },
+      "config": {
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "vlm_score_rel",
+      "type": "vlm_prismatic__score_tokens",
+      "label": "VLM: Score Rel (Yes/No)",
+      "position": {
+        "x": 1080,
+        "y": 280
+      },
+      "config": {
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "vlm_score_post",
+      "type": "explore_eqa__vlm_score_post",
+      "label": "VLM Score (Post)",
+      "position": {
+        "x": 1320,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "frontier_pre",
+      "type": "explore_eqa__frontier_pre",
+      "label": "Frontier (Pre)",
+      "position": {
+        "x": 840,
+        "y": 520
+      },
+      "config": {
+        "num_prompt_points": 3,
+        "min_num_prompt_points": 2,
+        "use_lsv": true,
+        "use_gsv": true,
+        "img_width": 640,
+        "img_height": 480
+      }
+    },
+    {
+      "id": "frontier_lsv",
+      "type": "vlm_prismatic__score_tokens",
+      "label": "VLM: Score LSV",
+      "position": {
+        "x": 1080,
+        "y": 440
+      },
+      "config": {
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "frontier_gsv",
+      "type": "vlm_prismatic__score_tokens",
+      "label": "VLM: Score GSV",
+      "position": {
+        "x": 1080,
+        "y": 600
+      },
+      "config": {
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "frontier_post",
+      "type": "explore_eqa__frontier_post",
+      "label": "Frontier (Post)",
+      "position": {
+        "x": 1320,
+        "y": 520
+      },
+      "config": {}
+    },
+    {
+      "id": "next_pose",
+      "type": "explore_eqa_tsdf__next_pose",
+      "label": "TSDF: Next Pose",
+      "position": {
+        "x": 1560,
+        "y": 600
+      },
+      "config": {
+        "min_random_init_steps": 2
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_hmeqa__step_pose",
+      "label": "HM-EQA: Step (teleport)",
+      "position": {
+        "x": 1840,
+        "y": 600
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2120,
+        "y": 600
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "cam_pose",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "pose_normal",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "angle",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "step_index",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "episode_id",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "choices",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "answer_gt",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate_answer",
+      "type": "explore_eqa__aggregate_answer",
+      "label": "Aggregate Answer",
+      "position": {
+        "x": 2400,
+        "y": 440
+      },
+      "config": {}
+    },
+    {
+      "id": "evaluate",
+      "type": "env_hmeqa__evaluate",
+      "label": "HM-EQA: Evaluate",
+      "position": {
+        "x": 2680,
+        "y": 440
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_obs",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 1840,
+        "y": 920
+      },
+      "config": {
+        "rows": 1,
+        "cols": 2,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH"
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_frontier",
+      "type": "imageViewer",
+      "label": "Frontier Labels",
+      "position": {
+        "x": 1560,
+        "y": 920
+      },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_answer",
+      "type": "textScroll",
+      "label": "Answer Log",
+      "position": {
+        "x": 2400,
+        "y": 920
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 2120,
+        "y": 920
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__pred_letter",
+      "type": "graphOut",
+      "label": "pred_letter",
+      "position": {
+        "x": 2680,
+        "y": 760
+      },
+      "config": {
+        "portName": "pred_letter",
+        "wireType": "TEXT"
+      }
+    },
+    {
+      "id": "output_port__success",
+      "type": "graphOut",
+      "label": "success",
+      "position": {
+        "x": 2680,
+        "y": 850
+      },
+      "config": {
+        "portName": "success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 2680,
+        "y": 940
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_hmeqa__observe_egocentric",
+      "label": "HM-EQA: Observe (egocentric)",
+      "position": {
+        "x": -200,
+        "y": 260
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_hmeqa__observe_egocentric",
+      "label": "HM-EQA: Observe (egocentric)",
+      "position": {
+        "x": 2020,
+        "y": 740
+      },
+      "config": {}
+    },
+    {
+      "id": "find_frontiers",
+      "type": "explore_eqa_tsdf__find_frontiers",
+      "label": "TSDF: Find Frontiers",
+      "position": {
+        "x": 560,
+        "y": 600
+      },
+      "config": {
+        "num_prompt_points": 3,
+        "img_width": 640,
+        "img_height": 480
+      }
+    },
+    {
+      "id": "integrate_sem",
+      "type": "explore_eqa_tsdf__integrate_sem",
+      "label": "TSDF: Integrate Semantic",
+      "position": {
+        "x": 1180,
+        "y": 600
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_rgb_to_init",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "rgb",
+      "targetHandle": "init_rgb"
+    },
+    {
+      "id": "e_reset_depth_to_init",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "depth",
+      "targetHandle": "init_depth"
+    },
+    {
+      "id": "e_reset_cam_pose_to_init",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "cam_pose_matrix",
+      "targetHandle": "init_cam_pose"
+    },
+    {
+      "id": "e_reset_pose_normal_to_init",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "pose_normal",
+      "targetHandle": "init_pose_normal"
+    },
+    {
+      "id": "e_reset_angle_to_init",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "angle",
+      "targetHandle": "init_angle"
+    },
+    {
+      "id": "e_reset_question_to_init",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "question",
+      "targetHandle": "init_question"
+    },
+    {
+      "id": "e_reset_episode_id_to_init",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "episode_id",
+      "targetHandle": "init_episode_id"
+    },
+    {
+      "id": "e_info_choices_to_init",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "choices",
+      "targetHandle": "init_choices"
+    },
+    {
+      "id": "e_info_answer_to_init",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "answer",
+      "targetHandle": "init_answer_gt"
+    },
+    {
+      "id": "e_info_tsdf_bnds_to_init",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "tsdf_bnds",
+      "targetHandle": "init_tsdf_bnds"
+    },
+    {
+      "id": "e_caminr_to_init",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "intrinsics",
+      "targetHandle": "init_cam_intr"
+    },
+    {
+      "id": "e_iter_rgb_to_tsdf",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iter_depth_to_tsdf",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "iterout_depth",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_iter_cam_pose_to_tsdf",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "iterout_cam_pose",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_iter_pose_normal_to_tsdf",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "iterout_pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_iter_cam_intr_to_tsdf_init",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "init_cam_intr",
+      "targetHandle": "cam_intr"
+    },
+    {
+      "id": "e_iter_episode_id_to_tsdf_init",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "step",
+      "targetHandle": "order"
+    },
+    {
+      "id": "e_iter_tsdf_bnds_to_tsdf_init",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "init_tsdf_bnds",
+      "targetHandle": "tsdf_bnds"
+    },
+    {
+      "id": "e_iter_question_to_build_init",
+      "source": "iter_in",
+      "target": "build_question",
+      "sourceHandle": "init_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_iter_choices_to_build_init",
+      "source": "iter_in",
+      "target": "build_question",
+      "sourceHandle": "init_choices",
+      "targetHandle": "choices"
+    },
+    {
+      "id": "e_iter_rgb_to_vlm_pre",
+      "source": "iter_in",
+      "target": "vlm_score_pre",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_build_to_vlm_pre",
+      "source": "build_question",
+      "target": "vlm_score_pre",
+      "sourceHandle": "vlm_question",
+      "targetHandle": "vlm_question"
+    },
+    {
+      "id": "e_iter_question_raw_to_vlm_pre",
+      "source": "iter_in",
+      "target": "vlm_score_pre",
+      "sourceHandle": "init_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_pre_image_pred_to_vlm_pred",
+      "source": "vlm_score_pre",
+      "target": "vlm_score_pred",
+      "sourceHandle": "image_pred",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_pre_prompt_pred_to_vlm_pred",
+      "source": "vlm_score_pre",
+      "target": "vlm_score_pred",
+      "sourceHandle": "prompt_pred",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e_pre_tokens_pred_to_vlm_pred",
+      "source": "vlm_score_pre",
+      "target": "vlm_score_pred",
+      "sourceHandle": "tokens_pred",
+      "targetHandle": "tokens"
+    },
+    {
+      "id": "e_pre_image_rel_to_vlm_rel",
+      "source": "vlm_score_pre",
+      "target": "vlm_score_rel",
+      "sourceHandle": "image_rel",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_pre_prompt_rel_to_vlm_rel",
+      "source": "vlm_score_pre",
+      "target": "vlm_score_rel",
+      "sourceHandle": "prompt_rel",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e_pre_tokens_rel_to_vlm_rel",
+      "source": "vlm_score_pre",
+      "target": "vlm_score_rel",
+      "sourceHandle": "tokens_rel",
+      "targetHandle": "tokens"
+    },
+    {
+      "id": "e_vlm_pred_to_post",
+      "source": "vlm_score_pred",
+      "target": "vlm_score_post",
+      "sourceHandle": "probs",
+      "targetHandle": "pred_probs"
+    },
+    {
+      "id": "e_vlm_rel_to_post",
+      "source": "vlm_score_rel",
+      "target": "vlm_score_post",
+      "sourceHandle": "probs",
+      "targetHandle": "rel_probs"
+    },
+    {
+      "id": "e_iter_episode_id_to_vlm_post",
+      "source": "iter_in",
+      "target": "vlm_score_post",
+      "sourceHandle": "init_episode_id",
+      "targetHandle": "episode_id"
+    },
+    {
+      "id": "e_iter_rgb_to_frontier_pre",
+      "source": "iter_in",
+      "target": "frontier_pre",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iter_question_to_frontier_pre",
+      "source": "iter_in",
+      "target": "frontier_pre",
+      "sourceHandle": "init_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_pre_image_lsv_to_lsv",
+      "source": "frontier_pre",
+      "target": "frontier_lsv",
+      "sourceHandle": "image_lsv",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_pre_prompt_lsv_to_lsv",
+      "source": "frontier_pre",
+      "target": "frontier_lsv",
+      "sourceHandle": "prompt_lsv",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e_pre_tokens_lsv_to_lsv",
+      "source": "frontier_pre",
+      "target": "frontier_lsv",
+      "sourceHandle": "tokens_lsv",
+      "targetHandle": "tokens"
+    },
+    {
+      "id": "e_pre_image_gsv_to_gsv",
+      "source": "frontier_pre",
+      "target": "frontier_gsv",
+      "sourceHandle": "image_gsv",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_pre_prompt_gsv_to_gsv",
+      "source": "frontier_pre",
+      "target": "frontier_gsv",
+      "sourceHandle": "prompt_gsv",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e_pre_tokens_gsv_to_gsv",
+      "source": "frontier_pre",
+      "target": "frontier_gsv",
+      "sourceHandle": "tokens_gsv",
+      "targetHandle": "tokens"
+    },
+    {
+      "id": "e_lsv_to_post",
+      "source": "frontier_lsv",
+      "target": "frontier_post",
+      "sourceHandle": "probs",
+      "targetHandle": "lsv_probs"
+    },
+    {
+      "id": "e_gsv_to_post",
+      "source": "frontier_gsv",
+      "target": "frontier_post",
+      "sourceHandle": "probs",
+      "targetHandle": "gsv_probs"
+    },
+    {
+      "id": "e_pre_n_to_post",
+      "source": "frontier_pre",
+      "target": "frontier_post",
+      "sourceHandle": "num_candidates",
+      "targetHandle": "num_candidates"
+    },
+    {
+      "id": "e_pre_skip_to_post",
+      "source": "frontier_pre",
+      "target": "frontier_post",
+      "sourceHandle": "skip",
+      "targetHandle": "skip"
+    },
+    {
+      "id": "e_iter_pose_normal_to_next",
+      "source": "iter_in",
+      "target": "next_pose",
+      "sourceHandle": "iterout_pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_iter_angle_to_next",
+      "source": "iter_in",
+      "target": "next_pose",
+      "sourceHandle": "iterout_angle",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_iter_step_to_next",
+      "source": "iter_in",
+      "target": "next_pose",
+      "sourceHandle": "iterout_step_index",
+      "targetHandle": "step_index"
+    },
+    {
+      "id": "e_iter_step_to_next_seed",
+      "source": "iter_in",
+      "target": "next_pose",
+      "sourceHandle": "step",
+      "targetHandle": "step_index"
+    },
+    {
+      "id": "e_next_to_step",
+      "source": "next_pose",
+      "target": "env_step",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_rgb_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_depth_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "depth",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_step_cam_pose_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "cam_pose_matrix",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_step_pose_normal_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_step_angle_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "angle",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_step_step_to_iterout",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "step_index",
+      "targetHandle": "step_index"
+    },
+    {
+      "id": "e_step_eid_to_aggregate",
+      "source": "iter_out",
+      "target": "aggregate_answer",
+      "sourceHandle": "final_episode_id",
+      "targetHandle": "episode_id"
+    },
+    {
+      "id": "e_iter_choices_to_aggregate_init",
+      "source": "iter_out",
+      "target": "aggregate_answer",
+      "sourceHandle": "final_choices",
+      "targetHandle": "choices"
+    },
+    {
+      "id": "e_iter_answer_to_aggregate_init",
+      "source": "iter_out",
+      "target": "aggregate_answer",
+      "sourceHandle": "final_answer_gt",
+      "targetHandle": "answer_gt"
+    },
+    {
+      "id": "e_aggregate_to_eval",
+      "source": "aggregate_answer",
+      "target": "evaluate",
+      "sourceHandle": "pred_letter",
+      "targetHandle": "pred_letter"
+    },
+    {
+      "id": "e_step_rgb_to_viewer",
+      "source": "loop_obs",
+      "target": "viewer_obs",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_depth_to_viewer",
+      "source": "loop_obs",
+      "target": "viewer_obs",
+      "sourceHandle": "depth",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_frontier_to_viewer",
+      "source": "frontier_pre",
+      "target": "viewer_frontier",
+      "sourceHandle": "annotated_image",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_aggregate_to_log",
+      "source": "aggregate_answer",
+      "target": "viewer_answer",
+      "sourceHandle": "pred_text",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_eval_to_metrics",
+      "source": "evaluate",
+      "target": "viewer_metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_aggregate_to_output__po",
+      "source": "aggregate_answer",
+      "sourceHandle": "pred_letter",
+      "target": "output_port__pred_letter",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_eval_to_output__po",
+      "source": "evaluate",
+      "sourceHandle": "success",
+      "target": "output_port__success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_output_83__po",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_hmmig_1",
+      "source": "reset",
+      "sourceHandle": "episode_id",
+      "target": "seed_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_hmmig_2",
+      "source": "env_step",
+      "sourceHandle": "info",
+      "target": "loop_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_carry_episode_id",
+      "source": "env_step",
+      "sourceHandle": "episode_id",
+      "target": "iter_out",
+      "targetHandle": "episode_id"
+    },
+    {
+      "id": "e_carry_choices",
+      "source": "iter_in",
+      "sourceHandle": "init_choices",
+      "target": "iter_out",
+      "targetHandle": "choices"
+    },
+    {
+      "id": "e_carry_answer_gt",
+      "source": "iter_in",
+      "sourceHandle": "init_answer_gt",
+      "target": "iter_out",
+      "targetHandle": "answer_gt"
+    },
+    {
+      "id": "e_initwire_init_rgb_tsdf_update_rgb",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "init_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_initwire_init_depth_tsdf_update_depth",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "init_depth",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_initwire_init_cam_pose_tsdf_update_cam_pose",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "init_cam_pose",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_initwire_init_pose_normal_tsdf_update_pose_normal",
+      "source": "iter_in",
+      "target": "tsdf_update",
+      "sourceHandle": "init_pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_initwire_init_rgb_frontier_pre_rgb",
+      "source": "iter_in",
+      "target": "frontier_pre",
+      "sourceHandle": "init_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_initwire_init_rgb_vlm_score_pre_rgb",
+      "source": "iter_in",
+      "target": "vlm_score_pre",
+      "sourceHandle": "init_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_initwire_init_angle_next_pose_angle",
+      "source": "iter_in",
+      "target": "next_pose",
+      "sourceHandle": "init_angle",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_initwire_init_pose_normal_next_pose_pose_normal",
+      "source": "iter_in",
+      "target": "next_pose",
+      "sourceHandle": "init_pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_envstep_trunc_to_stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "truncated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_int_order_to_find",
+      "source": "tsdf_update",
+      "target": "find_frontiers",
+      "sourceHandle": "order",
+      "targetHandle": "order"
+    },
+    {
+      "id": "e_iter_pn_to_find",
+      "source": "iter_in",
+      "target": "find_frontiers",
+      "sourceHandle": "iterout_pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_init_pn_to_find",
+      "source": "iter_in",
+      "target": "find_frontiers",
+      "sourceHandle": "init_pose_normal",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_iter_intr_to_find",
+      "source": "iter_in",
+      "target": "find_frontiers",
+      "sourceHandle": "init_cam_intr",
+      "targetHandle": "cam_intr"
+    },
+    {
+      "id": "e_iter_cp_to_find",
+      "source": "iter_in",
+      "target": "find_frontiers",
+      "sourceHandle": "iterout_cam_pose",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_init_cp_to_find",
+      "source": "iter_in",
+      "target": "find_frontiers",
+      "sourceHandle": "init_cam_pose",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_find_cand_to_fpre",
+      "source": "find_frontiers",
+      "target": "frontier_pre",
+      "sourceHandle": "candidates_pix",
+      "targetHandle": "candidates_pix"
+    },
+    {
+      "id": "e_find_nc_to_fpre",
+      "source": "find_frontiers",
+      "target": "frontier_pre",
+      "sourceHandle": "num_candidates",
+      "targetHandle": "num_candidates"
+    },
+    {
+      "id": "e_find_order_to_isem",
+      "source": "find_frontiers",
+      "target": "integrate_sem",
+      "sourceHandle": "order",
+      "targetHandle": "order"
+    },
+    {
+      "id": "e_fpost_sv_to_isem",
+      "source": "frontier_post",
+      "target": "integrate_sem",
+      "sourceHandle": "frontier_scores",
+      "targetHandle": "sem_pix"
+    },
+    {
+      "id": "e_fpost_nc_to_isem",
+      "source": "frontier_post",
+      "target": "integrate_sem",
+      "sourceHandle": "num_candidates",
+      "targetHandle": "num_candidates"
+    },
+    {
+      "id": "e_fpost_skip_to_isem",
+      "source": "frontier_post",
+      "target": "integrate_sem",
+      "sourceHandle": "skip",
+      "targetHandle": "skip"
+    },
+    {
+      "id": "e_isem_order_to_next",
+      "source": "integrate_sem",
+      "target": "next_pose",
+      "sourceHandle": "order",
+      "targetHandle": "order"
+    },
+    {
+      "id": "e_find_cand_to_isem",
+      "source": "find_frontiers",
+      "target": "integrate_sem",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    }
+  ],
+  "step_budget": 200,
+  "containers": [
+    {
+      "id": "explore_eqa_mem",
+      "label": "ExploreEQA Score History",
+      "states": {
+        "preds": {
+          "type": "accumulator",
+          "value_type": "ANY",
+          "lifetime": "episode"
+        },
+        "rels": {
+          "type": "accumulator",
+          "value_type": "ANY",
+          "lifetime": "episode"
+        }
+      },
+      "position": {
+        "x": 1500,
+        "y": 900
+      }
+    }
+  ],
+  "access_grants": [
+    {
+      "id": "ag_vlm_score_post",
+      "node_id": "vlm_score_post",
+      "container_id": "explore_eqa_mem"
+    },
+    {
+      "id": "ag_aggregate_answer",
+      "node_id": "aggregate_answer",
+      "container_id": "explore_eqa_mem"
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-executor-002 — AgentCanvas</title>
+<meta name="description" content="Three-pivot scheduling — seed rule + `pairedWith` transfer + `validate_graph_connectivity`">
+<meta property="og:title" content="ADR-executor-002 — AgentCanvas">
+<meta property="og:description" content="Three-pivot scheduling — seed rule + `pairedWith` transfer + `validate_graph_connectivity`">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/executor/adr-executor-002-three-pivot-scheduling.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/executor/adr-executor-002-three-pivot-scheduling.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Executor</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-executor-002</span>
+  </div>
+  <div class="last-updated">2026-04-18 10:38</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-executor);">ADR-executor-002</h1>
+  <p class="tagline">Three-pivot scheduling — seed rule + `pairedWith` transfer + `validate_graph_connectivity`</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-18 10:38</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>executor</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-031 (executor half)</code></dd><dt>Companion</dt><dd><a href='../dataflow/adr-dataflow-006.html'>ADR-dataflow-006</a></dd></dl>
+
+<div class='callout note'><p>Scope split. The original ADR-031 decided both the boundary-node typology (three pivot types + <code>ports_mode</code>) and the executor algorithm change (seed discovery + internal transfer + load-time validation). This file covers the <strong>executor-side half</strong>. The dataflow / boundary-node half is <a href="../dataflow/adr-dataflow-006-three-pivot-boundary-nodes.html">ADR-dataflow-006</a>. Both landed together.</p></div>
+
+<h2 id='context'>Context</h2>
+<p>The executor in <code>graph_executor.py:198-211</code> carried three startup-firing rules that were doing related-but-distinct work: (a) an explicit <code>config.seed=true</code> opt-in flag (only ever set on <code>iterIn</code> itself), (b) an implicit "no required ports AND no incoming edges" structural test, and (c) an <code>iterIn</code> special-case skip. Once <code>iterIn</code> was reshaped into an output-only pivot (see ADR-dataflow-006), the <code>seed=true</code> flag had zero remaining producers, and the special-case skip was the only rule still preventing iterIn from self-seeding empty. Separately, the old implicit ordering of "seed nodes fire first, then iterIn" was never visible in the graph — misconfigured graphs silently parked required-but-unwired ports in <code>pending_inputs</code> forever, a debugging black hole the team stepped on more than once during MapGPT bring-up.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>Executor-internal <code>pairedWith</code> transfer for <code>Initialize</code></strong>. On <code>Initialize</code> firing, copy its outputs into the paired <code>iterIn</code>'s <code>pending_inputs</code> (then queue iterIn) — byte-for-byte mirror of the existing <code>iterOut → iterIn</code> transfer at <code>graph_executor.py:294-337</code>. No canvas wire connects Initialize to iterIn; the transfer is purely runtime. (2) <strong>Collapse seed-discovery to one structural rule</strong>: <code>type != "iterIn" AND no incoming edges AND no required input ports</code>. Drop the <code>is_seed</code> / <code>config.seed</code> lookup entirely. <code>get_required_inputs()</code> + the per-instance <code>_resolve_ports(config)</code> resolver (ADR-dataflow-003) together decide which ports are required at seed-discovery time. (3) <strong>Load-time validator <code>validate_graph_connectivity()</code></strong> in <code>graph_def.py</code> (sibling of the existing <code>validate_edge_wire_type</code>) walks each node's required ports — honouring <code>_resolve_ports(config)</code> exactly the way <code>_get_required_ports_for_node</code> does at runtime — and raises <code>ValueError</code> for any required-but-unwired port. Hooked at the API boundary in <code>app/api/execution/run.py</code> and inside <code>_load_graph_by_name</code> in <code>app/api/execution/eval.py</code>, returning HTTP 400 on failure. (4) Remove the dead <code>seed: true</code> flag from <code>opennav_habitat.json</code> and <code>navgpt_mp3d.json</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Drop the seed-discovery rule entirely and require every startup node to be wired transitively into Initialize</strong> — rejected; constant-source nodes (text providers like <code>system_prompt</code>, <code>get_instruction</code>) live outside Initialize's chain and need the structural "no required, no incoming" rule to fire. (b) <strong>Walk backwards from Initialize's input wires to discover the chain heads</strong> — rejected; it covers env-state seeds cleanly but doesn't cover the constant-source case (same gap). (c) <strong>Drop the no-required-ports exclusion and let the validator be the only line of defence</strong> — rejected by the explicit principle: required-but-unwired nodes should never silently fire with <code>None</code>; the runtime exclusion is a belt to the validator's suspenders. (d) <strong>Collapse the <code>_seed</code>/<code>_loop</code> env-node duplication in the same change</strong> — explicitly deferred; that requires either a <code>default</code>-valued port on iterIn (so step 0 emits a <code>NoOp</code> action and a single env node fires N+1 times) or a per-iteration node lifecycle in the executor — both larger refactors with their own design space.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The executor change is one new branch (Initialize → iterIn transfer) modelled byte-for-byte on the existing iterOut → iterIn block, plus a strictly-tightening change to seed-discovery; no new firing modes, no new lifecycle, no new state-machine. The Phase-B validator + simplified discovery rule is a textbook fail-fast move: a misconfigured graph is rejected at the API boundary with a precise error message instead of silently parking a node forever in <code>pending_inputs</code>. The <code>_seed</code>/<code>_loop</code> env-node duplication is left in place precisely because the new pivot model gives that future refactor a cleaner foundation to land on (Initialize is now the formal target for the <code>_seed</code> chain, iterIn the formal source for the <code>_loop</code> chain — orthogonal slots), turning a confused dual-role question into a well-posed one.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>design-docs/graph-executor.md (Phase 2 seed-discovery rewrite), core/glossary.md (new terms: <code>validate_graph_connectivity</code>), core/architecture.md (Execution Engines section), core/roadmap.md (changelog), core/codebase-map.md (new validator)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

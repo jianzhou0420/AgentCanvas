@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3Isolated Runtime Environments — AgentCanvas</title>
+<meta name="description" content="Server-mode nodesets run in their own subprocess and Python env; the framework talks HTTP to them.">
+<meta property="og:title" content="3Isolated Runtime Environments — AgentCanvas">
+<meta property="og:description" content="Server-mode nodesets run in their own subprocess and Python env; the framework talks HTTP to them.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/isolated-runtime-environments.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/isolated-runtime-environments.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">3Isolated Runtime Environments</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">3</span>Isolated Runtime Environments</h1>
+  <p class="tagline">Server-mode nodesets run in their own subprocess and Python env; the framework talks HTTP to them.</p>
+</header>
+
+
+
+<p>Research tools often require conflicting Python environments. Any <code>BaseNodeSet</code> can run in <strong>server mode</strong> in its own interpreter — the framework auto-generates an HTTP server from the tool's port definitions. Zero extra server code. Under batch eval, the same mechanism fans out to <strong>N tagged subprocesses</strong> for per-worker isolation (ADR-eval-002).</p>
+<p><em>Design docs: <a href="../design-docs/operations/server-mode.html">Server Mode</a> · <a href="../design-docs/components/env-panels.html">Env Panels</a></em></p>
+<hr>
+<h2 id="1-problem"><span class="num">1.</span> Problem</h2>
+<p>AgentCanvas runs in <code>agentcanvas</code> (Python 3.10+, modern torch / HF / FastAPI — the primary env, ADR-platform-004). Research tools it drives often need <strong>different</strong> environments:</p>
+<ul>
+<li><strong>Habitat-Sim 0.1.7</strong> — pinned to Python 3.8 (<code>ac-vlnce</code> env) by its binary wheel</li>
+<li><strong>SAM / modern HF models</strong> — need torch ≥ 2.x, won't load under old CUDA</li>
+<li><strong>SLAM / ROS</strong> — Python 3.8 with ROS Noetic bindings</li>
+</ul>
+<p>These cannot coexist in one interpreter. AgentCanvas solves this by running each nodeset in its own subprocess with its own interpreter — transparently to the canvas.</p>
+<h2 id="2-two-loading-modes"><span class="num">2.</span> Two Loading Modes</h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Command</th>
+<th>Where tools run</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Local</strong></td>
+<td><code>POST /api/components/nodesets/{name}/load</code></td>
+<td>In the backend process</td>
+<td>Same-env tools, fast I/O</td>
+</tr>
+<tr>
+<td><strong>Server</strong></td>
+<td><code>POST /api/components/nodesets/{name}/load?mode=server</code></td>
+<td>In a separate subprocess</td>
+<td>Different Python env, GPU isolation, parallel workers</td>
+</tr>
+</tbody>
+</table>
+<p>In both modes the tools appear as identical canvas nodes — the researcher doesn't need to know which mode is active. Under batch eval, <code>worker_count &gt; 1</code> auto-routes env nodesets to server mode even if the graph was loaded locally (<code>registry.py · load_nodeset</code>, gated on <code>parallelism="replicated"</code>).</p>
+<h2 id="3-auto-server-architecture"><span class="num">3.</span> Auto-Server Architecture</h2>
+<p>When <code>mode=server</code>, the framework performs these steps automatically:</p>
+<div class="highlight"><pre><span></span><code>1. WorkspaceComponentRegistry._load_nodeset_as_server(name, nodeset, worker_count=N)
+2. Read server_python from nodeset class (or default to sys.executable)
+3. Allocate N free TCP ports (one subprocess per worker)
+4. Launch subprocess(es):
+     PYTHONPATH=... {server_python} -m app.server.auto_host \
+       --file {source_file} --class {class_name} --port {port}
+5. Subprocess starts AutoServerApp:
+     a. Instantiate nodeset env panel (if any) for the BaseNodeSet class
+     b. Call on_startup() → instantiate nodeset, await initialize()
+     c. Introspect get_tools() → read input_ports / output_ports
+     d. Auto-generate ServerFunction per tool
+     e. Serve HTTP: /manifest + /call/{fn} + /env-panel/* + /health
+6. Framework fetches /manifest from each subprocess
+7. Generate proxy canvas nodes from manifest
+8. Register proxy nodes in NODE_HANDLERS (once; proxies route to the right subprocess at call time)
+</code></pre></div>
+<h3 id="31-autoserverapp-introspection"><span class="num">3.1</span> AutoServerApp Introspection</h3>
+<p><code>AutoServerApp</code> reads each tool's <code>PortDef</code> declarations and converts them to <code>ServerFunction</code> entries:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># From auto_server_app.py — get_functions()</span>
+<span class="k">for</span> <span class="n">tool</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nodeset</span><span class="o">.</span><span class="n">get_tools</span><span class="p">():</span>
+    <span class="n">functions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">ServerFunction</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="n">tool</span><span class="o">.</span><span class="n">node_type</span><span class="p">,</span>
+        <span class="n">description</span><span class="o">=</span><span class="n">tool</span><span class="o">.</span><span class="n">description</span><span class="p">,</span>
+        <span class="n">input_ports</span><span class="o">=</span><span class="n">_portdefs_to_schemas</span><span class="p">(</span><span class="n">tool</span><span class="o">.</span><span class="n">input_ports</span><span class="p">),</span>
+        <span class="n">output_ports</span><span class="o">=</span><span class="n">_portdefs_to_schemas</span><span class="p">(</span><span class="n">tool</span><span class="o">.</span><span class="n">output_ports</span><span class="p">),</span>
+        <span class="n">config_schema</span><span class="o">=</span><span class="n">tool</span><span class="o">.</span><span class="n">config_schema</span><span class="p">,</span>
+        <span class="n">handler</span><span class="o">=</span><span class="n">_make_handler</span><span class="p">(</span><span class="n">tool</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_batched_server</span><span class="p">),</span>  <span class="c1"># batched server passed for batched=True nodes</span>
+    <span class="p">))</span>
+</code></pre></div>
+<p>No manual port re-declaration needed — the same <code>PortDef</code> used for local mode drives the server API. The <code>manifest.FunctionSchema.name</code> is the tool's <code>node_type</code>, so local and server-mode proxies register under the same <code>node_type</code> (TODO #33 closed).</p>
+<h2 id="4-proxy-nodes"><span class="num">4.</span> Proxy Nodes</h2>
+<p>After fetching the manifest, the framework generates <strong>proxy canvas nodes</strong> — <code>BaseCanvasNode</code> subclasses that forward <code>forward()</code> calls to the remote server via HTTP.</p>
+<div class="highlight"><pre><span></span><code>Canvas node forward()  →  HTTP POST /call/{fn}  →  subprocess: tool.forward()  →  HTTP response  →  return dict
+</code></pre></div>
+<p>Proxy nodes have the same <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, and <code>category</code> as the original tool. They're registered in <code>NODE_HANDLERS</code> exactly like local nodes, so the <code>GraphExecutor</code> treats them identically.</p>
+<p>At call time, a proxy checks the running executor for a per-worker <strong><code>server_url_overrides</code></strong> entry (ADR-eval-002 PB-1.5, <code>proxy.py::_make_forward</code>); if present, the request is routed to that worker's URL, otherwise it falls back to the globally-registered URL.</p>
+<h2 id="5-env-panel-bridging"><span class="num">5.</span> Env Panel Bridging</h2>
+<p>Env nodesets own mutable episode state (current split, current episode, last observation) that must live <strong>inside</strong> the subprocess where the simulator actually runs. ADR-server-002 formalises this with a generic <code>BaseEnvPanel</code> contract:</p>
+<ul>
+<li><code>BaseNodeSet.env_panel: type[BaseEnvPanel] | None</code> — opt-in ClassVar on the nodeset class</li>
+<li><code>AutoServerApp.on_startup()</code> instantiates the env panel inside the subprocess with <code>_context = {"mode": "local", "server_url": None, "nodeset_name": ...}</code> — the env panel is local to the subprocess, not the framework</li>
+<li><code>ServerApp._build_app()</code> mounts generic <code>/env-panel/info</code>, <code>/env-panel/{method}</code> routes that proxy method calls to the subprocess env panel</li>
+<li>Framework side: <code>RemoteEnvPanelProxy</code> (one per worker) is registered in the global env panel registry. Calls go HTTP → subprocess env panel → live simulator state</li>
+</ul>
+<p>This replaced the earlier pattern of smuggling episode control through hidden <code>env_*__ep_*</code> tool nodes. 5 hidden tools + <code>api/canvas/env.py</code> (233 lines) + <code>app/env_controller.py</code> (343 lines) were deleted; episode management is fully decoupled from the tool-call path.</p>
+<h2 id="6-worker-pool-fan-out-adr-eval-002"><span class="num">6.</span> Worker-Pool Fan-Out (ADR-eval-002)</h2>
+<p>For batch evaluation, <code>worker_count &gt; 1</code> extends server mode to <strong>N parallel isolated subprocesses</strong> per env nodeset:</p>
+<div class="highlight"><pre><span></span><code>ensure_nodesets_for_graph(graph, worker_count=N)
+  ├─ for env nodeset in graph:
+  │    └─ _load_nodeset_as_server(name, ns, worker_count=N)
+  │         ├─ allocate N free ports
+  │         ├─ spawn N auto_host subprocesses
+  │         ├─ fetch manifest from first; generate proxy nodes once
+  │         └─ register N tagged RemoteEnvPanelProxy instances: &quot;{name}#0&quot;…&quot;{name}#{N-1}&quot;
+  └─ non-env nodesets stay singleton (one subprocess, shared across workers)
+</code></pre></div>
+<p><code>EnvWorkerPool</code> then leases one <code>WorkerHandle</code> per episode; each handle carries:</p>
+<ul>
+<li><strong><code>env_panel_overrides</code></strong> <code>{nodeset_name: tagged_proxy}</code> — consulted by <code>executor.get_env_panel(name)</code> before the global registry, so <code>set_episode</code>/<code>reset</code> calls hit the right subprocess</li>
+<li><strong><code>server_url_overrides</code></strong> <code>{nodeset_name: tagged_url}</code> — consulted by <code>executor.get_server_url(name)</code>, so in-graph tool calls from the proxy node hit the same subprocess</li>
+</ul>
+<p>At <code>worker_count=1</code> both overrides are empty and the code path collapses to the singleton case (zero behaviour change). On eval shutdown, all N tagged subprocesses are unloaded together with rollback if any failed to come up.</p>
+<h2 id="7-batched-inference-adr-eval-002"><span class="num">7.</span> Batched Inference (ADR-eval-002)</h2>
+<p>Some nodes (e.g. <code>policy_cma__forward</code>) amortise better when K parallel callers share one GPU forward pass. <code>BatchedInferenceServer</code> is a per-<code>AutoServerApp</code> rendezvous tier:</p>
+<ul>
+<li>Opt-in on the node class: <code>batched: ClassVar[bool] = True</code>, <code>batch_dim: ClassVar[str] = "&lt;input_port_name&gt;"</code> (validated at scan time)</li>
+<li><code>AutoServerApp._make_handler</code> routes batched=True calls through <code>BatchedInferenceServer.submit(function_name, inputs, config)</code></li>
+<li>The server holds one <code>_BatchQueue</code> per <code>(function_name, config_hash)</code> — collects K submissions, calls the underlying handler <strong>once</strong> with stacked inputs (via <code>SAMPLES_KEY</code>/<code>OUTPUTS_KEY</code> markers), scatters the K result slices to K awaiting futures</li>
+<li><strong>Restart-on-each-submit flush timer</strong> at <code>flush_timeout_ms</code> (default 50 ms) — flush on either <code>batch_size == worker_count</code> or timeout, whichever fires first</li>
+<li><strong>Pure-functional contract</strong>: any per-call state must travel as explicit <code>hidden_in</code> / <code>hidden_out</code> ports on the node — the server never carries caller-scoped state between calls</li>
+</ul>
+<p>This sits inside a single subprocess (one <code>AutoServerApp</code> instance), so it composes cleanly with the worker-pool fan-out: K parallel workers submit into the same batched queue hosted by the inference subprocess.</p>
+<h2 id="8-how-to-use"><span class="num">8.</span> How to Use</h2>
+<h3 id="81-specifying-a-different-interpreter"><span class="num">8.1</span> Specifying a Different Interpreter</h3>
+<p>Add <code>server_python</code> to the nodeset class:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">SlamNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;slam&quot;</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;SLAM spatial tools&quot;</span>
+    <span class="n">server_python</span> <span class="o">=</span> <span class="s2">&quot;/opt/ros/noetic/bin/python3&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">LocalizeTool</span><span class="p">(),</span> <span class="n">MapQueryTool</span><span class="p">(),</span> <span class="n">FrontierTool</span><span class="p">()]</span>
+</code></pre></div>
+<p>For the <code>ac-vlnce</code> env:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">EnvHabitatNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;env_habitat&quot;</span>
+    <span class="n">server_python</span> <span class="o">=</span> <span class="s2">&quot;python&quot;</span>
+    <span class="n">env_panel</span> <span class="o">=</span> <span class="n">HabitatEnvPanel</span>  <span class="c1"># ADR-server-002 — lives in the subprocess</span>
+</code></pre></div>
+<h3 id="82-loading-via-api"><span class="num">8.2</span> Loading via API</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Load in local mode (default)</span>
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/api/components/nodesets/sam/load
+
+<span class="c1"># Load in server mode (auto-hosted subprocess)</span>
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/api/components/nodesets/slam/load?mode<span class="o">=</span>server
+
+<span class="c1"># Unload (works for all modes, including worker-pool)</span>
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/api/components/nodesets/slam/unload
+</code></pre></div>
+<p>Batch eval loads nodesets via <code>ensure_nodesets_for_graph(graph, worker_count=N)</code> — there is no public <code>?worker_count=N</code> query parameter; fan-out is driven by <code>EvalConfig.worker_count</code>.</p>
+<h3 id="83-opting-into-batched-inference"><span class="num">8.3</span> Opting Into Batched Inference</h3>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PolicyCMAForward</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;policy_cma__forward&quot;</span>
+    <span class="n">batched</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">batch_dim</span> <span class="o">=</span> <span class="s2">&quot;raw_obs&quot;</span>  <span class="c1"># must name an actual input port</span>
+    <span class="n">input_ports</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;raw_obs&quot;</span><span class="p">,</span> <span class="n">WIRE_OBSERVATION</span><span class="p">),</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;hidden_in&quot;</span><span class="p">,</span> <span class="n">WIRE_ANY</span><span class="p">),</span>   <span class="c1"># explicit per-caller state</span>
+        <span class="o">...</span>
+    <span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;action&quot;</span><span class="p">,</span> <span class="n">WIRE_ACTION</span><span class="p">),</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;hidden_out&quot;</span><span class="p">,</span> <span class="n">WIRE_ANY</span><span class="p">),</span>  <span class="c1"># explicit per-caller state</span>
+    <span class="p">]</span>
+</code></pre></div>
+<h2 id="9-key-files"><span class="num">9.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/server/auto_server_app.py</code></td>
+<td><code>AutoServerApp</code> — introspects nodeset, generates <code>ServerFunction</code> entries, hosts <code>BatchedInferenceServer</code>, instantiates nodeset env panel in-process</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/auto_host.py</code></td>
+<td>CLI entry point: <code>python -m app.server.auto_host --file ... --class ... --port ...</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/server_app.py</code></td>
+<td><code>ServerApp</code> base — HTTP endpoints, manifest serving, <code>/env-panel/*</code> routes (ADR-server-002)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/base_server.py</code></td>
+<td><code>BaseServer</code> — subprocess lifecycle, health check, manifest fetch</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/nodeset.py</code></td>
+<td><code>ServerNodeSet</code> — loadable group backed by an external server process</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/proxy.py</code></td>
+<td><code>generate_proxy_nodes()</code> + <code>_make_forward</code> — proxy <code>BaseCanvasNode</code> classes with per-worker URL routing</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/batched_inference.py</code></td>
+<td><code>BatchedInferenceServer</code> + <code>_BatchQueue</code> — per-app rendezvous batching (ADR-eval-002)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/manifest.py</code></td>
+<td><code>ServerManifest</code>, <code>FunctionSchema</code>, <code>PortSchema</code> — manifest data model</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/serialization.py</code></td>
+<td>Wire-type (de)serialization for HTTP transport — base64 images, numpy arrays, nested dicts</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/registry.py</code></td>
+<td><code>_load_nodeset_as_server(worker_count=N)</code>, tagged-proxy registration, rollback on partial failure</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/env_panel.py</code></td>
+<td><code>BaseEnvPanel</code> ABC + <code>RemoteEnvPanelProxy</code> (ADR-server-002)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/env_worker_pool.py</code></td>
+<td><code>EnvWorkerPool</code> + <code>WorkerHandle</code> — N-worker lease / release for batch eval</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Local loading mode</td>
+<td>Done</td>
+<td><code>load_nodeset(name, mode="local")</code> — in-process</td>
+</tr>
+<tr>
+<td>Server loading mode</td>
+<td>Done</td>
+<td><code>load_nodeset(name, mode="server")</code> — subprocess with auto-server</td>
+</tr>
+<tr>
+<td>AutoServerApp (introspect PortDef → ServerFunction)</td>
+<td>Done</td>
+<td>Zero manual port re-declaration</td>
+</tr>
+<tr>
+<td>auto_host CLI (<code>python -m app.server.auto_host</code>)</td>
+<td>Done</td>
+<td><code>--file</code>, <code>--class</code>, <code>--port</code> args</td>
+</tr>
+<tr>
+<td>BaseServer (subprocess lifecycle, health check, manifest)</td>
+<td>Done</td>
+<td>start/stop/restart, <code>_wait_for_health</code>, <code>fetch_manifest</code></td>
+</tr>
+<tr>
+<td>Proxy node generation</td>
+<td>Done</td>
+<td><code>generate_proxy_nodes()</code> + per-worker URL routing in <code>_make_forward</code></td>
+</tr>
+<tr>
+<td>server_python ClassVar</td>
+<td>Done</td>
+<td>Selects interpreter for subprocess</td>
+</tr>
+<tr>
+<td>Load/unload API endpoints</td>
+<td>Done</td>
+<td><code>POST /api/components/nodesets/{name}/load?mode=server</code></td>
+</tr>
+<tr>
+<td>Manifest protocol (<code>/manifest</code> endpoint)</td>
+<td>Done</td>
+<td><code>ServerApp</code> serves manifest with <code>FunctionSchema</code> entries; <code>node_type</code> is the schema name</td>
+</tr>
+<tr>
+<td>Env panel bridging (ADR-server-002)</td>
+<td>Done</td>
+<td><code>/env-panel/*</code> routes, <code>RemoteEnvPanelProxy</code>, env panel lives in subprocess</td>
+</tr>
+<tr>
+<td>Worker-pool fan-out (ADR-eval-002 PB)</td>
+<td>Done</td>
+<td><code>worker_count &gt; 1</code> spawns N tagged subprocesses + N tagged proxies with rollback</td>
+</tr>
+<tr>
+<td>Per-worker URL routing (ADR-eval-002 PB-1.5)</td>
+<td>Done</td>
+<td><code>server_url_overrides</code> consulted by <code>proxy._make_forward</code></td>
+</tr>
+<tr>
+<td>Batched inference tier (ADR-eval-002 PC)</td>
+<td>Done</td>
+<td><code>BatchedInferenceServer</code> + <code>batched</code>/<code>batch_dim</code> opt-in on <code>BaseCanvasNode</code></td>
+</tr>
+<tr>
+<td>Docker server mode</td>
+<td>Planned</td>
+<td>Feature TODO F7 — unblocked by ADR-eval-002; subprocess spawn is the only seam to swap</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass (B4). §5 heading anchor id had a literal space (<code>5-env panel-bridging</code>, a rename artifact) → <code>5-env-panel-bridging</code>; §8.1 code <code>env panel = ...</code> → <code>env_panel</code> (the real ClassVar; the space was invalid Python). §2 <code>registry.py:182</code> → <code>registry.py · load_nodeset</code> (line drifted; force-to-server gated on <code>parallelism="replicated"</code>). §9 batched_inference.py row dropped <code>BatchedClient</code> — no such class exists anywhere in the tree (only <code>BatchedInferenceServer</code> + <code>_BatchQueue</code> live there). AutoServerApp / auto_host / ServerApp / proxy / manifest / <code>_load_nodeset_as_server</code> all re-verified CONFIRMED.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-04-19 19:30: Refresh for ADR-platform-004, ADR-server-002, ADR-eval-002 — added §1 env map, new §5 Env panel Bridging, new §6 Worker-Pool Fan-Out, new §7 Batched Inference; removed stale <code>workspace/servers/</code> YAML section (surface removed); updated §3 auto-server flow to cover <code>worker_count=N</code> and env panel instantiation; updated key-files table with <code>nodeset.py</code>, <code>batched_inference.py</code>, <code>env_panel.py</code>, <code>env_worker_pool.py</code>, <code>serialization.py</code>; added status rows for env panel bridging, worker pool, per-worker routing, batched inference; code example in §3.1 updated to pass <code>self._batched_server</code> to <code>_make_handler</code></li>
+<li>2026-04-02 14:21: Added Status section</li>
+<li>2026-04-02 13:58: Initial content — two modes, auto-server architecture, proxy nodes, YAML servers</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="customizable-node-system.html">← 2. Customizable Node System</a> · <a href="index.html">↑ Capabilities index</a> · <a href="nested-graph-system.html">4. Nested Graph System →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-problem">1. Problem</a>
+      <a class="toc-h2" href="#2-two-loading-modes">2. Two Loading Modes</a>
+      <a class="toc-h2" href="#3-auto-server-architecture">3. Auto-Server Architecture</a>
+      <a class="toc-h3" href="#31-autoserverapp-introspection">3.1 AutoServerApp Introspection</a>
+      <a class="toc-h2" href="#4-proxy-nodes">4. Proxy Nodes</a>
+      <a class="toc-h2" href="#5-env-panel-bridging">5. Env Panel Bridging</a>
+      <a class="toc-h2" href="#6-worker-pool-fan-out-adr-eval-002">6. Worker-Pool Fan-Out (ADR-eval-002)</a>
+      <a class="toc-h2" href="#7-batched-inference-adr-eval-002">7. Batched Inference (ADR-eval-002)</a>
+      <a class="toc-h2" href="#8-how-to-use">8. How to Use</a>
+      <a class="toc-h3" href="#81-specifying-a-different-interpreter">8.1 Specifying a Different Interpreter</a>
+      <a class="toc-h3" href="#82-loading-via-api">8.2 Loading via API</a>
+      <a class="toc-h3" href="#83-opting-into-batched-inference">8.3 Opting Into Batched Inference</a>
+      <a class="toc-h2" href="#9-key-files">9. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

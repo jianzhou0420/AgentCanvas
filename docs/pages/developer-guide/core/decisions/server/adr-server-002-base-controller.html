@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-server-002 — AgentCanvas</title>
+<meta name="description" content="Generic BaseController contract supersedes env-specific EnvController">
+<meta property="og:title" content="ADR-server-002 — AgentCanvas">
+<meta property="og:description" content="Generic BaseController contract supersedes env-specific EnvController">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/server/adr-server-002-base-controller.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/server/adr-server-002-base-controller.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Server</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-server-002</span>
+  </div>
+  <div class="last-updated">2026-04-14</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-server);">ADR-server-002</h1>
+  <p class="tagline">Generic BaseController contract supersedes env-specific EnvController</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-14</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted (supersedes ADR-legacy-002)</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>server</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-025</code></dd><dt>Supersedes</dt><dd><code>ADR-legacy-002</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>ADR-legacy-002 introduced canvas episode control via three parallel layers: a standalone <code>EnvController</code> Protocol + <code>HabitatEnvController</code> + <code>_controllers</code> registry (<code>app/env_controller.py</code>, 343 lines), an env-specific REST router (<code>app/api/canvas/env.py</code>, 233 lines), a Habitat-aware React component (<code>EnvContextBar.tsx</code>), and 5 hidden <code>env_habitat__ep_*</code> bridge tools in <code>habitat.py</code> to make server mode work via <code>/call/{fn}</code>. Adding any future env nodeset (Matterport3D, AI2-THOR, RxR per TODOs E1/E4) required editing every layer and re-creating the bridge tools — the opposite of the "all things in single nodeset" principle embodied by <code>BaseNodeSet</code>, <code>BaseCanvasNode</code>, and <code>AutoServerApp</code>. Additionally, server-mode episode control was deferred to TODO #35 because the <code>HabitatEnvController</code>/hidden-tool bridge was awkward.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong><code>BaseController</code> ABC</strong> in <code>app/components/controllers.py</code> — declarative contract with <code>name</code>/<code>display_name</code>/<code>fields</code>/<code>actions</code> ClassVars, abstract <code>on_load()</code>, concrete <code>on_field_change()</code>/<code>on_action()</code>/<code>get_options()</code> defaults, and a <code>_context</code> attribute the registry stamps with <code>mode</code> and <code>server_url</code>. Paired <code>ControllerField</code> (select/number/text/slider) and <code>ControllerAction</code> (with <code>side_effect: run_start|run_pause|run_stop|run_step|none</code>) dataclasses describe the panel UI. (2) <strong>Opt-in ClassVar</strong> <code>controller: ClassVar[type | None] = None</code> on <code>BaseNodeSet</code>. Nodesets set it to their <code>BaseController</code> subclass; <code>WorkspaceComponentRegistry</code> reads it on load and instantiates + registers the controller via <code>_register_controller_for</code>. (3) <strong>One generic REST router</strong> <code>/api/controllers</code> with 5 routes (<code>GET /</code>, <code>GET /{name}/state</code>, <code>GET /{name}/options/{field}</code>, <code>POST /{name}/field/{field}</code>, <code>POST /{name}/action/{action}</code>). <code>_require_idle()</code> via <code>ExecutionGuard</code> blocks field changes and <code>run_start</code>/<code>none</code> actions during execution; <code>run_pause</code>/<code>run_stop</code> pass through. Zero env-specific code. Replaces <code>api/canvas/env.py</code> entirely. (4) <strong>One generic frontend panel</strong> <code>ControllerPanel.tsx</code> — picker dropdown lists every registered controller from <code>GET /api/controllers</code>, renders declared fields via a <code>select</code>/<code>number</code>/<code>text</code>/<code>slider</code> dispatcher, renders actions as color-coded icon buttons (play green, pause yellow, stop red, reset orange), interprets <code>side_effect</code> to dispatch existing <code>runPipeline</code>/<code>navPause</code>/<code>navStop</code> store calls. Persists active selection in <code>localStorage[agentcanvas:active_controller]</code>. Self-manages via <code>nodesets-changed</code> window event — no env-detection <code>useEffect</code> in <code>CanvasPage</code>. Replaces <code>EnvContextBar.tsx</code> entirely. (5) <strong>Server-mode bridge</strong>: <code>ServerApp._build_app</code> gains an optional <code>get_controller_instance()</code> hook that, when non-None, mounts 5 matching <code>/controller/*</code> routes next to <code>/call/{fn}</code>. <code>AutoServerApp.on_startup</code> instantiates <code>nodeset.controller()</code> inside the spawned subprocess (where the env actually lives) with <code>_context.mode="local"</code>. <code>WorkspaceComponentRegistry._register_remote_controller(name, server_url)</code> — called from <code>_load_nodeset_as_server</code> — <code>httpx.GET</code>s <code>/controller/info</code> from the subprocess and registers a <strong><code>RemoteControllerProxy(BaseController)</code></strong> in the agentcanvas main process that forwards every method call over HTTP. The panel works identically in local and server modes; the proxy is transparent. (6) <strong><code>HabitatController</code> inside <code>workspace/nodesets/server/habitat.py</code></strong> — subclasses <code>BaseController</code>, reads <code>HabitatEnvManager</code> directly, <code>on_field_change("split", ...)</code> triggers shutdown+reinit via the single-thread executor, <code>on_field_change("episode_index", ...)</code> caches the index and fetches preview info, <code>on_action("play")</code> calls <code>set_episode_by_index</code> then returns <code>side_effect: run_start</code>, <code>on_action("pause"|"stop")</code> returns <code>side_effect: run_{name}</code>, <code>get_options("episode_index")</code> lists all episodes via <code>mgr.get_episodes_list(0, 10000)</code>. Supersedes all 5 hidden <code>env_habitat__ep_*</code> tools which are deleted. (7) <strong>Eval/canvas parity</strong>: <code>BatchEvalOrchestrator</code> (ADR-eval-001) now calls <code>get_controller(env_nodeset).on_field_change("episode_index", i)</code> + <code>on_action("play")</code> per episode instead of the old <code>env_ctrl.set_episode(i)</code>. Eval and canvas share the exact same env-control code path.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Controller as a canvas node</strong> — clicking Play, Pause, Stop on a node wired into the graph, with the node's <code>execute()</code> doing the env reset at step 0. Conceptually elegant (pre-flight concept disappears entirely), but rejected: the node can scroll out of view during a long run hurting discoverability, a node reaching into <code>LoopRunner</code> inverts the dependency direction, new users wouldn't know to add a controller node before Play, and the run lifecycle state (pause/stop/resume) has nowhere natural to live if multiple controller nodes exist. (b) <strong>Keep ADR-legacy-002's <code>HabitatEnvController</code> but move it into <code>habitat.py</code></strong> — shrinks dependency graph but leaves the REST router + frontend component still env-specific. Rejected: only solves one-third of the problem. (c) <strong>Extend <code>AutoServerApp</code> to host control-plane routes in local mode too</strong> — would let the same <code>/controller/*</code> routes serve both modes via sub-app mounting. Rejected: would grow <code>AutoServerApp</code>'s responsibility beyond "server-mode subprocess transport" (ADR-server-001), conflating local and server paths, and the local-mode nodeset already has direct in-process access to its controller — no transport needed. (d) <strong>Use an <code>@control_endpoint</code> decorator</strong> that marks arbitrary methods on a <code>BaseNodeSet</code> as HTTP routes — rejected: conflates tool methods (typed ports, wire-type inputs) with control-plane methods (form-like inputs, actions) and bypasses the <code>ExecutionGuard</code> layering story. (e) <strong>Restore the hidden <code>env_habitat__ep_*</code> tools forever</strong> — rejected: duplicates the control plane across every env nodeset (one set per env), clutters the node type registry, and still requires the env-specific <code>HabitatEnvController</code> to wrap them.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The controller is fundamentally declarative data (fields + actions) plus four small async hooks. Making it a first-class base class lets the framework route it uniformly without per-env router or UI code. The <code>side_effect</code> channel is load-bearing: it keeps controllers pure data-and-state objects that never import <code>LoopRunner</code>, while still letting the UI Play button trigger <code>runPipeline</code>. The server-mode bridge is the key win: <code>RemoteControllerProxy</code> + <code>/controller/*</code> on <code>AutoServerApp</code> turns the server-mode gap (TODO #35) from "not yet supported" into "works transparently" without re-adding hidden tools. The controller runs in the subprocess where the env lives, so its <code>on_load</code> reads real state; the main process sees a proxy that forwards calls. This is structurally symmetrical to how proxy canvas nodes already handle tool calls across the subprocess boundary (ADR-server-001), and it keeps <code>AutoServerApp</code>'s responsibility unchanged — it still only does server-mode subprocess transport, just now for controller endpoints in addition to <code>/call/{fn}</code>. Net: ~800 lines deleted (old env-specific layers + hidden tools), ~480 lines added (new module + router + panel + proxy + HabitatController + design doc), one unified contract instead of three parallel layers.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>design-docs/controllers.md (new), mkdocs.yml (nav entry), roadmap.md (TODO #35 partial — server-mode episode control now works via bridge; full server-mode canvas execution remains separate)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

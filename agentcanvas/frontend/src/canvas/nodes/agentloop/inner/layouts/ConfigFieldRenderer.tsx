@@ -1,0 +1,132 @@
+/** Inline config field controls — renders a single ConfigFieldSchema as a UI widget. */
+
+import { useCallback } from "react";
+import type { ConfigFieldSchema } from "./layoutUtils";
+import { PortListEditorField } from "./PortListEditor";
+import { useFlowStore } from "../../../../useFlowStore";
+
+export function ConfigFieldRenderer({
+  field,
+  data,
+  nodeId,
+}: {
+  field: ConfigFieldSchema;
+  data: Record<string, unknown>;
+  nodeId: string;
+}) {
+  const updateNodeData = useFlowStore((s) => s.updateNodeData);
+
+  const updateData = useCallback(
+    (key: string, value: unknown) => {
+      updateNodeData(nodeId, { [key]: value });
+    },
+    [nodeId, updateNodeData],
+  );
+
+  const currentValue = data[field.name] ?? field.default;
+
+  switch (field.field_type) {
+    case "label":
+      return (
+        <div className="text-center text-[9px] text-gray-400">
+          {field.label}: {String(currentValue ?? "")}
+        </div>
+      );
+
+    case "slider": {
+      const num = Number(currentValue ?? field.min ?? 0);
+      return (
+        <label className="nopan nodrag block text-[9px] text-gray-400">
+          {field.label}: {num.toFixed(1)}
+          <input
+            type="range"
+            min={field.min ?? 0}
+            max={field.max ?? 1}
+            step={field.step ?? 0.1}
+            value={num}
+            onChange={(e) => updateData(field.name, Number(e.target.value))}
+            className="mt-0.5 w-full"
+          />
+        </label>
+      );
+    }
+
+    case "text":
+      return (
+        <label className="nopan nodrag block text-[9px] text-gray-400">
+          {field.label}
+          <input
+            type="text"
+            value={String(currentValue ?? "")}
+            placeholder={field.placeholder}
+            onChange={(e) => updateData(field.name, e.target.value)}
+            className="mt-0.5 w-full rounded border border-gray-700 bg-gray-800 px-1 py-0.5 text-[9px] text-gray-200"
+          />
+        </label>
+      );
+
+    case "select":
+      return (
+        <label className="nopan nodrag block text-[9px] text-gray-400">
+          {field.label}
+          <select
+            value={String(currentValue ?? "")}
+            onChange={(e) => updateData(field.name, e.target.value)}
+            className="mt-0.5 w-full rounded border border-gray-700 bg-gray-800 px-1 py-0.5 text-[9px] text-gray-200"
+          >
+            {(field.options || []).map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+
+    case "toggle": {
+      const checked = Boolean(currentValue);
+      return (
+        <label className="nopan nodrag flex items-center gap-1 text-[9px] text-gray-400">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => updateData(field.name, e.target.checked)}
+            className="h-3 w-3"
+          />
+          {field.label}
+        </label>
+      );
+    }
+
+    case "textarea":
+      return (
+        <label className="nopan nodrag nowheel block text-[9px] text-gray-400">
+          {field.label}
+          <textarea
+            value={String(currentValue ?? "")}
+            placeholder={field.placeholder}
+            rows={3}
+            onChange={(e) => updateData(field.name, e.target.value)}
+            className="mt-0.5 w-full resize-none rounded border border-gray-700 bg-gray-800 px-1 py-0.5 text-[9px] text-gray-200"
+          />
+        </label>
+      );
+
+    case "port_list": {
+      const portSide =
+        field.port_side === "output_ports" ? "output_ports" : "input_ports";
+      return (
+        <PortListEditorField
+          field={field}
+          data={data}
+          nodeId={nodeId}
+          portSide={portSide}
+          showPersist={field.show_persist_toggle === true}
+        />
+      );
+    }
+
+    default:
+      return null;
+  }
+}

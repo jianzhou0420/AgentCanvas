@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>State Containers — AgentCanvas</title>
+<meta name="description" content="Visible shared memory — reducers, lifetimes, access grants (not wires), the graph_state blackboard">
+<meta property="og:title" content="State Containers — AgentCanvas">
+<meta property="og:description" content="Visible shared memory — reducers, lifetimes, access grants (not wires), the graph_state blackboard">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/state-containers.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="sc-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:620px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .cont { fill: rgba(139,92,246,.10); stroke:#8b5cf6; stroke-width:1.5; }
+  .rxsvg .data { stroke: var(--muted); stroke-width:1.6; fill:none; marker-end:url(#scd); }
+  .rxsvg .grant { stroke:#8b5cf6; stroke-width:1.6; fill:none; stroke-dasharray:6 4; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/state-containers.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">State Containers</span>
+  </div>
+  <div class="last-updated">2026-06-16 12:00</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>State Containers</h1>
+  <p class="tagline">Visible shared memory — reducers, lifetimes, access grants (not wires), the graph_state blackboard</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="scd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">A wire carries one value from one port to one port, then it's gone. A <strong>state container</strong> is the opposite: a named, visible box of memory that several nodes can read and write, that persists across iterations, and that resets on a schedule you declare. It's how a graph remembers — action history, a running map, a scratch blackboard. This page is the deep reference on the mechanism; the schema that holds it (<code>ContainerDef</code>, <code>StateDef</code>, <code>AccessGrantDef</code>) is summarised in <a href="graph-system.html#22-state-containers">Graph System §2.2</a>.</p>
+
+<hr>
+
+<h2 id="1-what-it-is"><span class="num">1.</span> What a state container is</h2>
+
+<p>A container is a <strong>dict of named states</strong> drawn as a box on the canvas. Each named state has a <em>reducer</em> (how a write merges in — append, overwrite, add), a <em>value type</em> (what it holds), and a <em>lifetime</em> (when it auto-clears). Contrast it with per-node scratch state: a node can stash anything on its <code>ctx</code> between fires, but that is private and dies with the node. A container is shared, inspectable in the UI, checkpointed, and survives across the whole run.</p>
+
+<p>You reach for a container when memory must outlive a single firing <em>and</em> be seen by more than one node — a history buffer that the prompt node appends to and the reasoner reads, a SLAM map several nodes update. If only one node needs the value and only within a turn, keep it on <code>ctx</code>; don't make a container.</p>
+
+<h2 id="2-grants-not-wires"><span class="num">2.</span> Why access is a grant, not a wire</h2>
+
+<p>The most important thing to internalise: a node connects to a container through an <strong>access grant</strong>, and a grant is <em>not a wire</em>. A wire delivers a value and can make its target fire; a grant only says “this node may call <code>read()</code>/<code>write()</code> on this container.” It carries no data and never triggers firing. On the canvas it renders as a <strong>dashed violet line with no arrowhead</strong>, deliberately distinct from a solid directional data edge.</p>
+
+<svg class="rxsvg" viewBox="0 0 620 180" role="img" aria-label="Two nodes, a prompt node and a reasoner, each joined to a State container box by a dashed violet grant line (no arrowhead). A separate solid wire carries data from prompt to reasoner. The grant lines authorize read/write; they carry no data and never trigger firing.">
+  <rect x="20" y="40" width="120" height="44" rx="7" class="box"/><text x="80" y="66" text-anchor="middle">prompt</text>
+  <rect x="20" y="118" width="120" height="44" rx="7" class="box"/><text x="80" y="144" text-anchor="middle">reasoner</text>
+  <path class="data" d="M140,62 C220,62 220,140 300,140"/>
+  <text x="210" y="50" text-anchor="middle" class="dim">solid wire — carries TEXT, can fire reasoner</text>
+  <rect x="400" y="64" width="180" height="74" rx="9" class="cont"/>
+  <text x="490" y="90" text-anchor="middle">nav_state</text>
+  <text x="490" y="110" text-anchor="middle" class="mono">history · step_no</text>
+  <path class="grant" d="M140,58 H400"/>
+  <path class="grant" d="M140,136 H400"/>
+  <text x="270" y="118" text-anchor="middle" class="dim" fill="#8b5cf6">dashed violet — grant: may read/write, no data, no firing</text>
+</svg>
+
+<p>This separation (<a href="../../core/decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">ADR-dataflow-004</a>) is why there is no “magic global state”: a node sees exactly the containers it was granted, nothing else.</p>
+
+<h2 id="3-smallest-example"><span class="num">3.</span> The smallest example</h2>
+
+<p>One container with two states, one grant, and a handler that uses it. The JSON (schema detail in <a href="graph-system.html#22-state-containers">Graph System §2.2</a>):</p>
+
+<pre class="hl">
+<span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;containers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;nav_state&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Nav State&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;history&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;accumulator&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lifetime&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;episode&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">&quot;step_no&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;counter&quot;</span><span class="p">,</span><span class="w">     </span><span class="nt">&quot;value_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ANY&quot;</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;lifetime&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;episode&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">      </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;access_grants&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;g1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reason&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;container_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;nav_state&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre>
+
+<p>And the handler — the container arrives on <code>ctx.containers</code>, keyed by id:</p>
+
+<pre class="hl">
+<span class="c1"># Inside a node handler — read and write a granted container by id</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">hist</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">containers</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">nav_state</span><span class="s2">&quot;</span><span class="p">]</span>      <span class="c1"># only containers this node was granted</span>
+    <span class="n">hist</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">action</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>            <span class="c1"># reducer decides how the write merges</span>
+    <span class="n">recent</span> <span class="o">=</span> <span class="n">hist</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="p">)</span>                    <span class="c1"># accumulator → the list so far</span>
+    <span class="c1"># the well-known blackboard, bound only when granted:</span>
+    <span class="k">if</span> <span class="n">ctx</span><span class="o">.</span><span class="n">graph_state</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ctx</span><span class="o">.</span><span class="n">graph_state</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">last_seen</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">raw_obs</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>
+</pre>
+
+<p>Everything below is the detail behind those three method calls: what the reducer does (§4), what types a slot may hold (§5), when <code>history</code> clears (§6), how the grant put it on <code>ctx.containers</code> (§7), and what <code>graph_state</code> is (§8).</p>
+
+<h2 id="4-reducers"><span class="num">4.</span> The three reducer types</h2>
+
+<p>A state's <code>type</code> is its <strong>reducer</strong> — the merge rule applied on every <code>write()</code>. There are exactly three, in <code>STATE_TYPE_REGISTRY</code> (<code>state_containers.py</code>); an unknown reducer name falls back to <code>lastWrite</code> with a warning.</p>
+
+<table>
+<thead><tr><th>Reducer</th><th><code>write(x)</code> does</th><th>Initial value</th><th>Config</th></tr></thead>
+<tbody>
+<tr><td><code>accumulator</code></td><td>appends <code>x</code> to a list</td><td><code>[]</code></td><td><code>max_size</code> trims oldest entries</td></tr>
+<tr><td><code>lastWrite</code></td><td>overwrites — the slot becomes <code>x</code></td><td><code>None</code></td><td>—</td></tr>
+<tr><td><code>counter</code></td><td>adds — <code>value += x</code></td><td><code>0</code></td><td>—</td></tr>
+</tbody>
+</table>
+
+<p><code>read()</code> on a declared-but-never-written state returns its initial value; <code>clear()</code> resets it to the initial value (a deep copy, so list/dict initials don't alias). The container-level <code>read(name)</code> raises <code>KeyError</code> for a name that was never declared — there is no implicit slot creation. (A fourth reducer, a barrier for parallel execution, is deferred and not in the registry.)</p>
+
+<h2 id="5-value-types"><span class="num">5.</span> Value types and what's rejected</h2>
+
+<p>A state's <code>value_type</code> labels what it holds — for the UI and for intent, not runtime enforcement. The accepted set, <code>STATE_VALUE_TYPES</code>, is memory-shaped: it keeps the small structured types and adds domain-memory types, but <strong>rejects raw per-frame wire payloads</strong>. A container holds memory, not pixels.</p>
+
+<pre class="hl">
+<span class="n">STATE_VALUE_TYPES</span> <span class="o">=</span> <span class="p">{</span>                  <span class="c1"># state_containers.py — memory, not raw frames</span>
+    <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">BOOL</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">METRICS</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">POSE</span><span class="s2">&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;</span><span class="s2">POINTCLOUD</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">OCCUPANCY_MAP</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">EMBEDDING</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">EPISODE_CONTEXT</span><span class="s2">&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="n">_REMOVED_VALUE_TYPES</span> <span class="o">=</span> <span class="p">{</span>               <span class="c1"># build_container() raises ValueError naming the slot</span>
+    <span class="s2">&quot;</span><span class="s2">STATE</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">IMAGE</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">DEPTH</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ACTION</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">OBSERVATION</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">STEP_RESULT</span><span class="s2">&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre>
+
+<p>A removed type (including the old <code>STATE</code>, renamed to <code>POSE</code>) raises a <code>ValueError</code> at <code>build_container()</code> naming the offending container and slot. An unknown-but-not-removed type only warns and is allowed. Use <code>ANY</code> as the escape hatch while prototyping. The relationship to wire types is laid out from the wire side in <a href="wire-types.html#10-wire-vs-state-value-types">Wire Types §10</a>.</p>
+
+<h2 id="6-lifetimes"><span class="num">6.</span> Lifetimes and reset timing</h2>
+
+<p>A state's <code>lifetime</code> declares <em>when it auto-clears</em>, expressed as a set of signals that trigger <code>clear()</code>. The mapping is fixed; <code>custom</code> uses the slot's explicit <code>reset_on</code> list instead.</p>
+
+<pre class="hl">
+<span class="n">LIFETIME_TO_SIGNALS</span> <span class="o">=</span> <span class="p">{</span>        <span class="c1"># state_containers.py — which signals clear a slot</span>
+    <span class="s2">&quot;</span><span class="s2">forever</span><span class="s2">&quot;</span><span class="p">:</span>  <span class="p">[</span><span class="p">]</span><span class="p">,</span>            <span class="c1"># never reset</span>
+    <span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span>     <span class="p">[</span><span class="s2">&quot;</span><span class="s2">step_end</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span>      <span class="c1"># cleared at every iterOut boundary</span>
+    <span class="s2">&quot;</span><span class="s2">episode</span><span class="s2">&quot;</span><span class="p">:</span>  <span class="p">[</span><span class="s2">&quot;</span><span class="s2">episode_reset</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="c1"># cleared when the env starts a new episode</span>
+    <span class="s2">&quot;</span><span class="s2">run</span><span class="s2">&quot;</span><span class="p">:</span>      <span class="p">[</span><span class="s2">&quot;</span><span class="s2">run_end</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span>       <span class="c1"># cleared once, at run teardown</span>
+    <span class="s2">&quot;</span><span class="s2">custom</span><span class="s2">&quot;</span><span class="p">:</span>   <span class="p">[</span><span class="p">]</span><span class="p">,</span>            <span class="c1"># cleared by the explicit reset_on signal list</span>
+<span class="p">}</span>
+</pre>
+
+<p>The signals come from the executor's bus: <code>broadcast_signal(name)</code> fans out to every container, and each container fans to every state, which clears itself if the signal is in its <code>reset_on</code>. The executor emits <code>run_start</code> at the top, <code>step_start</code> at the iterIn boundary, <code>step_end</code> at the iterOut boundary, <code>run_end</code> on both clean and error teardown; <code>episode_reset</code> comes from the env panel (e.g. the MP3D panel emits it on reset and on episode-index change).</p>
+
+<div class="callout note"><p><strong>Order matters at the iterOut boundary.</strong> A <code>lifetime="step"</code> slot is cleared by <code>step_end</code>, and <code>step_end</code> fans out <em>before</em> the checkpoint is taken. So a step-lifetime slot is already empty in the checkpoint — restore lands on the cleared state, which is the intended per-step semantics. Boundary phase ordering is the executor's; see <a href="graph-executor.html#43-iterout-boundary">Graph Executor §4.3</a>.</p></div>
+
+<p>One sharp edge: <code>reset_on</code> is matched by signal <em>name</em> only — it can't filter by which loop scope fired. In a nested-scope graph, an inner scope's <code>step_end</code> clears a step-lifetime slot a node in the outer scope shares. Workarounds: scope-specific custom signals, or hold the value on a carry port instead. See <a href="loop-control-system.html">Loop Control</a> for scopes.</p>
+
+<h2 id="7-runtime-access"><span class="num">7.</span> How a node gets access at runtime</h2>
+
+<p>At build time the executor constructs the live containers from <code>graph.containers</code> and indexes the grants: <code>_access_grant_index[node_id]</code> → the set of container ids that node may touch. On every fire, the executor injects only that node's slice:</p>
+
+<ul>
+  <li><code>ctx.containers</code> is set to <code>{cid: container}</code> for exactly the granted ids — a node literally cannot reach a container it wasn't granted.</li>
+  <li><code>ctx.graph_state</code> is bound to the <code>graph_state</code> container <strong>only if</strong> this node holds a grant to it; otherwise it is <code>None</code> (§8).</li>
+  <li>Dynamic-firelist children inherit their parent's grants via <code>_dynamic_parent_id</code>, so spawned sub-nodes can use the same containers.</li>
+</ul>
+
+<h2 id="8-graph-state"><span class="num">8.</span> The <code>graph_state</code> blackboard</h2>
+
+<p><code>graph_state</code> is just a container with the well-known id <code>"graph_state"</code> — a convenient shared scratchpad, exposed as <code>ctx.graph_state</code> instead of <code>ctx.containers["graph_state"]</code>. The one rule worth remembering: since <a href="../../core/decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">ADR-dataflow-004</a> there is <strong>no auto-inject</strong> — a node that wants it must still carry an explicit grant, exactly like any other container. Without the grant, <code>ctx.graph_state</code> is <code>None</code>. On flatten, an inner composite's <code>graph_state</code> id is prefixed like any other container, so nested graphs get isolated blackboards unless deliberately shared.</p>
+
+<h2 id="9-nodeset-owned"><span class="num">9.</span> Nodeset-owned containers (the second category)</h2>
+
+<p>Everything above describes <strong>graph-level</strong> (or <em>home</em>) containers — declared per-graph in <code>graph.containers</code>, built in the executor process, reached by grant. There is a second category: a nodeset can <strong>own</strong> a container by overriding <code>get_containers()</code> (<code>components/bases.py</code>), returning the same <code>ContainerDef</code>s. What differs is <em>where the container lives</em>:</p>
+
+<table>
+  <thead><tr><th></th><th>Graph-level (home)</th><th>Nodeset-owned</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Declared in</strong></td><td><code>graph.containers</code> (the JSON)</td><td><code>BaseNodeSet.get_containers()</code></td></tr>
+    <tr><td><strong>Lives in</strong></td><td>the executor process</td><td>the nodeset's own process (its subprocess in server mode)</td></tr>
+    <tr><td><strong>Shared by</strong></td><td>any granted node, via per-fire injection (§7)</td><td>the nodeset's own nodes, <strong>by reference</strong> on <code>ctx.containers[id]</code></td></tr>
+    <tr><td><strong>Value types</strong></td><td>strict — raw wire payloads rejected (§5)</td><td><code>allow_opaque=True</code> — may hold opaque values (e.g. a numba planner object)</td></tr>
+    <tr><td><strong>Across the boundary</strong></td><td>checkpointed in-process (§10)</td><td>never serialized; only a <strong>read-only preview</strong> is surfaced for display</td></tr>
+  </tbody>
+</table>
+
+<p>A nodeset-owned container is built by <code>build_containers(…, allow_opaque=True)</code> (<code>server/auto_server_app.py</code>); the flag relaxes the §5 value-type guard precisely because the value never crosses a process boundary — ADR-026's strictness only protects values that get serialized. Its live preview piggybacks on the nodeset's <code>/call</code> response (<code>record_subprocess_containers</code>) and is merged into the next <code>nav_step</code> tagged <code>owner=&lt;nodeset&gt;</code> (home containers are tagged <code>owner="home"</code>) — so both categories appear in the State panel under an Owner column.</p>
+
+<h3 id="91-keyed"><span class="num">9.1</span> The keyed (per-key) dimension</h3>
+
+<p>A nodeset-owned container often serves <strong>N concurrent eval workers</strong> from one process. To keep workers from clobbering each other, a container can partition by an explicit <em>key</em> the caller passes at access time — <code>read(name, key)</code> / <code>write(name, key, …)</code>, where <code>key</code> is typically the <code>episode_id</code>. Each <code>(name, key)</code> sub-state is lazily cloned from the declared template at its <code>initial_value</code>, isolated from sibling keys (<code>StateContainer._keyed</code>, <code>state_containers.py</code>). <code>evict(key)</code> drops every sub-state for that key — worker-safe cleanup at episode or lease end, touching only that key. This replaces the old module-global &ldquo;never clear&rdquo; race workaround: <code>explore_eqa</code> migrated its module globals to a keyed <code>explore_eqa_mem</code> container. Checkpointing skips opaque, non-checkpointable keyed slots by design (they are not raised on).</p>
+
+<div class="callout note"><p><strong>Cross-nodeset access is a prototype.</strong> A node granted a container homed in <em>another</em> process is handed a <code>RemoteContainerProxy</code> (<code>server/remote_container.py</code>) with the same <code>read</code> / <code>write</code> / <code>evict</code> surface — &ldquo;position transparency,&rdquo; so node code is unchanged — which forwards each call synchronously to the executor's broker endpoint <code>/api/internal/containers/{exec}/{cid}/{op}</code> (<code>api/execution/internal_containers.py</code>; the executor holds the single source of truth). Transport is <strong>msgpack</strong> (ADR-server-004): ndarray / torch / PIL ride raw-byte blobs, no <code>__ndarray__</code> marker. This path is explicitly a <strong>prototype, not a public API</strong> — no locking, and it cannot route to a <em>replicated</em> nodeset's containers under <code>worker_count&gt;1</code>.</p></div>
+
+<h2 id="9-storage-checkpoint"><span class="num">10.</span> Runtime storage, checkpoint &amp; restore</h2>
+
+<p>Live values sit in the <code>StateContainer</code> objects the executor holds for the duration of the run; containers are per-run (a fresh <code>GraphExecutor</code> is built per <code>LoopRunner.run()</code>, and <code>BatchEvalRunner</code> makes a fresh runner per episode), so isolation between episodes is implicit. At each root-scope iterOut boundary the executor snapshots every container into an in-memory checkpoint ring; <code>restore_step(n)</code> rewinds them. The endpoints are <code>GET /api/navigate/run/checkpoints</code> and <code>POST /api/navigate/run/restore/{step}</code>.</p>
+
+<p>Checkpoints are taken on the <strong>root scope only</strong>, so in a nested-scope graph an inner-scope counter can drift on restore (the snapshot cadence is the outer loop's). This is the same multi-scope caveat as the <code>reset_on</code> one in §6 — treat per-scope state in nested loops carefully.</p>
+
+<h2 id="10-frontend"><span class="num">11.</span> Frontend &amp; broadcasting</h2>
+
+<p>On the canvas a container is a node of frontend-only type <code>stateContainer</code> (<code>nodes/state/StateContainerNode.tsx</code>), extracted back into a <code>ContainerDef</code> on save. A grant is an edge of type <code>accessGrant</code> (<code>edges/AccessGrantEdge.tsx</code>) — rendered as a dashed violet line (<code>stroke #8b5cf6</code>, <code>strokeDasharray 6 4</code>, no arrowhead), matching the grant-not-a-wire model of §2. Each state shows a lifetime badge.</p>
+
+<p>During a run, container snapshots ride the per-node <code>viewer_data</code> / step broadcasts so the UI can show live state; the contents are the same <code>StateContainer</code> values described above. The broadcast plumbing is the executor's (<a href="graph-executor.html#2-where-it-sits">Graph Executor</a>); this page owns only the container values it carries.</p>
+
+<h2 id="11-file-reference"><span class="num">12.</span> File reference</h2>
+
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>agentcanvas/backend/app/agent_loop/state_containers.py</code></td><td><code>BaseState</code> + 3 reducers, <code>STATE_TYPE_REGISTRY</code>, <code>STATE_VALUE_TYPES</code>, <code>LIFETIME_TO_SIGNALS</code>, <code>build_container(s)</code> (<code>allow_opaque</code> for nodeset-owned), <code>StateContainer</code> (read/write/evict/checkpoint/on_signal; <code>_keyed</code> per-key partitions)</td></tr>
+<tr><td><code>agentcanvas/backend/app/graph_def.py</code></td><td><code>StateDef</code>, <code>ContainerDef</code>, <code>AccessGrantDef</code> dataclasses (schema in <a href="graph-system.html#22-state-containers">Graph System §2.2</a>)</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td><td><code>build_containers</code>, <code>_access_grant_index</code>, per-fire <code>ctx.containers</code>/<code>ctx.graph_state</code> injection (incl. <code>RemoteContainerProxy</code> for cross-process grants), signal bus, checkpoint/restore</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/flatten.py</code></td><td>Container + access-grant id prefixing during composite expansion</td></tr>
+<tr><td><code>agentcanvas/backend/app/components/bases.py</code></td><td><code>BaseNodeSet.get_containers()</code> — declares nodeset-owned containers (§9)</td></tr>
+<tr><td><code>agentcanvas/backend/app/server/auto_server_app.py</code></td><td><code>build_containers(…, allow_opaque=True)</code> — builds nodeset-owned containers in the nodeset process</td></tr>
+<tr><td><code>agentcanvas/backend/app/server/remote_container.py</code></td><td><code>RemoteContainerProxy</code> — cross-process read/write/evict over msgpack (prototype, §9.1)</td></tr>
+<tr><td><code>agentcanvas/backend/app/api/execution/internal_containers.py</code></td><td>Broker + reverse-channel for cross-nodeset container access (prototype, §9.1)</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/nodes/state/StateContainerNode.tsx</code></td><td>The <code>stateContainer</code> canvas node (frontend-only type)</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/edges/AccessGrantEdge.tsx</code></td><td>The dashed-violet <code>accessGrant</code> edge component</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/useFlowStore.ts</code></td><td>Container + grant management in the canvas store</td></tr>
+</tbody>
+</table>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: <strong>Added §9 — nodeset-owned containers (the second category).</strong> Documents the production mechanism landed after the 2026-06-13 rewrite: <code>BaseNodeSet.get_containers()</code> declares containers that live in the nodeset's own process, shared by reference, built with <code>build_containers(…, allow_opaque=True)</code> (so they may hold opaque values, never serialized — only a read-only preview is surfaced, tagged <code>owner=&lt;nodeset&gt;</code> in <code>nav_step</code>). §9.1 covers the keyed/per-key dimension (<code>read/write(name, key)</code> + <code>evict(key)</code> for worker-parallel partitioning; <code>explore_eqa</code> migrated its module globals to a keyed <code>explore_eqa_mem</code>) and a known-gap callout for the cross-nodeset access prototype (<code>RemoteContainerProxy</code> + the internal broker, msgpack transport — explicitly not a public API). §§9–11 renumbered to §§10–12; file-reference updated. Sections 1–8 re-verified unchanged against current code (reducers, value types, lifetimes, grant injection, checkpoint all still accurate).</li>
+<li>2026-06-13 12:45: <strong>Full rewrite for the inverted-pyramid structure and code-accuracy.</strong> Reordered so the concept (what a container is, grant-not-a-wire, smallest example) leads and the mechanism (reducers, value types, lifetime reset timing, runtime grant injection, graph_state, checkpoint) follows; schema tables dropped in favour of a link to Graph System §2.2 (no longer duplicated). Code corrections: frontend section fixed to the real <code>accessGrant</code> edge type and <code>edges/AccessGrantEdge.tsx</code> / <code>nodes/state/StateContainerNode.tsx</code> files (was the non-existent <code>StateEdge.tsx</code> and a <code>stateEdge</code> type); removed the rejected <code>ACTION</code> value_type from examples; spelled out the container-level <code>read()</code> <code>KeyError</code>. All code blocks regenerated through the Pygments pipeline. Companion code fix: the stale <code>ctx.containers</code>/<code>ctx.graph_state</code> docstrings in <code>graph_executor.py</code> (“via state edges” / “auto-accessible by all nodes”) corrected to the access-grant model.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-05-18: multi-scope sync — <code>scope_id</code> in <code>step_start</code>/<code>step_end</code> payloads (ADR-dataflow-007); root-scope-only checkpoint rule; multi-scope <code>reset_on</code> hazard + workarounds + restore drift on inner-scope counters; iterIn dual-wire freeze warning (2026-05-05 CMA spin incident).</li>
+<li>2026-04-20: audit — <code>StateEdgeDef</code> → <code>AccessGrantDef</code>, <code>state_edges</code> → <code>access_grants</code>, <code>_state_edge_index</code> → <code>_access_grant_index</code>; removed rejected <code>ACTION</code>/<code>STATE</code> value_types from examples.</li>
+<li>2026-04-19 18:11: style compliance retrofit — added ToC + numbered sections.</li>
+<li>2026-04-18: <strong>Ephemeral reducer removed</strong> — <code>EphemeralState</code> deleted, registry reduced to <code>accumulator</code>/<code>lastWrite</code>/<code>counter</code>, <code>on_iter_boundary</code> hook gone; per-iteration clearing now via <code>lifetime="step"</code> + the signal bus. Legacy <code>"type": "ephemeral"</code> falls back to <code>lastWrite</code> with a warning.</li>
+<li>2026-04-15: <strong>Lifetime via Signals</strong> — <code>StateDef.lifetime</code> + <code>reset_on</code>; <code>BaseState.on_signal</code>; <code>broadcast_signal</code> with the canonical signal set; env panel <code>side_effect: "signal"</code> forwarding.</li>
+<li>2026-04-03 22:26: State toggle hides container nodes and edges; container handles moved to Top/Bottom.</li>
+<li>2026-04-03 13:39: Added checkpoint/restore; migrated HistoryTracker / LLMCall / NavGPTReason to graph_state.</li>
+<li>2026-04-02 18:36: Added built-in node graph_state integration.</li>
+<li>2026-03-31 15:51: Added graph_state section — graph-level container, flatten behavior.</li>
+<li>2026-03-31 01:00: Revised design — container as dict of named states, two-axis type system, extensible value-type registry.</li>
+<li>2026-03-30 21:30: Initial design — container types, API, execution model, schema, frontend.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What a state container is</a>
+      <a class="toc-h2" href="#2-grants-not-wires">2. Why access is a grant, not a wire</a>
+      <a class="toc-h2" href="#3-smallest-example">3. The smallest example</a>
+      <a class="toc-h2" href="#4-reducers">4. The three reducer types</a>
+      <a class="toc-h2" href="#5-value-types">5. Value types and what's rejected</a>
+      <a class="toc-h2" href="#6-lifetimes">6. Lifetimes and reset timing</a>
+      <a class="toc-h2" href="#7-runtime-access">7. How a node gets access at runtime</a>
+      <a class="toc-h2" href="#8-graph-state">8. The graph_state blackboard</a>
+      <a class="toc-h2" href="#9-nodeset-owned">9. Nodeset-owned containers (the second category)</a>
+      <a class="toc-h3" href="#91-keyed">9.1 The keyed (per-key) dimension</a>
+      <a class="toc-h2" href="#9-storage-checkpoint">10. Runtime storage, checkpoint &amp; restore</a>
+      <a class="toc-h2" href="#10-frontend">11. Frontend &amp; broadcasting</a>
+      <a class="toc-h2" href="#11-file-reference">12. File reference</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

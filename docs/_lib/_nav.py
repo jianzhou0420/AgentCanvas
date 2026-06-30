@@ -1,0 +1,495 @@
+#!/usr/bin/env python3
+"""Site navigation for docs/ — plug-and-play, filesystem-driven.
+
+Each top tab is discovered by scanning `docs/pages/<dir>/`. Drop a new
+directory in → new tab appears. Delete it → tab disappears. Code in
+this file has zero awareness of any specific tab's existence (no
+"Research" / "AAS" / etc. strings hardcoded).
+
+Per-tab overrides live in `docs/pages/<dir>/_tab.json`. Fields (all
+optional):
+
+  label             str    — tab text (default: title-cased dir name)
+  key               str    — CSS accent class (default: dir name)
+  landing           str    — landing path *relative to the tab dir*
+                              (default: "index.html"; falls back to
+                               the first index.html found anywhere
+                               under the dir)
+  order_priority    int    — smaller = leftward in the tab strip
+                              (default: 100; ties broken by dir name)
+  external_layout   bool   — page has its own chrome; wrapper skips it
+                              (default: false)
+  sections          list   — curated sidebar groups. Each entry:
+      label    : section label
+      dir      : path relative to the tab dir (or to docs/ root if
+                  it already starts with "pages/")
+      key      : CSS accent class
+      order    : optional curated stem order inside that section
+      files_only / depth_limit : same semantics as before
+
+  Without `sections`, the sidebar auto-discovers from the tab dir —
+  each subdir becomes a section, alphabetical.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import re
+from html.parser import HTMLParser
+from pathlib import Path
+
+from _site import SITE_NAME
+
+# Resolves to the docs/ root (script lives at docs/_lib/_nav.py).
+V2 = Path(__file__).resolve().parent.parent
+PAGES = V2 / "pages"
+
+
+# ---------- per-tab config loading ----------
+
+
+def _default_label(dir_name: str) -> str:
+    return dir_name.replace("-", " ").replace("_", " ").title()
+
+
+def _load_tab_cfg(tab_dir: Path) -> dict:
+    cfg_file = tab_dir / "_tab.json"
+    if not cfg_file.exists():
+        return {}
+    try:
+        return json.loads(cfg_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"warn: bad _tab.json at {cfg_file}: {e}")
+        return {}
+
+
+def _find_default_landing(tab_dir: Path) -> str | None:
+    """Pick a landing path (relative to tab_dir). Order of preference:
+    tab_dir/index.html → first top-level .html (open to top-level content) →
+    first index.html anywhere underneath → first .html found anywhere. The last
+    fallbacks mean a folder with NO index.html still gets a tab."""
+    direct = tab_dir / "index.html"
+    if direct.exists():
+        return "index.html"
+    top = sorted(tab_dir.glob("*.html"), key=lambda p: p.name.lower())
+    if top:
+        return top[0].name
+    for f in sorted(tab_dir.rglob("index.html")):
+        return f.relative_to(tab_dir).as_posix()
+    for f in sorted(tab_dir.rglob("*.html"), key=lambda p: p.as_posix().lower()):
+        return f.relative_to(tab_dir).as_posix()
+    return None
+
+
+def get_tabs() -> list[dict]:
+    """Scan docs/pages/<dir>/ and return one tab dict per discovered dir.
+
+    Returns same shape as the old hardcoded TABS list, with one extra
+    `_dir` field so consumers can find a tab by directory name.
+    """
+    if not PAGES.exists():
+        return []
+
+    discovered: list[tuple[tuple, dict]] = []
+    for d in sorted(PAGES.iterdir()):
+        if not d.is_dir() or d.name.startswith("_") or d.name.startswith("."):
+            continue
+        cfg = _load_tab_cfg(d)
+        landing_rel = cfg.get("landing") or _find_default_landing(d)
+        if landing_rel is None:
+            # Nothing serveable in this dir — skip silently (matches
+            # the user-facing contract: "tab disappears if absent").
+            continue
+        landing = f"pages/{d.name}/{landing_rel}"
+
+        label = cfg.get("label") or _default_label(d.name)
+        key = cfg.get("key") or d.name
+        external = bool(cfg.get("external_layout"))
+        priority = int(cfg.get("order_priority", 100))
+
+        sections_cfg = cfg.get("sections")
+        # Auto mode (no explicit `sections`): the sidebar is built by recursively
+        # mirroring the tab folder — loose .html as pages, subfolders as dividers,
+        # index.html as a folder's default page (see render_sidebar / _scan_root).
+        # No per-section precomputation needed. Explicit `sections` keep the old
+        # curated behaviour.
+        auto_nav = sections_cfg is None
+
+        sections: list[dict] = []
+        for sec in sections_cfg or []:
+            sec = dict(sec)
+            sec_dir = sec.get("dir", "")
+            if not sec_dir.startswith("pages/"):
+                sec["dir"] = f"pages/{d.name}/{sec_dir}".rstrip("/")
+            sections.append(sec)
+
+        discovered.append(
+            (
+                (priority, d.name),
+                {
+                    "tab": label,
+                    "key": key,
+                    "landing": landing,
+                    "sections": sections,
+                    "auto_nav": auto_nav,
+                    "external_layout": external,
+                    "_dir": d.name,
+                },
+            )
+        )
+
+    discovered.sort(key=lambda t: t[0])
+    return [t[1] for t in discovered]
+
+
+# Eagerly evaluated for legacy consumers. Plug-and-play callers should
+# prefer get_tabs() so the scan reruns each time.
+TABS = get_tabs()
+
+
+# ---------- title extraction ----------
+
+
+class _TitleGrabber(HTMLParser):
+    """Capture the <title> and the first <h1> from a page."""
+
+    def __init__(self):
+        super().__init__()
+        self._in_title = False
+        self._in_h1 = False
+        self.title = ""
+        self.h1 = ""
+        self.nav_title = ""
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title" and not self.title:
+            self._in_title = True
+        elif tag == "h1" and not self.h1:
+            self._in_h1 = True
+        elif tag == "meta" and not self.nav_title:
+            d = dict(attrs)
+            if d.get("name") == "nav-title":
+                self.nav_title = d.get("content") or ""
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        elif tag == "h1":
+            self._in_h1 = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        if self._in_h1:
+            self.h1 += data
+
+
+def _page_title(html_path: Path) -> str:
+    try:
+        text = html_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return html_path.stem
+    g = _TitleGrabber()
+    g.feed(text)
+    # A <meta name="nav-title"> override wins (short label for sidebar +
+    # breadcrumbs while the body <h1> keeps the long title). Otherwise prefer
+    # the body's <h1>: it carries no " — <site>" suffix, so labels stay
+    # correct after a site rename. Fall back to <title> with the suffix trimmed.
+    title = g.nav_title.strip() or g.h1.strip()
+    if not title:
+        title = g.title.strip()
+        title = re.split(rf"\s+[—|·-]\s+{re.escape(SITE_NAME)}", title, maxsplit=1)[0].strip()
+    # HTMLParser only decodes one layer of entities. Loop to be safe against
+    # titles that recycled through `html.escape` multiple times.
+    prev = None
+    while title != prev:
+        prev = title
+        title = html.unescape(title)
+    # A numbered <h1> badge (e.g. "<span>9</span>Visual Canvas Editor") collapses
+    # to "9Visual…" once tags are stripped; restore a hyphen separator.
+    title = re.sub(r"^(\d+)(?=\S)", r"\1 - ", title)
+    return html.escape(title) if title else html_path.stem
+
+
+# ---------- discovery ----------
+
+# Memoizes per-section tree discovery. Keyed ONLY on section config (dir / order
+# / depth), never on directory contents — so it's a within-a-build optimization,
+# not a long-lived store. A persistent process (the dev server) MUST call
+# invalidate_discovery_cache() whenever pages are added/removed/renamed, else
+# new pages stay invisible to sibling sidebars. See invalidate_discovery_cache().
+_DISCOVER_CACHE: dict[str, list[dict]] = {}
+
+
+def invalidate_discovery_cache() -> None:
+    """Drop memoized page-tree discovery so the next render re-scans the tree.
+
+    Cheap (just clears a dict). Long-lived callers that re-render after the page
+    set may have changed — chiefly the live-reload dev server's per-change wrap —
+    call this first so newly added/removed/renamed pages propagate into every
+    sibling sidebar without a server restart.
+    """
+    _DISCOVER_CACHE.clear()
+
+
+def _ordered_subdirs(parent: Path) -> list[Path]:
+    """Subdirectories of `parent` in nav order. Entries named in an optional
+    `parent/_order.json` (a JSON list of subdir names) come first, in that
+    order; anything unlisted follows alphabetically. Underscore/dot dirs are
+    skipped. Lets a folder pin its child-group order without renaming dirs or
+    polluting URLs (the default filesystem scan is alphabetical).
+    """
+    dirs = [d for d in parent.iterdir() if d.is_dir() and not d.name.startswith(("_", "."))]
+    priority: dict[str, int] = {}
+    order_file = parent / "_order.json"
+    if order_file.exists():
+        try:
+            names = json.loads(order_file.read_text(encoding="utf-8"))
+            if isinstance(names, list):
+                priority = {str(n): i for i, n in enumerate(names)}
+        except Exception:
+            priority = {}
+    return sorted(dirs, key=lambda d: (priority.get(d.name, len(priority)), d.name.lower()))
+
+
+def _scan_dir(current: Path) -> list[dict]:
+    """Recursive directory scan. index.html is consumed by the caller (it
+    becomes the parent group's label/href), so this returns siblings + subdirs.
+    """
+    nodes: list[dict] = []
+    files = sorted(
+        [f for f in current.glob("*.html") if f.name != "index.html"],
+        key=lambda p: p.stem.lower(),
+    )
+    for f in files:
+        nodes.append(
+            {
+                "kind": "page",
+                "label": _page_title(f),
+                "href": f.relative_to(V2).as_posix(),
+            }
+        )
+    for d in _ordered_subdirs(current):
+        idx = d / "index.html"
+        if idx.exists():
+            label = _page_title(idx)
+            href = idx.relative_to(V2).as_posix()
+        else:
+            label = _default_label(d.name)
+            href = None
+        nodes.append(
+            {
+                "kind": "group",
+                "label": label,
+                "href": href,
+                "key": d.relative_to(V2).as_posix(),
+                "children": _scan_dir(d),
+            }
+        )
+    return nodes
+
+
+def _scan_root(tab_dir: Path) -> list[dict]:
+    """Nodes for a tab's whole sidebar in auto mode — the tab folder mirrored
+    recursively. Unlike _scan_dir, the tab-root index.html IS surfaced as a page
+    (no parent group consumes it); it just sorts first. Subfolders become
+    collapsible dividers; their own index.html is their clickable default page."""
+    nodes: list[dict] = []
+    files = sorted(
+        tab_dir.glob("*.html"),
+        key=lambda p: (p.name != "index.html", p.stem.lower()),
+    )
+    for f in files:
+        nodes.append(
+            {"kind": "page", "label": _page_title(f), "href": f.relative_to(V2).as_posix()}
+        )
+    for d in _ordered_subdirs(tab_dir):
+        idx = d / "index.html"
+        if idx.exists():
+            label = _page_title(idx)
+            href = idx.relative_to(V2).as_posix()
+        else:
+            label = _default_label(d.name)
+            href = None
+        nodes.append(
+            {
+                "kind": "group",
+                "label": label,
+                "href": href,
+                "key": d.relative_to(V2).as_posix(),
+                "children": _scan_dir(d),
+            }
+        )
+    return nodes
+
+
+def _discover_tree(section: dict) -> list[dict]:
+    """Return ordered tree nodes for a section's nav."""
+    cache_key = "|".join(
+        [
+            section["dir"],
+            "files_only" if section.get("files_only") else "",
+            f"depth={section['depth_limit']}" if section.get("depth_limit") else "",
+            f"order={','.join(section['order'])}" if section.get("order") else "",
+        ]
+    )
+    if cache_key in _DISCOVER_CACHE:
+        return _DISCOVER_CACHE[cache_key]
+
+    base = V2 / section["dir"]
+    if not base.exists():
+        _DISCOVER_CACHE[cache_key] = []
+        return []
+
+    files_only = section.get("files_only", False)
+    depth_limit = section.get("depth_limit")
+    curated_order: list[str] = section.get("order") or []
+    order_index = {stem: i for i, stem in enumerate(curated_order)}
+
+    def _top_sort_key(p: Path) -> tuple:
+        if p.name == "index.html":
+            return (0, 0, "")
+        if p.stem in order_index:
+            return (1, order_index[p.stem], "")
+        # No curated order: sort by a leading <h1> number badge when present
+        # (e.g. capabilities are numbered in the h1, not the filename), else
+        # fall back to the filename stem.
+        m = re.match(r"\s*(\d+)", _page_title(p))
+        if m:
+            return (2, int(m.group(1)), "")
+        return (3, 0, p.stem.lower())
+
+    top_files = sorted(base.glob("*.html"), key=_top_sort_key)
+    nodes: list[dict] = [
+        {"kind": "page", "label": _page_title(f), "href": f.relative_to(V2).as_posix()}
+        for f in top_files
+    ]
+
+    if files_only:
+        _DISCOVER_CACHE[cache_key] = nodes
+        return nodes
+
+    if depth_limit == 2:
+        for d in sorted([d for d in base.iterdir() if d.is_dir()]):
+            idx = d / "index.html"
+            if idx.exists():
+                nodes.append(
+                    {
+                        "kind": "page",
+                        "label": _page_title(idx),
+                        "href": idx.relative_to(V2).as_posix(),
+                    }
+                )
+        _DISCOVER_CACHE[cache_key] = nodes
+        return nodes
+
+    for d in _ordered_subdirs(base):
+        idx = d / "index.html"
+        if idx.exists():
+            label = _page_title(idx)
+            href = idx.relative_to(V2).as_posix()
+        else:
+            label = d.name.replace("-", " ").replace("_", " ").title()
+            href = None
+        nodes.append(
+            {
+                "kind": "group",
+                "label": label,
+                "href": href,
+                "key": d.relative_to(V2).as_posix(),
+                "children": _scan_dir(d),
+            }
+        )
+    _DISCOVER_CACHE[cache_key] = nodes
+    return nodes
+
+
+# ---------- rendering ----------
+
+
+def render_top_header(active_tab: str, page_rel: str) -> str:
+    """Render the sticky top header shell — logo, action buttons, and an EMPTY
+    ``#site-tabs`` container.
+
+    The tab links themselves are rendered client-side from ``assets/nav.json``
+    (see ``assets/nav.js``) so that adding/removing a page or section doesn't
+    force a re-bake of the tab strip into every page. ``active_tab`` is no longer
+    consumed here — the client marks the active tab from ``<body data-tab>``."""
+    prefix = "../" * page_rel.count("/")
+    return f"""<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="{prefix}index.html">{html.escape(SITE_NAME)}</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>"""
+
+
+def _json_node(n: dict) -> dict:
+    """Normalize a discovery node into the JSON shape the client consumes.
+
+    Labels are un-escaped to raw text (the client assigns them via textContent,
+    which re-escapes safely) — otherwise entities like ``&amp;`` would
+    double-display."""
+    out: dict = {"kind": n["kind"], "label": html.unescape(n.get("label", ""))}
+    if n.get("href"):
+        out["href"] = n["href"]
+    if n.get("key"):
+        out["key"] = n["key"]
+    if n.get("children"):
+        out["children"] = [_json_node(c) for c in n["children"]]
+    return out
+
+
+def build_nav_data() -> dict:
+    """Serializable nav tree for client-side rendering (written to assets/nav.json).
+
+    Single source of truth for the top tabs + left sidebar. Rendered in the
+    browser by assets/nav.js, so adding/removing/renaming a page touches only
+    that page's own file + this one JSON — never every sibling's baked chrome.
+    hrefs are V2-relative ("pages/.../x.html"); the client prepends the page's
+    data-asset-prefix so they resolve at any depth / under any Pages base path."""
+    tabs_out: list[dict] = []
+    for tab in get_tabs():
+        nodes: list[dict]
+        if tab.get("external_layout"):
+            # External-layout tabs (AAS) own their chrome; they still appear in
+            # the top strip but have no docs-style sidebar to render.
+            nodes = []
+        elif tab.get("auto_nav"):
+            nodes = [_json_node(n) for n in _scan_root(PAGES / tab["_dir"])]
+        else:
+            nodes = []
+            for sec in tab["sections"]:
+                children = _discover_tree(sec)
+                if not children:
+                    continue
+                nodes.append(
+                    {
+                        "kind": "section",
+                        "label": html.unescape(sec["label"]),
+                        "key": sec["dir"],
+                        "children": [_json_node(c) for c in children],
+                    }
+                )
+        tabs_out.append(
+            {
+                "tab": tab["tab"],
+                "key": tab["key"],
+                "dir": tab["_dir"],
+                "landing": tab["landing"],
+                "external_layout": bool(tab.get("external_layout")),
+                "nodes": nodes,
+            }
+        )
+    return {"site_name": SITE_NAME, "tabs": tabs_out}
+
+
+def asset_prefix(page_rel: str) -> str:
+    depth = page_rel.count("/")
+    return "../" * depth if depth else ""

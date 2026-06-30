@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-server-003 — AgentCanvas</title>
+<meta name="description" content="Env nodeset parallelism contract — `replicated` vs. `shared`">
+<meta property="og:title" content="ADR-server-003 — AgentCanvas">
+<meta property="og:description" content="Env nodeset parallelism contract — `replicated` vs. `shared`">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/server/adr-server-003-env-parallelism-contract.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/server/adr-server-003-env-parallelism-contract.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Server</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-server-003</span>
+  </div>
+  <div class="last-updated">2026-04-24</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-server);">ADR-server-003</h1>
+  <p class="tagline">Env nodeset parallelism contract — `replicated` vs. `shared`</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-24</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>server</code></a></dd>
+</dl>
+
+
+
+
+<h2 id='context'>Context</h2>
+<p>ADR-eval-002 ships one deployment shape for batch eval at <code>worker_count&gt;1</code>: spawn <strong>N tagged subprocesses</strong> of the env nodeset (<code>env_habitat#0</code>, <code>#1</code>, …), each carrying its own process-local simulator state, and route every worker's set-episode/play + in-graph proxy calls into its own subprocess via <code>controller_overrides</code> + <code>server_url_overrides</code>. This is the only correct shape for Habitat-Sim (live GL context, scene state, episode iterator cannot cross JSON IPC — same class of constraint that blocked state-container integration for HM-EQA's TSDFPlanner, TODO #17). But it is <strong>not</strong> the only shape. On the policy side we already recognise a second shape: <code>policy_cma__forward</code> declares <code>batched=True</code>, K concurrent callers converge on one subprocess, and <code>BatchedInferenceServer</code> coalesces them into one stacked forward pass. The asymmetry is currently silent — env nodesets have no way to declare "I am pure-functional, deploy me as a singleton and batch K callers". Consequences: (1) any future pure-data or vectorisable env (MatterSim if re-wrapped, simple gym envs, teleport-only pose-lookup envs, data-indexed panoramic envs) forces us to spawn N Python interpreters + N scene loads for parallelism that could have been one process + K coalesced calls; (2) the extension contract lacks a single place where an env author says what their nodeset is. MatterSim itself has native batch support (<code>setBatchSize(K)</code> since v0.2) but our MP3D wrapper pins batch=1 and runs on a single-thread executor for GL affinity — so even though the underlying C++ library is batch-capable, <strong>our wrapper is stateful + thread-affine</strong> and must stay on the N-subprocess path. The contract has to accept both realities: some envs are stuck subprocess-per-worker regardless of library capability, others could legitimately be singletons if/when authored pure-functionally.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Add a single <code>ClassVar</code> on <code>BaseNodeSet</code> that every env nodeset declares:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">BaseNodeSet</span><span class="p">:</span>
+    <span class="c1"># Deployment topology under eval worker_count&gt;1. Default matches the only</span>
+    <span class="c1"># shape that exists today — no behavioural change for current nodesets.</span>
+    <span class="n">parallelism</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;replicated&quot;</span><span class="p">,</span> <span class="s2">&quot;shared&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;replicated&quot;</span>
+</code></pre></div>
+<p>Two modes, two contracts:</p>
+<ol>
+<li>
+<p><strong><code>replicated</code></strong> (default, today's behaviour). Nodeset holds live per-episode state the subprocess cannot forget between calls — simulator instance, loaded scan, GL context, episode iterator. <code>ensure_nodesets_for_graph(worker_count=N)</code> spawns N tagged copies; <code>EnvWorkerPool.__aenter__</code> populates tagged <code>controller_overrides</code> + <code>server_url_overrides</code> per worker; each <code>LoopRunner</code>'s executor routes to its own subprocess via those overrides. <strong>Current envs stay here</strong>: <code>env_habitat</code>, <code>env_mp3d</code>, <code>hmeqa</code>. Migration cost: zero.</p>
+</li>
+<li>
+<p><strong><code>shared</code></strong>. Nodeset is pure-functional — every tool call takes the full per-call state (<code>episode_index</code>, <code>step_index</code>, action, …) as explicit input ports; the subprocess holds no per-caller state between calls. The nodeset's step/observe tools additionally opt in with <code>batched=True, batch_dim="&lt;port name&gt;"</code>, exactly like <code>policy_cma__forward</code>. <code>ensure_nodesets_for_graph(worker_count=N)</code> spawns <strong>one</strong> copy regardless of N. <code>EnvWorkerPool</code> leaves <code>controller_overrides</code> + <code>server_url_overrides</code> empty; the executor falls through to the global registry; K concurrent <code>/call/{tool_name}</code> requests converge inside the one subprocess; the already-hosted <code>BatchedInferenceServer</code> (ADR-eval-002 PC) coalesces them into a single underlying handler call keyed on <code>(function_name, config_hash)</code>.</p>
+</li>
+</ol>
+<p>No new infrastructure. <code>shared</code> reuses the entire Phase-C batched-inference tier end-to-end. The registry's only new responsibility is reading <code>parallelism</code> and branching the spawn step.</p>
+<p><strong>Controller is orthogonal.</strong> Whether an env nodeset is <code>replicated</code> or <code>shared</code>, its <strong><code>BaseController</code></strong> (episode browser, <code>set_episode</code>/<code>play</code> from the UI) stays singleton and stateful — "the user is previewing episode 42" is inherently a single-user UI concept. For <code>shared</code> envs, <code>set_episode</code> is <strong>not</strong> called per-worker before running the graph; instead <code>episode_index</code> rides the wire as an input port on the step/observe tool, and the graph itself is responsible for encoding which episode each call is for. <code>_run_one_episode</code>'s pre-flight <code>on_field_change("episode_index", idx) → on_action("play")</code> cascade becomes an internal no-op for <code>shared</code> envs (controller stays in whatever state the UI last left it, which nobody looks at during batch eval).</p>
+<p><strong>Invariant carried forward from ADR-eval-002</strong>: at <code>worker_count=1</code>, both modes must stay bit-identical to today's single-tenant path. <code>replicated</code> achieves this by construction (single copy, empty overrides). <code>shared</code> achieves it because <code>_BatchQueue</code> flushes after <code>flush_timeout_ms</code> with batch size 1 when only one caller submits — same forward pass count, just with a 50 ms extra wall-clock for the single-caller case. This is already true for <code>policy_cma__forward</code> today.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <em>Unify everything as <code>shared</code> and pin batch size to 1</em>. Serialising Habitat's K callers through one subprocess makes <code>worker_count&gt;1</code> effectively <code>=1</code> — parallelism gone. Rejected.</p>
+<p>(b) <em>Keep everything as <code>replicated</code>, forever</em>. Forces N Python-interpreter + N scene-load overhead for envs that genuinely don't need per-process state. Wastes the entire <code>BatchedInferenceServer</code> machinery that already lives in every AutoServerApp. Rejected.</p>
+<p>(c) <em>Auto-detect parallelism mode from whether the nodeset declares any <code>batched=True</code> tools</em>. Too implicit; an author writing their first <code>batched=True</code> tool shouldn't silently flip their deployment topology. Rejected — explicit declaration is cheap.</p>
+<p>(d) <em>Introduce a third mode <code>threadsafe_singleton</code> (one subprocess, K callers run concurrently in separate asyncio tasks without coalescing)</em>. No real consumer today, and <code>shared</code> with batch_size coalescing already dominates it (one stacked forward pass &gt; K un-stacked forward passes on GPU). Rejected as over-design; if a real consumer appears (rare CPU-only lookup env), we re-open this ADR.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The contract acknowledges a distinction that already exists in the codebase — stateful subprocess vs. pure-functional server — but was only recognised on the policy side. Making it an explicit ClassVar on <code>BaseNodeSet</code> (a) gives every env author exactly one decision to make, with a safe default, (b) reuses Phase-C infrastructure instead of inventing new routing, (c) preserves the <code>worker_count=1</code> bit-identical invariant, (d) keeps the controller (singleton-by-nature) orthogonal to the graph-execution path (per-call). The split between "what the library can do" and "what our wrapper does today" is important: even batch-capable libraries like MatterSim land on <code>replicated</code> if our wrapper holds state — the contract follows the wrapper, not the upstream library.</p>
+<p><strong>Current consumer audit</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Nodeset</th>
+<th>Library</th>
+<th>Library batch-capable?</th>
+<th>Wrapper stateful?</th>
+<th>Mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_habitat</code></td>
+<td>Habitat-Sim 0.1.7</td>
+<td>No (single env per Simulator)</td>
+<td>Yes (live GL + scene + episode iterator)</td>
+<td><code>replicated</code></td>
+</tr>
+<tr>
+<td><code>env_mp3d</code></td>
+<td>MatterSim ≥ v0.2</td>
+<td>Yes (<code>setBatchSize(K)</code>)</td>
+<td>Yes (<code>batch=1</code>, single-thread executor, <code>self._sim</code> holds scan/viewpoint/heading)</td>
+<td><code>replicated</code></td>
+</tr>
+<tr>
+<td><code>hmeqa</code></td>
+<td>Habitat-Sim + TSDFPlanner</td>
+<td>No (numba-JIT volumes cannot cross JSON IPC, see TODO #17)</td>
+<td>Yes</td>
+<td><code>replicated</code></td>
+</tr>
+<tr>
+<td><em>(future pure-data env)</em></td>
+<td>—</td>
+<td>—</td>
+<td>No</td>
+<td><code>shared</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Scope of this ADR</strong>: we are <strong>not</strong> rewriting any existing wrapper to become pure-functional. The user has explicitly chosen to count on the upstream wrappers (MatterSim, habitat-sim, Prismatic) as-is. This ADR defines the contract so that (a) the default path is named and documented, not just implicit, and (b) the next env nodeset — whenever one is authored pure-functionally, most likely an F3-style parallelised agent or a future gym-style lookup env — lands on the already-built batched tier instead of forcing another N-subprocess spawn.</p>
+<p><strong>Migration path</strong> (no code landing in this ADR — consumer-driven):</p>
+<ol>
+<li>Land the ClassVar on <code>BaseNodeSet</code> with <code>replicated</code> default. Zero-line change for every existing nodeset.</li>
+<li>In <code>WorkspaceComponentRegistry.ensure_nodesets_for_graph</code>, branch on <code>type(nodeset).parallelism</code>: <code>replicated</code> → existing N-spawn path; <code>shared</code> → spawn 1 copy, skip the tagged overrides.</li>
+<li>In <code>EnvWorkerPool.__aenter__</code>, skip the tagged lookup for <code>shared</code> env nodesets (handles carry empty overrides → executor falls through → single copy serves K callers).</li>
+<li>In <code>_run_one_episode</code>, skip the <code>on_field_change/on_action("play")</code> pre-flight when the resolved env nodeset is <code>shared</code> (the graph carries <code>episode_index</code> as an input port instead).</li>
+<li>Document in the env-nodeset tutorial: "if your env is stateful, leave the default; if your env is pure-functional, set <code>parallelism = 'shared'</code> and declare <code>batched=True, batch_dim='...'</code> on your step/observe tools".</li>
+</ol>
+<p>Steps 1–4 are safe to land behind the default without any consumer migrating. Step 5 is the call-to-action for future env authors.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<ul>
+<li><code>docs-site/docs/developer-guide/core/decisions/server/index.md</code> — add ADR-server-003 row</li>
+<li><code>docs-site/docs/developer-guide/core/glossary.md</code> — new term <code>parallelism</code> under §3 Component System, sibling to <code>batched</code> / <code>batch_dim</code></li>
+<li><code>docs-site/docs/developer-guide/core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.md</code> — cross-reference note that per-worker subprocess fan-out is one of two shapes</li>
+<li><code>docs-site/docs/developer-guide/core/architecture.md</code> §5 — add a short "Parallelism modes" subsection after §5.1 Auto-Hosted Deployment</li>
+<li>Env-nodeset tutorial (when written, TODO #41) — document the two modes</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

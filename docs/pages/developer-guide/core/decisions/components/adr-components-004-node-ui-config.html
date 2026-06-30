@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-004 — AgentCanvas</title>
+<meta name="description" content="Python-driven node UI — NodeUIConfig replaces custom .tsx">
+<meta property="og:title" content="ADR-components-004 — AgentCanvas">
+<meta property="og:description" content="Python-driven node UI — NodeUIConfig replaces custom .tsx">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-004-node-ui-config.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-004-node-ui-config.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-004</span>
+  </div>
+  <div class="last-updated">2026-03-30</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-004</h1>
+  <p class="tagline">Python-driven node UI — NodeUIConfig replaces custom .tsx</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-30</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-013</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Adding a new canvas node required 4 file touches: a Python handler class, a custom <code>.tsx</code> React component, an import in <code>unifiedNodeTypes.ts</code>, and a catalog entry in <code>unifiedCatalog.ts</code>. Nodeset tools (Habitat, SAM) already bypassed this — <code>GenericBlockRenderer</code> auto-rendered them from backend port schemas. But 13 built-in nodes still had dedicated <code>.tsx</code> files for what amounted to simple port+label rendering. The framework had an asymmetry: nodeset tools = 1 Python file, built-in nodes = 4 files.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Add <code>NodeUIConfig</code> and <code>ConfigField</code> dataclasses to <code>BaseCanvasNode</code> in <code>bases.py</code>. Every node inherits <code>ui_config</code> with sensible defaults. (2) <code>NodeUIConfig</code> declares: <code>color</code> (Tailwind colour key), <code>layout</code> (<code>"block"</code> or <code>"strip"</code>), <code>width</code>/<code>min_height</code>/<code>rounding</code> (strip geometry), and <code>config_fields</code> (inline UI controls). (3) <code>ConfigField</code> supports 6 widget types: <code>label</code>, <code>slider</code>, <code>text</code>, <code>select</code>, <code>toggle</code>, <code>textarea</code>. (4) Serialize <code>ui_config</code> in the <code>/inner-nodes</code> API response. (5) Rewrite <code>GenericBlockRenderer.tsx</code> to support block layout (standard rectangle) and strip layout (narrow vertical gate like IterIn/IterOut). Block layout renders colour overrides and config fields. Strip layout renders vertical text with handles. (6) Enrich static catalog entries with <code>_schema</code> from backend so built-in nodes get <code>ui_config</code> at drag time. (7) Reduce <code>unifiedNodeTypes.ts</code> from 18 explicit mappings to 7 (6 custom UI + 1 fallback). (8) Delete 13 custom <code>.tsx</code> node files — the proxy fallback routes them to <code>GenericBlockRenderer</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Keep custom <code>.tsx</code> for all built-in nodes — rejected, maintenance burden with no benefit over auto-rendering. (b) Use a JSON config file instead of Python ClassVars — rejected, would separate UI config from the node class, violating the "one file per node" principle. (c) Generate <code>.tsx</code> files from Python at build time — rejected, code generation adds complexity; runtime schema reading is simpler.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>One Python class = one canvas node, everywhere. Built-ins, nodeset tools, and custom nodes all follow the same pattern. The 6 remaining custom <code>.tsx</code> files (PromptTemplate, Composite, 4 output viewers) are the irreducible minimum — they render truly complex UI (template editors with variable chips, live WebSocket image/log/metrics viewers) that cannot be expressed as ports + config fields.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>base-canvas-node.md, roadmap.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

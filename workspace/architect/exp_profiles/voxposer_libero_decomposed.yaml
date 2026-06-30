@@ -1,0 +1,65 @@
+# Experiment harness profile for the voxposer_libero_decomposed graph.
+# Read by /architect:{adas-subagent,aflow,myloop}:{loop,implementer,evaluator}.
+# Schema: see .claude/commands/architect/_common/evaluator.md (profile block: split/worker_count/step_budget/per_step_budget_sec/metrics).
+#
+# Created 2026-05-20 to bring voxposer_libero_decomposed into the architect pipeline.
+# VAS ("VoxPoser-on-LIBERO" eval set) = the first 4 LIBERO suites
+# (libero_spatial / object / goal / 10), 10 tasks each, 5 episodes per task
+# = 200 episodes. LIBERO's controller cascade is suite → task_id →
+# episode_index; the harness can ONLY advance task_id via episode_selectors
+# (a flat episode_index alone never leaves task 0). So every tier below
+# carries an explicit episode_selectors list ([{suite, task_id}], one entry
+# per episode) paired with episode_indices (the episode_index per episode;
+# eval.py forbids 'episode_index' *inside* episode_selectors).
+#
+# The tier lists are hand-authored below — smoke covers 2 tasks per suite
+# (× 1 ep) and perf covers the full VAS (4 suites × 10 tasks × 5 ep).
+
+# Eval-API parameters (flat — authoritative for non-tier skills; nominal
+# only, since LIBERO multi-suite eval is driven by the per-tier
+# episode_selectors below, not by `split`).
+split: libero_spatial
+worker_count: 4                  # UNCALIBRATED — LIBERO robosuite/mujoco env; tune after first run
+step_budget: 200                 # matches the graph's authored outer-loop step_budget (max waypoints/episode)
+per_step_budget_sec: 120         # UNCALIBRATED — VoxPoser LMP planning (LLM) + one waypoint exec per iter
+
+# Metric handling — env_libero__evaluate emits a success boolean + step count
+primary_metric: success
+secondary_metrics: [num_steps, cumulative_reward]
+
+rationale:
+  vas_definition: |
+    VAS = first 4 LIBERO suites (excludes libero_90, the 90-task pretraining
+    suite). perf evaluates all 4 × 10 tasks × 5 episodes = 200. smoke uses 2
+    tasks per suite × 1 episode = 8.
+  worker_count: |
+    UNCALIBRATED. No prior voxposer/LIBERO eval calibration on record. Each
+    set_episode rebuilds the robosuite env (different BDDL per task); the
+    eval harness uses task-contiguous dispatch so each worker sees only
+    ⌈tasks/N⌉ switches. .claude/commands/experiment/profiles.yaml also has no libero
+    entry — add one before the first /experiment:run, else admission falls
+    back to full-GPU exclusive.
+
+# -----------------------------------------------------------------------------
+# adas-subagent / aflow / myloop tier profiles (two-tier)
+# -----------------------------------------------------------------------------
+#   smoke_<graph>:  cheap gate inside implementer's debug retry loop
+#   perf_<graph>:   paper-comparable eval set; ranking signal for aflow,
+#                   post-implementer final-report for adas/myloop
+# Flat fields above remain authoritative for non-tier skills.
+
+smoke_voxposer_libero_decomposed:
+  episode_count: 8                         # 4 suites × 2 tasks (0, 5) × 1 ep
+  worker_count: 2
+  step_budget: 200
+  per_step_budget_sec: 120
+  episode_selectors: [{suite: libero_spatial, task_id: 0}, {suite: libero_spatial, task_id: 5}, {suite: libero_object, task_id: 0}, {suite: libero_object, task_id: 5}, {suite: libero_goal, task_id: 0}, {suite: libero_goal, task_id: 5}, {suite: libero_10, task_id: 0}, {suite: libero_10, task_id: 5}]
+  episode_indices: [0, 0, 0, 0, 0, 0, 0, 0]
+
+perf_voxposer_libero_decomposed:
+  episode_count: 200                       # full VAS — 4 suites × 10 tasks × 5 ep; aflow runs this ONCE on the best graph after the search loop
+  worker_count: 8
+  step_budget: 200
+  per_step_budget_sec: 120
+  episode_selectors: [{suite: libero_spatial, task_id: 0}, {suite: libero_spatial, task_id: 0}, {suite: libero_spatial, task_id: 0}, {suite: libero_spatial, task_id: 0}, {suite: libero_spatial, task_id: 0}, {suite: libero_spatial, task_id: 1}, {suite: libero_spatial, task_id: 1}, {suite: libero_spatial, task_id: 1}, {suite: libero_spatial, task_id: 1}, {suite: libero_spatial, task_id: 1}, {suite: libero_spatial, task_id: 2}, {suite: libero_spatial, task_id: 2}, {suite: libero_spatial, task_id: 2}, {suite: libero_spatial, task_id: 2}, {suite: libero_spatial, task_id: 2}, {suite: libero_spatial, task_id: 3}, {suite: libero_spatial, task_id: 3}, {suite: libero_spatial, task_id: 3}, {suite: libero_spatial, task_id: 3}, {suite: libero_spatial, task_id: 3}, {suite: libero_spatial, task_id: 4}, {suite: libero_spatial, task_id: 4}, {suite: libero_spatial, task_id: 4}, {suite: libero_spatial, task_id: 4}, {suite: libero_spatial, task_id: 4}, {suite: libero_spatial, task_id: 5}, {suite: libero_spatial, task_id: 5}, {suite: libero_spatial, task_id: 5}, {suite: libero_spatial, task_id: 5}, {suite: libero_spatial, task_id: 5}, {suite: libero_spatial, task_id: 6}, {suite: libero_spatial, task_id: 6}, {suite: libero_spatial, task_id: 6}, {suite: libero_spatial, task_id: 6}, {suite: libero_spatial, task_id: 6}, {suite: libero_spatial, task_id: 7}, {suite: libero_spatial, task_id: 7}, {suite: libero_spatial, task_id: 7}, {suite: libero_spatial, task_id: 7}, {suite: libero_spatial, task_id: 7}, {suite: libero_spatial, task_id: 8}, {suite: libero_spatial, task_id: 8}, {suite: libero_spatial, task_id: 8}, {suite: libero_spatial, task_id: 8}, {suite: libero_spatial, task_id: 8}, {suite: libero_spatial, task_id: 9}, {suite: libero_spatial, task_id: 9}, {suite: libero_spatial, task_id: 9}, {suite: libero_spatial, task_id: 9}, {suite: libero_spatial, task_id: 9}, {suite: libero_object, task_id: 0}, {suite: libero_object, task_id: 0}, {suite: libero_object, task_id: 0}, {suite: libero_object, task_id: 0}, {suite: libero_object, task_id: 0}, {suite: libero_object, task_id: 1}, {suite: libero_object, task_id: 1}, {suite: libero_object, task_id: 1}, {suite: libero_object, task_id: 1}, {suite: libero_object, task_id: 1}, {suite: libero_object, task_id: 2}, {suite: libero_object, task_id: 2}, {suite: libero_object, task_id: 2}, {suite: libero_object, task_id: 2}, {suite: libero_object, task_id: 2}, {suite: libero_object, task_id: 3}, {suite: libero_object, task_id: 3}, {suite: libero_object, task_id: 3}, {suite: libero_object, task_id: 3}, {suite: libero_object, task_id: 3}, {suite: libero_object, task_id: 4}, {suite: libero_object, task_id: 4}, {suite: libero_object, task_id: 4}, {suite: libero_object, task_id: 4}, {suite: libero_object, task_id: 4}, {suite: libero_object, task_id: 5}, {suite: libero_object, task_id: 5}, {suite: libero_object, task_id: 5}, {suite: libero_object, task_id: 5}, {suite: libero_object, task_id: 5}, {suite: libero_object, task_id: 6}, {suite: libero_object, task_id: 6}, {suite: libero_object, task_id: 6}, {suite: libero_object, task_id: 6}, {suite: libero_object, task_id: 6}, {suite: libero_object, task_id: 7}, {suite: libero_object, task_id: 7}, {suite: libero_object, task_id: 7}, {suite: libero_object, task_id: 7}, {suite: libero_object, task_id: 7}, {suite: libero_object, task_id: 8}, {suite: libero_object, task_id: 8}, {suite: libero_object, task_id: 8}, {suite: libero_object, task_id: 8}, {suite: libero_object, task_id: 8}, {suite: libero_object, task_id: 9}, {suite: libero_object, task_id: 9}, {suite: libero_object, task_id: 9}, {suite: libero_object, task_id: 9}, {suite: libero_object, task_id: 9}, {suite: libero_goal, task_id: 0}, {suite: libero_goal, task_id: 0}, {suite: libero_goal, task_id: 0}, {suite: libero_goal, task_id: 0}, {suite: libero_goal, task_id: 0}, {suite: libero_goal, task_id: 1}, {suite: libero_goal, task_id: 1}, {suite: libero_goal, task_id: 1}, {suite: libero_goal, task_id: 1}, {suite: libero_goal, task_id: 1}, {suite: libero_goal, task_id: 2}, {suite: libero_goal, task_id: 2}, {suite: libero_goal, task_id: 2}, {suite: libero_goal, task_id: 2}, {suite: libero_goal, task_id: 2}, {suite: libero_goal, task_id: 3}, {suite: libero_goal, task_id: 3}, {suite: libero_goal, task_id: 3}, {suite: libero_goal, task_id: 3}, {suite: libero_goal, task_id: 3}, {suite: libero_goal, task_id: 4}, {suite: libero_goal, task_id: 4}, {suite: libero_goal, task_id: 4}, {suite: libero_goal, task_id: 4}, {suite: libero_goal, task_id: 4}, {suite: libero_goal, task_id: 5}, {suite: libero_goal, task_id: 5}, {suite: libero_goal, task_id: 5}, {suite: libero_goal, task_id: 5}, {suite: libero_goal, task_id: 5}, {suite: libero_goal, task_id: 6}, {suite: libero_goal, task_id: 6}, {suite: libero_goal, task_id: 6}, {suite: libero_goal, task_id: 6}, {suite: libero_goal, task_id: 6}, {suite: libero_goal, task_id: 7}, {suite: libero_goal, task_id: 7}, {suite: libero_goal, task_id: 7}, {suite: libero_goal, task_id: 7}, {suite: libero_goal, task_id: 7}, {suite: libero_goal, task_id: 8}, {suite: libero_goal, task_id: 8}, {suite: libero_goal, task_id: 8}, {suite: libero_goal, task_id: 8}, {suite: libero_goal, task_id: 8}, {suite: libero_goal, task_id: 9}, {suite: libero_goal, task_id: 9}, {suite: libero_goal, task_id: 9}, {suite: libero_goal, task_id: 9}, {suite: libero_goal, task_id: 9}, {suite: libero_10, task_id: 0}, {suite: libero_10, task_id: 0}, {suite: libero_10, task_id: 0}, {suite: libero_10, task_id: 0}, {suite: libero_10, task_id: 0}, {suite: libero_10, task_id: 1}, {suite: libero_10, task_id: 1}, {suite: libero_10, task_id: 1}, {suite: libero_10, task_id: 1}, {suite: libero_10, task_id: 1}, {suite: libero_10, task_id: 2}, {suite: libero_10, task_id: 2}, {suite: libero_10, task_id: 2}, {suite: libero_10, task_id: 2}, {suite: libero_10, task_id: 2}, {suite: libero_10, task_id: 3}, {suite: libero_10, task_id: 3}, {suite: libero_10, task_id: 3}, {suite: libero_10, task_id: 3}, {suite: libero_10, task_id: 3}, {suite: libero_10, task_id: 4}, {suite: libero_10, task_id: 4}, {suite: libero_10, task_id: 4}, {suite: libero_10, task_id: 4}, {suite: libero_10, task_id: 4}, {suite: libero_10, task_id: 5}, {suite: libero_10, task_id: 5}, {suite: libero_10, task_id: 5}, {suite: libero_10, task_id: 5}, {suite: libero_10, task_id: 5}, {suite: libero_10, task_id: 6}, {suite: libero_10, task_id: 6}, {suite: libero_10, task_id: 6}, {suite: libero_10, task_id: 6}, {suite: libero_10, task_id: 6}, {suite: libero_10, task_id: 7}, {suite: libero_10, task_id: 7}, {suite: libero_10, task_id: 7}, {suite: libero_10, task_id: 7}, {suite: libero_10, task_id: 7}, {suite: libero_10, task_id: 8}, {suite: libero_10, task_id: 8}, {suite: libero_10, task_id: 8}, {suite: libero_10, task_id: 8}, {suite: libero_10, task_id: 8}, {suite: libero_10, task_id: 9}, {suite: libero_10, task_id: 9}, {suite: libero_10, task_id: 9}, {suite: libero_10, task_id: 9}, {suite: libero_10, task_id: 9}]
+  episode_indices: [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4]

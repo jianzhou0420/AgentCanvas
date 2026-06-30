@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-observability-005 — AgentCanvas</title>
+<meta name="description" content="Per-node LLM usage tracked via ContextVar hook in executor">
+<meta property="og:title" content="ADR-observability-005 — AgentCanvas">
+<meta property="og:description" content="Per-node LLM usage tracked via ContextVar hook in executor">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/observability/adr-observability-005-llm-usage-hook.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/observability/adr-observability-005-llm-usage-hook.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Observability</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-observability-005</span>
+  </div>
+  <div class="last-updated">2026-05-10</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-observability);">ADR-observability-005</h1>
+  <p class="tagline">Per-node LLM usage tracked via ContextVar hook in executor</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-10</dd>
+  <dt>Status</dt><dd><span class="adr-status status-rejected">accepted
+
+## Context
+
+DiscussNav's cost analysis surfaced that AgentCanvas had no end-to-end LLM token / USD accounting. First-pass remedy added a `usage_out: dict | None` parameter to `llm_complete` / `llm_complete_n` and required every LLM-using node to thread its own accumulator dict + `_self_log("usage_*")` calls. After implementing it for `LLMCallNode` and DiscussNav's three reasoning nodes (thought_fusion / decision_test / history_writer), the boilerplate cost was clear: every new nodeset author would re-implement the same 6-line accumulator pattern, VLM calls were forgotten entirely, and any code path that called `llm_complete` without remembering to plumb `usage_out=` silently lost data.
+
+User pushed back on the per-node plumbing as hardcode boilerplate and asked for a hook-based design that all graphs benefit from automatically.
+
+## Decision
+
+LLM usage capture moves from per-node opt-in plumbing to an executor-owned cross-cutting hook keyed by Python's `contextvars`.
+
+1. **`app.llm.call._current_node_usage`** — module-level `ContextVar[dict | None]` with `default=None`.
+
+2. **`_accumulate_usage(response)`** — called inside `llm_complete` / `llm_complete_n` / `vlm_complete` after every successful `litellm.acompletion`. Reads the bucket from the contextvar; if `None` (call originated outside a graph node — CLI, key validator, etc.) the helper no-ops. Otherwise, accumulates `{calls, model, prompt_tokens, completion_tokens, total_tokens, cached_tokens, usd_cost}` into the bucket. Cost comes from `litellm.completion_cost(response)` so the framework never owns a model→price table.
+
+3. **`GraphExecutor` lifecycle wrap.** Around each `instance.forward(fire_inputs, ctx)` call:
+   ```python
+   usage_bucket: dict = {"calls": 0, "model": "", ...}
+   usage_token = _current_node_usage.set(usage_bucket)
+   try:
+       result = await instance.forward(fire_inputs, ctx)
+   finally:
+       _current_node_usage.reset(usage_token)
+       if usage_bucket["calls"] > 0:
+           usage_bucket["usd_cost"] = round(usage_bucket["usd_cost"], 6)
+           instance._log_buffer.append({"key": "usage", "value": usage_bucket})
+   ```
+
+4. **Result shape.** Every node firing that touched the LLM gets exactly one `{"key":"usage","value":{...}}` entry in its inner log, picked up by `instance.log()` and written into the run log alongside other `_self_log` entries. Zero entries when `calls == 0`.
+
+5. **Nodesets touch zero usage code.** `LLMCallNode`, DiscussNav, MapGPT, NavGPT, future reasoners — none of them know the hook exists. Authors call `await llm_complete(...)` and the framework handles aggregation.
+
+## Alternatives
+
+a. **Per-node `usage_out: dict` plumbing.** This is what shipped first. Rejected after-the-fact: 6 lines of boilerplate per call site, easy to forget, missed VLM, hostile to third-party nodesets.
+
+b. **litellm `success_callback` / `CustomLogger`.** litellm offers a built-in callback that fires on every `acompletion`. Considered for max coverage (would intercept any litellm call, even from a third-party library imported into a node). Rejected for v1 because (i) we don't currently have third-party libraries calling litellm inside our process, (ii) the CustomLogger API has more surface area to maintain than a contextvar, and (iii) the contextvar approach is one-line-portable to litellm callbacks if we ever need that breadth — keep the executor wrap, just have the callback be the writer.
+
+c. **Background telemetry (Langfuse / W&B / OpenTelemetry).** Out of scope for this ADR. The contextvar bucket is a minimal "data exists in the run log" foundation; an upstream telemetry backend can subscribe to `_log_buffer` events later without disturbing this hook.
+
+## Rationale
+
+- **Cross-cutting concerns belong at the executor, not in every node.** Latency budgets, model-swap audit, span tracing all want the same lifecycle handle (`enter execute → exit execute`). Putting one ContextVar set/reset around `instance.forward(...)` makes the executor the single point where the framework owns the lifecycle, and the LLM helpers are pure consumers.
+- **`contextvars` propagates correctly across `await`.** Python's contextvars are designed for exactly this: the value set in the executor before `await instance.forward(...)` is visible inside any `await llm_complete(...)` reached during that execute, even across multiple `await` boundaries — because each Task inherits the calling context. No threading, no globals, no manual context plumbing.
+- **`litellm.completion_cost` makes USD a free field.** litellm carries an internal model→price table updated with each release, so we don't have to maintain pricing for 23 providers. `try/except` around the cost call ensures unknown models (local vLLM, custom endpoints) report `usd_cost: 0.0` rather than crashing the hook.
+- **Asymmetric default (`None` outside graph nodes) prevents accounting pollution.** CLI calls, key-validator probes, and direct `python -c "...llm_complete(...)..."` smoke tests don't accidentally accumulate into a stale bucket, because `_accumulate_usage` checks `is None` and bails out.
+
+## Affected docs
+
+- `developer-guide/capabilities/observability.md` — LLM usage entry shape added
+- `developer-guide/core/glossary.md` — "Usage hook" term added
+- `developer-guide/design-docs/llm-config.md` (if present) — usage section</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>observability</code></a></dd>
+</dl>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

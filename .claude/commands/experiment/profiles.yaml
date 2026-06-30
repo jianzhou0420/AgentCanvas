@@ -1,0 +1,170 @@
+# Resource profiles for /experiment:run admission control.
+#
+# bin/submit.py reads this on every call and forwards (vram_mb, exclusive_gpu)
+# to the backend's JobScheduler as (marginal_vram_mb, exclusive_gpu) in the
+# spec's scheduling block. Single-GPU bin-packing on vram_mb; exclusive_gpu=true
+# forces serialization for that profile.
+#
+# Tuning: scheduler's reserved_vram_mb (visible at GET /api/eval/v2/queue)
+# tells you live demand; compare to declared in the run's stderr.log.
+#
+# ── Backend strict-error mode ─────────────────────────────────────────────
+# Set AGENTCANVAS_STRICT_ERRORS=1 at backend launch (auto_host / uvicorn) to
+# make LLM/VLM API failures + uncaught node exceptions re-raise instead of
+# being swallowed into None/[] outputs and result={"error": ...} continuation.
+# Designed for smoke + eval runs where any error should surface immediately
+# (e.g. the focus_llm temperature=0 bug that ran silently for 2 iters).
+# Caveat: env var is read by the BACKEND process, not by submit.py — to
+# toggle, restart the backend with the var set. Sticky for the backend
+# lifetime; interactive canvas sessions on the same backend will also be
+# strict (one bad node call kills the canvas). For long-lived dev backends,
+# leave unset and start a separate strict backend for adas-subagent runs.
+#
+# ── 2026-05-24: vram_mb=2000 admission under-declaration for 4 graph families ──
+# smartway-ce, vla-libero (VoxPoser-on-LIBERO), mapgpt-mp3d, explore-eqa-hmeqa
+# (incl. their smoke_/search_/perf_ variants) now declare vram_mb=2000.
+# Rationale: user has stress-tested each tier's perf worker_count physically
+# fits the GPU envelope. The myloop K-job-wave allocator enforces
+# Σwc ≤ perf.worker_count, so real-VRAM stays within the stress-tested
+# envelope regardless of how many sub-jobs admit concurrently. The 2000
+# declaration is a deliberate fudge that lets ≤4 jobs of these families
+# admit simultaneously (usable_vram_mb=8576) and unblocks multi-spec
+# parallelism. Other entries retain their original calibration.
+
+budget:
+  gpu_vram_mb: 22000        # user-set 2026-05-07
+  cpu_cores: 16
+
+defaults:                    # used when an experiment name has no entry
+  vram_mb: 22000             # treat unknown as full-GPU
+  exclusive_gpu: true
+  notes: "no profile registered — admit conservatively, please add an entry"
+
+experiments:
+  # ---- API / CPU-only (always parallel) ----
+  doc-smoke:
+    vram_mb: 0
+    exclusive_gpu: false
+    notes: "graph correctness / doc renders"
+
+  # ---- Habitat / small policy ----
+  architect-cma:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "Habitat sim + small CMA policy"
+
+  architect-cma-exclusive:
+    vram_mb: 8000
+    exclusive_gpu: true
+    notes: "Same as architect-cma but exclusive — use when a sibling run is already running policy_vlnce (parallelism=shared) and you need to swap variant. Forces serialization to avoid VlnceManager singleton thrash across concurrent runs."
+
+  # ---- MP3D MatterSim + GPT-4 API (no local neural model) ----
+  navgpt-mp3d:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "MatterSim CUDA-GL per worker (~1GB each) + GPT-4 API. Graph uses paper_objects_cache / paper_captions_cache (offline preprocessing), not online BLIP-2/RCNN — API-bound, not GPU-bound."
+
+  mapgpt-mp3d:
+    vram_mb: 2000                # under-declared 2026-05-24, see preamble note
+    exclusive_gpu: false
+    notes: "MatterSim CUDA-GL renderer + GPT-4o API. vram_mb=2000 is admission under-declaration (was 8000 calibrated at 10-worker). Real VRAM bounded across perf worker_count by stress test; myloop K-job-wave allocator enforces Σwc ≤ perf.worker_count → real VRAM stays inside the envelope. usable_vram_mb=8576 → 4 sub admit concurrent."
+
+  discussnav-mp3d:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "MatterSim ~1GB + RAM Swin-L (~1GB) + InstructBLIP-XL fp16 (~7GB) + GPT-4 API. ~6 LLM calls/step. Marginal-only (per ADR-eval-003) — InstructBLIP/RAM are shared singletons across workers. Sized for single-worker smoke."
+
+  # ---- VLN-CE (habitat-sim 0.1.7 via env_vlnce server) ----
+  smartway-ce:
+    vram_mb: 2000                # under-declared 2026-05-24, see preamble note
+    exclusive_gpu: false
+    notes: "Marginal-only (ADR-eval-003): env_vlnce habitat-sim ~1.5GB per worker + GPT-4o API. Waypoint predictor (DDPPO + DINOv2) and RAM+ are shared singletons in server nodesets — reserved out-of-budget. vram_mb=2000 admission under-declaration; user stress-tested perf worker_count fits."
+
+  aoplanner-ce:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "AO-Planner VLN-CE port (env_habitat ~1.5GB/worker + GroundingDINO Swin-B ~1.5GB shared singleton in detany3d server + SAM vit_b in-process ~0.5GB + 2x gpt-5-mini vision API). 8000 covers a small-worker smoke with headroom; the FM detectors/segmenter differ from smartway-ce's waypoint-predictor singletons so this gets its own entry."
+
+  threestep-ce:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "Three-Step Nav VLN-CE port. env_habitat ~1.5GB/worker + RAM Swin-L (~2GB) + SpatialBot-3B fp16 (~6.5GB) + waypoint TRM/DDPPO — RAM+SpatialBot+waypoint are shared singletons in the opennav_perception/opennav_waypoint server nodesets (reserved out-of-budget, per ADR-eval-003). ~4 gpt-5-mini vision calls/step (navigator + 2 summaries + gated judge). Reuses Open-Nav's RAM+SpatialBot stack (cf. discussnav-mp3d). 8000 covers a small-worker smoke with headroom."
+
+  # ---- SIMPLER eval ----
+  simpler-rt1:
+    vram_mb: 6000
+    exclusive_gpu: false
+    notes: "reload nodeset every ~15 eps (set_episode cascade crash)"
+
+  simpler-octo:
+    vram_mb: 8000
+    exclusive_gpu: false
+
+  # ---- Heavy VLA ----
+  architect-vla-pi0:
+    vram_mb: 20000
+    exclusive_gpu: true
+    notes: "Prismatic-class VLA; SAPIEN no-close pattern (segfault otherwise)"
+
+  # ---- VoxPoser-on-LIBERO Track-B smoke (LMP-driven, no neural model on GPU) ----
+  vla-libero:
+    vram_mb: 2000                # under-declared 2026-05-24, see preamble note (already 2000 from prior calibration)
+    exclusive_gpu: false
+    notes: "LIBERO MuJoCo OffScreenRender (~1-2GB GPU for GLEW); LMP-driven, no policy on GPU; LLM via litellm. vram_mb=2000 — stress-tested envelope."
+
+  # ---- EQA ----
+  openeqa-blip2:
+    vram_mb: 12000
+    exclusive_gpu: false
+
+  explore-eqa-hmeqa:
+    vram_mb: 2000                # under-declared 2026-05-24, see preamble note
+    exclusive_gpu: false
+    notes: "marginal-only (ADR-eval-003): 10× habitat-sim ~0.8GB each; Prismatic 14GB is shared singleton, reserved out of usable_vram_mb. vram_mb=2000 admission under-declaration; user stress-tested perf worker_count fits."
+
+  tooleqa-hmeqa:
+    vram_mb: 1500
+    exclusive_gpu: false
+    notes: "marginal-only (ADR-eval-003): DetAny3D singleton ~12GB is shared, reserved out-of-budget; per-worker habitat-sim ~0.8GB + scratch. LLM is API-only."
+
+  # ---- adas-subagent / aflow / myloop two-tier admission entries (added 2026-05-19) ----
+  # Naming convention: smoke_<graph> / perf_<graph> (underscore form mirrors
+  # workspace/architect/exp_profiles/<graph>.yaml keyed blocks). Loop spec
+  # passes these as the first arg to submit.py; unknown names fall back to
+  # full-GPU + exclusive_gpu=true (22GB, serialized) per defaults block above.
+
+  smoke_smartway_ce:
+    vram_mb: 2000                # mirror smartway-ce under-declaration
+    exclusive_gpu: false
+    notes: "smoke (5 ep, 5 workers) — adas-subagent debug retry gate; calibration 2026-05-19"
+  perf_smartway_ce:
+    vram_mb: 2000                # mirror smartway-ce under-declaration
+    exclusive_gpu: false
+    notes: "perf (rand100 = 100 ep, 15 workers) — paper-canonical eval, adas-subagent evaluator; calibration 2026-05-19"
+
+  smoke_mapgpt_mp3d:
+    vram_mb: 2000                # mirror mapgpt-mp3d under-declaration
+    exclusive_gpu: false
+    notes: "smoke (3 ep, 3 workers) — MatterSim CUDA-GL per worker; GPT-4o API"
+  perf_mapgpt_mp3d:
+    vram_mb: 2000                # mirror mapgpt-mp3d under-declaration
+    exclusive_gpu: false
+    notes: "perf (MapGPT72 = 216 ep, 40 workers) — paper-comparable; ~30min wall; ~$5/run gpt-5-mini, ~$26/run gpt-4o"
+
+  smoke_explore_eqa_hmeqa:
+    vram_mb: 2000                # mirror explore-eqa-hmeqa under-declaration
+    exclusive_gpu: false
+    notes: "smoke (5 ep, 1 worker) — Prismatic singleton shared, marginal-only"
+  perf_explore_eqa_hmeqa:
+    vram_mb: 2000                # mirror explore-eqa-hmeqa under-declaration
+    exclusive_gpu: false
+    notes: "perf (100 ep, 10 workers) — Prismatic singleton shared, marginal-only"
+
+  smoke_voxposer_libero_decomposed:
+    vram_mb: 2000                # mirror vla-libero under-declaration
+    exclusive_gpu: false
+    notes: "smoke (1-8 ep, low workers) - VoxPoser decomposed (env-decoupled 2026-06-10); LMPs run in backend, sim VRAM only"
+  perf_voxposer_libero_decomposed:
+    vram_mb: 2000                # mirror vla-libero under-declaration
+    exclusive_gpu: false
+    notes: "perf (VAS = 4 suites x 10 tasks x 5 ep = 200 ep, 17 workers) - mirrors retired monolithic calibration (2026-05-26 stress-test)"

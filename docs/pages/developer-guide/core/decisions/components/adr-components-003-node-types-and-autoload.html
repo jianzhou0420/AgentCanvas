@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-003 — AgentCanvas</title>
+<meta name="description" content="Standardized node types, auto-load nodesets, presets as data">
+<meta property="og:title" content="ADR-components-003 — AgentCanvas">
+<meta property="og:description" content="Standardized node types, auto-load nodesets, presets as data">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-003-node-types-and-autoload.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-003-node-types-and-autoload.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-003</span>
+  </div>
+  <div class="last-updated">2026-03-29</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-003</h1>
+  <p class="tagline">Standardized node types, auto-load nodesets, presets as data</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-29</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-012</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>After ADR-components-002 moved all environment interaction to nodeset tools, the framework had no hardcoded env or policy node types. But three problems remained: (1) Saved graphs referenced nodeset node types that might not be loaded, causing blank nodes with no ports/edges. (2) Node type naming was inconsistent (<code>habitat_observe</code>, <code>tool_MeasureDistance</code>, <code>policy_forward_cma</code>) — the frontend couldn't determine which nodeset a node type belonged to. (3) Graph presets were hardcoded in TypeScript (<code>presets.ts</code>), tightly coupling the framework to specific agent designs.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>Node type convention</strong> <code>${nodeset_name}__${node_name}</code> with <code>__</code> (double underscore) as separator. Examples: <code>env_habitat__observe</code>, <code>env_habitat__step</code>, <code>policy_cma__forward</code>. Built-in framework nodes (<code>iterIn</code>, <code>llmCall</code>, etc.) have no <code>__</code> and are always available. (2) <strong>Auto-load nodesets on graph open</strong>: When the frontend loads a saved graph, it parses nodeset names from node types (split on <code>__</code>), fetches the nodeset list, and auto-loads any missing nodesets before rendering. After loading, it fetches updated node schemas and injects <code>_schema</code> into node data so <code>GenericBlockRenderer</code> can render ports and edges. (3) <strong>Presets as JSON data</strong>: Graph templates moved from <code>presets.ts</code> (TypeScript) to <code>workspace/graphs/*.json</code> (JSON files served via <code>GET /api/graphs</code>). No hardcoded graph templates in the framework. (4) <strong>Node IDs use <code>${type}_${hash8}</code></strong> format for readability. (5) <strong>NodeSet discovery probes tools</strong>: <code>_scan_and_register_nodesets()</code> calls <code>get_tools()</code> at scan time to populate <code>_discovered_tool_names</code> — the frontend can map node types to nodesets even before they're loaded. (6) <strong>Consolidated per-iteration WS broadcast</strong>: Output viewer sinks store their inputs, and a single <code>nav_step</code> WebSocket event is broadcast at the <code>iterOut</code> boundary (once per iteration) with merged data from all viewers.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Keep presets in TypeScript — rejected, couples framework to specific domains. (b) Store port schemas in graph JSON — rejected, makes JSON larger and duplicates backend truth. (c) Require manual nodeset loading before opening graphs — rejected, poor UX. (d) Per-viewer WS broadcasts — rejected, caused conflicting partial data (e.g. observationViewer's broadcast had <code>action: 0</code> default, overwriting actionLog's correct value).</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The <code>__</code> convention makes nodeset detection parseable from the node type string alone — no backend round-trip needed to determine which nodeset provides which tool. Auto-loading bridges the gap between "nodesets are discover-only" and "graphs reference nodeset nodes." Presets as JSON follows the "data, not code" principle — researchers modify JSON files, not TypeScript. The consolidated broadcast ensures output viewers receive consistent, complete data per iteration.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>architecture.md, blueprint.md, glossary.md, roadmap.md, nodesets.md, canvas-system.md, capabilities/real-time-observability.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

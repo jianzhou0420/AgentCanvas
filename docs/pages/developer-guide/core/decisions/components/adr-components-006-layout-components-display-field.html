@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-006 — AgentCanvas</title>
+<meta name="description" content="Layout Component System with DisplayField">
+<meta property="og:title" content="ADR-components-006 — AgentCanvas">
+<meta property="og:description" content="Layout Component System with DisplayField">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-006-layout-components-display-field.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-006-layout-components-display-field.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-006</span>
+  </div>
+  <div class="last-updated">2026-04-04</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-006</h1>
+  <p class="tagline">Layout Component System with DisplayField</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-04</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-019</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>AgentCanvas had 6 custom <code>.tsx</code> React components for canvas nodes that bypass GenericBlockRenderer (ADR-components-004). This meant adding certain node types still required writing TypeScript — violating the "Python-driven UI" principle. Analysis via ralplan consensus (Planner → Architect → Critic) revealed these 6 fall into three categories: (1) 4 output viewers (ObservationViewer, ThinkingLog, ActionLog, Metrics) — pure display widgets subscribing to WebSocket data, structurally identical; (2) CompositeCanvasNode — behavioral node with runtime subgraph introspection and drill-down navigation; (3) StateContainerNode — structurally privileged entity with 18 hardcoded references across 8 files (FRONTEND_ONLY_TYPES, dedicated graph conversion, state edge normalization). The Architect identified that composite and container are behavioral/structural problems, not rendering problems. The Critic confirmed ConfigField conflation (mixing user-editable controls with read-only data display) as a category error.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Introduce <code>DisplayField</code> dataclass alongside <code>ConfigField</code> in <code>bases.py</code> — separates user-editable config controls (slider, text, select) from read-only runtime data display widgets (image_viewer, log_list, metric_table). Add <code>display_fields: List[DisplayField]</code> to <code>NodeUIConfig</code>. (2) Add <code>layout="viewer"</code> to NodeUIConfig for output viewer nodes. (3) Refactor GenericBlockRenderer into a thin ~80-line dispatcher + separate layout component files: <code>BlockLayout.tsx</code>, <code>StripLayout.tsx</code>, <code>ViewerLayout.tsx</code> (each &lt;200 lines). Extract shared code to <code>layoutUtils.ts</code> and <code>useNodeOutput.ts</code> hook. (4) Eliminate 4 custom output viewer <code>.tsx</code> files. (5) Keep <code>CompositeCanvasNode.tsx</code> and <code>StateContainerNode.tsx</code> as explicit entries in <code>unifiedNodeTypes.ts</code> — they are architectural singletons with behavioral/structural coupling that cannot be purely data-driven from Python. (6) New <code>viewerFieldRenderers.tsx</code> handles <code>image_viewer</code> (base64 → img), <code>log_list</code> (scrollable entry list), <code>metric_table</code> (key-value metrics).</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) All 6 at once (single phase) — rejected by Architect: composite/container are behavioral problems masquerading as rendering problems; forcing them through GenericBlockRenderer gives false unification while structural divergence remains. (b) Single-file extension (~900+ lines) — rejected by 800-line coding style rule. (c) Overload ConfigField with display types — rejected by Critic: semantic conflation of user-editable controls and read-only data widgets violates single responsibility.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Phased approach (4 output viewers now, composite/container deferred) delivers 67% of the value with ~20% of the risk. The 4 output viewers are the category that multiplies as features grow — future output nodes will need zero <code>.tsx</code>. The 2 remaining custom files are architectural singletons that will never proliferate. <code>DisplayField</code> preserves the clean boundary between "what users configure" (ConfigField) and "what the node displays from runtime data" (DisplayField). The Layout Component System keeps each file under 200 lines while maintaining the single-dispatcher entry point.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>canvas-system.md, base-canvas-node.md, roadmap.md, glossary.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

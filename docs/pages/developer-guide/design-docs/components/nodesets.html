@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NodeSets — AgentCanvas</title>
+<meta name="description" content="The packaging unit — one class, a shared lifecycle, three server modes, and an optional env panel">
+<meta property="og:title" content="NodeSets — AgentCanvas">
+<meta property="og:description" content="The packaging unit — one class, a shared lifecycle, three server modes, and an optional env panel">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/components/nodesets.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="ns-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:700px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#nsa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/components/nodesets.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">NodeSets</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>NodeSets</h1>
+  <p class="tagline">The packaging unit — one class, a shared lifecycle, three server modes, and an optional env panel</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="nsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">A node is one function on the canvas; a <strong>NodeSet</strong> is how related nodes ship together. It groups nodes that share a lifecycle (a loaded model, a simulator handle), registers them under a <code>${nodeset}__${node}</code> prefix, and loads or unloads atomically. Its one extra power is running in a <em>different process or conda environment</em> than the framework — so a node that needs Python 3.8 + habitat-sim can sit beside one that needs the 3.11 backend. This page owns packaging, lifecycle, and the server modes; the node class itself is <a href="base-canvas-node.html">Base Canvas Node</a>, and the control panel an env nodeset attaches is <a href="env-panels.html">Env Panels</a>.</p>
+
+<hr>
+
+<h2 id="1-what-it-is"><span class="num">1.</span> What a NodeSet is, and when to make one</h2>
+
+<p>A NodeSet is a <code>BaseNodeSet</code> subclass that returns a list of node instances from <code>get_tools()</code>. Reach for one when nodes share <strong>expensive initialisation</strong> (load a model once, use it from several nodes), when they form a <strong>natural group</strong> that should load and unload as a unit (an environment's reset/step/observe/evaluate), or when they need <strong>process / environment isolation</strong> (a different conda env, a crash-prone simulator). A handful of unrelated utility nodes don't need a NodeSet — just drop them in a scanned directory.</p>
+
+<h2 id="2-smallest-nodeset"><span class="num">2.</span> The smallest NodeSet</h2>
+
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseNodeSet</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">GreeterNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">greeter</span><span class="s2">&quot;</span>                      <span class="c1"># = the workspace file stem; the __ prefix</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">A two-node demo set</span><span class="s2">&quot;</span>   <span class="c1">#   ({nodeset}__{node}) routes catalog + auto-load</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span>                  <span class="c1"># the one required method</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">HelloNode</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">GoodbyeNode</span><span class="p">(</span><span class="p">)</span><span class="p">]</span>
+</pre>
+
+<p>Drop the file under <code>workspace/nodesets/</code>, load it in the NodeSet Manager, and <code>greeter__hello</code> / <code>greeter__goodbye</code> appear in the catalog. Open a graph that uses them and the frontend auto-loads the set from the <code>__</code> prefix.</p>
+
+<h2 id="3-three-modes"><span class="num">3.</span> Three server modes at a glance</h2>
+
+<p>The same <code>BaseNodeSet</code> runs three ways. Which one is chosen is mostly automatic — it follows <code>server_python</code> and the eval worker count:</p>
+
+<svg class="rxsvg" viewBox="0 0 700 150" role="img" aria-label="Three server modes. Local: the nodeset runs in the framework process. Auto-hosted: setting server_python spawns a subprocess under that interpreter, and the framework talks to generated proxy nodes over HTTP. Manual ServerNodeSet: the nodeset also subclasses BaseServer and runs as an independent server the framework connects to.">
+  <rect x="8" y="34" width="210" height="84" rx="9" class="ghost"/><text x="22" y="26" class="dim at">Local</text>
+  <rect x="28" y="60" width="170" height="36" rx="7" class="accent"/><text x="113" y="82" text-anchor="middle" class="at">nodeset in-process</text>
+  <text x="113" y="112" text-anchor="middle" class="dim">same env · lowest latency</text>
+
+  <rect x="244" y="34" width="210" height="84" rx="9" class="ghost"/><text x="258" y="26" class="dim at">Auto-hosted</text>
+  <rect x="258" y="56" width="80" height="30" rx="6" class="box"/><text x="298" y="75" text-anchor="middle" class="mono">proxy</text>
+  <rect x="360" y="56" width="84" height="30" rx="6" class="box"/><text x="402" y="75" text-anchor="middle" class="mono">subprocess</text>
+  <path class="edge" d="M338,71 H360"/>
+  <text x="350" y="112" text-anchor="middle" class="dim">server_python → auto_host · HTTP</text>
+
+  <rect x="480" y="34" width="212" height="84" rx="9" class="ghost"/><text x="494" y="26" class="dim at">Manual ServerNodeSet</text>
+  <rect x="494" y="56" width="80" height="30" rx="6" class="box"/><text x="534" y="75" text-anchor="middle" class="mono">proxy</text>
+  <rect x="596" y="56" width="84" height="30" rx="6" class="box"/><text x="638" y="75" text-anchor="middle" class="mono">your server</text>
+  <path class="edge" d="M574,71 H596"/>
+  <text x="586" y="112" text-anchor="middle" class="dim">non-Python / remote machine</text>
+</svg>
+
+<table>
+<thead><tr><th>Mode</th><th>When</th><th>How it's selected</th></tr></thead>
+<tbody>
+<tr><td><strong>Local</strong></td><td>Same conda env as the backend; lowest latency.</td><td>Default (<code>server_python = None</code>).</td></tr>
+<tr><td><strong>Auto-hosted</strong></td><td>Needs a different Python / env (habitat-sim 0.1.7, a model's deps).</td><td>Set <code>server_python</code> to that interpreter — the registry auto-routes to server mode and spawns the subprocess for you.</td></tr>
+<tr><td><strong>Manual ServerNodeSet</strong></td><td>Non-Python server, custom protocol, or a remote machine.</td><td>Subclass <code>BaseNodeSet</code> + <code>BaseServer</code> and run it yourself.</td></tr>
+</tbody>
+</table>
+
+<p>Independently, an eval run with <code>worker_count &gt; 1</code> forces server mode so each worker gets its own process (§9).</p>
+
+<h2 id="4-contract"><span class="num">4.</span> The BaseNodeSet contract</h2>
+
+<p>One required attribute (<code>name</code>) and one required method (<code>get_tools</code>); the rest are optional ClassVars:</p>
+
+<table>
+<thead><tr><th>ClassVar</th><th>Default</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>name</code></td><td><em>(required)</em></td><td>Unique id; must equal the workspace file stem. Becomes the <code>${name}__</code> node prefix.</td></tr>
+<tr><td><code>description</code></td><td><code>""</code></td><td>One-line summary for the Manager.</td></tr>
+<tr><td><code>server_python</code></td><td><code>None</code></td><td>Interpreter for server mode; non-<code>None</code> auto-routes to auto-hosted (§7).</td></tr>
+<tr><td><code>parallelism</code></td><td><code>"shared"</code></td><td><code>shared</code> (one instance) or <code>replicated</code> (one subprocess per eval worker) — §9, ADR-server-003.</td></tr>
+<tr><td><code>env_panel</code></td><td><code>None</code></td><td>A <code>BaseEnvPanel</code> subclass to register on load (§12).</td></tr>
+<tr><td><code>default_per_step_budget_sec</code></td><td><code>30.0</code></td><td>Per-episode eval timeout = <code>max_steps × this</code>.</td></tr>
+<tr><td><code>replay_parser</code></td><td><code>None</code></td><td>Path to a sibling <code>BaseReplayParser</code> module for log replay.</td></tr>
+</tbody>
+</table>
+
+<h2 id="5-lifecycle"><span class="num">5.</span> Lifecycle hooks</h2>
+
+<p>On load, the registry constructs the NodeSet, calls <code>get_tools()</code>, awaits <code>initialize(**kwargs)</code>, and registers the tools; on unload it awaits <code>shutdown()</code>. Both lifecycle hooks default to no-ops — override them only when the set holds a heavyweight resource:</p>
+
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">EnvHabitatNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">env_habitat</span><span class="s2">&quot;</span>
+    <span class="n">env_panel</span> <span class="o">=</span> <span class="n">HabitatEnvPanel</span>          <span class="c1"># control-plane panel (see env-panels)</span>
+    <span class="n">parallelism</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">replicated</span><span class="s2">&quot;</span>           <span class="c1"># stateful sim: one subprocess per eval worker</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">initialize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="o">*</span><span class="n">kwargs</span><span class="p">)</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sim</span> <span class="o">=</span> <span class="n">load_habitat</span><span class="p">(</span><span class="p">)</span>       <span class="c1"># heavy, held for the nodeset&#x27;s lifetime</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">ResetHabitatTool</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">StepDiscreteHabitatTool</span><span class="p">(</span><span class="p">)</span><span class="p">,</span>
+                <span class="n">ObserveEgocentricHabitatTool</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">EvaluateHabitatTool</span><span class="p">(</span><span class="p">)</span><span class="p">]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sim</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="p">)</span>
+</pre>
+
+<p>Env NodeSets also override <code>get_eval_metadata()</code> to expose splits, episode counts, metric names, and the per-episode <code>step_budget</code> the batch runner reads (<a href="env-panels.html#5-on-load">Env Panels §5</a>).</p>
+
+<p>A NodeSet can also <strong>own state containers</strong> by overriding <code>get_containers()</code> (default <code>[]</code>): these live in the nodeset's own process, are shared by reference by its nodes, and surface only a read-only preview across the boundary — the production &ldquo;nodeset-owned container&rdquo; path documented in <a href="../graph/state-containers.html#9-nodeset-owned">State Containers §9</a>.</p>
+
+<h2 id="6-local-mode"><span class="num">6.</span> Local mode</h2>
+
+<p>The default. The NodeSet runs in the framework process and conda env; tool calls are plain in-process method calls with no serialisation. Use it for anything whose dependencies coexist with the backend's. Nothing to configure — leave <code>server_python = None</code>.</p>
+
+<h2 id="7-auto-hosted"><span class="num">7.</span> Auto-hosted mode</h2>
+
+<p>When a NodeSet needs a different interpreter, set <code>server_python</code> to it. The registry then auto-routes the set to server mode (<a href="../core/decisions/server/index.html">ADR-server-001</a>): it spawns <code>python -m app.server.auto_host</code> under that interpreter, the child's <code>AutoServerApp</code> introspects <code>get_tools()</code> and serves a <code>/manifest</code>, and the parent generates <strong>proxy nodes</strong> that forward over HTTP while keeping the original <code>node_type</code> (so graphs are portable across modes).</p>
+
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">ModelSamNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">model_sam</span><span class="s2">&quot;</span>
+    <span class="c1"># different interpreter → the registry auto-routes this nodeset to SERVER mode:</span>
+    <span class="c1"># it spawns `python -m app.server.auto_host` under that env, reads /manifest,</span>
+    <span class="c1"># and generates proxy nodes that keep the original node_type.</span>
+    <span class="n">server_python</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">python</span><span class="s2">&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">SamSegmentPointTool</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">SamSegmentBoxTool</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">SamAutoMaskTool</span><span class="p">(</span><span class="p">)</span><span class="p">]</span>
+</pre>
+
+<div class="callout warning"><p><strong>Import-boundary gotcha.</strong> The framework process must be able to <em>import the NodeSet module</em> to read its <code>server_python</code> — so the heavy, env-specific imports (habitat_sim, torch with CUDA pinned to the other env) must be deferred inside <code>initialize()</code>/tool bodies, not at module top level. The framework imports the class; the subprocess does the heavy lifting. Server-mode proxy node types currently carry an <code>srv_</code> prefix internally (tracked as TODO #33) — graphs still bind the unprefixed <code>node_type</code>.</p></div>
+
+<h2 id="8-manual-server"><span class="num">8.</span> Manual ServerNodeSet</h2>
+
+<p>For a non-Python server, a custom wire protocol, or a model on another machine, subclass <code>BaseNodeSet</code> + <code>BaseServer</code> (<code>ServerNodeSet</code>) and run it yourself. The framework connects to it as a remote and generates the same proxy nodes. Key <code>BaseServer</code> ClassVars: <code>command</code> (<code>str | list[str]</code> — the argv-list form is preferred, no shell), <code>port</code>, <code>startup_timeout</code> (default <strong>1800s</strong>), <code>auto_restart</code>. No in-tree NodeSet uses this path today — auto-hosted covers every Python case — so treat it as the escape hatch for genuinely foreign servers.</p>
+
+<h2 id="9-parallelism"><span class="num">9.</span> Parallelism (ADR-server-003)</h2>
+
+<p>The <code>parallelism</code> ClassVar decides what happens when an eval runs multiple workers. <code>shared</code> (default) keeps a single instance — fine for stateless tools, which may even rendezvous K callers through the batched-inference server. <code>replicated</code> spawns N independent tagged subprocesses, one per worker — required when the NodeSet holds per-worker state (a simulator's scene, an agent pose), which is why every env NodeSet sets it. A <code>worker_count &gt; 1</code> request forces server mode regardless, since the workers need separate processes.</p>
+
+<h2 id="10-registry-rest"><span class="num">10.</span> Registry &amp; REST</h2>
+
+<p><code>WorkspaceComponentRegistry.load_nodeset(name, mode, worker_count)</code> drives loading: resolve the class (scan <code>workspace/nodesets/</code> if needed) → auto-route to server mode if <code>server_python</code> is set or <code>worker_count &gt; 1</code> → for local, <code>get_tools()</code> + <code>initialize()</code> + register tools + register the env panel; for server, spawn the <code>auto_host</code> subprocess(es), fetch <code>/manifest</code>, generate proxies, register the remote env-panel proxy. The REST surface lives under <code>/api/components</code> (file <code>app/api/platform/components.py</code>):</p>
+
+<table>
+<thead><tr><th>Endpoint</th><th>Behaviour</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/components/nodesets</code></td><td>List discovered + live nodesets.</td></tr>
+<tr><td><code>POST /api/components/nodesets/{name}/load?mode=</code></td><td>Load (optionally forcing a mode).</td></tr>
+<tr><td><code>POST /api/components/nodesets/{name}/unload</code></td><td>Unload + <code>shutdown()</code>.</td></tr>
+<tr><td><code>GET /api/components/nodesets/{name}/eval-metadata</code></td><td>The <code>get_eval_metadata()</code> dict.</td></tr>
+<tr><td><code>GET /api/components/node-schemas</code></td><td>All node specs (the catalog feed — <a href="base-canvas-node.html#9-schema-endpoint">Base Canvas Node §9</a>).</td></tr>
+<tr><td><code>GET /api/components/servers</code> + <code>/{name}/start|stop|restart</code></td><td>Lifecycle of server-mode subprocesses.</td></tr>
+</tbody>
+</table>
+
+<h2 id="11-file-layout"><span class="num">11.</span> File layout</h2>
+
+<p>NodeSets live under <code>workspace/nodesets/</code>, organised by role: <code>env/</code> (simulators), <code>method/</code>, <code>policy/</code>, <code>model/</code> (e.g. <code>model_sam</code>), <code>common/</code>, <code>other/</code>. A simple set is one <code>.py</code> file (<code>env_habitat.py</code>); a complex one is a folder (<code>env/env_libero/</code>, <code>policy/policy_vla/</code>). The <strong><code>name</code> ClassVar must equal the file (or folder) stem</strong> — that's the contract that ties <code>name</code>, the <code>${name}__</code> node prefix, and auto-load together. Placement and naming rules are codified in <code>.claude/standard/nodeset-layout.md</code>.</p>
+
+<h2 id="12-env-panel"><span class="num">12.</span> env_panel attachment</h2>
+
+<p>An env NodeSet exposes its out-of-loop controls (suite, episode, Play/Stop) by setting the <code>env_panel</code> ClassVar to a <code>BaseEnvPanel</code> subclass. On load, <code>_register_env_panel_for</code> instantiates it, stamps a <code>_context</code> (<code>{mode, server_url, nodeset_name}</code>), and registers it — or, in server mode, registers a <code>RemoteEnvPanelProxy</code> over the bridge. That's all that belongs here; the panel's field/action contract, <code>on_load</code>, and signal side-effects are <a href="env-panels.html">Env Panels</a>, and how its episode/step operations map onto run scopes is <a href="env-lifecycle.html">Env &amp; Episode Lifecycle</a>.</p>
+
+<h2 id="13-cookbook"><span class="num">13.</span> Cookbook</h2>
+
+<ul>
+  <li><strong>Wrap a model</strong> — one NodeSet, load the model in <code>initialize()</code>, return the inference nodes from <code>get_tools()</code>; if the model needs its own env, set <code>server_python</code> (e.g. <code>model_sam</code> with <code>SamSegmentPointTool</code> / <code>SamSegmentBoxTool</code> / <code>SamAutoMaskTool</code>).</li>
+  <li><strong>Run in a different conda env</strong> — set <code>server_python</code> to that interpreter; keep heavy imports inside <code>initialize()</code>/tool bodies so the framework can still import the class (§7).</li>
+  <li><strong>Debug a load failure</strong> — check the Manager's server panel and the <code>auto_host</code> subprocess log; a module-top-level heavy import is the usual culprit.</li>
+</ul>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: §5 — added <code>get_containers()</code>: a NodeSet can own state containers (the production nodeset-owned container path), cross-linked to <a href="../graph/state-containers.html#9-nodeset-owned">State Containers §9</a>. Code-faithfulness pass; the ClassVar defaults (incl. <code>startup_timeout=1800</code>, <code>default_per_step_budget_sec=30.0</code>), the three server modes, and the <code>/api/components</code> REST surface all re-verified accurate.</li>
+<li>2026-06-13 14:08: <strong>Full rewrite for the inverted-pyramid structure and code-accuracy.</strong> Concept-first: what a NodeSet is → smallest set → three modes at a glance → contract/lifecycle/modes in depth. Corrections vs code: completed the <code>BaseNodeSet</code> ClassVar table (added <code>parallelism</code>, <code>env_panel</code>, <code>default_per_step_budget_sec</code>, <code>replay_parser</code>); fixed example tool class names to the real ones (<code>ResetHabitatTool</code>/<code>StepDiscreteHabitatTool</code>/<code>ObserveEgocentricHabitatTool</code>/<code>EvaluateHabitatTool</code>, <code>SamSegmentPointTool</code> et al.); fixed REST file path to <code>app/api/platform/components.py</code>; fixed <code>startup_timeout</code> default 30 → 1800; noted the <code>srv_</code> proxy prefix (TODO #33). Trimmed over-reach: the env-panel field/action contract and the locked env port schema now cross-link to Env Panels / Env Lifecycle, and <code>ports_mode</code> cross-links to Base Canvas Node. All code blocks via the Pygments pipeline.</li>
+<li>2026-05-18: Folded the 4-quadrant Diátaxis split back into a single concept-axis monolith; inline examples.</li>
+<li>2026-05-04: §11 file map — <code>policy/policy_vla/</code> horizontal <code>adapters/{robots,models}/</code> split.</li>
+<li>2026-04-19: Style compliance retrofit — added ToC + numbered sections.</li>
+<li>2026-04-18: Added the env-nodeset three-tier-floor section (locked port schema; episode-control is env-panel-only).</li>
+<li>2026-04-10: Added <code>get_eval_metadata()</code>; documented <code>server_python</code> auto-routing.</li>
+<li>2026-04-07: ADR-platform-004 dual-env boundary — <code>server_python</code> auto-routing, proxy nodes preserve original <code>node_type</code>.</li>
+<li>2026-04-02: All nodeset tools became direct <code>BaseCanvasNode</code> subclasses; <code>BaseTool</code> removed.</li>
+<li>2026-03-29: Node-type convention <code>nodeset__node</code>, auto-load on graph open (ADR-components-003).</li>
+<li>2026-03-28: Environments became NodeSets — <code>EnvHabitatNodeSet</code> replaces <code>BaseEnv</code> (ADR-components-002); auto-hosted mode (ADR-server-001).</li>
+<li>2026-03-27: Initial content.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What a NodeSet is, and when to make one</a>
+      <a class="toc-h2" href="#2-smallest-nodeset">2. The smallest NodeSet</a>
+      <a class="toc-h2" href="#3-three-modes">3. Three server modes at a glance</a>
+      <a class="toc-h2" href="#4-contract">4. The BaseNodeSet contract</a>
+      <a class="toc-h2" href="#5-lifecycle">5. Lifecycle hooks</a>
+      <a class="toc-h2" href="#6-local-mode">6. Local mode</a>
+      <a class="toc-h2" href="#7-auto-hosted">7. Auto-hosted mode</a>
+      <a class="toc-h2" href="#8-manual-server">8. Manual ServerNodeSet</a>
+      <a class="toc-h2" href="#9-parallelism">9. Parallelism (ADR-server-003)</a>
+      <a class="toc-h2" href="#10-registry-rest">10. Registry &amp; REST</a>
+      <a class="toc-h2" href="#11-file-layout">11. File layout</a>
+      <a class="toc-h2" href="#12-env-panel">12. env_panel attachment</a>
+      <a class="toc-h2" href="#13-cookbook">13. Cookbook</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-executor-004 — AgentCanvas</title>
+<meta name="description" content="Dynamic Fire-List dispatch — runtime-emitted child firings inside static topology">
+<meta property="og:title" content="ADR-executor-004 — AgentCanvas">
+<meta property="og:description" content="Dynamic Fire-List dispatch — runtime-emitted child firings inside static topology">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/executor/adr-executor-004-dynamic-firelist-dispatch.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/executor/adr-executor-004-dynamic-firelist-dispatch.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Executor</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-executor-004</span>
+  </div>
+  <div class="last-updated">2026-05-25</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-executor);">ADR-executor-004</h1>
+  <p class="tagline">Dynamic Fire-List dispatch — runtime-emitted child firings inside static topology</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-25</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>executor</code></a></dd>
+</dl>
+
+<h2 id='context'>Context</h2>
+<p>VoxPoser-class agents have a fundamentally <em>dynamic</em> call structure: a composer LLM emits a Python body that decides at run-time which sub-LMPs to call (<code>parse_query_obj</code>, 5 voxel-map LMPs, <code>execute</code>) and in what order. The static canvas topology — <code>flatten_graph()</code> expands all composites once before the run, then <code>GraphExecutor</code> precomputes <code>adjacency</code> / <code>scope_forest</code> / <code>_termination_ids</code> and treats them as immutable — cannot represent this: edges in the graph JSON are the only thing that can dispatch a node firing. Today the project copes by hosting the entire VoxPoser LMP runtime inside one <em>black-box</em> canvas node (v3's <code>env_libero__voxposer_run_subtask</code>); SR=1.0 is achievable but the LMP layer is invisible, unswappable, and unprofilable from canvas. Capture-then-replay in static topology (record the call sequence in a dry run, then replay through static gates) requires double execution and first-class conditional-fire semantics the engine doesn't have. Architecture-search (AAS) and the myloop performance loop both want per-LMP introspection so they can ablate / swap / mock individual LMP calls across iters — a need that a black-box node cannot serve. The framework needs a primitive that lets a single node's <code>forward()</code> spawn a runtime sequence of node firings while keeping the editor's static-topology assumption intact.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>Three new component types</strong> in <code>app/components/bases.py</code>: <code>FireSpec</code> (dataclass — <code>node_type</code>, <code>inputs</code>, <code>config</code>, <code>label</code>, <code>capture_outputs</code>), <code>FireList</code> (dataclass sentinel — <code>specs: list[FireSpec]</code>, <code>spawner_outputs: dict</code>, <code>aggregator: dict</code>), and <code>DynamicFireListNode</code> (<code>BaseCanvasNode</code> subclass with abstract <code>forward() → FireList</code> and concrete-with-clear-error <code>aggregate(child_results) → dict</code>). (2) <strong>Engine intercept in <code>_fire_node</code></strong>: when a node's <code>forward()</code> returns a <code>FireList</code>, the executor calls <code>_fire_dynamic_children(spawner, fire_list, session)</code>, then applies the FireList's declarative aggregator OR the spawner's <code>aggregate()</code> method, merges with <code>spawner_outputs</code>, and replaces <code>result</code> for the spawner's normal log + edge-propagation path. (3) <strong>Ephemeral children</strong>: each <code>FireSpec</code> becomes a <code>NodeInstance</code> with id <code>{spawner.id}::dyn{i}</code> that is NOT in <code>self.nodes</code> / <code>adjacency</code> / <code>scope_forest</code> / <code>ready_queue</code>. Children are fired sequentially via the existing <code>_fire_node</code> path (so they get the full hook / log / ctx machinery); their outputs are collected explicitly, never propagated through the static graph. (4) <strong>Declarative aggregators</strong>: <code>FireList.aggregator</code> recipes (<code>passthrough_last</code>, <code>passthrough_index</code>, <code>merge_all</code>, <code>rename</code>) collapse children's outputs framework-side without needing the spawner's Python <code>aggregate()</code> method — required for server-mode spawners whose framework-side proxy is a plain <code>BaseCanvasNode</code> subclass that doesn't inherit the method. (5) <strong>Hierarchical logging</strong>: ephemeral children carry <code>_dynamic_parent_id</code> and <code>_dynamic_index</code> attributes which <code>_fire_node</code> reads and plumbs into <code>ExecutionLogger.log_node()</code>; <code>NodeLogEntry</code> grows two optional fields (<code>parent_node_id</code>, <code>dynamic_index</code>, default <code>None</code>, backward-compatible). (6) <strong>Access-grant inheritance</strong>: <code>_fire_node</code>'s access-grant lookup uses <code>_dynamic_parent_id or node.id</code> as the lookup key so children inherit the spawner's container access without per-child grants (essential when the spawner shares a runtime container with its children, as VoxPoser v4 does). (7) <strong>HTTP boundary</strong>: server-side <code>/call/{fn}</code> route detects <code>isinstance(result, FireList)</code> and serializes to a <code>{"__firelist__": {specs, spawner_outputs, aggregator}}</code> envelope; the framework-side proxy detects <code>__firelist__</code> in the response and reconstructs <code>FireList</code>/<code>FireSpec</code> objects. (8) <strong>Hard constraints</strong> (engine rejects on attempt): forbidden child types — <code>iterIn</code>, <code>iterOut</code>, <code>initialize</code>, <code>termination</code>, <code>graphIn</code>, <code>graphOut</code> — would either no-op outside static topology or corrupt scope / termination state. Nested <code>FireList</code> (a child itself returning <code>FireList</code>) is rejected as <code>NotImplementedError</code> — that is full subgraph territory (deferred). Sequential semantics: child raise stops the sequence; <code>parallel_group</code> extension deferred.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Full subgraph spawn (option "C")</strong> — spawner returns a <code>SubgraphSpawn(GraphSpec)</code> with nodes + edges + nested scope pivots; engine instantiates a sub-executor with proper scope nesting, hierarchical termination, cross-process coordination, and an editor trace viewer that lets the author expand a spawner to see the actually-instantiated subgraph. Rejected for current scope: estimated 8–11 weeks of engine + editor work for capabilities (recursive HTN, MCTS-style tree search, ReAct retry loops, multi-agent debate) the current paper roadmap doesn't need. The C.5 fire-list shape is a strict subset; if a future agent needs subgraph wires the upgrade path is clean (FireList becomes a special case of GraphSpec). (b) <strong>Capture-then-replay in static topology (option "B")</strong> — first pass records the dynamic call sequence with all sub-LMPs stubbed, second pass dispatches the captured calls through static topology with conditional-fire gates. Rejected: requires double execution and a new "fire only if input matches" semantics that doesn't exist as a first-class engine feature; the conditional-gate fan-out also bloats the editor graph with 7+ dispatcher nodes per dynamic node, defeating the introspection win. (c) <strong>Black-box hosting (option "A", v3)</strong> — keep the entire dynamic dispatch inside one canvas node, log internals via <code>_self_log()</code>. Already in production as VoxPoser v3 (kept on disk as design reference); the new primitive coexists with it. Black-box is the right answer when there's no need for per-step introspection; once AAS / myloop need to ablate single LMPs, the black box becomes the bottleneck. (d) <strong>Two-stage LLM → graph compile (option "D")</strong> — LLM emits a complete graph JSON; canvas treats it as a new run. Rejected: hard to retrofit VoxPoser's existing composer prompt format (which writes Python with sub-LMP calls, not declarative JSON); also loses the recursive LLM reasoning structure where each layer's prompt depends on the previous layer's output.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The framework gains one new branch in <code>_fire_node</code> + one new private helper (<code>_fire_dynamic_children</code>, ~90 LOC) + four declarative aggregator recipes; no new firing modes, no new scope, no new executor instance, no editor changes. ~600 LOC engine + 15 unit tests vs ~4000 LOC for full subgraphs. Editor's static-topology assumption is preserved — children are runtime-only firings that never appear on the canvas, just as log entries with <code>parent_node_id</code> provenance. Server-mode boundary works cleanly via the JSON envelope; declarative aggregator decouples the spawner's Python class from the framework-side proxy so dispatch crosses subprocess boundaries without a second HTTP round-trip. VoxPoser v4 dogfood validates the abstraction is faithful: SR=1.0 / 1177 steps / 43.1s on LIBERO task 0 — exact parity with v3's black-box baseline (42.9s), 11 lmp_call children correctly captured across 4 subtasks with proxy refs resolving through a per-spawn runtime scratch dict. Headless deployment paths (AAS, myloop) consume <code>log.jsonl</code> directly via <code>node_type=env_libero__voxposer_lmp_call</code> filter + <code>parent_node_id</code> grouping — no canvas UI needed. Hard rejection of recursion + control-type children keeps the engine's existing scope / termination / settle machinery untouched (no nested executor lifetime, no cross-scope error propagation, no editor trace viewer required).</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>core/glossary.html (new terms: <code>FireSpec</code>, <code>FireList</code>, <code>DynamicFireListNode</code>, <em>dynamic fire-list dispatch</em>, <em>declarative aggregator</em>, <em>ephemeral child</em>, <code>parent_node_id</code>, <code>dynamic_index</code>); core/codebase-map.html (new files: <code>app/agent_loop/test_dynamic_firelist.py</code>; new methods: <code>_fire_dynamic_children</code>, <code>_apply_declarative_aggregator</code>; new classes: <code>FireSpec</code>, <code>FireList</code>, <code>DynamicFireListNode</code>; new constants: <code>_DYNAMIC_FIRELIST_FORBIDDEN_CHILD_TYPES</code>); design-docs/graph/graph-executor.html (new "Dynamic Fire-List dispatch" section); design-docs/components/base-canvas-node.html (new <code>DynamicFireListNode</code> subclass section); core/decisions/executor/index.html + core/decisions/index.html (this ADR added)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

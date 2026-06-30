@@ -1,0 +1,32 @@
+# Experiment harness profile for the navgpt_mp3d graph.
+# Read by /architect:experiment and /architect:debug.
+# Schema: see .claude/commands/architect/_common/evaluator.md (profile block: split/worker_count/step_budget/per_step_budget_sec/metrics).
+
+# Eval-API parameters
+split: val_unseen                # set "" if env nodeset doesn't use splits
+worker_count: 4                  # validated for env_mp3d (replicated mode)
+step_budget: 15                    # hard cap on graph iterations per episode
+per_step_budget_sec: 120         # episode_timeout = step_budget × this = 1800s
+
+# Metric handling
+primary_metric: success          # drives trace.md headline + report verdict
+secondary_metrics: [spl, nDTW, SDTW]  # exact API casing — env_mp3d emits camel/upper
+
+# Free-form rationale; lives here so the skill .md stays graph-agnostic.
+rationale:
+  step_budget: |
+    NavGPT reference (workspace/nodesets/_upstream/navgpt/upstream/nav_src/parser.py:21)
+    uses --max_iterations=10 on R2R val_unseen. Our scratchpad+reasoner+action
+    graph adds 1-2 setup steps per logical move, so 15 = 10 × 1.5 buffer.
+    Empirically iter_0 baseline: episodes that exceed ~15 reasoning steps were
+    all SR=0 lost trajectories. Don't raise above 20 without re-validating.
+  per_step_budget_sec: |
+    Empirical p100 = 62s/step on this graph (BLIP-2 caption dominates,
+    20s steady + 50s cold-start). 120 = ~2× p100 buffer.
+    Iteration history: 5s default → 20/20 timeouts; 30s → 9/20 timeouts;
+    120s → 0 timeouts (validated 2026-04-27 run c1e16d52).
+    Don't lower below 60 without re-measuring p95 in log.jsonl.
+  worker_count: |
+    Validated 2026-04-25 with 4 workers on env_mp3d (replicated mode).
+    GPU stable at 11.7 GiB; raising to 8 needs re-validation. Lazy-loader
+    race in BLIP-2/RCNN was fixed via threading.Lock 2026-04-27.

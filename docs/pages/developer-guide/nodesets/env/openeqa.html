@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenEQA NodeSet (EM-EQA) — AgentCanvas</title>
+<meta name="description" content="The OpenEQA NodeSet ( EnvOpenEQAEMNodeSet ) wraps the Episodic-Memory mode of OpenEQA (Majumdar et al., CVPR 2024) — a free-form Embodied Question Answering benchmark scored by an LLM-as-judge on a…">
+<meta property="og:title" content="OpenEQA NodeSet (EM-EQA) — AgentCanvas">
+<meta property="og:description" content="The OpenEQA NodeSet ( EnvOpenEQAEMNodeSet ) wraps the Episodic-Memory mode of OpenEQA (Majumdar et al., CVPR 2024) — a free-form Embodied Question Answering benchmark scored by an LLM-as-judge on a…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="OpenEQA">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/openeqa.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">OpenEQA</span>
+  </div>
+  <div class="last-updated">2026-06-11 15:37</div>
+</div>
+  <header class="page-header guide">
+  <h1>OpenEQA NodeSet (EM-EQA)</h1>
+</header>
+
+<p>The <strong>OpenEQA NodeSet</strong> (<code>EnvOpenEQAEMNodeSet</code>) wraps the <strong>Episodic-Memory</strong> mode of OpenEQA (Majumdar et al., CVPR 2024) — a free-form Embodied Question Answering benchmark scored by an LLM-as-judge on a 1–5 scale (LLM-Match).</p>
+<p>Sibling of <a href="hmeqa.html">HM-EQA</a>, not an extension. HM-EQA is multi-choice with token-likelihood scoring (Prismatic VLM); OpenEQA is free-form text with an external LLM judge. They share the <code>ac-hmeqa</code> conda env in server mode but are independent nodesets.</p>
+<blockquote>
+<p><strong>v1 scope:</strong> EM-EQA only. The active-exploration mode (A-EQA) is tracked as roadmap E10 — it would reuse the HM-EQA Habitat manager + an explore-eqa-style termination policy on top of these tools.</p>
+</blockquote>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<h3 id="purpose">Purpose</h3>
+<p>EM-EQA gives the agent a <strong>fixed set of pre-recorded frames</strong> from a walkthrough of a 3D scene plus a free-form question (e.g. <em>"What is on top of the kitchen counter?"</em>). The agent answers in natural language; an LLM judge scores 1–5 by comparing against a reference answer. The benchmark's headline metric, <strong>LLM-Match</strong>, normalizes that score to <code>[0, 1]</code> via <code>(score − 1) / 4</code>.</p>
+<p>There is <strong>no interactive simulator</strong> in EM-EQA — observation is a fixed list of images, not a <code>step()</code>-able sim. The OpenEQA nodeset is therefore a pure asset+judge surface; it does <strong>not</strong> export <code>step</code> or <code>done</code>.</p>
+<h3 id="architecture">Architecture</h3>
+<p>Three-layer pattern mirroring the other env nodesets:</p>
+<ol>
+<li><strong><code>OpenEQAEMManager</code></strong> (subprocess-singleton) — loads <code>open-eqa-v0.json</code> once at <code>initialize()</code>, then on <code>reset()</code> returns the episode's frame <strong>file paths</strong> as a plain <code>list[str]</code> (no decode). PNG decoding is deferred to <code>sample_frames</code>, which decodes only the K frames actually consumed by the VLM — for ScanNet (600 frames @ 1296×968) at K=50 this drops per-episode peak RSS from ~2.2 GB to ~190 MB and reset wall-time from ~19 s to under 10 ms. The wire payload between <code>reset</code> → <code>sample_frames</code> is a JSON-serialisable string list (port type <code>ANY</code>), which is what makes the lazy contract survive the server-mode RPC.</li>
+<li><strong>Canvas tool nodes</strong> — 5 tools (reset / episode_info / sample_frames / parse_score / emit_metrics). The judge LLM call itself is the framework's builtin <code>llmCall</code>; the OpenEQA-specific score parsing + metric naming live in the two thin nodeset nodes.</li>
+<li><strong><code>EnvOpenEQAEMNodeSet</code></strong> — <code>server_python</code> defaults to <code>$HMEQA_PYTHON</code>, so the framework auto-routes the nodeset into a <code>ac-hmeqa</code> subprocess when loaded via <code>?mode=server</code>.</li>
+</ol>
+<h3 id="server-mode-only">Server-Mode Only</h3>
+<p>The nodeset always runs server-mode under the <code>ac-hmeqa</code> env to keep <code>litellm</code> + <code>PIL</code> + <code>numpy</code> versions consistent with the other EQA stacks and to leave room for A-EQA's habitat-sim dependency. No work needed beyond setting <code>HMEQA_PYTHON</code> (already required for HM-EQA).</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Display Name</th>
+<th>Input Ports</th>
+<th>Output Ports</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_openeqa_em__reset</code></td>
+<td>OpenEQA EM: Reset</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>frames</code> (ANY — frame file paths), <code>question</code>, <code>answer_gt</code>, <code>category</code>, <code>episode_id</code>, <code>num_frames</code></td>
+<td>Load pre-recorded frame paths + question for the env panel-selected episode (decoding deferred to <code>sample_frames</code>)</td>
+</tr>
+<tr>
+<td><code>env_openeqa_em__episode_info</code></td>
+<td>OpenEQA EM: Episode Info</td>
+<td>(none)</td>
+<td><code>question</code>, <code>answer_gt</code>, <code>extra_answers</code>, <code>category</code>, <code>episode_id</code>, <code>episode_history</code></td>
+<td>Episode metadata without re-reading the frame archive</td>
+</tr>
+<tr>
+<td><code>env_openeqa_em__sample_frames</code></td>
+<td>OpenEQA EM: Sample Frames</td>
+<td><code>frames</code> (ANY — paths from reset, or pre-decoded <code>list[ndarray]</code>)</td>
+<td><code>sampled</code> (LIST[IMAGE]), <code>indices</code> (ANY)</td>
+<td>Down-select frames to fit the VLM's image cap (uniform stride or first/last/middle); decodes only the K sampled paths (lazy contract); also long-side resize (default 512 px) so multi-frame payloads stay under provider request-size caps</td>
+</tr>
+<tr>
+<td><code>env_openeqa_em__parse_score</code></td>
+<td>OpenEQA EM: Parse Score</td>
+<td><code>text</code> (TEXT)</td>
+<td><code>score_1to5</code> (ANY), <code>parsed</code> (ANY)</td>
+<td>Extract OpenEQA's 1–5 LLM-Match score from a judge LLM response (handles <code>Your mark: N</code>, pure-digit, and free-form fallback)</td>
+</tr>
+<tr>
+<td><code>env_openeqa_em__emit_metrics</code></td>
+<td>OpenEQA EM: Emit Metrics</td>
+<td><code>score_1to5</code> (ANY)</td>
+<td><code>metrics</code> (METRICS), <code>llm_match</code> (ANY)</td>
+<td>Wrap a 1–5 score into <code>{openeqa_score, openeqa_llm_match=(s-1)/4}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-is-not-in-this-nodeset">What is <strong>not</strong> in this nodeset</h3>
+<ul>
+<li><strong>No <code>step</code> / <code>done</code>.</strong> EM-EQA is a single-pass DAG, not a loop. There is no agent action.</li>
+<li><strong>No simulator camera.</strong> Frames come straight off disk — there's no <code>cam_intr</code> or <code>pose</code> to emit. (A-EQA, when added, will pull these from the Habitat env nodeset.)</li>
+<li><strong>No multi-letter answer.</strong> Predictions are free-form text.</li>
+</ul>
+<hr>
+<h2 id="3-composable-judge-pattern"><span class="num">3.</span> Composable Judge Pattern</h2>
+<p>The judge is <strong>not</strong> a single node — it is a 3-piece composition assembled in the graph:</p>
+<div class="highlight"><pre><span></span><code>        ┌─────────────────────────┐
+reset.question  ─────────────►   │                         │
+reset.answer_gt ─────────────►   │ llmCall (builtin)       │
+reasoner.response ───────────►   │ template = mmbench.txt  │  ─response─►  parse_score  ─score_1to5─►  emit_metrics  ─metrics─►  outputPort
+                                 │ profile = &quot;&quot;            │
+                                 └─────────────────────────┘
+</code></pre></div>
+<p>Why the split:</p>
+<ul>
+<li><strong><code>llmCall</code> is generic</strong> — runs the OpenEQA <code>mmbench.txt</code> few-shot prompt against any LLM the user picks. Belongs to the framework's builtin catalog, not OpenEQA.</li>
+<li><strong><code>parse_score</code> is OpenEQA-specific</strong> — the 1–5 scale, the <code>Your mark: N</code> surface form, the fallback heuristics, and the <code>-1</code> sentinel are conventions of this benchmark. Belongs to the OpenEQA nodeset.</li>
+<li><strong><code>emit_metrics</code> is OpenEQA-specific</strong> — the metric keys (<code>openeqa_score</code>, <code>openeqa_llm_match</code>) and the <code>(s-1)/4</code> normalization are reporting conventions defined by the paper. Belongs to the OpenEQA nodeset.</li>
+</ul>
+<p>This pattern generalises: any benchmark-specific LLM-judge can be expressed as <code>llmCall + parse_X + emit_X_metrics</code> where the parser and emitter live in the benchmark's own nodeset. See <code>docs-site/docs/developer-guide/design-docs/graph-system.md</code> §2.3 for the broader principle.</p>
+<h3 id="inputs-the-judge-llmcall-needs">Inputs the judge <code>llmCall</code> needs</h3>
+<p>The judge <code>llmCall</code> is configured with three ports — <code>question</code>, <code>answer</code>, <code>prediction</code> — and the mmbench template (paper-faithful, copy-pasted from <code>facebookresearch/open-eqa/prompts/mmbench.txt</code>). Wire <code>reset.question → judge.question</code>, <code>reset.answer_gt → judge.answer</code>, <code>reasoner.response → judge.prediction</code>.</p>
+<h3 id="outputs">Outputs</h3>
+<ul>
+<li><strong><code>parse_score.score_1to5</code></strong> — integer in <code>[1, 5]</code>, or <code>-1</code> if the response could not be parsed (no <code>Your mark: N</code>, no pure digit, no <code>\b[1-5]\b</code> fallback).</li>
+<li><strong><code>emit_metrics.metrics</code></strong> — <code>{"openeqa_score": &lt;float&gt;, "openeqa_llm_match": &lt;float&gt;}</code>. Auto-harvested by <code>BatchEvalRunner._collect_metrics</code> and aggregated as a mean across episodes.</li>
+<li><strong><code>emit_metrics.llm_match</code></strong> — <code>(score − 1) / 4</code> in <code>[0, 1]</code> for parsable responses; <code>0.0</code> on sentinel.</li>
+<li><strong><code>llmCall.response</code></strong> — the raw judge response (wire to a <code>textViewer</code> for audit / debugging).</li>
+</ul>
+<h3 id="failure-modes">Failure modes</h3>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th style="text-align: right;"><code>parse_score.score_1to5</code></th>
+<th style="text-align: right;"><code>emit_metrics.metrics["openeqa_score"]</code></th>
+<th style="text-align: right;"><code>emit_metrics.metrics["openeqa_llm_match"]</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Judge <code>llmCall</code> returns empty / <code>None</code></td>
+<td style="text-align: right;"><code>-1</code></td>
+<td style="text-align: right;"><code>-1.0</code></td>
+<td style="text-align: right;"><code>0.0</code></td>
+</tr>
+<tr>
+<td>Response unparseable as 1–5</td>
+<td style="text-align: right;"><code>-1</code></td>
+<td style="text-align: right;"><code>-1.0</code></td>
+<td style="text-align: right;"><code>0.0</code></td>
+</tr>
+<tr>
+<td>Profile misconfigured (e.g. unfunded key)</td>
+<td style="text-align: right;">(depends — <code>llmCall</code> returns empty → <code>-1</code>)</td>
+<td style="text-align: right;"><code>-1.0</code></td>
+<td style="text-align: right;"><code>0.0</code></td>
+</tr>
+<tr>
+<td>Score successfully extracted</td>
+<td style="text-align: right;"><code>1</code>–<code>5</code></td>
+<td style="text-align: right;"><code>1.0</code>–<code>5.0</code></td>
+<td style="text-align: right;"><code>0.0</code>–<code>1.0</code></td>
+</tr>
+</tbody>
+</table>
+<p>The sentinel <code>-1.0</code> survives mean aggregation — when the eval run completes you will see a non-physical mean if the judge silently failed on every episode. Inspect the judge <code>llmCall.response</code> per episode (via the wired <code>textViewer</code>) in the run JSONL to diagnose.</p>
+<hr>
+<h2 id="4-configuration"><span class="num">4.</span> Configuration</h2>
+<h3 id="env_openeqa_em__sample_frames-config"><code>env_openeqa_em__sample_frames</code> config</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th style="text-align: right;">Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>k</code></td>
+<td>slider 1–64</td>
+<td style="text-align: right;">15</td>
+<td>Target output length. Capped by <code>len(frames)</code>.</td>
+</tr>
+<tr>
+<td><code>strategy</code></td>
+<td>select</td>
+<td style="text-align: right;"><code>"uniform"</code></td>
+<td><code>"uniform"</code> (stride-based) or <code>"first_last_middle"</code> (legacy keyframe selector).</td>
+</tr>
+<tr>
+<td><code>image_size</code></td>
+<td>slider 0–2048</td>
+<td style="text-align: right;">512</td>
+<td>Long-side resize before downstream VLM call. <code>0</code> disables. Matches OpenEQA paper baseline (<code>openai_utils.py:30</code>); the default keeps a 32-frame batch under provider single-request size caps (OpenAI rejects &gt;50 MB; raw 1920×1080 PNGs total ~70 MB and silently fail otherwise).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="env_openeqa_em__parse_score-and-env_openeqa_em__emit_metrics-config"><code>env_openeqa_em__parse_score</code> and <code>env_openeqa_em__emit_metrics</code> config</h3>
+<p>Both nodes are config-free — the score parsing rules and metric naming are fixed by OpenEQA convention. Drop them onto the canvas and wire them up.</p>
+<h3 id="judge-llmcall-config-paper-faithful-defaults">Judge <code>llmCall</code> config (paper-faithful defaults)</h3>
+<p>The judge call is a builtin <code>llmCall</code>; the OpenEQA-specific recommendation is to set:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Recommended</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>profile</code></td>
+<td><code>""</code></td>
+<td><strong>Always empty in saved graphs.</strong> Resolves to the user's active LLM profile at run time. See graph-system.md §2.3.</td>
+</tr>
+<tr>
+<td><code>template</code></td>
+<td>(mmbench.txt verbatim)</td>
+<td>The few-shot scoring prompt with <code>{question}</code>, <code>{answer}</code>, <code>{prediction}</code> placeholders. Embedded directly in the graph JSON.</td>
+</tr>
+<tr>
+<td><code>system_prompt</code></td>
+<td>brief grounding line</td>
+<td>Empty works for <code>gpt-4-1106-preview</code> (paper default); <code>gpt-4o</code> benefits from a one-line "you are a careful evaluator" prefix.</td>
+</tr>
+<tr>
+<td><code>temperature</code></td>
+<td><code>0.2</code></td>
+<td>Paper default.</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>128</code></td>
+<td>Paper used <code>32</code> with the older Turbo model; modern chat models often emit short preamble that can blow past 32 — 128 is the safe number.</td>
+</tr>
+<tr>
+<td><code>ports</code></td>
+<td><code>[{question, answer, prediction}]</code> (all TEXT)</td>
+<td>Maps the three runtime values into the template.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="manager-level-config-passed-to-initializekwargs">Manager-level config (passed to <code>initialize(**kwargs)</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th style="text-align: right;">Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>frame_glob_patterns</code></td>
+<td style="text-align: right;"><code>("*.png", "*.jpg", "*.jpeg")</code></td>
+<td>First non-empty root wins. The loader auto-filters basenames matching <code>*-{depth,seg,sem,semantic,normal,instance}.*</code> so non-RGB modalities (ScanNet depth PNGs, semantic maps) aren't loaded as RGB frames.</td>
+</tr>
+<tr>
+<td><code>max_frames_per_episode</code></td>
+<td style="text-align: right;"><code>0</code></td>
+<td><code>0</code> = no cap; with the lazy decode pipeline RAM is no longer a concern, and <code>sample_frames</code> does the per-call K selection. If set &gt; 0 the manager <strong>stride-samples</strong> (not truncates) the path list at index time, which still preserves temporal coverage.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-env panel-integration"><span class="num">5.</span> Env panel Integration</h2>
+<p><code>OpenEQAEMEnvPanel</code> (registered as <code>env_openeqa_em</code> on the canvas panel) cascades <strong><code>split → episode_index</code></strong>. OpenEQA's public release is val-only, so the split selector currently has a single option; the field is retained for forward-compatibility.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Kind</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>split</code></td>
+<td>select</td>
+<td>Single value <code>"val"</code> today</td>
+</tr>
+<tr>
+<td><code>episode_index</code></td>
+<td>select</td>
+<td>Cascade — populated from the loaded JSON</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Side effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>play</code></td>
+<td><code>run_start</code></td>
+</tr>
+<tr>
+<td><code>pause</code></td>
+<td><code>run_pause</code></td>
+</tr>
+<tr>
+<td><code>stop</code></td>
+<td><code>run_stop</code></td>
+</tr>
+<tr>
+<td><code>reset</code></td>
+<td><code>signal:episode_reset</code> (also fired automatically on <code>episode_index</code> change)</td>
+</tr>
+</tbody>
+</table>
+<p>The env panel routes <code>episode_index</code> changes through <code>mgr.set_episode_by_index</code>, which drops the previous episode's frame cache so RSS stays bounded. The <code>episode_reset</code> signal clears any <code>lifetime="episode"</code> state containers downstream.</p>
+<p><code>get_eval_metadata()</code> returns <code>step_budget=1</code> — EM-EQA is a single-pass DAG, not a loop. <code>BatchEvalRunner</code> uses this to pick a per-episode timeout of <code>1 × default_per_step_budget_sec</code> (= 90 s today, judge-call dominated).</p>
+<hr>
+<h2 id="6-dataset-layout"><span class="num">6.</span> Dataset Layout</h2>
+<p>The loader expects this layout (override the root via <code>OPENEQA_DATA_DIR</code>):</p>
+<div class="highlight"><pre><span></span><code>data/openeqa/
+    open-eqa-v0.json                              # list of question records (JSON)
+    episodes/hm3d-v0/&lt;episode_history&gt;/
+        00000-rgb.png, 00001-rgb.png, ...         # 1920×1080 PNG, lossless
+    episodes/scannet-v0/&lt;episode_history&gt;/
+        000000-rgb.png    (1296×968 RGB, lossless PNG)
+        000000-depth.png  (640×480 uint16 depth, native ScanNet sensor res)
+        000000.txt        (4×4 camera-to-world pose)
+        ... (up to 600 frames per episode, capped at 20 sec @ 30 fps)
+        intrinsic_color.txt  (4×4, fx≈1165.7, cx≈649.1 — for 1296×968 RGB)
+        intrinsic_depth.txt  (4×4, fx≈575.7, cx≈320.3 — for 640×480 depth)
+        extrinsic_color.txt, extrinsic_depth.txt  (4×4 extrinsics)
+</code></pre></div>
+<p>The loader is filename-schema agnostic — <code>_list_frame_files</code> accepts both flat layouts (<code>frame_NNN.jpg</code>) and the AIGeeksGroup <code>&lt;NNNNN&gt;-rgb.png</code> schema, and auto-filters basenames ending in <code>-depth.*</code> / <code>-seg.*</code> / etc. so non-RGB modalities never reach <code>_load_frame_as_rgb</code>.</p>
+<h3 id="data-source-aigeeksgroup-huggingface-mirror">Data source: AIGeeksGroup HuggingFace mirror</h3>
+<p>The upstream Meta-released frame tarball (<code>open-eqa-hm3d-frames-v0.tgz</code> on Dropbox, referenced in <code>facebookresearch/open-eqa/data/README.md</code>) is <strong>permanently expired</strong> — both the frames tarball and the matching states tarball used by the Habitat re-render path return Dropbox "Link Expired" pages as of 2026-05-04. The previously-used HF mirror <a href="https://huggingface.co/datasets/Embodied1/open-eqa"><code>Embodied1/open-eqa</code></a> (parquet) was hard-capped at 32 frames per episode.</p>
+<p>Our installer (<code>scripts/data/fetch_dataset_openeqa.sh</code>) now routes through <a href="https://huggingface.co/datasets/AIGeeksGroup/OpenEQA"><code>AIGeeksGroup/OpenEQA</code></a> — third-party packaging as <strong>per-episode <code>.tar</code> files</strong>, full original episode lengths, lossless PNG. Total ~87 GB (12 GB HM3D + 75 GB ScanNet). The installer downloads via <code>huggingface_hub.snapshot_download</code>, then extracts each tar with <code>--strip-components=1</code> so files land directly under <code>episodes/&lt;subset&gt;/&lt;episode_id&gt;/</code>.</p>
+<h4 id="hm3d-vs-scannet-provenance">HM3D vs ScanNet provenance</h4>
+<table>
+<thead>
+<tr>
+<th>Subset</th>
+<th>Native res (paper script)</th>
+<th>AIGeeksGroup serving</th>
+<th>Loss vs paper canonical</th>
+<th>Bonus modalities</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HM3D</td>
+<td>1920×1080 PNG (<code>data/hm3d/extract-frames.py:51</code>)</td>
+<td>1920×1080 PNG</td>
+<td><strong>None</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>ScanNet</td>
+<td>1296×968 RGB + 640×480 depth (<code>SensorData.py:142</code>)</td>
+<td>1296×968 RGB + 640×480 depth</td>
+<td><strong>None</strong></td>
+<td>depth, per-frame 4×4 pose, color+depth intrinsics, color+depth extrinsics</td>
+</tr>
+</tbody>
+</table>
+<p>The bonus ScanNet depth + pose channels are wasted by the current EM-EQA graph (which is RGB-only) but unblock future SpatialNav / 3D-grounded methods without a re-render.</p>
+<h4 id="frame-counts-vs-old-mirror">Frame counts vs old mirror</h4>
+<table>
+<thead>
+<tr>
+<th>Mirror</th>
+<th>HM3D frames/episode</th>
+<th>ScanNet frames/episode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Embodied1/open-eqa</code> (parquet, retired)</td>
+<td>32 hard-capped</td>
+<td>32 hard-capped</td>
+</tr>
+<tr>
+<td><code>AIGeeksGroup/OpenEQA</code> (current)</td>
+<td>60–400 (variable, full original)</td>
+<td>up to 600 (capped at 20 sec @ 30 fps)</td>
+</tr>
+</tbody>
+</table>
+<p>The K=50 default in the multi-frame graph now actually pulls 50 frames on most HM3D episodes (was silently 32). For ScanNet, K=50 from a 600-frame episode under stride sampling matches the paper's <code>gpt4v.py --num-frames=50</code> default.</p>
+<h3 id="question-record-schema-tolerant">Question-record schema (tolerant)</h3>
+<p><code>_normalize_question</code> projects each upstream record onto a canonical schema with these field-name aliases:</p>
+<table>
+<thead>
+<tr>
+<th>Canonical</th>
+<th>Accepted upstream keys</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>question_id</code></td>
+<td><code>question_id</code>, <code>id</code>, <code>episode_id</code>, <code>qid</code></td>
+</tr>
+<tr>
+<td><code>question</code></td>
+<td><code>question</code>, <code>q</code>, <code>prompt</code></td>
+</tr>
+<tr>
+<td><code>answer</code></td>
+<td><code>answer</code>, <code>gt_answer</code>, <code>gt</code>, <code>ground_truth</code></td>
+</tr>
+<tr>
+<td><code>category</code></td>
+<td><code>category</code>, <code>question_type</code>, <code>type</code>, <code>tag</code></td>
+</tr>
+<tr>
+<td><code>episode_history</code></td>
+<td><code>episode_history</code>, <code>history</code>, <code>episode_history_path</code>, <code>episode_id</code>, <code>scene_id</code></td>
+</tr>
+<tr>
+<td><code>extra_answers</code></td>
+<td><code>extra_answers</code>, <code>alt_answers</code>, <code>additional_answers</code></td>
+</tr>
+</tbody>
+</table>
+<p>If your upstream JSON uses different keys, edit <code>_QUESTION_FIELD_ALIASES</code> near the top of <code>workspace/nodesets/env/env_openeqa_em.py</code>.</p>
+<h3 id="frame-directory-layout">Frame-directory layout</h3>
+<p><code>_list_frame_files</code> searches <code>data/openeqa/episodes/&lt;episode_history&gt;/</code> and the common subdirectories <code>frames/</code>, <code>rgb/</code>, <code>color/</code>, <code>images/</code>. The first non-empty match wins. Files are lex-sorted — name your frames so the natural sort is the temporal sort (e.g. <code>0001.jpg, 0002.jpg, …</code>).</p>
+<hr>
+<h2 id="7-example-graphs"><span class="num">7.</span> Example Graphs</h2>
+<p>The 6 baselines shipped in <code>facebookresearch/open-eqa/openeqa/baselines/</code> collapse to <strong>three distinct inference logics</strong>, covered by three graphs. Switching vendor (OpenAI / Anthropic / Google / local LLaMA) is a profile-dropdown change inside each graph — no new graph required.</p>
+<table>
+<thead>
+<tr>
+<th>Paper baseline</th>
+<th>Group</th>
+<th>Graph</th>
+<th>What changes per vendor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gpt4.py</code></td>
+<td>A — blind LLM</td>
+<td><code>openeqa_em_blind_llm.json</code></td>
+<td>Pick a text-only profile in the canvas (e.g. OpenAI <code>gpt-4o</code>, Anthropic, Gemini, local LLaMA)</td>
+</tr>
+<tr>
+<td><code>llama.py</code></td>
+<td>A — blind LLM</td>
+<td><code>openeqa_em_blind_llm.json</code></td>
+<td>Pick a local vLLM / HF profile</td>
+</tr>
+<tr>
+<td><code>gemini-pro.py</code></td>
+<td>A — blind LLM</td>
+<td><code>openeqa_em_blind_llm.json</code></td>
+<td>Pick a Google <code>gemini-pro</code> profile</td>
+</tr>
+<tr>
+<td>(ablation)</td>
+<td>C — single-frame VLM</td>
+<td><code>openeqa_em_single_frame.json</code> (K=1, middle)</td>
+<td>Pick a vision-capable profile</td>
+</tr>
+<tr>
+<td><code>gpt4v.py</code></td>
+<td>B — multi-frame VLM</td>
+<td><code>openeqa_em_multiframe.json</code> (default K=50, paper-faithful)</td>
+<td>Pick a vision-capable profile</td>
+</tr>
+<tr>
+<td><code>claude-vision.py</code></td>
+<td>B — multi-frame VLM</td>
+<td><code>openeqa_em_multiframe.json</code> (set K=20)</td>
+<td>Pick an Anthropic vision profile</td>
+</tr>
+<tr>
+<td><code>gemini-pro-vision.py</code></td>
+<td>B — multi-frame VLM</td>
+<td><code>openeqa_em_multiframe.json</code> (set K=15)</td>
+<td>Pick a Google vision profile</td>
+</tr>
+</tbody>
+</table>
+<p>All three graphs are pure DAGs (<code>step_budget: 1</code>, no <code>iter_in/iter_out</code>). Hyperparameters in the configs (<code>temperature=0.2</code>, <code>max_tokens=128</code>, prompts) match the upstream <code>prompts/*.txt</code> and baseline <code>--num-frames</code> defaults; the judge <code>llmCall</code> defaults to <code>temp=0.2, max_tokens=128</code> (paper used <code>32</code> with <code>gpt-4-1106-preview</code> — modern chat models need more headroom).</p>
+<blockquote>
+<p><strong>Faithfulness gaps:</strong>
+- <code>llmCall</code> does not expose <code>seed</code>. The paper sets <code>seed=1234</code> for OpenAI calls; our runs are non-deterministic. Mean LLM-Match across ≥30 episodes is the right comparison, not single-episode scores.</p>
+</blockquote>
+<h3 id="71-openeqa_em_multiframejson-group-b-multi-frame-vlm"><span class="num">7.1</span> <code>openeqa_em_multiframe.json</code> — Group B (multi-frame VLM)</h3>
+<p>Reproduces <code>gpt4v.py</code> (K=50, paper-faithful — full episodes available via AIGeeksGroup mirror). Topology:</p>
+<div class="highlight"><pre><span></span><code>[reset] ── frames ──► [sample_frames k=50] ── sampled ──► [vlmCall (rgb+question)] ── response ──┐
+                                                                                                   │
+[reset] ── question ──────────────────────────────────────────────────────────────► [judge llmCall (mmbench)]
+[reset] ── answer_gt ─────────────────────────────────────────────────────────────►        │
+                                                                                            │
+                                                                                            ▼
+                                                                              [parse_score] ──► [emit_metrics] ──► [outputPort]
+</code></pre></div>
+<p><code>llmCall</code> auto-detects VLM mode at runtime from the <code>rgb</code> input being a non-empty image list — no <code>vlm</code> config flag is needed.</p>
+<h3 id="72-openeqa_em_single_framejson-group-c-single-frame-vlm-ablation"><span class="num">7.2</span> <code>openeqa_em_single_frame.json</code> — Group C (single-frame VLM, ablation)</h3>
+<p>Sits between blind-LLM (no vision) and multi-frame (K=50) on the OpenEQA baseline ladder — the standard ablation that isolates "first-look" vision contribution from multi-frame fusion. K=1 with <code>strategy="first_last_middle"</code> returns the middle frame. Topology is identical to multi-frame, only the <code>sample_frames</code> config changes.</p>
+<h3 id="73-openeqa_em_blind_llmjson-group-a-language-only"><span class="num">7.3</span> <code>openeqa_em_blind_llm.json</code> — Group A (language-only)</h3>
+<p>Reproduces <code>gpt4.py</code> / <code>llama.py</code> / <code>gemini-pro.py</code>. Frames are not loaded — the model answers from prior knowledge. Topology:</p>
+<div class="highlight"><pre><span></span><code>[reset] ── question ──► [llmCall (TEXT, blind-llm prompt)] ── response ──┐
+                                                                          │
+[reset] ── question ──────────────────────────────────────────► [judge llmCall (mmbench)]
+[reset] ── answer_gt ─────────────────────────────────────────►        │
+                                                                        │
+                                                                        ▼
+                                                          [parse_score] ──► [emit_metrics] ──► [outputPort]
+</code></pre></div>
+<p>The <code>blind-llm.txt</code> prompt is split between the reasoner <code>llmCall</code>'s <code>system_prompt</code> (few-shot examples) and <code>template</code> (<code>Q: {question}</code>).</p>
+<h3 id="running-any-of-the-three-graphs">Running any of the three graphs</h3>
+<ol>
+<li><code>bash scripts/install/install_ac_hmeqa.sh</code> (one-time, brings up the <code>ac-hmeqa</code> conda env)</li>
+<li><code>bash scripts/data/fetch_dataset_openeqa.sh</code> (downloads HF mirror + materialises 32 frames/episode under <code>data/openeqa/</code>)</li>
+<li>Make sure your active LLM profile (<code>/api/profiles/</code>) points to a model that can handle the role — vision-capable for graphs B/C, any chat model for A.</li>
+<li>Open the graph and hit <strong>Play</strong>, or batch-eval via <code>POST /api/eval/v2/start</code> with <code>episode_count=K</code>, <code>worker_count=N</code> (<code>parallelism="replicated"</code> spawns N tagged subprocesses, each loading the JSON + its own episode-frame cache).</li>
+</ol>
+<blockquote>
+<p><strong>Profile note:</strong> All three graphs ship with <code>llmCall.profile = ""</code>, which resolves to the user's active profile at run time. If you want different LLMs for the reasoner vs the judge, override <code>profile</code> per-node in the canvas UI; do not edit the saved graph JSON to bake in a profile name (graph-system.md §2.3).</p>
+</blockquote>
+<hr>
+<h2 id="8-environment-setup"><span class="num">8.</span> Environment Setup</h2>
+<div class="highlight"><pre><span></span><code><span class="c1"># 1. Bring up the hmeqa conda env (shared with HM-EQA)</span>
+bash<span class="w"> </span>scripts/install/install_ac_hmeqa.sh
+
+<span class="c1"># 2. Stage the OpenEQA data (AIGeeksGroup HF mirror; ~87 GB total: 12 GB HM3D + 75 GB ScanNet)</span>
+<span class="c1">#    Use --filter hm3d or --filter scannet to fetch only one subset.</span>
+bash<span class="w"> </span>scripts/data/fetch_dataset_openeqa.sh
+
+<span class="c1"># 3. Tell the framework which interpreter hosts this nodeset</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">HMEQA_PYTHON</span><span class="o">=</span>/home/<span class="k">$(</span>whoami<span class="k">)</span>/miniforge3/envs/ac-hmeqa/bin/python
+
+<span class="c1"># 4. Make sure your active LLM profile points at a model with credit</span>
+<span class="c1">#    (graphs default to `llmCall.profile = &quot;&quot;` which resolves to active).</span>
+<span class="c1">#    Use the Profiles panel, or POST /api/profiles/activate, to switch.</span>
+</code></pre></div>
+<p>Override the data root if you keep OpenEQA outside the repo:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">OPENEQA_DATA_DIR</span><span class="o">=</span>/mnt/datasets/openeqa
+</code></pre></div>
+<hr>
+<h2 id="9-license"><span class="num">9.</span> License</h2>
+<p>OpenEQA is released by Meta AI under a research license documented in the upstream <code>facebookresearch/open-eqa</code> repository. Confirm the license terms before redistributing any data or eval outputs.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#purpose">Purpose</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h3" href="#server-mode-only">Server-Mode Only</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#what-is-not-in-this-nodeset">What is not in this nodeset</a>
+      <a class="toc-h2" href="#3-composable-judge-pattern">3. Composable Judge Pattern</a>
+      <a class="toc-h3" href="#inputs-the-judge-llmcall-needs">Inputs the judge llmCall needs</a>
+      <a class="toc-h3" href="#outputs">Outputs</a>
+      <a class="toc-h3" href="#failure-modes">Failure modes</a>
+      <a class="toc-h2" href="#4-configuration">4. Configuration</a>
+      <a class="toc-h3" href="#env_openeqa_em__sample_frames-config">env_openeqa_em__sample_frames config</a>
+      <a class="toc-h3" href="#env_openeqa_em__parse_score-and-env_openeqa_em__emit_metrics-config">env_openeqa_em__parse_score and env_openeqa_em__emit_metrics config</a>
+      <a class="toc-h3" href="#judge-llmcall-config-paper-faithful-defaults">Judge llmCall config (paper-faithful defaults)</a>
+      <a class="toc-h3" href="#manager-level-config-passed-to-initializekwargs">Manager-level config (passed to initialize(**kwargs))</a>
+      <a class="toc-h2" href="#5-env panel-integration">5. Env panel Integration</a>
+      <a class="toc-h2" href="#6-dataset-layout">6. Dataset Layout</a>
+      <a class="toc-h3" href="#data-source-aigeeksgroup-huggingface-mirror">Data source: AIGeeksGroup HuggingFace mirror</a>
+      <a class="toc-h3" href="#question-record-schema-tolerant">Question-record schema (tolerant)</a>
+      <a class="toc-h3" href="#frame-directory-layout">Frame-directory layout</a>
+      <a class="toc-h2" href="#7-example-graphs">7. Example Graphs</a>
+      <a class="toc-h3" href="#71-openeqa_em_multiframejson-group-b-multi-frame-vlm">7.1 openeqa_em_multiframe.json — Group B (multi-frame VLM)</a>
+      <a class="toc-h3" href="#72-openeqa_em_single_framejson-group-c-single-frame-vlm-ablation">7.2 openeqa_em_single_frame.json — Group C (single-frame VLM, ablation)</a>
+      <a class="toc-h3" href="#73-openeqa_em_blind_llmjson-group-a-language-only">7.3 openeqa_em_blind_llm.json — Group A (language-only)</a>
+      <a class="toc-h3" href="#running-any-of-the-three-graphs">Running any of the three graphs</a>
+      <a class="toc-h2" href="#8-environment-setup">8. Environment Setup</a>
+      <a class="toc-h2" href="#9-license">9. License</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

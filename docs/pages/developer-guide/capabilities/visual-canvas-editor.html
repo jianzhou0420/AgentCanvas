@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9Visual Canvas Editor — AgentCanvas</title>
+<meta name="description" content="A React Flow editor where you wire up an agent graph, drop nodes from a live backend catalog, and watch every port update during execution — no separate &quot;design&quot; and &quot;monitor&quot; tools.">
+<meta property="og:title" content="9Visual Canvas Editor — AgentCanvas">
+<meta property="og:description" content="A React Flow editor where you wire up an agent graph, drop nodes from a live backend catalog, and watch every port update during execution — no separate &quot;design&quot; and &quot;monitor&quot; tools.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/visual-canvas-editor.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/visual-canvas-editor.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">9Visual Canvas Editor</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+    <h1><span class="capability-num">9</span>Visual Canvas Editor</h1>
+    <p class="tagline">A React Flow editor where you wire up an agent graph, drop nodes from a live backend catalog, and watch every port update during execution — no separate "design" and "monitor" tools.</p>
+  </header>
+
+  <p>Every other capability page in this section describes a backend mechanism. This one is about the surface researchers actually touch: the in-browser canvas where graphs are authored, run, and observed. The editor is a single React app that talks to the backend over HTTP for state-changing actions and a single multiplexed WebSocket for live execution traffic. The same canvas is used to drill into composite subgraphs, configure nodes via auto-rendered forms, and replay finished episodes — no mode switching.</p>
+  <p><em>Design docs: <a href="../design-docs/components/canvas-system.html">Canvas System</a> · <a href="../design-docs/graph/graph-system.html">Graph System</a> · <a href="../design-docs/operations/execution-logs.html">Execution Logs</a></em></p>
+  <hr>
+
+  <h2 id="1-problem"><span class="num">1.</span> Problem</h2>
+  <p>An agent-graph authoring tool needs four things that don't combine easily:</p>
+  <ul>
+    <li><strong>Edit topology</strong> — drag/drop nodes, draw typed wires, validate connections before submit.</li>
+    <li><strong>Configure nodes</strong> — every node ships its own settings (model name, temperature, image grid size); these can't be hand-coded panels per node type.</li>
+    <li><strong>Run and watch</strong> — show port-by-port output while the executor is running, not just a final summary.</li>
+    <li><strong>Drill in / out</strong> — open a composite, edit its inner graph, save back, without losing the outer canvas context.</li>
+  </ul>
+  <p>If any of these is split across a separate page, the round-trip cost dominates. The unified editor folds all four into one ReactFlow canvas backed by a single WebSocket stream.</p>
+
+  <h2 id="2-three-layer-architecture"><span class="num">2.</span> Three-Layer Architecture</h2>
+  <div class="highlight"><pre><code>+-------------------+   HTTP /api/*       +--------------------------+
+|  Browser (React)  | ------------------> |  FastAPI backend         |
+|  - ReactFlow      |                     |  - WorkspaceComponentRegistry     |
+|  - Zustand store  | <-- WS /ws -------- |  - GraphExecutor      |
+|  - WSManager      |   nav_step,         |  - ErrorBus              |
++-------------------+   viewer_data,      +--------------------------+
+                        nav_status,
+                        error_event
+</code></pre></div>
+  <ul>
+    <li><strong>React Flow (<code>@xyflow/react</code>)</strong> renders nodes and edges; it owns geometry (positions, viewport, drag state).</li>
+    <li><strong>Zustand store (<code>useFlowStore</code>)</strong> owns graph semantics (typed wires, port resolution, composite drill-stack, per-node live output). Tab-aware: each open tab is an independent slice with its own nodes/edges/<code>nodeOutputs</code>; top-level selectors are projections of the active tab so older components keep working.</li>
+    <li><strong>WSManager (<code>ws.ts</code>)</strong> is one singleton WebSocket with auto-reconnect (exponential backoff 1s → 30s), a typed handler map, and a wildcard channel. Every panel that needs live data subscribes by frame <code>type</code> — no per-feature socket.</li>
+  </ul>
+  <p>State-changing actions (load nodeset, run graph, cancel run) are HTTP because they need a synchronous result. Live execution is WS because it's a high-volume one-way fan-out.</p>
+
+  <h2 id="3-graph-editor"><span class="num">3.</span> Graph Editor</h2>
+  <p><code>UnifiedGraphEditor</code> is the same component at the root canvas and inside a composite's inner graph:</p>
+  <table>
+    <thead><tr><th>Mode</th><th>State source</th><th>Save semantics</th></tr></thead>
+    <tbody>
+      <tr><td><code>root</code></td><td>Reads/writes <code>useFlowStore</code> directly</td><td>Edits are immediately live; no save button</td></tr>
+      <tr><td><code>subgraph</code></td><td>Local React state seeded from <code>innerGraph</code></td><td>Explicit <strong>Save</strong> / <strong>Reset</strong>; <code>onSave</code> writes back to the parent composite node's <code>data.subgraph</code></td></tr>
+    </tbody>
+  </table>
+  <p>Both modes share the drag-drop pipeline, typed-wire compatibility check (<code>isCompatibleWireConnection</code>), and the same <code>proxiedNodeTypes</code> registry, so a composite editor looks and behaves identically to the root — only the persistence model differs.</p>
+
+  <h3 id="31-typed-wire-compatibility"><span class="num">3.1</span> Typed Wire Compatibility</h3>
+  <p>Connections go through <code>useFlowStore.onConnect → isCompatibleWireConnection</code>. The check pulls each port's <code>wire_type</code> from <code>portResolution</code> (which walks <code>_schema</code> + live <code>config.ports</code> overrides for instance-derived ports such as <code>iterIn</code>, <code>stateContainer</code>, <code>imageViewer</code>) and rejects mismatches before the edge enters the store. This means the canvas can never reach the backend in a state that would only be caught by <code>validate_graph_connectivity</code>.</p>
+
+  <h3 id="32-node-library-and-catalog"><span class="num">3.2</span> Node Library and Catalog</h3>
+  <p>The left-side <code>NodeLibrary</code> reads from <code>unifiedCatalog</code>, which merges three sources:</p>
+  <ul>
+    <li><strong>Built-in nodes</strong> from the bundled <code>buildBuiltinEntries</code> table (iterIn/Out, graphIn/Out, viewers, state containers, composite, graphNode) — their <code>default_config</code> mirrors backend <code>BaseCanvasNode.default_config</code> so a freshly dropped node validates immediately.</li>
+    <li><strong>Loaded nodeset tools</strong> fetched from <code>GET /api/components/loaded</code> after any load/unload — each tool's <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, and <code>configSchema</code> drive both the palette entry and the dropped node's initial state.</li>
+    <li><strong>Composite graphs</strong> registered as nodeset <code>graph_nodes</code> — they appear as a single drop-tile and expand into a subgraph editor when opened.</li>
+  </ul>
+
+  <h2 id="4-configuration-panel"><span class="num">4.</span> Configuration Panel</h2>
+  <p>Selecting a node opens <code>PropertiesPanel</code>, which renders fields straight from the node's <code>ui_config.config_fields</code> (or, for non-customised nodes, infers them from <code>configSchema</code>). One renderer (<code>ConfigFieldRenderer</code>) covers the common widgets:</p>
+  <ul>
+    <li><code>text</code> / <code>textarea</code> / <code>select</code> / <code>slider</code> / <code>checkbox</code> — primitive fields</li>
+    <li><code>port_list</code> — used by <code>iterIn</code>/<code>iterOut</code>/<code>stateContainer</code>/<code>imageViewer</code> to add/remove typed ports; edits feed back into <code>portResolution</code> so the node's handle row updates live</li>
+    <li><code>llmRef</code> — picker bound to the loaded profile list (<code>GET /api/profiles</code>)</li>
+  </ul>
+  <p>There is no per-node React form. Adding a new node type means adding its <code>ui_config</code> and <code>configSchema</code> on the Python side; the UI is automatic.</p>
+
+  <h2 id="5-live-execution-view"><span class="num">5.</span> Live Execution View</h2>
+  <p>While the executor runs, the editor consumes four WS frame types from <code>state.broadcast</code>:</p>
+  <table>
+    <thead><tr><th>Frame</th><th>Emitter</th><th>Frontend handler</th></tr></thead>
+    <tbody>
+      <tr><td><code>nav_status</code></td><td><code>GraphExecutor</code> + <code>LoopRunner</code></td><td>Updates the run-state banner (idle / running / paused / error) and toolbar</td></tr>
+      <tr><td><code>nav_step</code></td><td><code>GraphExecutor._broadcast_step</code></td><td>Consolidated per-step payload from <code>graphOut</code> sinks — feeds the agent node's <code>nodeOutputs</code> entry (RGB / depth / action / position / containers / metrics)</td></tr>
+      <tr><td><code>viewer_data</code></td><td><code>textViewer</code> / <code>textScroll</code> / <code>imageViewer</code></td><td>Per-node payload (<code>{node_id, step, fields}</code>) — routed by <code>node_id</code> straight into that node's <code>nodeOutputs.fields</code> slice</td></tr>
+      <tr><td><code>error_event</code></td><td><code>ErrorBus</code> (ADR-observability-004)</td><td>Pushed to <code>errorStore</code> + Report panel + per-node error badge on the canvas</td></tr>
+    </tbody>
+  </table>
+  <p>Each node's shell (<code>NodeShell</code> + <code>HandleDot</code>) renders a per-handle status dot driven by <code>nodeOutputs[node_id]</code>; receiving a value flips the handle to "filled", emitting flips the output handle to "fresh". Composite nodes overlay their inner-graph progress as a small badge so you can see iteration depth without opening them.</p>
+
+  <h2 id="6-composite-drill-down"><span class="num">6.</span> Composite Drill-Down</h2>
+  <p>Double-clicking a composite node opens its inner graph in a modal <code>UnifiedGraphEditor mode="subgraph"</code>. The subgraph editor is seeded from the composite's <code>NodeDef.subgraph</code>, edits live in local React state, and on <strong>Save</strong> writes back via <code>onSave</code> — the parent canvas stays mounted underneath, so positions, selection, and run state are preserved. The drill stack is recorded on the store's <code>canvasStack</code> so multi-level dives keep their crumb trail.</p>
+  <p>Live execution is rendered <em>through</em> the drill: when the executor enters a composite's expanded child scope, the inner editor's nodes light up with the same per-handle status dots as the root.</p>
+
+  <h2 id="7-panels"><span class="num">7.</span> Panels</h2>
+  <p>The canvas is wrapped by a tab-aware shell with one resizable bottom drawer and a stack of right-side tabs. Every panel is a thin Zustand consumer:</p>
+  <table>
+    <thead><tr><th>Panel</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>NodeLibrary</code></td><td>Drag source — built-ins + loaded nodesets + graph_nodes</td></tr>
+      <tr><td><code>PropertiesPanel</code></td><td>Selected-node config form (auto-rendered from <code>ui_config</code>)</td></tr>
+      <tr><td><code>ExecutionToolbar</code></td><td>Run / pause / cancel / restore-checkpoint / step-delay slider</td></tr>
+      <tr><td><code>StatePanel</code></td><td>Live state-container values + <code>graph_state</code> preview</td></tr>
+      <tr><td><code>EnvPanel</code></td><td>Env-panel methods exposed by loaded env nodesets (split / episode / reset)</td></tr>
+      <tr><td><code>ObservationPanel</code></td><td>RGB / depth / overhead view from <code>nav_step</code></td></tr>
+      <tr><td><code>LogPanel</code> / <code>StepLogPanel</code></td><td>Per-node inner_log timeline (ADR-observability-003)</td></tr>
+      <tr><td><code>OutputDrawer</code></td><td>Tabbed dump of every node's last output, typed by wire</td></tr>
+      <tr><td><code>ReportPanel</code></td><td>ErrorBus envelopes — clickable, jumps to the offending node on the canvas</td></tr>
+      <tr><td><code>ExplorerPanel</code></td><td>Tree view of nodes by composite / category — useful in large graphs</td></tr>
+      <tr><td><code>TemplatePicker</code></td><td>Starter graphs from <code>TEMPLATES</code> (defaultGraph.ts)</td></tr>
+      <tr><td><code>SaveGraphDialog</code></td><td>Save current canvas as a named graph via <code>POST /api/graphs</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="8-run-flow"><span class="num">8.</span> Run Flow</h2>
+  <p>Pressing <strong>Run</strong> in the toolbar fires <code>runPipeline(graph)</code>:</p>
+  <ol>
+    <li>Convert the live ReactFlow nodes/edges back to a <code>GraphDefinition</code> via <code>fromFlowNodes</code> + <code>fromFlowEdges</code>.</li>
+    <li>Client-side pre-flight: for <code>eval_graph: true</code> (default), require ≥1 <code>graphOut</code> node. Surfaces a clearer error than waiting for the backend's <code>validate_graph_connectivity</code>.</li>
+    <li>Build the <code>LoopDefinition</code> wire payload (nodes, edges, containers, access_grants, step_budget, terminationCondition, presetId, hooks).</li>
+    <li>POST to <code>/api/navigate/run</code> (ADR-platform-002 — single endpoint) with an optional <code>execution_id</code> and <code>step_delay_ms</code>.</li>
+    <li>The backend acknowledges with <code>{ execution_id }</code> and starts emitting <code>nav_status</code> / <code>nav_step</code> / <code>viewer_data</code> / <code>error_event</code> frames over the already-open WS — no new connection.</li>
+  </ol>
+  <p>Cancel goes through <code>POST /api/navigate/run/stop</code>; the toolbar disables itself based on <code>nav_status.status</code>.</p>
+
+  <h2 id="9-related-pages"><span class="num">9.</span> Related Pages and Tools</h2>
+  <p>The visual editor is one of several React surfaces backed by the same store and WS:</p>
+  <ul>
+    <li><strong>NodeSet Manager</strong> (<code>pages/NodeSetManager.tsx</code>) — load/unload nodesets, pick local vs server mode, view manifest. Updates to loaded nodesets reflow the editor's catalog.</li>
+    <li><strong>Eval page</strong> (<code>eval/EvalPage.tsx</code>) — submit / monitor / cancel batch runs (see <a href="batch-evaluation-job-queue.html">capability 8</a>); reuses the same WSManager for per-episode <code>nav_step</code>.</li>
+    <li><strong>Replay page</strong> (<code>replay/ReplayPage.tsx</code>) — scrub through stored per-episode logs (ADR-eval-004); renders the same node shells with frozen data.</li>
+    <li><strong>Log viewer</strong> (<code>logs/LogViewerPage.tsx</code>) — historic execution logs with the canvas re-rendered from the saved graph; per-node inner_logs are filtered, paginated, and clickable.</li>
+  </ul>
+
+  <h2 id="10-key-files"><span class="num">10.</span> Key Files</h2>
+  <table>
+    <thead><tr><th>File</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>agentcanvas/frontend/src/canvas/UnifiedGraphEditor.tsx</code></td><td>Root + subgraph editor; ReactFlow host, drag-drop, save/reset</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/useFlowStore.ts</code></td><td>Zustand store: tab-aware nodes/edges/<code>nodeOutputs</code>/<code>canvasStack</code>; integrates ReactFlow change handlers</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/unifiedCatalog.ts</code></td><td>Catalog merge: built-ins + loaded nodesets + composite graph_nodes</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/unifiedNodeTypes.ts</code></td><td>ReactFlow <code>nodeTypes</code> registry — wraps every node type with the shared shell</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/nodes/shared/NodeShell.tsx</code></td><td>Universal node frame: handle rows, status dots, error badge, composite-drill button</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/nodes/shared/HandleDot.tsx</code></td><td>Per-handle status dot driven by <code>nodeOutputs</code></td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/nodes/composite/CompositeNodeView.tsx</code></td><td>Composite tile + drill button → subgraph modal</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/panels/PropertiesPanel.tsx</code></td><td>Auto-rendered config form from <code>ui_config.config_fields</code></td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/panels/NodeLibrary.tsx</code></td><td>Drag-source list with categories</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/panels/ExecutionToolbar.tsx</code></td><td>Run/pause/cancel/step-delay controls; observes <code>nav_status</code></td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/runPipeline.ts</code></td><td>Editor → <code>LoopDefinition</code> → <code>POST /api/navigate/run</code></td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/graphConversion.ts</code></td><td><code>GraphDefinition</code> ↔ ReactFlow Node[]/Edge[] (incl. containers, access grants)</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/canvas/portResolution.ts</code></td><td>Resolve instance ports (iterIn / stateContainer / imageViewer) from live config</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/ws.ts</code></td><td><code>WSManager</code> singleton — auto-reconnect, typed handler map, wildcard channel</td></tr>
+      <tr><td><code>agentcanvas/frontend/src/store.ts</code></td><td>WS subscriptions: routes <code>nav_step</code> / <code>viewer_data</code> / <code>nav_status</code> / <code>error_event</code> into the appropriate store slices</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+  <h2 id="status">Status</h2>
+  <table>
+    <thead><tr><th>Item</th><th>Status</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Unified root/subgraph editor</td><td>Done</td><td><code>UnifiedGraphEditor</code> handles both modes with one component</td></tr>
+      <tr><td>Typed-wire client-side validation</td><td>Done</td><td><code>isCompatibleWireConnection</code> in <code>useFlowStore.onConnect</code></td></tr>
+      <tr><td>Auto-rendered properties panel</td><td>Done</td><td><code>ConfigFieldRenderer</code> covers text / textarea / select / slider / checkbox / port_list / llmRef</td></tr>
+      <tr><td>Catalog merge (builtin + loaded + composite)</td><td>Done</td><td><code>unifiedCatalog</code> refreshes on nodeset load/unload</td></tr>
+      <tr><td>Single multiplexed WebSocket</td><td>Done</td><td>One <code>wsManager</code> with typed channels + wildcard</td></tr>
+      <tr><td>Per-handle live status</td><td>Done</td><td><code>NodeShell</code> + <code>HandleDot</code> driven by <code>nodeOutputs</code></td></tr>
+      <tr><td>Consolidated nav_step from graphOut sinks</td><td>Done</td><td>Recognised port names (rgb/depth/action/state/done/metrics/response) fed into agent node slice</td></tr>
+      <tr><td>Per-node viewer_data routing</td><td>Done</td><td>Sink nodes emit their own <code>viewer_data</code> frames during <code>forward()</code></td></tr>
+      <tr><td>Tab-aware canvas slices</td><td>Done</td><td>Each tab owns nodes/edges/<code>nodeOutputs</code>/<code>canvasStack</code></td></tr>
+      <tr><td>Composite drill-down with save/reset</td><td>Done</td><td>Modal subgraph editor; parent canvas preserved underneath</td></tr>
+      <tr><td>Pre-flight: eval_graph requires graphOut</td><td>Done</td><td>Caught client-side before <code>/api/navigate/run</code> round-trip</td></tr>
+      <tr><td>Step-delay slider for human-readable runs</td><td>Done</td><td><code>step_delay_ms</code> passed on every <code>/api/navigate/run</code> call</td></tr>
+      <tr><td>Restore-checkpoint UI</td><td>Done</td><td>Toolbar reads <code>get_checkpoints()</code>; per-scope (ADR-executor-003)</td></tr>
+      <tr><td>Error-bus badges on offending node</td><td>Done</td><td>Report panel click jumps to node on canvas</td></tr>
+      <tr><td>Mobile / touch UX</td><td>Planned</td><td>ReactFlow supports it but no UI tuning done; right panels do not collapse on narrow viewports</td></tr>
+      <tr><td>Multi-selection composite extraction</td><td>Planned</td><td>"Select N nodes → wrap into composite" — group-selection scaffolding exists in <code>groupSelection.ts</code>; UI command not wired</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+  <h2 id="changelog">Changelog</h2>
+  <ul>
+<li>2026-06-17: Code-faithfulness pass (B4). §8 + §10 run endpoint <code>/api/v1/run</code> → the real <code>POST /api/navigate/run</code> (route <code>/run</code> + mount prefix <code>/api/navigate</code>); §8 cancel corrected to <code>POST /api/navigate/run/stop</code> (there is no <code>/run/{execution_id}/cancel</code> for canvas — that pattern is eval-only). §3.2 dropped <code>Initialize</code> from the built-in palette list (node type removed; the catalog is data-driven from backend schemas anyway). §4 <code>llmRef</code> endpoint <code>POST /api/llm/profiles</code> → <code>GET /api/profiles</code>. graphIn/graphOut usage, the four WS frame types, and the 10 frontend key files all re-verified CONFIRMED.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+    <li>2026-05-18 17:00: Initial page — three-layer architecture, UnifiedGraphEditor root/subgraph modes, typed-wire validation, auto-rendered PropertiesPanel, four WS frame types, per-handle status, composite drill-down, run-flow walkthrough, 15 key files, 15-item status table</li>
+  </ul>
+
+  <nav class="page-nav">
+    <p><a href="batch-evaluation-job-queue.html">← 8. Batch Evaluation &amp; Job Queue</a> · <a href="index.html">↑ Capabilities index</a></p>
+  </nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-problem">1. Problem</a>
+      <a class="toc-h2" href="#2-three-layer-architecture">2. Three-Layer Architecture</a>
+      <a class="toc-h2" href="#3-graph-editor">3. Graph Editor</a>
+      <a class="toc-h3" href="#31-typed-wire-compatibility">3.1 Typed Wire Compatibility</a>
+      <a class="toc-h3" href="#32-node-library-and-catalog">3.2 Node Library and Catalog</a>
+      <a class="toc-h2" href="#4-configuration-panel">4. Configuration Panel</a>
+      <a class="toc-h2" href="#5-live-execution-view">5. Live Execution View</a>
+      <a class="toc-h2" href="#6-composite-drill-down">6. Composite Drill-Down</a>
+      <a class="toc-h2" href="#7-panels">7. Panels</a>
+      <a class="toc-h2" href="#8-run-flow">8. Run Flow</a>
+      <a class="toc-h2" href="#9-related-pages">9. Related Pages and Tools</a>
+      <a class="toc-h2" href="#10-key-files">10. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

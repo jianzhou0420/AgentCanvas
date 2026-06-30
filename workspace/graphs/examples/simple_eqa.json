@@ -1,0 +1,169 @@
+{
+  "name": "Example: Simple EQA",
+  "description": "Demo-level EQA reasoner assembled from built-in glue (llmCall, textParse) + basic_agent frame_sample + the OpenEQA EM env nodeset. Pure DAG: frames + question -> subsample -> multi-image VLM -> extract the final 'Answer:' line. A reasoner fragment, not an agent: pure (frames, question) -> answer function. For benchmark scoring add the LLM-judge composition from openeqa_em_multiframe.json.",
+  "step_budget": 1,
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_openeqa_em__reset",
+      "label": "OpenEQA EM: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "frame_sample",
+      "type": "basic_agent__frame_sample",
+      "label": "Frames: Sample (k=8)",
+      "position": {
+        "x": 320,
+        "y": 0
+      },
+      "config": {
+        "k": 8,
+        "strategy": "uniform"
+      }
+    },
+    {
+      "id": "vlm",
+      "type": "llmCall",
+      "label": "VLM: Answer Question",
+      "position": {
+        "x": 640,
+        "y": 0
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "LIST[IMAGE]",
+            "required": true
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "required": true
+          }
+        ],
+        "template": "User Query: {question}\n\nAnswer the question from the images. Explain briefly, then write your final answer alone on the last line in the form:\nAnswer: <concise answer>",
+        "system_prompt": "You are an intelligent question answering agent. You will be shown a set of images collected from a single indoor location and must answer the user's question about that space.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "parse_answer",
+      "type": "textParse",
+      "label": "Extract Answer",
+      "position": {
+        "x": 960,
+        "y": 0
+      },
+      "config": {
+        "mode": "regex",
+        "pattern": "Answer:\\s*(.+)",
+        "default": ""
+      }
+    },
+    {
+      "id": "response_viewer",
+      "type": "textViewer",
+      "label": "Full VLM response",
+      "position": {
+        "x": 640,
+        "y": 240
+      },
+      "config": {}
+    },
+    {
+      "id": "answer_viewer",
+      "type": "textViewer",
+      "label": "Extracted answer",
+      "position": {
+        "x": 960,
+        "y": 240
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__answer",
+      "type": "graphOut",
+      "label": "answer",
+      "position": {
+        "x": 1280,
+        "y": 0
+      },
+      "config": {
+        "portName": "answer",
+        "wireType": "TEXT"
+      }
+    },
+    {
+      "id": "note_demo",
+      "type": "note",
+      "label": "Demo: built-in EQA reasoner",
+      "position": {
+        "x": 320,
+        "y": -280
+      },
+      "config": {
+        "markdown": "**Demo: an EQA reasoner from built-in parts only**\n\n- `basic_agent__frame_sample` (standard nodeset) — uniform K-frame subsample\n- `llmCall` (built-in) — multi-image VLM call via the `LIST[IMAGE]` port\n- `textParse` (built-in, regex mode) — pulls the final `Answer:` line\n\nThis is a *reasoner fragment*, not an agent: a pure (frames, question) → answer function with no loop. To score against the OpenEQA benchmark, append the judge composition from `eqa/verified/openeqa_em_multiframe.json` (judge `llmCall` → `parse_score` → `emit_metrics`)."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_frames_to_sample",
+      "source": "env_reset",
+      "target": "frame_sample",
+      "sourceHandle": "frames",
+      "targetHandle": "frames"
+    },
+    {
+      "id": "e_sample_to_vlm",
+      "source": "frame_sample",
+      "target": "vlm",
+      "sourceHandle": "sampled",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_reset_question_to_vlm",
+      "source": "env_reset",
+      "target": "vlm",
+      "sourceHandle": "question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_vlm_to_parse",
+      "source": "vlm",
+      "target": "parse_answer",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_vlm_to_viewer",
+      "source": "vlm",
+      "target": "response_viewer",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_parse_to_viewer",
+      "source": "parse_answer",
+      "target": "answer_viewer",
+      "sourceHandle": "value",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_parse_to_graphout",
+      "source": "parse_answer",
+      "target": "output_port__answer",
+      "sourceHandle": "value",
+      "targetHandle": "value"
+    }
+  ]
+}

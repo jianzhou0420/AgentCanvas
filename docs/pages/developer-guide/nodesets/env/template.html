@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Env NodeSet Template (Gym-like Interface) — AgentCanvas</title>
+<meta name="description" content="The interface contract every interactive (MDP) env nodeset should implement so simulators expose one consistent surface. It keeps Gymnasium&#x27;s four verbs — reset / step / close / observe — but adopts…">
+<meta property="og:title" content="Env NodeSet Template (Gym-like Interface) — AgentCanvas">
+<meta property="og:description" content="The interface contract every interactive (MDP) env nodeset should implement so simulators expose one consistent surface. It keeps Gymnasium&#x27;s four verbs — reset / step / close / observe — but adopts…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/template.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Template (Gym Interface)">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/template.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">Template (Gym Interface)</span>
+  </div>
+  <div class="last-updated">2026-06-12 14:31</div>
+</div>
+  <header class="page-header guide">
+  <h1>Env NodeSet Template (Gym-like Interface)</h1>
+</header>
+
+<p class="lede">The interface contract every <strong>interactive (MDP) env nodeset</strong> should implement so simulators expose one consistent surface. It keeps Gymnasium's four verbs — <code>reset</code> / <code>step</code> / <code>close</code> / <code>observe</code> — but adopts a <strong>pull-style perception model</strong> that fits VLN/EQA: <code>step</code> is a pure transition that returns no observation, and <code>observe</code> is the on-demand channel a method uses to fetch exactly the information it wants. Action and observation spaces are <strong>node-naming axes</strong>, not runtime config: each env exposes a <code>step_&lt;actionspace&gt;</code> family and an <code>observe_&lt;obsspace&gt;</code> family, all sharing fixed return contracts.</p>
+
+<p>All five MDP env nodesets implement this contract (since 2026-06-10). Which env supports which spaces is registry information, not contract — see the <a href="index.html#capability-matrix">capability matrix in the env catalog</a>. The 2026-06 migration record (old→new node maps, pre-refactor audit) lives in this page's git history.</p>
+
+<h2 id="1-taxonomy"><span class="num">1.</span> Interface taxonomy — where this template applies</h2>
+
+<p><code>env/</code> currently holds <strong>three interface types</strong>, separated by two axes: does the nodeset have an <em>episode lifecycle</em>, and does it have an <em>action loop</em> (do the agent's actions change what it observes next)? This template (§3–§5) specifies only the first type; the other two are listed so a new env nodeset gets classified deliberately instead of inheriting whatever shape its upstream code had.</p>
+
+<table>
+<thead><tr><th>Type</th><th>Episode lifecycle</th><th>Action loop</th><th>Verb surface</th><th>Members</th></tr></thead>
+<tbody>
+<tr><td><strong>Interactive MDP</strong> (gym-like)</td><td>yes — <code>reset</code> / <code>evaluate</code></td><td>closed — <code>step</code> mutates world state; future observations change</td><td><code>reset / step_* / observe_* / evaluate</code> (+ suite-level <code>close</code>)</td><td><code>env_habitat</code>, <code>env_mp3d</code>, <code>env_hmeqa</code>, <code>env_simpler</code>, <code>env_libero</code></td></tr>
+<tr><td><strong>Replay benchmark</strong> (scored dataset)</td><td>yes — <code>reset</code> / <code>episode_info</code> / <code>emit_metrics</code></td><td>none — data is pre-recorded; the agent's output feeds only the scorer</td><td><code>reset / episode_info / sample_frames / parse_score / emit_metrics</code></td><td><code>env_openeqa_em</code></td></tr>
+<tr><td><strong>Stateless service</strong></td><td>none</td><td>none — pure request→response</td><td>per-capability tool verbs (<code>locate_2d / locate_3d / segment</code>)</td><td><code>env_detany3d</code></td></tr>
+</tbody>
+</table>
+
+<p>Three boundary rules fall out of the table:</p>
+<ul>
+  <li><strong>A replay benchmark keeps the lifecycle half of the env contract and drops the interaction half.</strong> <code>env_openeqa_em</code> has reset, episode iteration, metric emission, and an env panel with episode selection + play/pause/stop — everything except <code>step</code>. It is exempt from this template, not an outlier of it (its nodes deliberately kept their pre-gym names — renaming would have broken three verified graphs for a purely cosmetic change).</li>
+  <li><strong>A stateless service is not an env interface type at all</strong> — <code>locate_2d / segment</code> is the same request→response shape as the <code>model/</code> servers (<code>vlm_prismatic</code>, <code>model_sam</code>). <code>env_detany3d</code> sits in <code>env/</code> by historical placement (it predates the role-directory layout and is owned by ToolEQA); under the layout standard's membership test it would fit <code>model/</code> or <code>method/tooleqa_*</code>. Do not use it as precedent for new lifecycle-less "env" nodesets.</li>
+  <li><strong>Variation inside the MDP type is parameterization, not a new type.</strong> Action-space suffixes (<code>step_discrete</code> vs <code>step_continuous</code>), observation-space suffixes, and <code>env_libero</code>'s privileged GT observation space (<code>observe_objects</code>) all ride the same four-verb contract; none of them justifies a new row above.</li>
+</ul>
+
+<p>The two-axis matrix has one empty cell — <em>action loop without episode lifecycle</em>. That is the <strong>continuing / real-time environment</strong> (a physical robot, a live world): no <code>reset</code> (the world cannot be rewound), no episode boundary, and time does not pause between <code>step</code> and <code>observe</code> — which breaks gym's lockstep assumption. If the platform reaches real-robot deployment, that type arrives as a <em>contract change</em>, not as one more nodeset under this template. Other conceivable shapes — trajectory replay of recorded (obs, action) demonstrations for offline training, turn-based multi-agent — become relevant only if the platform's scope grows to cover them; no verb surface is reserved in advance.</p>
+
+<h2 id="2-why"><span class="num">2.</span> Why, and why not vanilla gym</h2>
+
+<p>Env nodesets are <strong>pure tools</strong> (decoupled-nodeset principle): observe / step / episode-control surfaces, no method reasoning. Before this contract (pre-2026-06), each env had grown its own surface and they didn't line up — step returns differed per env, <code>reward</code> was exposed nowhere, <code>done</code> had no terminated/truncated split, and observe/step each went by 3–5 different names. The contract exists so a method written against one env finds the same verbs, the same port shapes, on every other env.</p>
+
+<p>Vanilla gym fixes naming but assumes a model we don't have: <strong>gym observations are env-pushed and fixed-schema</strong> (declared by <code>observation_space</code>, returned every step), so they ride on <code>step</code>. Ours are <strong>agent-pulled and parametric</strong> — a method asks for a panorama (<code>n_views=12</code>), a single egocentric view, or the navigable-viewpoint graph, on demand, and panoramas are expensive enough that you must <em>not</em> render one every step. That is gym's <code>render()</code> role, not its observation. So we split transition from perception.</p>
+
+<h2 id="3-model"><span class="num">3.</span> The model: four verbs, pull perception</h2>
+
+<table>
+<thead>
+<tr><th>Verb</th><th>Kind</th><th>Returns</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><strong><code>reset</code></strong></td><td>lifecycle</td><td>episode metadata only — <strong>no observation</strong></td><td>First frame is fetched by calling an <code>observe</code> node after reset</td></tr>
+<tr><td><strong><code>step_&lt;x&gt;</code></strong></td><td>transition</td><td>control signals only — <code>reward / terminated / truncated / info</code></td><td>A family, one node per action space <code>x</code>; <strong>no observation</strong></td></tr>
+<tr><td><strong><code>observe_&lt;y&gt;</code></strong></td><td>perception (pull)</td><td>the observation payload for obs space <code>y</code></td><td>A family, one node per observation space <code>y</code>; called on demand, idempotent</td></tr>
+<tr><td><strong><code>close</code></strong></td><td>lifecycle</td><td>—</td><td>Suite-level, owned by env panel/manager — <strong>not a graph node</strong>. SIMPLER must never close per-episode (SAPIEN GC segfault)</td></tr>
+</tbody>
+</table>
+
+<p>A typical agent loop becomes: <code>observe_* → reason → step_* → observe_* → …</code>, with the loop's continue-condition reading <code>terminated</code> / <code>truncated</code> off the last <code>step</code>. The method pulls exactly the modalities it needs each iteration, and pays for expensive observations (panorama) only when it asks.</p>
+
+<p>Episode selection (split / episode_index / play) stays <strong>env panel-owned</strong> — the gym <code>gym.make(id)</code> analog, not a node. A thin <strong><code>evaluate</code></strong> metric-sink node is kept outside the four verbs (decision E, §7); it fires once in the after-loop band (triggered by the iterOut's <code>final_stop</code>) and reads the env's terminal metrics.</p>
+
+<h2 id="4-spaces"><span class="num">4.</span> Spaces as naming axes</h2>
+
+<p>Action and observation spaces are <strong>not graph nodes and not runtime config</strong> — they are a fixed vocabulary that names the <code>step_*</code> / <code>observe_*</code> node families and types their ports. Each env declares which spaces it supports and exposes the matching nodes. Cross-env unification = this vocabulary is shared and each suffix carries the same port contract everywhere, so a method that wants waypoint nav looks for <code>*__step_waypoint</code> and gets the same shape on every env that has it.</p>
+
+<h3 id="41-action"><span class="num">4.1</span> Action spaces → <code>step_&lt;x&gt;</code></h3>
+<table>
+<thead><tr><th>Space</th><th>Action input</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>discrete</code></td><td><code>action:ACTION</code> (int 0–3)</td><td>Fixed discrete set: FORWARD / LEFT / RIGHT / STOP</td></tr>
+<tr><td><code>waypoint</code></td><td><code>viewpoint_id:TEXT</code></td><td>Navigate to a navigable viewpoint id (discrete graph)</td></tr>
+<tr><td><code>pose</code></td><td><code>target:POSE</code></td><td>Navigate / teleport to a target SE(3) pose</td></tr>
+<tr><td><code>hightolow</code></td><td><code>angle, distance</code></td><td>Macro (turn angle, advance distance) expanded to low-level actions</td></tr>
+<tr><td><code>continuous</code></td><td><code>action:VECTOR</code> (7-DoF)</td><td>Continuous control delta (arm)</td></tr>
+</tbody>
+</table>
+
+<h3 id="42-obs"><span class="num">4.2</span> Observation spaces → <code>observe_&lt;y&gt;</code></h3>
+<table>
+<thead><tr><th>Space</th><th>Output ports</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>egocentric</code></td><td><code>rgb:IMAGE, depth:DEPTH, pose:POSE, intrinsics:ANY</code></td><td>Single first-person view; <strong>pose + intrinsics folded in here</strong> (no standalone localize/cam_intrinsics nodes)</td></tr>
+<tr><td><code>panorama</code></td><td><code>views:ANY, directions:TEXT, n_views:ANY</code></td><td>Multi-view / stitched panorama (parametric, expensive)</td></tr>
+<tr><td><code>navigable</code></td><td><code>viewpoint_id:TEXT, navigable:ANY, headings:ANY, position:ANY</code></td><td>Current viewpoint + reachable neighbors + headings (graph nav)</td></tr>
+<tr><td><code>objects</code></td><td><code>snapshot:ANY, error:TEXT</code></td><td>Privileged GT scene snapshot — object names, point clouds, EE pose, bounds in <strong>one dict</strong>, so GT planners read one atomic state</td></tr>
+<tr><td><code>frames</code></td><td><code>frames:ANY</code></td><td>Episodic-memory frame sequence (non-MDP envs)</td></tr>
+</tbody>
+</table>
+
+<p>Reuse an existing suffix before inventing one — a new space name is a vocabulary change that every future env inherits. Which env implements which suffix is tracked in the <a href="index.html#capability-matrix">capability matrix</a>, not here.</p>
+
+<h2 id="5-contracts"><span class="num">5.</span> Return contracts</h2>
+
+<h3 id="51-reset"><span class="num">5.1</span> <code>reset</code></h3>
+<p>Begins an episode and emits <strong>episode-level metadata only</strong> (the gym <code>info</code> at episode start). These ports are env-specific because the metadata is — VLN carries <code>instruction</code>, EQA carries <code>question</code> — but the rule is fixed: <strong>no observation, no rgb/depth</strong>. The first frame comes from a following <code>observe_*</code> call.</p>
+<p>Reset is an <strong>idempotent ensure-live</strong>: if the previous episode is done (a canvas re-run — reset fires once in the pre-loop band, before any <code>observe</code>), it re-arms an episode in place; a live episode — the batch-eval path, where the runner has just placed a fresh one — is read without disturbance. Episode <em>placement</em> (which episode) stays env panel-owned; reset never chooses, only revives (decision I, §7).</p>
+<ul>
+  <li>VLN (habitat / mp3d / simpler): <code>instruction, episode_id, scene_id</code></li>
+  <li>EQA (hmeqa / openeqa): <code>question, choices/answer_gt, episode_id, scene</code></li>
+</ul>
+
+<h3 id="52-step"><span class="num">5.2</span> <code>step_&lt;x&gt;</code></h3>
+<p><strong>Input varies by action space</strong> (§4.1). <strong>Output is fixed across the whole family</strong> — every <code>step_*</code> on every env emits exactly:</p>
+<table>
+<thead><tr><th>Port</th><th>Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>reward</code></td><td>ANY</td><td>Per-step reward, scalar (VLN sparse → 0 each step, payoff at terminal; SIMPLER real)</td></tr>
+<tr><td><code>terminated</code></td><td>BOOL</td><td>MDP terminal: STOP called / goal reached / answer submitted</td></tr>
+<tr><td><code>truncated</code></td><td>BOOL</td><td>Budget / step-limit cutoff</td></tr>
+<tr><td><code>info</code></td><td>ANY</td><td>Per-step diagnostics + terminal metrics (when terminated/truncated)</td></tr>
+</tbody>
+</table>
+<p class="note">The wire-type registry (<code>app/standard/wire_types.py</code>) has no <code>FLOAT</code> or <code>DICT</code> type — <code>ANY</code> is the canonical carrier for scalars and plain dicts. So <code>reward</code> and <code>info</code> ride <code>ANY</code>; <code>terminated</code>/<code>truncated</code> use <code>BOOL</code>.</p>
+
+<h3 id="53-observe"><span class="num">5.3</span> <code>observe_&lt;y&gt;</code></h3>
+<p>Input is a bare <code>trigger</code> (perception is a read of current state, idempotent). Output ports are the obs-space payload from §4.2. No control signals — observe never advances the env, <strong>and performs no lifecycle action</strong>: observing a finished episode returns the terminal frame unchanged, never a fresh episode. Rollover ownership lives in <code>reset</code> (decision I, §7) — the ADR-012-era auto-reset inside <code>observe_*</code> was removed 2026-06-11 because a post-loop re-fire of an observe could silently roll the env into a new episode under <code>evaluate</code>.</p>
+
+<h3 id="54-close"><span class="num">5.4</span> <code>close</code></h3>
+<p>Suite-level teardown owned by the env panel/manager, not a graph node. Per-episode close is forbidden for SIMPLER (SAPIEN 2.2.2 GC ordering segfault); mirror the upstream no-close pattern.</p>
+
+<h2 id="6-checklist"><span class="num">6.</span> Checklist: what a new env nodeset provides</h2>
+
+<p>The contract above fixes the node surface; this is the fill-in-the-blanks list for
+shipping a new MDP env nodeset under it.</p>
+
+<ul class="checklist">
+  <li><strong>Classify first</strong> (§1). If there is no action loop, you are building a replay benchmark or a service — this template does not apply.</li>
+  <li><strong>Three-layer file shape</strong>: a singleton <em>manager</em> owning the simulator handle (single-thread executor if the sim has GL/thread affinity) · <em>tool nodes</em> implementing the verbs · a <em>NodeSet binding</em> (<code>get_tools</code> / <code>initialize</code> / <code>shutdown</code>).</li>
+  <li><strong>Nodes</strong>: <code>reset</code> (§5.1) · one <code>step_&lt;x&gt;</code> per supported action space (§4.1, return contract §5.2) · one <code>observe_&lt;y&gt;</code> per obs space (§4.2, §5.3) · a thin <code>evaluate</code> sink. Reuse existing space suffixes before inventing one.</li>
+  <li><strong>Env panel</strong>: placement cascade fields (e.g. <code>split → episode_index</code>) + the play / pause / stop / reset action quartet; play and reset emit the <code>episode_reset</code> signal carrying the cascade snapshot. See the <a href="../../design-docs/components/env-panels.html">env-panel design doc</a>.</li>
+  <li><strong>NodeSet ClassVars</strong>: <code>server_python = conda_env_python("&lt;env&gt;", "&lt;VAR&gt;_PYTHON")</code> for a dedicated conda env · <code>parallelism = "replicated"</code> for stateful sims · <code>default_per_step_budget_sec</code> matched to step latency · optional <code>replay_parser</code>.</li>
+  <li><strong>Eval integration</strong>: <code>get_eval_metadata()</code> (splits, episode counts, metrics, step budget) so batch eval can drive the env.</li>
+  <li><strong>Ship with</strong>: an install script <code>scripts/install/install_&lt;env&gt;.sh</code> (creates the conda env; initializes any <code>third_party/</code> submodules it needs) and a row in the <a href="index.html">env catalog</a> tables.</li>
+</ul>
+
+<h2 id="7-decisions"><span class="num">7.</span> Decisions</h2>
+<table>
+<thead><tr><th>#</th><th>Decision</th><th>Outcome</th></tr></thead>
+<tbody>
+<tr><td><strong>A</strong></td><td>Observation port shape</td><td><strong>Resolved:</strong> obs is <em>off</em> <code>step</code>; pulled via per-obs-space <code>observe_*</code> nodes</td></tr>
+<tr><td><strong>B</strong></td><td>Action polymorphism</td><td><strong>Resolved:</strong> one node per action space (<code>step_*</code> family), not a single polymorphic step</td></tr>
+<tr><td><strong>C</strong></td><td>terminated / truncated split</td><td><strong>Adopted:</strong> gymnasium two-bool split (STOP = terminated, budget = truncated)</td></tr>
+<tr><td><strong>D</strong></td><td>Expose <code>reward</code></td><td><strong>Adopted:</strong> yes, even where VLN reward is 0 every step</td></tr>
+<tr><td><strong>E</strong></td><td><code>evaluate</code> node</td><td><strong>Adopted, role updated 2026-06-11:</strong> a thin metric-sink reading the env's terminal state — wired in the <strong>after-loop band</strong> (<code>iter_out.final_stop → evaluate.trigger</code>), fired exactly once at termination. Per-step telemetry rides <code>step.info → viewer</code>; the verdict never comes from an in-loop evaluate</td></tr>
+<tr><td><strong>F</strong></td><td><code>openeqa_em</code> exemption</td><td><strong>Resolved naturally:</strong> no action ⇒ no <code>step</code> node; it is <code>reset</code> + <code>observe_frames</code></td></tr>
+<tr><td><strong>G</strong></td><td>reset returns obs?</td><td><strong>Decided:</strong> no — reset emits episode metadata only</td></tr>
+<tr><td><strong>H</strong></td><td>pose / intrinsics nodes</td><td><strong>Decided:</strong> folded into <code>observe_egocentric</code>, no standalone nodes</td></tr>
+<tr><td><strong>I</strong></td><td>episode rollover ownership</td><td><strong>Decided 2026-06-11:</strong> <code>reset</code> re-arms a done episode (idempotent ensure-live, §5.1); <code>observe_*</code> is a pure read. Replaces the ADR-012-era (2026-03-29) auto-reset inside habitat's observe nodes — a leftover from the commit that deleted explicit episode management before the env panel existed, and a metric-pollution hazard once <code>evaluate</code> moved to the after-loop band</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-taxonomy">1. Interface taxonomy — where this template applies</a>
+      <a class="toc-h2" href="#2-why">2. Why, and why not vanilla gym</a>
+      <a class="toc-h2" href="#3-model">3. The model: four verbs, pull perception</a>
+      <a class="toc-h2" href="#4-spaces">4. Spaces as naming axes</a>
+      <a class="toc-h3" href="#41-action">4.1 Action spaces → step_&lt;x&gt;</a>
+      <a class="toc-h3" href="#42-obs">4.2 Observation spaces → observe_&lt;y&gt;</a>
+      <a class="toc-h2" href="#5-contracts">5. Return contracts</a>
+      <a class="toc-h3" href="#51-reset">5.1 reset</a>
+      <a class="toc-h3" href="#52-step">5.2 step_&lt;x&gt;</a>
+      <a class="toc-h3" href="#53-observe">5.3 observe_&lt;y&gt;</a>
+      <a class="toc-h3" href="#54-close">5.4 close</a>
+      <a class="toc-h2" href="#6-checklist">6. Checklist: what a new env nodeset provides</a>
+      <a class="toc-h2" href="#7-decisions">7. Decisions</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

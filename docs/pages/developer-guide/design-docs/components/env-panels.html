@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nodeset Env Panels — AgentCanvas</title>
+<meta name="description" content="The env-side control surface — fields, actions, on_load, signal side-effects, REST, and the server-bridge proxy">
+<meta property="og:title" content="Nodeset Env Panels — AgentCanvas">
+<meta property="og:description" content="The env-side control surface — fields, actions, on_load, signal side-effects, REST, and the server-bridge proxy">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/components/env-panels.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="ep-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:700px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#epa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/components/env-panels.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">Nodeset Env Panels</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Nodeset Env Panels</h1>
+  <p class="tagline">The env-side control surface — fields, actions, on_load, signal side-effects, REST, and the server-bridge proxy</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="epa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">Some controls don't belong on the canvas: which dataset split to run, which episode, the Play and Stop buttons. They act <em>around</em> the graph, not inside it. An <strong>env panel</strong> is the small declarative control surface that holds them — a <code>BaseEnvPanel</code> subclass that ships inside the env nodeset's file and is rendered by one generic frontend panel. This page owns the panel contract; how its episode and step operations map onto the run's scopes is <a href="env-lifecycle.html">Env &amp; Episode Lifecycle</a>, and the packaging it rides on is <a href="nodesets.html">NodeSets</a>.</p>
+
+<hr>
+
+<h2 id="1-what-it-is"><span class="num">1.</span> What an env panel is, and why it's env-side</h2>
+
+<p>A graph models the in-loop agent: observe → think → act. It cannot model the out-of-loop interactions an environment needs — pick an episode, reset the scene, press Play. Earlier those lived in a separate controller registry with its own router and frontend bar; the env panel collapses all of that back into the nodeset, so an environment is once again <em>one file</em> that declares both its nodes and its controls. The rule that keeps the boundary clean: a panel carries only <strong>env-side runtime knobs</strong> (suite, split, episode, parallelism). Anything about the <em>method</em> — model, checkpoint, adapter, per-step reasoning state — belongs on node configs, never on the panel.</p>
+
+<h2 id="2-smallest-panel"><span class="num">2.</span> The smallest panel</h2>
+
+<p>A panel is declarative: list the fields, list the actions, implement <code>on_load</code>. The nodeset attaches it with one ClassVar (<code>env_panel = HabitatEnvPanel</code>, see <a href="nodesets.html#12-env-panel">NodeSets §12</a>):</p>
+
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="nn">.</span><span class="nn">env_panel</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseEnvPanel</span><span class="p">,</span> <span class="n">EnvPanelField</span><span class="p">,</span> <span class="n">EnvPanelAction</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HabitatEnvPanel</span><span class="p">(</span><span class="n">BaseEnvPanel</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">env_habitat</span><span class="s2">&quot;</span>
+    <span class="n">display_name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Habitat</span><span class="s2">&quot;</span>
+    <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">EnvPanelField</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">split</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">select</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Split</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">options</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">val_unseen</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">val_seen</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span><span class="p">,</span>
+        <span class="n">EnvPanelField</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">episode_index</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">number</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Episode</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="p">,</span>
+    <span class="p">]</span>
+    <span class="n">actions</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">EnvPanelAction</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">play</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Play</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">side_effect</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">run_start</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">enabled_when</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">idle</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span>
+        <span class="n">EnvPanelAction</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">stop</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Stop</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">side_effect</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">run_stop</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">enabled_when</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">running</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span>
+    <span class="p">]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_load</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span>                  <span class="c1"># status + the values the runner reads</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">available</span><span class="s2">&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">step_budget</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">30</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">episode_index</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span>
+</pre>
+
+<h2 id="3-field-action-model"><span class="num">3.</span> The field/action model at a glance</h2>
+
+<p>Two dataclasses and four hooks describe everything a panel can do. The <strong>fields</strong> are inputs, the <strong>actions</strong> are buttons; the four async hooks respond to load, edits, clicks, and dynamic dropdowns:</p>
+
+<table>
+<thead><tr><th>Piece</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td><code>EnvPanelField</code></td><td><code>name</code>, <code>kind</code> (select / number / text / …), <code>label</code>, optional <code>options</code> / <code>min</code> / <code>max</code> / <code>step</code> / <code>placeholder</code>.</td></tr>
+<tr><td><code>EnvPanelAction</code></td><td><code>name</code>, <code>label</code>, <code>side_effect</code> (§6), <code>enabled_when</code> (<code>always</code> / <code>idle</code> / <code>running</code> / <code>paused</code>).</td></tr>
+<tr><td><code>on_load()</code></td><td>Returns the panel's current state — <code>available</code>, field values, and the per-episode <code>step_budget</code> (§5).</td></tr>
+<tr><td><code>on_field_change(name, value)</code></td><td>A committed field edit; may return a <code>side_effect</code> (§6).</td></tr>
+<tr><td><code>on_action(name, params)</code></td><td>A button click; returns its <code>side_effect</code>.</td></tr>
+<tr><td><code>get_options(field)</code></td><td>Dynamic dropdown contents (e.g. episode list for the chosen split).</td></tr>
+</tbody>
+</table>
+
+<h2 id="4-contract"><span class="num">4.</span> The BaseEnvPanel contract</h2>
+
+<p>A subclass declares four ClassVars — <code>name</code>, <code>display_name</code>, <code>fields</code>, <code>actions</code> — and implements the four hooks (<code>on_load</code> is abstract; the other three default to no-ops). <code>info()</code> serialises the field/action lists for the frontend. After construction the registry stamps <code>_context</code> = <code>{mode, server_url, nodeset_name}</code> so a panel can word its status correctly when, in server mode, it can't reach the env directly. One purity rule keeps the layering sound: <strong>a panel must not import the loop runner or executor</strong> — it returns declarative intents (§6), and the framework acts on them.</p>
+
+<h2 id="5-on-load"><span class="num">5.</span> on_load &amp; step_budget resolution</h2>
+
+<p><code>on_load()</code> is the panel's status read: it returns whether the env is <code>available</code>, the current field values, and — importantly for eval — a per-episode <code>step_budget</code>. The batch runner resolves the effective budget through a three-tier cascade, most-specific first:</p>
+
+<ol>
+  <li>an explicit <code>step_budget</code> on the eval API request (wins);</li>
+  <li>else the panel's <code>on_load()</code> <code>step_budget</code> (legacy fallback key <code>max_steps_default</code>);</li>
+  <li>else the graph's static <code>step_budget</code>.</li>
+</ol>
+
+<p>A resolved budget below 1 is refused (no zero-step episodes). The per-episode wall-clock timeout is then <code>resolved_budget × default_per_step_budget_sec</code> (the nodeset ClassVar, <a href="nodesets.html#4-contract">NodeSets §4</a>). In batch, the runner drives the panel per episode — pushing field values, then <code>on_field_change("episode_index", i)</code> and <code>on_action("play")</code> — to place each episode; the scope/timing side of that is <a href="env-lifecycle.html">Env Lifecycle</a>.</p>
+
+<h2 id="6-signal"><span class="num">6.</span> The side_effect channel</h2>
+
+<p>Hooks don't <em>do</em> things; they <em>return intents</em>. The <code>side_effect</code> of an action (or a field change) is one of <code>run_start</code> · <code>run_pause</code> · <code>run_stop</code> · <code>run_step</code> · <code>signal</code> · <code>none</code>. The framework — not the panel — carries it out. The interesting one is <code>signal</code>: it tells the env-panel router to forward a named framework signal into the running executor's state containers. An episode change uses it to clear <code>lifetime="episode"</code> memory:</p>
+
+<pre class="hl">
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_field_change</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">episode_index</span><span class="s2">&quot;</span><span class="p">:</span>
+        <span class="c1"># tell the running executor to clear lifetime=&quot;episode&quot; containers</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">ok</span><span class="s2">&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">side_effect</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">signal</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;</span><span class="s2">signal_name</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">episode_reset</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">signal_payload</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">index</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">value</span><span class="p">}</span><span class="p">}</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">ok</span><span class="s2">&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</pre>
+
+<p>The router's <code>_forward_signal_if_any</code> reads that result and calls <code>executor.broadcast_signal(signal_name, payload)</code> on the live run. The signal's <em>timing</em> and what it actually resets is <a href="env-lifecycle.html#2-signals">Env Lifecycle §2</a> and <a href="../graph/state-containers.html#6-lifetimes">State Containers §6</a>.</p>
+
+<h2 id="7-rest"><span class="num">7.</span> REST surface</h2>
+
+<p>The frontend talks to the panel through five endpoints under <code>/api/env-panels</code> (<code>app/api/canvas/env_panel.py</code>); the router has no env knowledge — it just dispatches to the registered panel and applies side-effects:</p>
+
+<table>
+<thead><tr><th>Endpoint</th><th>Hook</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/env-panels</code></td><td>list registered panels</td></tr>
+<tr><td><code>GET /api/env-panels/{name}/state</code></td><td><code>on_load()</code></td></tr>
+<tr><td><code>GET /api/env-panels/{name}/options/{field}</code></td><td><code>get_options(field)</code></td></tr>
+<tr><td><code>POST /api/env-panels/{name}/field/{field}</code></td><td><code>on_field_change()</code> — guarded: refused while a run is active</td></tr>
+<tr><td><code>POST /api/env-panels/{name}/action/{action}</code></td><td><code>on_action()</code> — guarded for <code>run_start</code> / <code>none</code> / <code>signal</code> side-effects when not idle</td></tr>
+</tbody>
+</table>
+
+<p>The frontend (<code>canvas/panels/EnvPanel.tsx</code>) is one generic renderer for all panels; it remembers the active panel under <code>localStorage["agentcanvas:active_env_panel"]</code>.</p>
+
+<h2 id="8-server-bridge"><span class="num">8.</span> Server-bridge proxy &amp; overrides</h2>
+
+<p>When the env nodeset runs in server mode (<a href="nodesets.html#7-auto-hosted">NodeSets §7</a>), the panel lives in the subprocess. The framework registers a <code>RemoteEnvPanelProxy</code> that mirrors the real panel's <code>name</code>/<code>display_name</code>/<code>fields</code>/<code>actions</code> and forwards each hook over the bridge's <code>/env-panel/state|field|action|options</code> routes — so the REST surface and the frontend are identical whether the panel is local or remote.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 130" role="img" aria-label="Server-bridge: the frontend hits the framework's /api/env-panels endpoint, which dispatches to a RemoteEnvPanelProxy, which forwards over HTTP to the /env-panel route on the auto-host subprocess holding the real panel.">
+  <rect x="8" y="46" width="120" height="40" rx="7" class="box"/><text x="68" y="71" text-anchor="middle">frontend</text>
+  <rect x="170" y="46" width="160" height="40" rx="7" class="box"/><text x="250" y="66" text-anchor="middle" class="mono">/api/env-panels</text><text x="250" y="80" text-anchor="middle" class="dim">framework</text>
+  <rect x="372" y="46" width="150" height="40" rx="7" class="accent"/><text x="447" y="63" text-anchor="middle" class="at mono">RemoteEnvPanelProxy</text>
+  <rect x="560" y="46" width="132" height="40" rx="7" class="box"/><text x="626" y="66" text-anchor="middle" class="mono">/env-panel</text><text x="626" y="80" text-anchor="middle" class="dim">subprocess</text>
+  <path class="edge" d="M128,66 H170"/><path class="edge" d="M330,66 H372"/><path class="edge" d="M522,66 H560"/>
+  <text x="350" y="112" text-anchor="middle" class="dim">same REST surface · same frontend · panel is remote</text>
+</svg>
+
+<p>At <code>worker_count &gt; 1</code> each replicated worker gets its own tagged proxy (<code>name#k</code>), and the per-worker panel + server URL are tracked as <code>env_panel_overrides</code> / <code>server_url_overrides</code> on the worker handle so the batch runner drives the right one. The subprocess spawn, fan-out, and rollback are nodeset mechanics — <a href="nodesets.html">NodeSets</a>.</p>
+
+<h2 id="9-comparison"><span class="num">9.</span> What an env panel is not</h2>
+
+<p>Keep the surfaces distinct: a <strong>node</strong> is in-loop computation; a <strong>nodeset</strong> is packaging; an <strong>env panel</strong> is the out-of-loop env control plane. A panel must <em>not</em> carry model/checkpoint/adapter choices (those are node configs) or per-step reasoning state (that's container state). If a knob changes how the <em>method</em> behaves, it isn't a panel field.</p>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: §7 — corrected the frontend path <code>panels/EnvPanel.tsx</code> → <code>canvas/panels/EnvPanel.tsx</code>. Code-faithfulness pass; the <code>BaseEnvPanel</code> contract (<code>app/components/env_panel.py</code>), the <code>side_effect</code> Literal set, <code>_context</code> keys, the 5 REST routes + guards, and <code>RemoteEnvPanelProxy</code>'s bridge routes all re-verified accurate.</li>
+<li>2026-06-13 14:08: <strong>Full rewrite for the inverted-pyramid structure and code-accuracy.</strong> Concept-first: what an env panel is + why env-side → smallest panel → field/action model → contract → on_load/step_budget → signal → REST → server bridge. Completed the 2026-06-11 controller→env-panel rename that a botched find/replace left half-done: fixed literal “env panel” (space) inside code identifiers back to <code>env_panel</code>, removed broken anchor ids containing spaces, dropped the stale <code>remotecontrollerproxy</code> anchor, and corrected the frontend key to <code>agentcanvas:active_env_panel</code>. Added the three-tier <code>step_budget</code> resolver (§5) that the old §8 only gestured at; trimmed the nodeset/server-mode mechanics (parallelism fan-out, rollback) to cross-links. All code blocks via the Pygments pipeline.</li>
+<li>2026-06-11 15:37: workspace/nodesets paths updated to the role-directory layout (env/ method/ policy/ model/ common/ other/); sam→model_sam, ram_perception→model_ram.</li>
+<li>2026-06-11 13:46: Page renamed <code>controllers.html</code> → <code>env-panels.html</code>; controller → env panel rename (<code>BaseEnvPanel</code>, <code>EnvPanelField</code>, <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code>, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>).</li>
+<li>2026-05-18: ADR-server-003 sync — <code>parallelism</code> ClassVar; per-worker tagged proxies + overrides.</li>
+<li>2026-04-20: Audit against codebase (ADR-server-002 + ADR-eval-002) — instantiation site, side-effect routing, REST guards.</li>
+<li>2026-04-14 16:55: Initial design doc — <code>BaseEnvPanel</code> contract, registration lifecycle, REST API, server-mode <code>RemoteEnvPanelProxy</code>.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What an env panel is, and why it's env-side</a>
+      <a class="toc-h2" href="#2-smallest-panel">2. The smallest panel</a>
+      <a class="toc-h2" href="#3-field-action-model">3. The field/action model at a glance</a>
+      <a class="toc-h2" href="#4-contract">4. The BaseEnvPanel contract</a>
+      <a class="toc-h2" href="#5-on-load">5. on_load &amp; step_budget resolution</a>
+      <a class="toc-h2" href="#6-signal">6. The side_effect channel</a>
+      <a class="toc-h2" href="#7-rest">7. REST surface</a>
+      <a class="toc-h2" href="#8-server-bridge">8. Server-bridge proxy &amp; overrides</a>
+      <a class="toc-h2" href="#9-comparison">9. What an env panel is not</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

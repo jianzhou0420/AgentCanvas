@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-platform-003 — AgentCanvas</title>
+<meta name="description" content="Layered LLM config resolution with CLI and env var fallback">
+<meta property="og:title" content="ADR-platform-003 — AgentCanvas">
+<meta property="og:description" content="Layered LLM config resolution with CLI and env var fallback">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/platform/adr-platform-003-layered-llm-config.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/platform/adr-platform-003-layered-llm-config.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Platform</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-platform-003</span>
+  </div>
+  <div class="last-updated">2026-04-03</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-platform);">ADR-platform-003</h1>
+  <p class="tagline">Layered LLM config resolution with CLI and env var fallback</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-03</dd>
+  <dt>Status</dt><dd><span class="adr-status status-superseded">superseded by [ADR-platform-006](adr-platform-006-env-only-credentials.md) (2026-05-10) — credential-resolution policy only; CLI / mtime-invalidation / RLock / `schema_version` mechanisms remain.</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>platform</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-018</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>The LLM config system had a single path: <code>profiles.json</code> at <code>~/.agentcanvas/</code>, managed only through the web UI's SettingsModal. No CLI existed for headless/SSH/Docker/CI environments. The <code>.env</code> file documented <code>VLM_API_KEY</code> etc. but the profile system silently ignored them. ProfileStore cached data in memory with no invalidation, so CLI changes were invisible to a running server. The <code>@lru_cache</code> on <code>get_settings()</code> made runtime config overrides fragile.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Layered config resolution with field-level fallback: profile fields &gt; env vars (<code>AGENTCANVAS_*</code> primary, <code>VLM_*</code> legacy alias) &gt; registry defaults. Env vars fill empty profile fields rather than replacing whole profiles. (2) Standalone argparse CLI (<code>cli.py</code>) that directly imports ProfileStore — works without the FastAPI server. 8 subcommands: list/show/set/delete/activate/test/providers/env. (3) Mtime-based cache invalidation (TTL 2s) as primary fix for inter-process CLI→server coherence, with threading.RLock as secondary intra-process safety. (4) Replace <code>@lru_cache</code> on <code>get_settings()</code> with explicit singleton. (5) Sync + async API key validation (<code>key_validator.py</code>). (6) <code>schema_version</code> field in profiles.json for future migration. (7) Interactive setup script (<code>setup_llm.sh</code>) with 8-check automated verification.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) typer + TOML config rewrite — rejected: 3 new dependencies, TOML migration breaks existing profiles.json, Python 3.8 typer support uncertain, overkill for 8 commands. (b) pydantic-settings custom SettingsSource — rejected: named-profile semantics (multi-profile with activation) don't map to flat Settings, despite pydantic-settings v2 being available. (c) Env vars as whole-profile tier (level 3 in precedence) — rejected after Architect review: an active profile with empty api_key would block env var access, breaking the headless use case. Field-level fallback chosen instead.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Field-level env var fallback serves both the "explicit profile wins" principle and the "headless just works" principle. The CLI sharing ProfileStore via the filesystem (not REST API) is simpler and works offline. Zero new pip dependencies (argparse + threading are stdlib; httpx already a dep). The ralplan consensus process (Planner → Architect → Critic, 2 iterations) caught the field-level vs whole-profile distinction and the mtime-vs-Lock priority framing before implementation.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>architecture.md (config resolution), roadmap.md (TODO #30 partial)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

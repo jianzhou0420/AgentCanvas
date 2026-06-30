@@ -1,0 +1,83 @@
+# Experiment harness profile for the explore_eqa_hmeqa graph.
+# Read by /architect:experiment and /architect:debug.
+# Schema: see .claude/commands/architect/_common/evaluator.md (profile block: split/worker_count/step_budget/per_step_budget_sec/metrics).
+#
+# Auto-bootstrapped 2026-04-27 from EnvHMEQANodeSet.get_eval_metadata();
+# metric list corrected 2026-05-21 — the env's evaluate node simplified to a
+# single post-hoc `success` (success_weighted/success_max retired):
+#   splits=["val"], metrics=["success","num_steps"],
+#   step_budget=30 (env now publishes per-episode budget via on_load).
+
+# Eval-API parameters
+split: val                       # HMEQA controller only ships the val split
+worker_count: 10                 # 24GB RTX 3090: ~22.9GB at 10w (~1.2GB headroom) — OOM edge; <=5w (~19GB) comfortable. See rationale.
+step_budget: 30                  # API failsafe ceiling; env publishes per-episode int(sqrt(scene_size)*3) ~10-20 via controller.on_load and the framework resolver picks that
+per_step_budget_sec: 120         # measured 2026-05-20: runs complete well under 120s/step, no per-step timeouts — buffer kept generous
+
+# Metric handling — HMEQA emits letter-match success, not VLN trajectory metrics
+primary_metric: success          # post-hoc pred_letter == ground_truth (1.0/0.0)
+secondary_metrics: [num_steps]
+
+# Free-form rationale; lives here so the skill .md stays graph-agnostic.
+rationale:
+  worker_count: |
+    worker_count=10 on RTX 3090 24 GB. env_hmeqa is "replicated"
+    (habitat-sim stateful), explore_eqa and vlm_prismatic are "shared"
+    singletons. Measured 2026-05-20 (supersedes the 2026-05-01 nominal
+    estimate that wrongly predicted OOM at N=10): Prismatic loads at
+    ~15 GB and peaks ~18 GB during inference; habitat-sim GPU footprint
+    is small (~100-300 MB/worker, GL context not CUDA). 10 workers →
+    ~22.9 GB total, ~1.2 GB headroom — runs complete (10/10 episodes
+    reproduced the 2026-05-09 archive) but sit on the OOM edge;
+    transient Prismatic-forward spikes have OOM'd at N=10 intermittently.
+    Use <=5 workers (~19 GB, ~5 GB headroom) for a comfortable margin.
+    Prismatic forward is serialised through the singleton, so useful
+    speedup tops out at ~1.3-1.4× regardless of worker count.
+  step_budget: |
+    HMEQA env computes its own per-episode budget num_step =
+    int(sqrt(scene_size) * max_step_room_size_ratio), typically 10-20
+    steps, and publishes it via the controller's on_load so the
+    framework resolver applies it per episode. The 30 here is a
+    failsafe ceiling for episodes where the env's value is missing;
+    well-formed scenes terminate naturally before it.
+  per_step_budget_sec: |
+    Per-step cost dominated by Prismatic VLM calls: ~1 question scoring
+    + 5 frontier-direction LSV calls + 1 GSV call ≈ 7 forward passes per
+    step. Measured 2026-05-20: full episodes (~25-50 steps) complete in
+    ~210-490 s wall across 5-10 workers, i.e. comfortably under the 120s
+    /step ceiling — no per-step timeouts observed. 120s buffer kept
+    generous to absorb cold-load spikes.
+
+# -----------------------------------------------------------------------------
+# adas-subagent / aflow / myloop tier profiles (two-tier)
+# -----------------------------------------------------------------------------
+# Required by /architect:{adas-subagent,aflow,myloop}:{loop,implementer,evaluator}:
+#   smoke_<graph>:  cheap gate inside implementer's debug retry loop
+#   perf_<graph>:   paper-comparable eval set; ranking signal for aflow,
+#                   post-implementer final-report for adas/myloop
+# Flat fields above remain authoritative for non-tier skills.
+
+smoke_explore_eqa_hmeqa:
+  episode_count: 5
+  worker_count: 1
+  split: val
+  step_budget: 30
+  per_step_budget_sec: 120
+
+perf_explore_eqa_hmeqa:
+  episode_count: 100                       # subset of 500-ep HM-EQA val; stratified by suite if backend honors it
+  worker_count: 10                         # calibrated 2026-05-01 on RTX 3090 24GB (env_hmeqa replicated × 10 + Prismatic shared singleton)
+  split: val
+  step_budget: 30
+  per_step_budget_sec: 120
+
+# aflow tunables — upstream-code defaults (DEFAULT_ALPHA / DEFAULT_LAMBDA from data_utils.py)
+aflow:
+  sample: 4                                # top-K parents for select_round
+  alpha: 0.2                               # softmax temperature (note: applied as α·score·100 inside select_round)
+  lambda_uniform: 0.3                      # uniform-mix weight
+  replay_max_retries: 5                    # soft cap on anti-replay loop (NEW vs upstream's unbounded while True)
+  replay_norm: lower_ws                    # "verbatim" | "lower_ws" | "embed"
+  convergence_z: 0.0                       # advisory only under F3 (validation_rounds=1 → per-round σ=0 → predicate reduces to exact equality)
+  convergence_top_k: 3
+  convergence_consecutive: 5

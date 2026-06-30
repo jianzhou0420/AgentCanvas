@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-canvas-002 — AgentCanvas</title>
+<meta name="description" content="Unified canvas paradigm — one editor, one registry, one catalog">
+<meta property="og:title" content="ADR-canvas-002 — AgentCanvas">
+<meta property="og:description" content="Unified canvas paradigm — one editor, one registry, one catalog">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/canvas/adr-canvas-002-unified-canvas-paradigm.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/canvas/adr-canvas-002-unified-canvas-paradigm.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Canvas</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-canvas-002</span>
+  </div>
+  <div class="last-updated">2026-03-28</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-canvas);">ADR-canvas-002</h1>
+  <p class="tagline">Unified canvas paradigm — one editor, one registry, one catalog</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-28</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>canvas</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-010</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Despite ADR-canvas-001 declaring a flat workspace, the frontend still had two separate worlds: an outer editor (<code>FlowCanvas</code> with 7 node types, <code>nodeTypes.ts</code>, <code>nodeCatalog.ts</code>) and an inner editor (<code>InnerGraphEditor</code> with 18+ node types, <code>innerNodeTypes.ts</code>, <code>innerNodeCatalog.ts</code>). Each used different node registries, different catalogs, and different editor components. Users editing a composite subgraph saw a completely different node palette than the root canvas. The two-layer split was a code-level artifact, not just a UX pattern.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>Unified node registry</strong> (<code>unifiedNodeTypes.ts</code>): single map of ~25 node types used at every graph level — root canvas and any subgraph depth. Merges all inner types (envStep, llmCall, etc.) + outer types (compositeNode, output viewers). (2) <strong>Unified catalog</strong> (<code>unifiedCatalog.ts</code>): single sidebar catalog with categories (Environment, LLM, Prompt, Loop Control, Output, Composite, Agent Presets, etc.). Old presets become compositeNode entries with preset subgraphs. (3) <strong>Unified editor</strong> (<code>UnifiedGraphEditor.tsx</code>): dual-mode component — root mode reads from Zustand store, subgraph mode uses local state with save-back. Both modes use the same <code>unifiedNodeTypes</code> and share drag-drop/connection logic. (4) <strong>Execution toolbar</strong> (<code>ExecutionToolbar.tsx</code>): Play/Pause/Stop controls extracted from AgentLoopCanvasNode into standalone toolbar. Root canvas graph serialized directly via <code>getGraphForExecution()</code>. (5) <strong>Graph save/load sidebar</strong>: Frontend API client gains graph CRUD methods (<code>listGraphs</code>, <code>saveGraph</code>, etc.). <code>NodeLibrary</code> sidebar shows "Saved Graphs" section — entries are draggable (drop as compositeNode), loadable as root, and deletable. <code>SaveGraphDialog</code> modal for naming/saving. (6) <strong>Flat templates</strong>: Default templates migrated from outer-layer format (habitatEnv → agentLoop → outputs) to flat format (preset inner nodes + output viewers directly on root canvas). (7) <strong>Canonical types</strong> (<code>canvas/types.ts</code>): <code>GraphDefinition</code>, <code>NodeDef</code>, <code>EdgeDef</code>, <code>CatalogEntry</code> moved to a single canonical location.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Keep two editors, just share the same node registry. (b) Remove composites entirely and go fully flat (no nesting). (c) Make the inner editor the only editor and wrap the root in a virtual composite.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>One editor, one registry, one catalog is the simplest mental model — researchers don't need to know they're "inside an inner graph" vs. "on the root canvas." The dual-mode <code>UnifiedGraphEditor</code> preserves the save-back pattern for composites (which needs local state + dirty tracking) while keeping root-level editing simple (direct Zustand). The backend needed zero changes — <code>GraphExecutor</code> already accepted any <code>GraphDefinition</code>. Graph save/load to sidebar completes the workflow: design → save → reuse. Old files are deprecated with re-export shims, not deleted, for gradual migration.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>architecture.md, blueprint.md, glossary.md, roadmap.md, canvas-system.md, graph-system.md, capabilities/real-time-observability.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4Nested Graph System — AgentCanvas</title>
+<meta name="description" content="Composite nodes contain subgraphs; flatten.py recursively expands them before execution.">
+<meta property="og:title" content="4Nested Graph System — AgentCanvas">
+<meta property="og:description" content="Composite nodes contain subgraphs; flatten.py recursively expands them before execution.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/nested-graph-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/nested-graph-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">4Nested Graph System</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">4</span>Nested Graph System</h1>
+  <p class="tagline">Composite nodes contain subgraphs; flatten.py recursively expands them before execution.</p>
+</header>
+
+
+
+<p>Any canvas graph can be saved as a <strong>graph node</strong> and dragged onto another canvas as a reusable block. This page explains the data model, boundary nodes, flattening algorithm, and storage.</p>
+<p><em>Design doc: <a href="../design-docs/graph/graph-system.html">Graph System</a></em></p>
+<hr>
+<h2 id="1-concepts"><span class="num">1.</span> Concepts</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Composite node</strong></td>
+<td>A canvas node whose <code>subgraph</code> field holds a <code>GraphDefinition</code></td>
+</tr>
+<tr>
+<td><strong>GraphIn / GraphOut</strong></td>
+<td>Boundary nodes inside a composite — define its external interface</td>
+</tr>
+<tr>
+<td><strong>Flatten</strong></td>
+<td>Recursive expansion of composites into a flat graph before execution</td>
+</tr>
+<tr>
+<td><strong>FlattenMap</strong></td>
+<td>Mapping from flattened node IDs to original composite paths (for error tracing)</td>
+</tr>
+<tr>
+<td><strong>Graph</strong></td>
+<td>An editable template stored in <code>workspace/graphs/</code> — opens in tabs</td>
+</tr>
+<tr>
+<td><strong>Graph Node</strong></td>
+<td>A frozen composite stored in <code>workspace/graph_nodes/</code> — dragged onto canvas as a block</td>
+</tr>
+</tbody>
+</table>
+<h2 id="2-data-model"><span class="num">2.</span> Data Model</h2>
+<p>A <code>GraphDefinition</code> is recursive — nodes can contain sub-<code>GraphDefinition</code>s:</p>
+<div class="highlight"><pre><span></span><code>GraphDefinition
+  ├── nodes: NodeDef[]
+  │     └── subgraph: GraphDefinition | None   ← nesting
+  ├── edges: EdgeDef[]
+  ├── containers: ContainerDef[]
+  ├── access_grants: AccessGrantDef[]          ← node ↔ container grants (ADR-dataflow-004)
+  └── step_budget, terminationCondition, ...
+</code></pre></div>
+<p><code>access_grants</code> replaced the earlier <code>state_edges</code> in ADR-dataflow-004. The dedicated top-level <code>graph_state</code> field is also gone — a graph-level blackboard is now an ordinary <code>ContainerDef</code> in <code>containers</code> with the well-known id <code>"graph_state"</code>, plus one <code>AccessGrantDef</code> per node that needs it.</p>
+<p>A composite node on the canvas has <code>kind = "composite"</code> (ClassVar on the <code>BaseCanvasNode</code> subclass) and carries its inner graph in the JSON-side <code>NodeDef.subgraph</code> field (the docstring on <code>BaseCanvasNode</code> sometimes calls this the node's <em>children</em>, but the wire-level / persisted field name is <code>subgraph</code> — see <code>graph_def.py:NodeDef</code>). The inner graph uses the same node/edge types as the root canvas — full recursion to arbitrary depth.</p>
+<h2 id="3-graphin-graphout-boundaries"><span class="num">3.</span> GraphIn / GraphOut Boundaries</h2>
+<p>GraphIn and GraphOut are special control nodes that define a composite's external ports:</p>
+<div class="highlight"><pre><span></span><code>Parent canvas:
+  [NodeA] ──→ [Composite] ──→ [NodeB]
+                   │
+Inside composite:  │
+  [GraphIn: &quot;input&quot;] → [ProcessNode] → [GraphOut: &quot;output&quot;]
+</code></pre></div>
+<ul>
+<li><strong>GraphIn</strong> config: <code>{ "portName": "input" }</code> — maps to a target handle on the composite's input</li>
+<li><strong>GraphOut</strong> config: <code>{ "portName": "output" }</code> — maps to a source handle on the composite's output</li>
+</ul>
+<p>These are <strong>not</strong> IterIn/IterOut — GraphIn/GraphOut define composite boundaries, while IterIn/IterOut handle iteration cycles.</p>
+<h2 id="4-flatten-algorithm"><span class="num">4.</span> Flatten Algorithm</h2>
+<p>The <code>GraphExecutor</code> expects a flat graph. Before execution, <code>flatten.py</code> recursively expands all composites:</p>
+<div class="highlight"><pre><span></span><code>Input:  [A] → [Composite{P_in → X → Y → P_out}] → [B]
+
+Output: [A] → [X] → [Y] → [B]
+        (GraphIn/GraphOut removed, edges rewired)
+</code></pre></div>
+<h3 id="41-steps"><span class="num">4.1</span> Steps</h3>
+<ol>
+<li><strong>Walk</strong> all nodes — identify those with a non-empty <code>subgraph</code></li>
+<li><strong>Prefix</strong> inner node IDs with <code>{composite_id}__</code> for uniqueness</li>
+<li><strong>Identify</strong> GraphIn/GraphOut boundary nodes</li>
+<li><strong>Rewire</strong> parent edges:
+   - Incoming edges targeting the composite → target the GraphIn's downstream nodes
+   - Outgoing edges from the composite → source from GraphOut's upstream nodes</li>
+<li><strong>Remove</strong> GraphIn/GraphOut nodes and their internal edges</li>
+<li><strong>Collect</strong> inner containers and access grants — container <code>id</code> is prefixed with <code>{composite_id}__</code>; each <code>AccessGrantDef</code> gets its <code>id</code> and <code>container_id</code> prefixed, and its <code>node_id</code> remapped through the same <code>id_map</code> as the inner nodes (<code>flatten.py:103–114</code>)</li>
+<li><strong>Recurse</strong> if any flattened nodes also have subgraphs</li>
+</ol>
+<h3 id="42-flattenmap"><span class="num">4.2</span> FlattenMap</h3>
+<p>The <code>FlattenMap</code> records <code>flat_id → (composite_path, original_id)</code> for error tracing:</p>
+<div class="highlight"><pre><span></span><code><span class="n">fmap</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;agentLoop__step3__llmCall&quot;</span><span class="p">)</span>
+<span class="c1"># → &quot;agentLoop &gt; step3 &gt; llmCall&quot;</span>
+</code></pre></div>
+<p>When a node fails during execution, the error log shows the original composite path, not the flattened ID.</p>
+<h2 id="5-storage-graphs-vs-graph-nodes"><span class="num">5.</span> Storage: Graphs vs Graph Nodes</h2>
+<p>Two storage kinds serve different purposes (ADR-canvas-003):</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Location</th>
+<th>Behavior</th>
+<th>Sidebar section</th>
+<th>Extra fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Graphs</strong></td>
+<td><code>workspace/graphs/*.json</code></td>
+<td>Editable templates, open in tabs</td>
+<td>"Graphs"</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Graph Nodes</strong></td>
+<td><code>workspace/graph_nodes/*.json</code></td>
+<td>Frozen composites, drag onto canvas</td>
+<td>"Graph Nodes"</td>
+<td><code>group: str</code> — user-defined label used to cluster entries in the Explorer sidebar</td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-graph-editable-template"><span class="num">5.1</span> Graph (Editable Template)</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Save</span>
+POST<span class="w"> </span>/api/graphs<span class="w"> </span><span class="o">{</span><span class="w"> </span>name,<span class="w"> </span>description,<span class="w"> </span>nodes,<span class="w"> </span>edges<span class="w"> </span><span class="o">}</span>
+
+<span class="c1"># Load (opens in editor tab)</span>
+GET<span class="w"> </span>/api/graphs/<span class="o">{</span>graph_id<span class="o">}</span>
+</code></pre></div>
+<h3 id="52-graph-node-frozen-composite"><span class="num">5.2</span> Graph Node (Frozen Composite)</h3>
+<p>"Save as Graph Node" takes a snapshot of a graph or selection. The snapshot is frozen — editing the source graph doesn't affect existing graph node instances on other canvases. This is <strong>snapshot semantics</strong>.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// workspace/graph_nodes/llm_step.json</span>
+<span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;LLM Step&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Wraps an LLM call as a reusable composite block&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;node&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;group&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;planning&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gin&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graphIn&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;portName&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;observation&quot;</span><span class="p">}</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llm&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llmCall&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gout&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graphOut&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;portName&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;response&quot;</span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;edges&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="6-key-files"><span class="num">6.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/flatten.py</code></td>
+<td><code>flatten_graph()</code>, <code>FlattenMap</code> — recursive composite expansion</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_def.py</code></td>
+<td><code>GraphDefinition</code>, <code>NodeDef</code>, <code>EdgeDef</code>, <code>AccessGrantDef</code> — recursive data model</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/api/canvas/graphs.py</code></td>
+<td>CRUD for <code>workspace/graphs/</code> and <code>workspace/graph_nodes/</code> — routes by <code>kind</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
+<td><code>GraphInNode</code> / <code>GraphOutNode</code> — the boundary node classes (node_io.py holds only the IO-schema registry, no node handlers)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recursive GraphDefinition (NodeDef.subgraph)</td>
+<td>Done</td>
+<td>Full recursion to arbitrary depth</td>
+</tr>
+<tr>
+<td>GraphIn / GraphOut boundary nodes</td>
+<td>Done</td>
+<td>Both node types defined, handled in flatten</td>
+</tr>
+<tr>
+<td>Flatten algorithm (prefix, rewire, remove, recurse)</td>
+<td>Done</td>
+<td>Tested with nested composites</td>
+</tr>
+<tr>
+<td>FlattenMap + trace()</td>
+<td>Done</td>
+<td>Maps flattened IDs to original composite paths</td>
+</tr>
+<tr>
+<td>Dual storage (graphs/ vs graph_nodes/)</td>
+<td>Done</td>
+<td>Both directories exist, routed by <code>kind</code> field</td>
+</tr>
+<tr>
+<td>CRUD API (<code>/api/graphs</code>)</td>
+<td>Done</td>
+<td>GET, POST, PUT, DELETE all implemented</td>
+</tr>
+<tr>
+<td>Snapshot semantics (frozen graph nodes)</td>
+<td>Done</td>
+<td>Functional guarantee holds: dragged instances get a frontend deep copy of the subgraph, and <code>flatten.py</code> deep-copies again at execution time, so editing the source graph never mutates existing instances. Files in <code>graph_nodes/</code> have no FS-level write protection — that's a policy gap, not a semantic one</td>
+</tr>
+<tr>
+<td>GraphDefinition.from_dict()</td>
+<td>Done</td>
+<td>Works as a deserializer; no strict schema validation (missing keys default silently)</td>
+</tr>
+<tr>
+<td>Composite node kind="composite"</td>
+<td>Partial</td>
+<td>ClassVar exists in BaseCanvasNode, but no concrete CompositeNode class — composites are pure data (NodeDef with subgraph), expanded by flatten before execution</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass (B4). The entire page documented removed node types. Propagated <strong><code>PortIn</code>/<code>PortOut</code> → <code>GraphIn</code>/<code>GraphOut</code></strong> across §1/§3/§4/§4.1/§Status (boundary node types are <code>graphIn</code>/<code>graphOut</code>; <code>flatten.py</code> keys on them; no <code>portIn</code>/<code>portOut</code> exist). Rebuilt the §5.2 graph-node example off the removed <code>portIn</code>/<code>historyTracker</code>/<code>promptTemplate</code>/<code>portOut</code> types onto real ones (<code>graphIn</code> → <code>llmCall</code> → <code>graphOut</code>). §6 key-files corrected — the boundary node classes <code>GraphInNode</code>/<code>GraphOutNode</code> live in <code>builtin_nodes.py</code>, not <code>node_io.py</code> (which holds only the IO-schema registry). <code>kind="composite"</code> with no concrete <code>CompositeNode</code> class, <code>flatten_graph()</code>/<code>FlattenMap.trace()</code> re-verified CONFIRMED.</li>
+<li>2026-05-18: §2 Data Model — clarified that the composite-node inner-graph field is <code>NodeDef.subgraph</code> at the wire/JSON level; the docstring on <code>BaseCanvasNode</code> sometimes calls this the node's "children" but they refer to the same field. The earlier sentence implied a separate <code>children = GraphDefinition(...)</code> attribute.</li>
+<li>2026-04-19 18:11: Refreshed against current code — <code>state_edges</code> → <code>access_grants</code> and dropped top-level <code>graph_state</code> field per ADR-dataflow-004; made flatten step 6 precise about how <code>AccessGrantDef.node_id</code> / <code>container_id</code> are remapped; added <code>group</code> field to the graph-node storage table; updated graph-node JSON example with <code>kind</code> / <code>group</code>; corrected API file path to <code>api/canvas/graphs.py</code> (post-refactor); rewrote snapshot-semantics Status row (functional guarantee is complete — <code>flatten.py:83</code> + frontend drop-copy).</li>
+<li>2026-04-02 14:21: Added Status section</li>
+<li>2026-04-02 13:58: Initial content — data model, GraphIn/GraphOut, flatten algorithm, dual storage</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="isolated-runtime-environments.html">← 3. Isolated Runtime Environments</a> · <a href="index.html">↑ Capabilities index</a> · <a href="graph-execution-engine.html">5. Graph Execution Engine →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-concepts">1. Concepts</a>
+      <a class="toc-h2" href="#2-data-model">2. Data Model</a>
+      <a class="toc-h2" href="#3-graphin-graphout-boundaries">3. GraphIn / GraphOut Boundaries</a>
+      <a class="toc-h2" href="#4-flatten-algorithm">4. Flatten Algorithm</a>
+      <a class="toc-h3" href="#41-steps">4.1 Steps</a>
+      <a class="toc-h3" href="#42-flattenmap">4.2 FlattenMap</a>
+      <a class="toc-h2" href="#5-storage-graphs-vs-graph-nodes">5. Storage: Graphs vs Graph Nodes</a>
+      <a class="toc-h3" href="#51-graph-editable-template">5.1 Graph (Editable Template)</a>
+      <a class="toc-h3" href="#52-graph-node-frozen-composite">5.2 Graph Node (Frozen Composite)</a>
+      <a class="toc-h2" href="#6-key-files">6. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

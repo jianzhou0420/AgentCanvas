@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>proposer — architect mirror</title>
+<style>:root {
+  --bg: #fafaf7; --fg: #1a1a1a; --muted: #6b6b6b;
+  --accent: #3a4a55; --accent-bg: #eef1f4;
+  --frame: #d4d4d0; --code-bg: #f0efe9;
+  --link: #1e5a8a;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--fg);
+  max-width: 1080px; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
+  line-height: 1.6;
+}
+nav.crumbs {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: .85rem; color: var(--muted);
+  padding-bottom: .6rem; border-bottom: 1px solid var(--frame); margin-bottom: 1.5rem;
+}
+nav.crumbs a { color: var(--accent); text-decoration: none; }
+nav.crumbs a:hover { text-decoration: underline; }
+nav.crumbs .here { color: var(--fg); font-weight: 600; }
+h1 { font-size: 1.75rem; margin: .2rem 0 .8rem; }
+h2 {
+  font-size: 1.25rem; margin-top: 2.4rem;
+  border-bottom: 1px solid var(--frame); padding-bottom: .25rem;
+}
+h3 { font-size: 1.05rem; margin-top: 1.6rem; color: var(--accent); }
+h4 { font-size: .98rem; margin-top: 1.2rem; }
+a { color: var(--link); }
+code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; }
+code { background: var(--code-bg); padding: .05rem .35rem; border-radius: 2px; font-size: .88em; }
+pre {
+  background: var(--code-bg); padding: .8rem 1rem; border-radius: 3px;
+  overflow-x: auto; font-size: .82rem; border-left: 3px solid var(--accent);
+  line-height: 1.5;
+}
+pre code { background: transparent; padding: 0; }
+blockquote {
+  border-left: 3px solid var(--accent); margin: 1rem 0;
+  padding: .2rem 1rem; color: #444; background: var(--accent-bg);
+  border-radius: 0 3px 3px 0;
+}
+table { border-collapse: collapse; margin: .8rem 0; font-size: .9rem; }
+th, td { border: 1px solid var(--frame); padding: .45rem .65rem; text-align: left; vertical-align: top; }
+th { background: #f0efe9; font-weight: 600; }
+ul, ol { padding-left: 1.5rem; }
+li { margin-bottom: .25rem; }
+.frontmatter {
+  background: #fff; border: 1px solid var(--frame);
+  border-left: 3px solid var(--accent); border-radius: 3px;
+  padding: .8rem 1rem; margin: 0 0 1.5rem; font-size: .9rem;
+}
+.frontmatter dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+.frontmatter dt { font-family: "SF Mono", Menlo, monospace; color: var(--muted); font-size: .82rem; }
+.frontmatter dd { margin: 0; }
+details.toc {
+  background: #fff; border: 1px solid var(--frame); border-radius: 3px;
+  padding: .4rem .8rem .6rem; margin: 0 0 1.5rem; font-size: .88rem;
+}
+details.toc summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+details.toc ul { margin: .4rem 0; padding-left: 1.2rem; list-style: none; }
+details.toc li { margin: .15rem 0; }
+details.toc a { color: var(--link); text-decoration: none; }
+details.toc a:hover { text-decoration: underline; }
+footer.src {
+  margin-top: 3rem; padding-top: .8rem; border-top: 1px solid var(--frame);
+  font-size: .78rem; color: var(--muted);
+  font-family: "SF Mono", Menlo, monospace;
+}
+</style>
+</head>
+<body>
+<!-- aas-cross-nav: v1 -->
+<script>
+  // Match the site-wide theme choice (shared 'site-theme' key) before first
+  // paint, so an AAS page opened from a dark main-site session renders dark.
+  (function() {
+    var t;
+    try { t = localStorage.getItem('site-theme'); } catch (e) {}
+    if (!t) { t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<nav class="aas-xnav" aria-label="Site sections">
+  <a class="aas-xnav-brand" href="../../../../index.html">AgentCanvas</a>
+  <div class="aas-xnav-tabs">
+    <a href="../../../../pages/developer-guide/capabilities/index.html">Developer Guide</a>
+    <a class="active" href="../../../../pages/aas/index.html">AAS</a>
+  </div>
+  <button class="aas-xnav-theme" type="button" aria-label="Toggle light / dark theme"
+    onclick="(function(){var d=document.documentElement;var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('site-theme',n);}catch(e){}})()">&#9680;</button>
+</nav>
+<style>
+.aas-xnav {
+  background: #1a1a1a; color: #fafaf7;
+  padding: .55rem 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: .88rem;
+  display: flex; align-items: center; gap: 1.6rem;
+  position: sticky; top: 0; z-index: 1000;
+  margin: 0; box-shadow: 0 1px 0 rgba(0,0,0,.15);
+}
+.aas-xnav .aas-xnav-brand {
+  color: #fafaf7; text-decoration: none; font-weight: 700;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: .92rem;
+}
+.aas-xnav .aas-xnav-tabs { display: flex; gap: .4rem; }
+.aas-xnav .aas-xnav-tabs a {
+  color: #fafaf7; text-decoration: none; opacity: .65;
+  padding: .25rem .65rem; border-radius: 3px;
+  transition: opacity .12s, background .12s;
+}
+.aas-xnav .aas-xnav-tabs a:hover { opacity: 1; background: rgba(255,255,255,.06); }
+.aas-xnav .aas-xnav-tabs a.active {
+  opacity: 1; font-weight: 600; background: rgba(255,255,255,.12);
+}
+.aas-xnav-theme {
+  margin-left: auto;
+  background: transparent; border: 1px solid rgba(255,255,255,.28);
+  color: #fafaf7; cursor: pointer; border-radius: 3px;
+  padding: .15rem .55rem; font-size: .95rem; line-height: 1;
+}
+.aas-xnav-theme:hover { background: rgba(255,255,255,.1); }
+
+/* Dark theme for the AAS subsite. These pages are self-contained (own
+   <head>/<style>, no shared style.css) but all share the same CSS var
+   names + boilerplate classes, so one override block covers the whole
+   subtree. It lives in <body> (injected after <head>), so it wins on
+   source order for equal-specificity rules. Per-page saturated --accent
+   text is left as-is; only the light --accent-bg tint is neutralised. */
+[data-theme="dark"] {
+  --bg: #1a1a1c; --fg: #e8e8e6; --muted: #8a8a86;
+  --frame: #3a3a3e; --frame-strong: #cfcfcc;
+  --box: #232328; --code-bg: #2a2a2e;
+  --accent-bg: #2b2b32; --link: #6ba6dc;
+}
+[data-theme="dark"] th { background: #26262b; }
+[data-theme="dark"] .frontmatter { background: #232328; }
+[data-theme="dark"] details.toc { background: #232328; }
+[data-theme="dark"] .group { background: #232328; }
+[data-theme="dark"] blockquote { color: #c0c0bc; }
+</style>
+<!-- /aas-cross-nav -->
+
+<nav class="crumbs"><a href="../index.html">mirror</a> / <span>myloop</span> / <span class="here">proposer</span></nav>
+
+<details class="toc" open><summary>On this page</summary>
+<ul>
+<li><a href="#think-phase-produce-the-next-experimentspec">THINK phase — produce the next ExperimentSpec</a><ul>
+<li><a href="#contract">Contract</a></li>
+<li><a href="#arguments">Arguments</a></li>
+<li><a href="#pre-conditions">Pre-conditions</a></li>
+<li><a href="#steps">Steps</a><ul>
+<li><a href="#1-resolve-announce">1. Resolve + announce</a></li>
+<li><a href="#2-read-prior-iters-record-if-any">2. Read prior iter's record (if any)</a></li>
+<li><a href="#3-think-free-form-reasoning-by-a-sub-agent-bounded-by-spec-contract">3. THINK (free-form reasoning by a sub-agent, bounded by spec contract)</a></li>
+<li><a href="#6-return-to-loop">6. Return to loop</a></li>
+</ul>
+</li>
+<li><a href="#outputs">Outputs</a></li>
+<li><a href="#notes">Notes</a></li>
+</ul>
+</li>
+</ul>
+</details>
+<article>
+<h1 id="think-phase-produce-the-next-experimentspec">THINK phase — produce the next ExperimentSpec</h1>
+<blockquote>
+<p><strong>Required reading before invoking</strong>:
+- <code>myloop/README.md</code> — the myloop mental model (knowledge-distillation orchestrator)
+- <code>myloop/schemas.md</code> — every file's schema, especially <code>ExperimentSpec</code>
+- <code>_common/files-contract.md</code> § "Edit whitelist" — what the EXPERIMENT apply-step is later allowed to patch</p>
+</blockquote>
+<p>This skill IS the THINK phase of one myloop iter. It is one half of
+the hard-paired <code>THINK → EXPERIMENT</code> rhythm. The other half is
+EXPERIMENT (<code>loop.md § 3c</code>, inline in the loop — myloop has no
+implementer skill): the apply step (if <code>spec.patch</code>) + a
+<code>/experiment:run</code> call (always).</p>
+<h2 id="contract">Contract</h2>
+<p><strong>Inputs</strong> (read at start of skill):
+- <code>outputs/design_runs/myloop/{graph}/v{N}/goal.md</code>                    (read-only)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/constraints.md</code>             (read-only; OPTIONAL — hard rules, skip if absent)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/knowledge.md</code>               (append-only)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/search_space.md</code>            (read-only here; REFLECT writes it — read the latest <code>## reflection_N</code> for the current Frontier + the <code>## Axes</code> list)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/experience.jsonl</code>           (read-only; DISTILL writes this)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/hypotheses.jsonl</code>           (mutable: append; DISTILL also mutates)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/iteration/iter_*/record.json</code> (read-only; what each prior iter tested and learned — already DISTILL'd)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/iteration/iter_*/critique_*.json</code> (read-only; what CRITIC predicted on prior iters, per spec — DISTILL judges accuracy)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/.staging/iter_{n}/critique_&lt;spec_id&gt;_round_1.json</code> (read-only; ONLY on <code>--respond-to-critique --spec-id &lt;X&gt;</code> rebuttal pass — the in-iter round-1 critique for that one spec)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/experiment_design.yaml</code>     (mutable: append profiles)
+- <code>outputs/design_runs/myloop/{graph}/v{N}/tools/*.py</code>                 (mutable: add files)
+- <code>workspace/graphs/{graph}.json</code> + <code>workspace/nodesets/</code>              (read-only; current graph state)
+- <code>outputs/eval_runs/*/</code>                                               (read-only; selectively — ONLY for episode-subset construction, see Step 3)</p>
+<p>THINK MAY read raw eval artifacts (<code>outputs/eval_runs/*/</code>) — but for
+ONE purpose: constructing a targeted episode subset for the next
+experiment (Step 3, "Experiment design"). For <em>lessons</em> — what prior
+iters concluded — THINK reads the distilled <code>hypotheses.jsonl</code> /
+<code>experience.jsonl</code> / <code>knowledge.md</code>, NOT the raw logs; re-deriving
+DISTILL's conclusions from logs is wasted work. Raw logs are MB-scale:
+grep / sample / use a <code>tools/</code> filter, never cat them whole.</p>
+<p><strong>Mandatory output</strong> (one file):
+- <code>.staging/iter_{n}/spec.json</code> — a complete <code>ExperimentSpec</code> envelope <code>{iter, specs:[...]}</code> (schema in <code>schemas.md</code> § 8). THINK MAY emit <code>K ≥ 1</code> specs in one turn (<code>max_specs_per_iter</code> in config.yaml caps K; default 3). Each spec is an independent experiment with its own patch / eval / risk_vectors / passes; CRITIC + EXPERIMENT + DISTILL all operate per-spec downstream.</p>
+<p><strong>Optional side-effects</strong> (all under vN dir, eager-write during the think turn):
+- <code>hypotheses.jsonl</code>           — append / delete-line
+- <code>knowledge.md</code>               — append bullets (NEVER overwrite existing)
+- <code>experiment_design.yaml</code>     — append new profile (e.g. a probe entry)
+- <code>tools/*.py</code>                 — add a new tool file
+- <code>.staging/iter_{n}/milestone.md</code> — current sub-goal text (orchestrator's near-term plan)</p>
+<p><strong>SKIP semantics</strong>: if THINK cannot produce a useful envelope (i.e.
+even one viable spec is out of reach), return <code>status=SKIP_THINK_EMPTY</code>
+instead of writing spec.json. This means only "no experiment in the
+<strong>current frontier</strong>" — it does NOT terminate the run. The loop escalates to REFLECT
+(<code>reflect.md</code>); REFLECT re-surveys the whole intervention space and
+either hands back a new frontier (THINK is re-run once) or returns
+<code>SPACE_EXHAUSTED</code> (only then does the run end). So THINK should
+return <code>SKIP_THINK_EMPTY</code> when <em>the axes it can see</em> are dry — and
+NOT pre-emptively declare global saturation; that judgement is
+REFLECT's. Manufacturing a weak experiment to avoid the SKIP is
+equally wrong: an honest SKIP that triggers REFLECT is the designed
+path off a local optimum.</p>
+<h2 id="arguments">Arguments</h2>
+<pre><code>/architect:myloop:proposer [&lt;graph&gt; [&lt;version&gt; [&lt;iter&gt;]]]
+                           [--graph &lt;name&gt;] [--version &lt;N&gt;] [--iter &lt;M&gt;]
+                           [--respond-to-critique --spec-id &lt;spec_id&gt;]   # rebuttal pass after CRITIC REVISE/BLOCK on one specific spec
+</code></pre>
+
+<p>Iter resolution: loop passes the next iter index (<code>iter_n</code>); manual
+invocation defaults to <code>max(committed iters) + 1</code>.</p>
+<p><code>--respond-to-critique --spec-id &lt;spec_id&gt;</code> is set by the loop when
+CRITIC returned <code>REVISE</code> or <code>BLOCK</code> on round 1 for <strong>one specific
+spec</strong> in the envelope. THINK is re-spawned within the same iter
+with the <strong>other specs left untouched</strong>; it must read
+<code>.staging/iter_{n}/critique_&lt;spec_id&gt;_round_1.json</code> (the loop
+preserves the round-1 critique at that path before calling
+proposer) and either:
+(a) rewrite ONLY that spec's entry in the envelope to address the
+    concerns (the rewritten spec will be vetted by CRITIC round 2
+    in isolation), OR
+(b) keep the spec largely intact but add a <code>block_override</code> field
+    on that spec documenting why the critique is wrong for this
+    case (the override is recorded; the spec proceeds to EXPERIMENT
+    regardless of CRITIC round 2's verdict).</p>
+<p>THINK MUST NOT touch sibling specs in the envelope during a rebuttal
+pass — they have their own CRITIC verdicts (possibly OK, possibly
+pending their own round 2). Without the flag, any prior
+<code>.staging/iter_{n}/spec.json</code> is overwritten cleanly with a fresh
+envelope.</p>
+<h2 id="pre-conditions">Pre-conditions</h2>
+<ul>
+<li><code>goal.md</code> exists (hard contract; loop enforces, but this skill
+  re-checks and errs <code>MISSING_GOAL</code> if absent).</li>
+<li><code>knowledge.md</code> exists (loop bootstraps it from seed if vN is
+  fresh — see <code>loop.md § Bootstrap</code>).</li>
+<li><code>.staging/iter_{n}/</code> does NOT exist yet (or is empty). This skill
+  creates it.</li>
+</ul>
+<h2 id="steps">Steps</h2>
+<h3 id="1-resolve-announce">1. Resolve + announce</h3>
+<pre><code>[myloop:proposer] iter=iter_{n}  graph={graph}  v{N}
+                  goal.md       = &lt;ok&gt;
+                  knowledge.md  = {bytes} bytes / {N_sections} sections
+                  experience    = {K} entries
+                  hypotheses    = {H} open
+                  prior iters   = {M} committed
+</code></pre>
+
+<h3 id="2-read-prior-iters-record-if-any">2. Read prior iter's record (if any)</h3>
+<p>If <code>iteration/iter_{n-1}/record.json</code> exists, read it for <strong>context
+only</strong> — to see what spec the previous iter tested and what its
+outcome was. Do NOT re-derive <em>lessons</em> from raw eval logs; that work
+was already done by iter_{n-1}'s DISTILL phase
+(<code>/architect:myloop:distill</code>) and the conclusions live in
+<code>hypotheses.jsonl</code> / <code>experience.jsonl</code> / <code>knowledge.md</code>. (Reading
+raw logs to <em>select episodes</em> for the next experiment is a different
+task — that is allowed; see Step 3.)</p>
+<p>If no prior record (first iter ever), skip this step.</p>
+<h3 id="3-think-free-form-reasoning-by-a-sub-agent-bounded-by-spec-contract">3. THINK (free-form reasoning by a sub-agent, bounded by spec contract)</h3>
+<p>Invoke a single sub-agent — the orchestrator's reasoning lives here.
+This is NOT a 3-call Reflexion chain; it is one tool-augmented
+reasoning pass with a strict output contract.</p>
+<pre><code class="python">resp = Agent({
+  &quot;subagent_type&quot;: &quot;general-purpose&quot;,
+  &quot;description&quot;:   f&quot;myloop THINK iter_{n} on {graph}&quot;,
+  &quot;prompt&quot;: render_think_prompt(
+      graph=graph, vN=N, iter_n=n,
+      goal_md           = read(&quot;goal.md&quot;),
+      constraints_md    = read_if_exists(&quot;constraints.md&quot;),   # None if absent
+      knowledge_md      = read(&quot;knowledge.md&quot;),
+      search_space_md   = read(&quot;search_space.md&quot;),            # § Axes + latest reflection's Frontier
+      experience_jsonl  = read(&quot;experience.jsonl&quot;),
+      hypotheses_jsonl  = read(&quot;hypotheses.jsonl&quot;),
+      experiment_design = read(&quot;experiment_design.yaml&quot;),
+      tool_index        = ls_with_docstrings(&quot;tools/&quot;),
+      prior_iters_brief = render_recent_iters(last=3),
+      schema_doc        = read(&quot;.claude/commands/architect/myloop/schemas.md&quot;),
+  ),
+})
+</code></pre>
+
+<p><code>render_think_prompt</code> composes:</p>
+<pre><code>You are the myloop orchestrator. Your job is knowledge distillation
+toward the goal — NOT direct fitness optimization. You operate on a
+hard contract: this think turn MUST end by producing a single JSON
+envelope of the form `{&quot;iter&quot;: N, &quot;specs&quot;: [...]}` containing K ≥ 1
+ExperimentSpec entries — or signaling SKIP_THINK_EMPTY if there is
+genuinely nothing to test.
+
+=== WHAT GOES IN THE ENVELOPE ===
+
+The envelope's `specs` list is how you say &quot;this iter's investigation
+breaks down into these pieces&quot;. K = how many genuinely independent
+pieces the iter's question already has, NOT a knob you tune separately
+from the reasoning.
+
+If your reasoning naturally converges on one focused question — write
+one spec. If, while reasoning, you find you're actually holding two
+distinct conjectures whose outcomes don't depend on each other — write
+two. If you want to measure a candidate's effect AND its noise floor on
+the same ep set in the same iter — that's two specs. The envelope
+shape just reflects how your investigation is actually structured.
+
+Don't force K=1 out of conservatism — serializing independent questions
+across iters wastes wall-clock and obscures cross-spec interactions
+that DISTILL can otherwise catch in one pass. Don't force K&gt;1 out of
+performative breadth either — empty specs cost CRITIC + eval budget
+and dilute signal.
+
+Cost shape: the Python multi-spec wrapper submits every spec×pass
+combination in ONE parallel wave (one admission window, JobScheduler
+arbitrates VRAM), so K&gt;1 with independent overlays is NOT 2× wall-clock
+— it's 2× eval API calls and 2× CRITIC spawns. Be honest about whether
+additional specs carry independent information; don't be artificially
+expensive.
+
+Cap: K ≤ {max_specs_per_iter} (config). Each spec needs a unique
+`spec_id` of the form `spec_iter_{n}_{LETTER}` (LETTER = A, B, C, ...
+in order). Each spec is an INDEPENDENT experiment with its own patch /
+eval_profile / risk_vectors / passes — CRITIC vets each separately,
+EXPERIMENT applies each on its own `active_workspace_&lt;id&gt;/` overlay,
+DISTILL produces a per-spec verdict. There is no shared overlay across
+specs; patches do not stack within a single iter.
+
+Each spec carries `passes: int` (≥ 1). passes &gt; 1 makes the Python
+eval wrapper run that spec's eval `passes` times against the same
+ep set, producing mean_sr / sd_sr / robust_sr (per-ep majority-vote
+SR).
+
+**`passes_required` floor — non-negotiable**: every profile in
+experiment_design.yaml carries a `passes_required` field, derived
+from `episode_count`:
+  - episode_count &lt; 119  → passes_required = 3
+  - episode_count ≥ 119  → passes_required = 1
+  - smoke profiles       → passes_required = 0 (smoke is a
+                           correctness gate, never a measurement)
+
+If `profile.baseline` is locked (i.e. some prior iter has run this
+profile under multi-pass policy), `baseline.passes` is also a floor.
+
+Your spec's `passes` MUST be ≥ both floors. If you set it lower,
+proposer's validator auto-promotes you to the required value
+(non-fatal warning logged). You MAY set passes HIGHER than the
+floor — e.g. passes=5 on a small subset where you really want
+tight CI — but expensive. Default to the profile's
+`passes_required`.
+
+The Python wrapper submits every (spec, pass_idx) combination in
+ONE parallel wave (the iter's &quot;合集 / combined experiment&quot;); the
+JobScheduler arbitrates admission by VRAM. Worker count per
+submission is auto-allocated so the total across the wave stays
+within `perf_&lt;graph&gt;.worker_count`. This is opaque to you — just
+set `passes` and trust the wrapper.
+
+You may freely use Read / Grep / Bash / Edit / Write during this
+turn to:
+  - append bullets to knowledge.md (pure facts you know a priori
+    that aren't yet captured — most knowledge accrual happens in
+    DISTILL, but you may add bullets here too)
+  - append lines to hypotheses.jsonl (new conjectures worth testing)
+  - register a new eval profile in experiment_design.yaml
+  - author a new tool in tools/&lt;name&gt;.py
+
+=== Experiment design — choosing this iter's episode set ===
+The smoke / perf entries in experiment_design.yaml are just a starting
+menu. The episode set you test is yours to design:
+
+  - smoke_&lt;graph&gt; (≈3 ep) is the EXPERIMENT apply-step's correctness
+    gate (&quot;does the change run&quot;). It is NEVER this spec's eval_profile
+    — 3 ep cannot measure anything.
+  - perf_&lt;graph&gt; (full, paper-comparable) is the escalation tier —
+    invoke only when goal.md § Escalation / constraints authorize it.
+  - A THINK-composed targeted subset (kind=custom) is the DEFAULT
+    measurement tier. If a hypothesis is about one failure mode, test
+    exactly the episodes that exhibit it. To build one:
+      1. Read the relevant prior run's raw logs — usually the
+         iter_0 baseline at outputs/eval_runs/&lt;baseline_run_id&gt;/.
+         grep / sample / write a tools/*.py filter; do NOT cat
+         MB-scale log.jsonl files whole.
+      2. Collect the episode indices that exhibit the failure mode.
+      3. Append a profile to experiment_design.yaml with explicit
+         episode_indices + a derived_from block recording the
+         failure mode and source run (schemas.md § 6).
+      4. Point spec.eval_profile.name at it. The profile persists —
+         later iters testing the same failure mode just reuse it.
+
+Reading raw logs IS allowed, for episode selection. For *lessons*
+(what prior iters concluded) read the distilled hypotheses.jsonl /
+experience.jsonl / knowledge.md instead — don't re-derive them.
+
+You MUST NOT modify workspace/* — patches go through
+ExperimentSpec.patch; the EXPERIMENT apply-step (loop.md § 3c)
+realizes them and enforces the edit whitelist.
+
+=== Search space — which intervention axis (READ THIS) ===
+search_space.md maps the INTERVENTION SPACE this run searches. Its
+`## Axes` section is the taxonomy (prompt-content / topology /
+control-flow / action-space / observation-pipeline / state-memory /
+model-component-config — and any REFLECT has added). Its latest
+`## reflection_N` section carries a per-axis Coverage table and a
+ranked **Frontier** — the axes the REFLECT phase judged still worth
+searching, with a mechanism sketch for each.
+
+EACH SPEC in the envelope MUST carry an `intervention_axis` field
+naming exactly one axis from `## Axes`. The set of axes across your
+K specs is what determines whether THIS ITER counts as concentrated
+or jumped — see the axis-jump rule below.
+
+THE AXIS-JUMP RULE. myloop's known failure is THINK refining one
+axis to death (e.g. five prompt-content variants, all refuted) and
+never trying a structurally different intervention. So:
+  - If a Frontier exists in the latest reflection, PREFER an axis on
+    it — the Frontier is REFLECT's considered judgement of where the
+    unsearched headroom is.
+  - If the last few committed iters all share one `intervention_axis`
+    (in the Recent-iters block, look at the union of axes per iter),
+    the DEFAULT is to ensure THIS iter touches at least one DIFFERENT
+    axis on at least one of its specs. Staying entirely on the
+    concentrated axis (i.e. every spec in this iter's envelope uses
+    the same concentrated axis) is allowed ONLY if you write an
+    explicit rebuttal in your reasoning trace — a concrete argument
+    that an untested sub-lever on that axis still has a mechanism-
+    grounded path the Frontier missed.
+  - Multi-spec breadth IS an axis-jump tool: if you genuinely want
+    to continue refining one axis but feel the rule's pressure,
+    emit K=2 with one spec on the refined axis + one spec on a
+    Frontier axis. Both get tested; the iter is no longer &quot;concentrated&quot;.
+  - Picking a fresh axis does not mean picking a bad experiment: the
+    intervention still needs a real mechanism and must fit budget +
+    constraints. If no viable experiment exists in any axis, return
+    SKIP_THINK_EMPTY (the loop escalates to REFLECT; that is correct,
+    not a failure).
+
+=== HARD CONSTRAINTS (non-negotiable) ===
+{constraints_block_or_&quot;(none — no constraints.md file)&quot;}
+
+These rules are absolute. Your spec.patch (if any) and any
+hypothesis / knowledge you append MUST respect them. If you cannot
+propose a useful experiment under these constraints, return
+SKIP_THINK_EMPTY rather than violating.
+
+=== RISK VECTORS — REQUIRED structural declaration (per spec, when patch is non-null) ===
+
+For EACH spec in your envelope where `patch` is non-null, you MUST
+emit a `risk_vectors` block (schemas.md § 8). This is not optional
+and not optional-via-empty: the act of enumerating risk vectors per
+spec is itself the cross-check that catches the structural pathologies
+past iters have recurred on. Specifically:
+
+  - state_io.{reads, writes, grants_required}: list every
+    `gs.read(...)` / `gs.write(...)` your proposed code touches; for
+    every new node whose code touches graph_state, include an
+    `access_grants` entry in your graph JSON edit AND list its id
+    in `grants_required`. If you forget the access_grants entry,
+    your mechanism will silently no-op (cf. iter_3, iter_7
+    pathology — see experience.jsonl).
+  - llm_calls: one entry per llm_complete / vlm_complete / llmCall
+    introduced or modified. For reasoning-aware models (gpt-5-*,
+    o1-*, o3-*), max_tokens must be ≥ 2000 (reasoning_tokens
+    consume the budget before visible content). Set
+    `reasoning_aware: true` so CRITIC verifies the budget.
+  - fallback_branches: trace each error/empty/parse-error path. If
+    a fallback produces an output indistinguishable from a real
+    decision, the fallback IS the mechanism (cf. iter_2 fail-OPEN
+    rubber-stamp, iter_7 fail-CLOSED reroute) — restructure so
+    fallbacks are `fallback_is_inert: true` (preserve baseline /
+    return BYPASS), not load-bearing.
+  - globally_firing_nodes_touched: list any node whose `execute`
+    fires on every step of every ep (build_options, observe,
+    render_prompt, parse_action, iter_in, iter_out, step). If
+    non-empty, your `expected_signal` SHOULD include a counter-check
+    on the (S)-bucket (baseline-success eps) — patches at these
+    nodes can churn the (S) bucket while lifting (c)/(d), and that
+    cost is invisible at subset-eval scale (cf. iter_12).
+  - mechanism_fire_predicate: state how you will OBSERVE the
+    mechanism firing. The proposed code MUST `_self_log(...)` a
+    counter or per-step value DISTILL can grep, independent of
+    aggregate metrics (cf. iter_3 silent no-op caught only by lack
+    of a fire log; iter_9 gate-too-strict caught only by 0/27 fire
+    count).
+
+CRITIC will validate each spec's `risk_vectors` independently in the
+next phase. The validator re-runs the same checks structurally;
+CRITIC pattern-matches each spec against past refuted experiences.
+Fill it honestly per spec — under-declaring a risk vector is the
+kind of mistake that gets THAT spec blocked at round 2 (sibling
+specs in the envelope still proceed).
+
+=== RECENT PRIOR CRITIQUES (context — DISTILL judges their accuracy, not you) ===
+{recent_critiques_or_&quot;(no prior critiques yet)&quot;}
+
+Past CRITIC predictions live here for context. The fact that
+CRITIC flagged X on iter_K does not mean iter_K's outcome confirmed
+the prediction — DISTILL evaluates that against the actual eval.
+Read these to see what kinds of pathologies CRITIC has been
+catching; do not &quot;respond&quot; to each one — that is DISTILL's job.
+
+{if --respond-to-critique:}
+=== IN-ITER CRITIQUE — REWRITE OR REBUT (ONE SPEC ONLY) ===
+
+CRITIC fired on spec `{rebuttal_spec_id}` in this iter's envelope
+and returned:
+  verdict: {round_1_verdict}
+  predicted_failure_modes:
+{round_1_critique}
+
+You are rewriting THIS ONE SPEC (`{rebuttal_spec_id}`) only. The
+other specs in the envelope have their own CRITIC verdicts —
+DO NOT touch them. Your job is to emit a new envelope where:
+  - the entry for spec_id=`{rebuttal_spec_id}` is rewritten (or
+    annotated with `block_override`),
+  - every other spec is COPIED VERBATIM from the prior envelope.
+
+You have two options for the targeted spec:
+
+  (a) ACCEPT the critique. Rewrite that spec's entry to fix the
+      flagged issue. The rewritten spec will be vetted by CRITIC
+      round 2 in isolation; if round 2 also flags issues, that
+      spec is dropped (commits as `outcome_class=&quot;critic_block&quot;`),
+      but sibling specs still proceed.
+
+  (b) REBUT the critique. Add a `block_override` field to that
+      spec:
+        &quot;block_override&quot;: {
+          &quot;critique_id&quot;: &quot;&lt;copy from above&gt;&quot;,
+          &quot;rebuttal&quot;:    &quot;&lt;argument — name the SPECIFIC structural
+                          difference between this spec and the
+                          reference experience CRITIC matched
+                          against&gt;&quot;
+        }
+      The spec proceeds to EXPERIMENT regardless. DISTILL then
+      judges whether your rebuttal was right (predicted_outcome
+      didn't materialize) or wrong (it did) and records the
+      verdict.
+
+Pick (a) unless you have a concrete argument why CRITIC is matching
+on surface similarity. &quot;I think this is different&quot; is not a rebuttal —
+&quot;the access_grant IS added at intent §A.4 line ... so the structural
+feature CRITIC matched does not hold&quot; is.
+
+=== Heuristic — when iter_n == 0 (no prior committed iter) ===
+You have no per-ep evidence yet. iter_0 MUST be a no-patch baseline
+run (spec.patch = null) on a real measurement tier — perf_&lt;graph&gt;
+when the goal's success criterion is defined there, otherwise a
+wide-enough custom subset (≥ ~30 ep). NOT a 3-ep probe: iter_0's
+per-episode logs are the corpus every later iter mines to build
+failure-mode subsets (see &quot;Experiment design&quot; above), so the
+baseline must be wide enough to expose those failure modes. A
+patch-applying iter_0 has no comparison point — any apparent
+&quot;lift&quot; or &quot;regression&quot; is noise. Use iter_0 to establish ground
+truth + a rich log corpus; let iter_1 onward do the patches.
+
+=== goal.md ===
+{goal_md}
+
+=== knowledge.md ===
+{knowledge_md}
+
+=== search_space.md (§ Axes + all reflections; the LATEST reflection's Frontier is your guide) ===
+{search_space_md}
+
+=== experience.jsonl (last 20 entries) ===
+{experience_tail}
+
+=== hypotheses.jsonl (all open) ===
+{hypotheses_full}
+
+=== experiment_design.yaml ===
+{experiment_design}
+
+=== tools/ index ===
+{tool_index}
+
+=== Recent iters (last 3) ===
+{prior_iters_brief}
+
+=== Schemas (single source of truth) ===
+{schema_doc_excerpt}
+
+Now reason. When done, emit a SINGLE fenced ```json block as your
+final visible chunk. The JSON must conform to the ExperimentSpec
+envelope shape (schemas.md § 8):
+
+```json
+{
+  &quot;iter&quot;: {n},
+  &quot;specs&quot;: [
+    {
+      &quot;spec_id&quot;: &quot;spec_iter_{n}_A&quot;,
+      &quot;kind&quot;: &quot;...&quot;,
+      &quot;intervention_axis&quot;: &quot;...&quot;,
+      &quot;passes&quot;: 1,
+      ...all other ExperimentSpec fields per schemas.md § 8...
+    }
+    // additional specs if K&gt;1; each MUST have unique spec_id, intervention_axis,
+    // and (if patch != null) risk_vectors
+  ]
+}
+</code></pre>
+
+<p>If the axes you can see are dry across the whole envelope, instead
+emit <code>{"status": "SKIP_THINK_EMPTY", "reason": "..."}</code> — the loop
+will escalate to REFLECT, which is the designed way out, not a
+failure. Do NOT emit an envelope with <code>specs: []</code> — empty is treated
+as malformed.</p>
+<pre><code>
+### 4. Parse + validate ExperimentSpec envelope
+
+After the sub-agent returns:
+
+- Extract the LAST fenced ```json block via `parse_final_json`.
+- If `{&quot;status&quot;: &quot;SKIP_THINK_EMPTY&quot;, ...}`: do not write spec.json;
+  return `SKIP_THINK_EMPTY` to loop (loop translates to termination
+  candidate).
+- **Envelope-level validation**:
+  - Top-level keys: `iter` (int, must equal the loop's `n`), `specs`
+    (non-empty list).
+  - `len(specs) ≤ max_specs_per_iter` (from config.yaml; default 3).
+    Over-cap → `SKIP_INVALID_SPEC` with `reason=&quot;K &gt; max_specs_per_iter&quot;`.
+  - All `spec_id` values are unique within `specs[]` and follow the
+    `spec_iter_{n}_{LETTER}` pattern (regex
+    `spec_iter_\d+_[A-Z]+`). Duplicates / malformed → `SKIP_INVALID_SPEC`.
+  - On `--respond-to-critique --spec-id &lt;S&gt;` rebuttal pass: the new
+    envelope must contain a spec with `spec_id=S` AND every other
+    spec from the prior `spec.json` must appear UNCHANGED (loop
+    diff-checks them). If a sibling spec is altered → `SKIP_INVALID_SPEC`
+    with `reason=&quot;rebuttal touched sibling spec&quot;`.
+- **For each entry in `specs[]`** (apply the per-spec rules below;
+  ALL specs must pass or the envelope is rejected):
+  - Required fields present (per `schemas.md § 8`).
+  - `kind` ∈ {probe, perf, custom}.
+  - `passes` is an integer ≥ 1.
+  - **`passes ≥ profile.passes_required`** (read from
+    `experiment_design.yaml` for the referenced `eval_profile.name`).
+    If `spec.passes &lt; profile.passes_required`: **auto-promote** in
+    the validated envelope (set `spec.passes := profile.passes_required`)
+    + emit a WARNING. Auto-promotion is a recoverable correction,
+    not a SKIP — the spec proceeds at the required pass count. The
+    rationale: `passes_required` derives from `episode_count` and is
+    not negotiable noise-floor protection; THINK is allowed to ask
+    for MORE passes than required (multi-pass on an N≥119 profile is
+    legitimate) but not fewer.
+  - **`passes ≥ profile.baseline.passes`** if `profile.baseline` is
+    locked AND `passes &lt; baseline.passes`: same auto-promote rule.
+    (Once a baseline locks at 3-pass, future specs on the profile
+    must run at least 3 passes for the comparison to be valid.)
+  - `intervention_axis` is present and names an axis listed in
+    `search_space.md § Axes` (or is `&quot;none&quot;` for a pure
+    data-collection no-patch probe). Unknown axis → `SKIP_INVALID_SPEC`.
+  - `eval_profile.name` exists as a key in `experiment_design.yaml`
+    (re-read the file in case THINK appended one this turn).
+  - If `patch` is non-null, it is `{intent, targets}` (per
+    `schemas.md § 8`): `intent` is non-empty prose and every entry of
+    `targets` is under `workspace/` — `workspace/graphs/&lt;name&gt;.json`,
+    `workspace/nodesets/&lt;X&gt;.py`, or
+    `workspace/nodesets/server/&lt;X&gt;.py` / `workspace/nodesets/server/&lt;X&gt;/...`
+    (TODO #60: server-mode is editable; the whitelist is enforced
+    ALSO by the EXPERIMENT apply-step, we early-check here to fail
+    fast). Out-of-workspace paths (`agentcanvas/backend/app/**`,
+    `third_party/**`) → fail fast.
+  - **`risk_vectors` REQUIRED when patch is non-null** (per
+    `schemas.md § 8`). All five sub-blocks must be present and
+    typed correctly:
+    - `state_io.{reads, writes, grants_required}` are lists of
+      strings (may be empty lists if the patch makes no graph_state
+      access).
+    - `llm_calls` is a list of objects; each entry must carry
+      `purpose` (str), `model_profile` (str), `max_tokens` (int),
+      `reasoning_aware` (bool), `fallback_on_empty` (str),
+      `fallback_on_parse_error` (str), `fallback_is_inert` (bool).
+      May be empty list if patch introduces no new LLM call.
+    - `globally_firing_nodes_touched` is a list of strings (may be
+      empty).
+    - `mechanism_fire_predicate` is a non-empty string.
+    A missing `risk_vectors` block, or any required sub-field
+    missing, → `SKIP_INVALID_SPEC` with the specific spec_id +
+    field gap named.
+  - **Programmatic lint pass** (deterministic, no LLM):
+    - For every `node_id` listed in `risk_vectors.state_io.grants_required`,
+      verify the patch.intent text contains the substring `access_grants` AND
+      the substring `&lt;that node_id&gt;` (case-sensitive). This catches
+      the iter_3/iter_7 access_grant-missing pathology at THINK-time
+      without waiting for CRITIC.
+    - For every entry in `risk_vectors.llm_calls` with
+      `reasoning_aware: true` AND `max_tokens &lt; 2000`: report a
+      WARNING (do NOT fail the spec) — CRITIC will likely BLOCK this
+      anyway. THINK is allowed to proceed if it knows what it's
+      doing (e.g. running an explicit ablation).
+    - Failures here → `SKIP_INVALID_SPEC` with the specific spec_id
+      + gap; the envelope is not written and loop increments
+      `consecutive_skips`. (One bad spec rejects the whole envelope —
+      THINK should re-emit all specs together.)
+  - **`block_override` schema** (only when present, see `schemas.md § 8`):
+    object with non-empty string fields `critique_id` and `rebuttal`.
+    Loop verifies `critique_id` matches the `critique_id` of the
+    round-1 critique on disk for THIS spec_id; mismatch →
+    `SKIP_INVALID_SPEC`.
+  - **Constraint guard** (only if `constraints.md` exists and `patch`
+    is non-null): coarse string-match — scan `patch.intent` for any
+    `node_id.config.&lt;key&gt;` fragment a `constraints.md` bullet forbids
+    (a bullet containing BOTH `MUST` / `MUST NOT` AND that literal
+    `node_id.config.&lt;key&gt;` or `node_id.*.&lt;key&gt;` substring). If found →
+    flag a candidate violation and read that bullet to the user as the
+    reason. This catches the common cases (model profile / temperature
+    / max_tokens forbids) without parsing markdown semantically.
+- On validation failure: signal `SKIP_INVALID_SPEC` with the specific
+  error — loop logs, increments consecutive_skips, continues.
+
+### 5. Write `.staging/iter_{n}/spec.json` (envelope)
+
+```bash
+mkdir -p outputs/design_runs/myloop/{graph}/v{N}/.staging/iter_{n}/
+
+# Rebuttal pass: preserve the round-1 envelope for forensics before overwriting.
+# The whole envelope is preserved (not just the rebutted spec) — easier to
+# diff the before/after, and the sibling specs being identical is part of
+# the validated invariant.
+if [ &quot;$RESPOND_TO_CRITIQUE&quot; = &quot;true&quot; ] &amp;&amp; [ -f .staging/iter_{n}/spec.json ]; then
+    cp .staging/iter_{n}/spec.json .staging/iter_{n}/spec_round_1.json
+fi
+
+echo &quot;$VALIDATED_SPEC_ENVELOPE_JSON&quot; &gt; outputs/design_runs/myloop/{graph}/v{N}/.staging/iter_{n}/spec.json
+</code></pre>
+
+<p>Also stage a copy of the THINK sub-agent's full text return at
+<code>.staging/iter_{n}/think_trace.md</code> for forensics — on the rebuttal
+pass, append to (don't overwrite) the existing trace, so both
+rounds' reasoning is preserved.</p>
+<h3 id="6-return-to-loop">6. Return to loop</h3>
+<pre><code>[myloop:proposer] OK
+                  spec.json   = .staging/iter_{n}/spec.json   (envelope, K={len(specs)})
+                  specs       = [{spec_id} (axis={ax}, kind={k}, patch={p}, passes={pp}), ...]
+                  side-effects= {N file writes during think}
+                  → loop will run CRITIC then EXPERIMENT next
+</code></pre>
+
+<p>Return <code>status=OK</code> to loop.</p>
+<h2 id="outputs">Outputs</h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Writer</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v{N}/.staging/iter_{n}/spec.json</code></td>
+<td>this skill</td>
+<td>ExperimentSpec envelope (schema § 8) — <code>{iter, specs:[...]}</code>; the loop's CRITIC + EXPERIMENT phases consume it</td>
+</tr>
+<tr>
+<td><code>v{N}/.staging/iter_{n}/spec_round_1.json</code></td>
+<td>this skill (rebuttal only)</td>
+<td>Round-1 envelope preserved before rebuttal-pass overwrite</td>
+</tr>
+<tr>
+<td><code>v{N}/.staging/iter_{n}/think_trace.md</code></td>
+<td>this skill</td>
+<td>Full sub-agent return text — forensics; appended (not overwritten) on rebuttal pass</td>
+</tr>
+<tr>
+<td><code>v{N}/.staging/iter_{n}/milestone.md</code></td>
+<td>this skill (optional)</td>
+<td>Current sub-goal narrative</td>
+</tr>
+<tr>
+<td><code>v{N}/hypotheses.jsonl</code></td>
+<td>this skill (eager during think)</td>
+<td>New / resolved entries</td>
+</tr>
+<tr>
+<td><code>v{N}/knowledge.md</code></td>
+<td>this skill (eager during think)</td>
+<td>New bullets appended</td>
+</tr>
+<tr>
+<td><code>v{N}/experiment_design.yaml</code></td>
+<td>this skill (eager during think)</td>
+<td>New probe profile (if defined)</td>
+</tr>
+<tr>
+<td><code>v{N}/tools/*.py</code></td>
+<td>this skill (eager during think)</td>
+<td>New tool (if authored)</td>
+</tr>
+<tr>
+<td><em>Note: <code>experience.jsonl</code> is <strong>not</strong> written by this skill — that's DISTILL's domain (<code>/architect:myloop:distill</code>). THINK only reads it.</em></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="notes">Notes</h2>
+<ul>
+<li><strong>No 3-call Reflexion.</strong> myloop deliberately drops the ADAS R0/R1/R2
+  scaffold. The forcing function is now "must produce ExperimentSpec",
+  which gives THINK enough structure. If we find single-pass thinking
+  is too shallow in practice, we can wrap this skill with a critique
+  pass — but not by default.</li>
+<li><strong>THINK is one sub-agent spawn.</strong> Independent sample, full tool
+  access. The orchestrator-as-agent pattern in literal form.</li>
+<li><strong>Eager writes vs staged writes</strong>: hypothesis / knowledge / tool /
+  design changes happen during the think turn directly to vN files
+  (not staged), because if the think turn produces a probe targeting
+  a brand-new hypothesis, that hypothesis MUST be visible to
+  EXPERIMENT and DISTILL. The atomic boundary in myloop is the iter
+  dir promotion, not these document writes.</li>
+<li>Recovery: if THINK crashes mid-write, vN files may be partially
+    updated. Loop's <code>.loop_state/</code> carries the last-known-good iter
+    index; on resume, the orchestrator reads files as-is and
+    continues — partial writes are recoverable by reasoning, not
+    rollback.</li>
+<li><strong>edit whitelist for patches</strong>: enforced by the EXPERIMENT
+  apply-step (<code>loop.md § 3c</code>, via <code>_common/lib/overlay.py</code>) per
+  <code>_common/files-contract.md</code>. This skill only fast-fails ill-formed
+  targets; final authority is the apply-step.</li>
+<li><strong>per-episode trace as the ground for episode selection</strong>:
+  <code>outputs/eval_runs/{run_id}/episodes/ep0003/log.jsonl</code> records every
+  node firing, llmCall, and observation for that episode. THINK reads
+  these — selectively — to construct targeted episode subsets (Step 3,
+  "Experiment design"). It does NOT read them to re-derive lessons:
+  DISTILL has already promoted that signal into
+  hypotheses/experience/knowledge by the time the next iter's THINK
+  starts.</li>
+</ul>
+</article>
+<footer class="src">source: .claude/commands/architect/myloop/proposer.md</footer>
+</body>
+</html>

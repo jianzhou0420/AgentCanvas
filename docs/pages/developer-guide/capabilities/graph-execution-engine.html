@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5Graph Execution Engine — AgentCanvas</title>
+<meta name="description" content="Fire-on-input ready-queue scheduler — no form-specific code paths for DAG vs. loop vs. mixed.">
+<meta property="og:title" content="5Graph Execution Engine — AgentCanvas">
+<meta property="og:description" content="Fire-on-input ready-queue scheduler — no form-specific code paths for DAG vs. loop vs. mixed.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/graph-execution-engine.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/graph-execution-engine.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">5Graph Execution Engine</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">5</span>Graph Execution Engine</h1>
+  <p class="tagline">Fire-on-input ready-queue scheduler — no form-specific code paths for DAG vs. loop vs. mixed.</p>
+</header>
+
+
+
+<p>Nodes fire when inputs arrive, not in a fixed order. The <code>GraphExecutor</code> supports cycles natively, enables real-time streaming, and opens the door for future parallelism.</p>
+<p><em>Design docs: <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · <a href="../design-docs/graph/loop-control-system.html">Loop Control</a> · <a href="../design-docs/graph/state-containers.html">State Containers</a></em></p>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<p>The <code>GraphExecutor</code> is the primary execution engine. It replaces a linear DAG executor with a dataflow model where data drives execution order. This naturally supports:</p>
+<ul>
+<li><strong>DAG workflows</strong> — single forward pass</li>
+<li><strong>Cyclic agent loops</strong> — <code>iterOut</code> feeds back to <code>iterIn</code>; run-start values wire into iterIn's init side (ADR-dataflow-008)</li>
+<li><strong>Mixed patterns</strong> — both in the same graph</li>
+</ul>
+<div class="highlight"><pre><span></span><code>Ready queue: [entry₁, entry₂, ...]
+         │
+         ▼
+    Pop node → fire → propagate outputs → enqueue ready targets
+         │                                       │
+         └───────────────────────────────────────┘
+              (until queue empty or terminated)
+</code></pre></div>
+<h2 id="2-core-concepts"><span class="num">2.</span> Core Concepts</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>NodeInstance</strong></td>
+<td>Live node with <code>id</code>, <code>type</code>, <code>config</code>, persistent <code>state</code>, <code>pending_inputs</code>, and (iterIn only) <code>init_port_cache</code></td>
+</tr>
+<tr>
+<td><strong>Entry node</strong></td>
+<td>Non-<code>iterIn</code> node with no incoming edges <strong>and</strong> no required input ports — queued at run start</td>
+</tr>
+<tr>
+<td><strong>Ready queue</strong></td>
+<td>FIFO queue of node IDs whose required inputs are all satisfied</td>
+</tr>
+<tr>
+<td><strong>Pending inputs</strong></td>
+<td><code>{port_name: value}</code> buffer — cleared after node fires</td>
+</tr>
+<tr>
+<td><strong><code>port_slots</code></strong></td>
+<td>iterIn-only dict — one slot per synthesised port (<code>init_&lt;X&gt;</code> / <code>iterout_&lt;X&gt;</code>); written by run-start init edges and the iterOut transfer, read on every iterIn fire; <code>persist=false</code> slots clear after the fire (ADR-dataflow-008)</td>
+</tr>
+<tr>
+<td><strong>Adjacency map</strong></td>
+<td><code>{source_id: [outgoing edges]}</code> — for output propagation</td>
+</tr>
+<tr>
+<td><strong>Access grant index</strong></td>
+<td><code>{node_id: {container_ids}}</code> built from <code>graph.access_grants</code> (ADR-dataflow-004, replaces "state edges")</td>
+</tr>
+<tr>
+<td><strong>Step counter</strong></td>
+<td>Incremented each time <code>iterOut</code> fires (one per iteration)</td>
+</tr>
+<tr>
+<td><strong>Env panel / URL overrides</strong></td>
+<td>Per-runner maps consulted before the global registry so worker-pool eval can route to its own tagged env subprocess (ADR-eval-002)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-execution-algorithm"><span class="num">3.</span> Execution Algorithm</h2>
+<h3 id="31-initialization"><span class="num">3.1</span> Initialization</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># 1. Merge hooks from 3 sources: global → graph → node</span>
+<span class="n">merged</span> <span class="o">=</span> <span class="n">merge_hooks</span><span class="p">(</span><span class="n">global_hooks</span><span class="p">,</span> <span class="n">graph</span><span class="o">.</span><span class="n">hooks</span><span class="p">,</span> <span class="n">extract_node_hooks</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">nodes</span><span class="p">))</span>
+
+<span class="c1"># 2. Flatten composites (expand subgraphs into flat graph)</span>
+<span class="n">graph</span><span class="p">,</span> <span class="n">flatten_map</span> <span class="o">=</span> <span class="n">flatten_graph</span><span class="p">(</span><span class="n">graph</span><span class="p">)</span>
+
+<span class="c1"># 3. Build state containers + access-grant index</span>
+<span class="n">containers</span> <span class="o">=</span> <span class="n">build_containers</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">containers</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">ag</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">access_grants</span><span class="p">:</span>
+    <span class="n">access_grant_index</span><span class="p">[</span><span class="n">ag</span><span class="o">.</span><span class="n">node_id</span><span class="p">]</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">ag</span><span class="o">.</span><span class="n">container_id</span><span class="p">)</span>
+
+<span class="c1"># 4. Build node instances + adjacency map</span>
+<span class="k">for</span> <span class="n">node_def</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">nodes</span><span class="p">:</span>
+    <span class="n">nodes</span><span class="p">[</span><span class="n">node_def</span><span class="o">.</span><span class="n">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">NodeInstance</span><span class="p">(</span><span class="nb">id</span><span class="o">=...</span><span class="p">,</span> <span class="nb">type</span><span class="o">=...</span><span class="p">,</span> <span class="n">config</span><span class="o">=...</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">edge</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">edges</span><span class="p">:</span>
+    <span class="n">adjacency</span><span class="p">[</span><span class="n">edge</span><span class="o">.</span><span class="n">source</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">edge</span><span class="p">)</span>
+
+<span class="c1"># 5. Entry discovery — three structural conditions:</span>
+<span class="c1">#      type != &quot;iterIn&quot;  AND  no incoming edges  AND  no required input ports</span>
+<span class="c1">#    validate_graph_connectivity() (graph_def.py) rejects required-but-unwired</span>
+<span class="c1">#    ports at load time, so this rule never silently drops a well-formed entry node.</span>
+<span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">nodes</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterIn&quot;</span><span class="p">:</span> <span class="k">continue</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span> <span class="ow">in</span> <span class="n">incoming_targets</span><span class="p">:</span> <span class="k">continue</span>
+    <span class="k">if</span> <span class="n">_get_required_ports_for_node</span><span class="p">(</span><span class="n">node</span><span class="p">):</span> <span class="k">continue</span>
+    <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+
+<span class="c1"># 6. Fire run_start signal (lifetime=&quot;run&quot; states reset) + GraphStart hook</span>
+<span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;run_start&quot;</span><span class="p">,</span> <span class="p">{</span><span class="o">...</span><span class="p">})</span>
+<span class="k">await</span> <span class="n">hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span><span class="s2">&quot;GraphStart&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+<p>Required ports are resolved per-instance: <code>_get_required_ports_for_node</code> merges class-level <code>get_required_inputs(type)</code> with anything <code>_resolve_ports(config)</code> marks <code>optional=False</code>, so configurable-port nodes (ADR-dataflow-003) like <code>iterIn</code>/<code>iterOut</code>/<code>llmCall</code> participate in both entry discovery and readiness.</p>
+<h3 id="32-dataflow-loop"><span class="num">3.2</span> Dataflow Loop</h3>
+<div class="highlight"><pre><span></span><code><span class="k">while</span> <span class="n">ready_queue</span> <span class="ow">and</span> <span class="n">total_firings</span> <span class="o">&lt;</span> <span class="n">max_firings</span><span class="p">:</span>
+    <span class="k">await</span> <span class="n">pause</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">stop</span><span class="o">.</span><span class="n">is_set</span><span class="p">():</span> <span class="k">break</span>
+
+    <span class="n">node_id</span> <span class="o">=</span> <span class="n">ready_queue</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">node</span> <span class="o">=</span> <span class="n">nodes</span><span class="p">[</span><span class="n">node_id</span><span class="p">]</span>
+
+    <span class="c1"># iterIn: emit step_start before firing so lifetime=&quot;step&quot; states see a</span>
+    <span class="c1"># fresh slate for the upcoming iteration</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterIn&quot;</span><span class="p">:</span>
+        <span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;step_start&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="n">step_counter</span> <span class="o">+</span> <span class="mi">1</span><span class="p">})</span>
+
+    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_fire_node</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">session</span><span class="p">)</span>   <span class="c1"># runs Pre/PostNodeExecute hooks</span>
+    <span class="n">total_firings</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="c1"># iterOut: per-scope step counter + checkpoint + nav_step + transfer to paired iterIn</span>
+    <span class="c1"># (snippet simplified to single-scope; see §10 — actual code resolves _io_scope_id from</span>
+    <span class="c1">#  node.config[&quot;pairedWith&quot;], advances _io_scope.step_counter, and only mirrors to</span>
+    <span class="c1">#  self.step_counter / checkpoints on the outermost scope)</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterOut&quot;</span><span class="p">:</span>
+        <span class="n">step_counter</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;step_end&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="n">step_counter</span><span class="p">})</span>
+        <span class="k">if</span> <span class="n">containers</span><span class="p">:</span>
+            <span class="n">_checkpoints</span><span class="p">[</span><span class="n">step_counter</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="n">cid</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">checkpoint</span><span class="p">()</span> <span class="k">for</span> <span class="n">cid</span><span class="p">,</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">containers</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+        <span class="k">await</span> <span class="n">_broadcast_step</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">step_counter</span> <span class="o">&gt;=</span> <span class="n">step_budget</span><span class="p">:</span> <span class="k">break</span>
+        <span class="c1"># ADR-dataflow-006 auto-prefix: iterOut output key X declared in</span>
+        <span class="c1"># iterIn.config.loop_ports routes to paired.pending_inputs[&quot;iterout_X&quot;]</span>
+        <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">val</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">paired_loop_ports</span><span class="p">:</span>
+                <span class="n">_route_value_to_port</span><span class="p">(</span><span class="n">paired</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;iterout_</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">val</span><span class="p">)</span>
+        <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">paired</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+
+    <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># consumed</span>
+
+    <span class="c1"># Propagate outputs to downstream — LIST[T] coercion applied at this seam</span>
+    <span class="k">for</span> <span class="n">edge</span> <span class="ow">in</span> <span class="n">adjacency</span><span class="p">[</span><span class="n">node_id</span><span class="p">]:</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="n">nodes</span><span class="p">[</span><span class="n">edge</span><span class="o">.</span><span class="n">target</span><span class="p">]</span>
+        <span class="n">_route_value_to_port</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">edge</span><span class="o">.</span><span class="n">targetHandle</span><span class="p">,</span> <span class="n">result</span><span class="p">[</span><span class="n">edge</span><span class="o">.</span><span class="n">sourceHandle</span><span class="p">])</span>
+        <span class="k">if</span> <span class="n">_is_ready</span><span class="p">(</span><span class="n">target</span><span class="p">)</span> <span class="ow">and</span> <span class="n">target</span><span class="o">.</span><span class="n">id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">:</span>
+            <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="33-readiness-check"><span class="num">3.3</span> Readiness Check</h3>
+<p>A node is ready when:</p>
+<ul>
+<li><strong>Has required ports</strong>: all required ports (class-level ∪ instance-resolved) have data in <code>pending_inputs</code></li>
+<li><strong>All ports optional</strong>: fires when ANY data arrives — or, for <code>iterIn</code>, when <code>init_port_cache</code> has any values even if no loop inputs have arrived yet</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">_is_ready</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+    <span class="n">required</span> <span class="o">=</span> <span class="n">_get_required_ports_for_node</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>   <span class="c1"># class + _resolve_ports(config)</span>
+    <span class="k">if</span> <span class="n">required</span><span class="p">:</span>
+        <span class="k">return</span> <span class="nb">all</span><span class="p">(</span><span class="n">p</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">required</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterIn&quot;</span> <span class="ow">and</span> <span class="n">node</span><span class="o">.</span><span class="n">init_port_cache</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">True</span>
+    <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span>
+</code></pre></div>
+<h3 id="34-hooks-around-each-firing"><span class="num">3.4</span> Hooks Around Each Firing</h3>
+<p><code>_fire_node</code> wraps <code>instance.forward(fire_inputs, ctx)</code> with two user-extensible hooks:</p>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>When</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PreNodeExecute</code></td>
+<td>Before <code>forward()</code></td>
+<td><code>continue</code> / <code>block</code> / <code>modify</code> (patch <code>pending_inputs</code>)</td>
+</tr>
+<tr>
+<td><code>PostNodeExecute</code></td>
+<td>After <code>forward()</code> (success or error)</td>
+<td><code>continue</code> / <code>modify</code> (replace <code>result</code> on success)</td>
+</tr>
+</tbody>
+</table>
+<p>Graph-level hooks (<code>GraphStart</code> / <code>GraphComplete</code> / <code>GraphError</code>) fire at run entry and both exit paths. All hooks are <strong>fail-open</strong> — hook errors never break execution.</p>
+<h2 id="4-two-pivot-iteration-adr-dataflow-008"><span class="num">4.</span> Two-Pivot Iteration (ADR-dataflow-008)</h2>
+<div class="highlight"><p><strong><a href="../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a> + full removal (2026-06-10):</strong> the <code>initialize</code> pivot is folded into <code>iterIn</code>'s left/input side and the node type has been deleted outright — graphs still carrying one are rejected by <code>validate_graph_connectivity</code> with a migration hint. Run-start inputs are authored in <code>iterIn.config.initPorts</code> and wired as ordinary canvas edges into the <code>init_&lt;name&gt;</code> handles; the <code>iterOut</code> transfer is unchanged.</p></div>
+<p>Cyclic agent loops use two pivot node types — the loop-carry transfer goes through the executor, not through a canvas wire:</p>
+<table>
+<thead>
+<tr>
+<th>Pivot</th>
+<th><code>ports_mode</code></th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>iterIn</code></td>
+<td><code>source</code></td>
+<td>Two-sided: left/input side receives step-0 values (env observations, instruction sources) on <code>init_&lt;name&gt;</code> handles declared via <code>config.initPorts</code>; right/output side is the per-iteration entry point whose outputs are the loop-carry bundle</td>
+</tr>
+<tr>
+<td><code>iterOut</code></td>
+<td><code>sink</code></td>
+<td>Collect end-of-iteration state and hand it back to the paired <code>iterIn</code> for the next iteration</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>pairedWith</code> config field on <code>iterOut</code> names the paired <code>iterIn</code> id. iterIn's unified port surface is synthesised at load (<code>_synthesize_iterin_ports</code>) from two writer namespaces:</p>
+<ul>
+<li><strong><code>initPorts</code></strong> (authored on iterIn) — run-start values written by ordinary canvas edges into <code>init_&lt;name&gt;</code> handles; <code>persist=true</code> slots re-emit every iteration, <code>persist=false</code> slots are one-shot (iter 0 only)</li>
+<li><strong>paired <code>iterOut.ports</code></strong> — written each iteration by the executor transfer into <code>iterout_&lt;name&gt;</code> slots</li>
+</ul>
+<p>Handle ids on iterIn are always-prefixed so the two writers never collide: <code>init_X</code> for init values, <code>iterout_X</code> for loop-carry values. All slots live in <code>NodeInstance.port_slots</code>; at fire time the populated slots become the fire inputs.</p>
+<p>An entry node is queued iff <code>type != "iterIn" AND no incoming edges AND no required input ports</code>. Required-but-unwired ports are rejected at the API boundary by <code>validate_graph_connectivity()</code> (see <code>graph_def.py</code>), so the executor never silently fails to fire an entry node.</p>
+<h2 id="5-list-typed-ports-adr-dataflow-005"><span class="num">5.</span> List-Typed Ports (ADR-dataflow-005)</h2>
+<p>Any wire type <code>T</code> can be wrapped as <code>LIST[T]</code> on a consumer port. Producers stay scalar; the executor applies coercion at a single port-binding seam (<code>_route_value_to_port</code>):</p>
+<ul>
+<li>Consumer port <code>T</code> (non-list): write-through (overwrite).</li>
+<li>Consumer port <code>LIST[T]</code>:<ul>
+<li>Incoming scalar → append to the existing list (starting a length-1 list if empty).</li>
+<li>Incoming list → extend.</li>
+<li>Fan-in order follows edge declaration order (adjacency iteration is stable).</li>
+</ul>
+</li>
+</ul>
+<p>This unblocks multi-image LLM calls, multi-LLM debate (LIST[TEXT]), search-operator population fan-in, and the two-pivot handoff without forcing list shape on single-item producers.</p>
+<h2 id="6-state-management"><span class="num">6.</span> State Management</h2>
+<p>Each node has two kinds of state:</p>
+<h3 id="61-node-state-_nodestateproxy"><span class="num">6.1</span> Node State (<code>_NodeStateProxy</code>)</h3>
+<p>Persistent across firings. Handlers read/write attributes via <code>ctx</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">):</span>
+    <span class="n">history</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">history</span> <span class="ow">or</span> <span class="p">[]</span>
+    <span class="n">ctx</span><span class="o">.</span><span class="n">history</span> <span class="o">=</span> <span class="n">history</span> <span class="o">+</span> <span class="p">[</span><span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;observation&quot;</span><span class="p">]]</span>
+    <span class="n">ctx</span><span class="o">.</span><span class="n">step</span>            <span class="c1"># current step counter</span>
+    <span class="n">ctx</span><span class="o">.</span><span class="n">_executor</span>       <span class="c1"># back-ref — proxy nodes use this for per-runner URL overrides (ADR-eval-002)</span>
+</code></pre></div>
+<p><code>_NodeStateProxy</code> redirects attribute access to the node's <code>state</code> dict, which persists across iterOut→iterIn cycles.</p>
+<h3 id="62-config-selfconfig"><span class="num">6.2</span> Config (<code>self.config</code>)</h3>
+<p>Per-node config from graph JSON — set once at graph-build time, immutable during execution.</p>
+<h2 id="7-state-containers-signals"><span class="num">7.</span> State Containers &amp; Signals</h2>
+<p>State containers (ADR-dataflow-002, ADR-dataflow-004) provide <strong>visible shared state</strong> across nodes. Nodes obtain access via <strong>access grants</strong> (formerly called "state edges") in <code>graph.access_grants</code> — grants carry no data and do not trigger firing.</p>
+<h3 id="71-access"><span class="num">7.1</span> Access</h3>
+<p>Containers are injected into the <code>ctx</code> proxy <em>only</em> when the node holds an access grant:</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">):</span>
+    <span class="n">container</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">containers</span><span class="p">[</span><span class="s2">&quot;exploration_state&quot;</span><span class="p">]</span>   <span class="c1"># granted container</span>
+    <span class="n">container</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;visited_rooms&quot;</span><span class="p">,</span> <span class="n">room_id</span><span class="p">)</span>
+
+    <span class="c1"># graph_state is a regular ContainerDef — no auto-inject after ADR-dataflow-004;</span>
+    <span class="c1"># the node must also hold an access grant to it.</span>
+    <span class="k">if</span> <span class="n">ctx</span><span class="o">.</span><span class="n">graph_state</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ctx</span><span class="o">.</span><span class="n">graph_state</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;step_count&quot;</span><span class="p">,</span> <span class="n">ctx</span><span class="o">.</span><span class="n">step</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="72-reducers"><span class="num">7.2</span> Reducers</h3>
+<p>Each state entry has a reducer that defines how writes accumulate:</p>
+<table>
+<thead>
+<tr>
+<th>Reducer</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>accumulator</code></td>
+<td>Appends to a list</td>
+</tr>
+<tr>
+<td><code>lastWrite</code></td>
+<td>Overwrites with latest value</td>
+</tr>
+<tr>
+<td><code>counter</code></td>
+<td>Increments/decrements</td>
+</tr>
+</tbody>
+</table>
+<p>Per-iteration clearing is declared separately on the state's <code>lifetime</code> field (<code>forever</code> / <code>step</code> / <code>episode</code> / <code>run</code> / <code>custom</code>); the removed <code>ephemeral</code> reducer is now expressed as <code>lastWrite + lifetime="step"</code>.</p>
+<h3 id="73-signal-bus"><span class="num">7.3</span> Signal Bus</h3>
+<p><code>broadcast_signal(name, payload)</code> fans a signal out to every live container; each <code>BaseState</code> with that <code>name</code> in its <code>reset_on</code> list clears to <code>initial_value</code>. Canonical signals:</p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Emitted by</th>
+<th>Typical <code>lifetime</code> subscribers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>run_start</code></td>
+<td>Executor, before first node fires</td>
+<td><code>run</code> — reset to clean baseline</td>
+</tr>
+<tr>
+<td><code>step_start</code></td>
+<td>Executor, when <code>iterIn</code> enters the queue</td>
+<td><code>step</code> — fresh slate for the upcoming iteration</td>
+</tr>
+<tr>
+<td><code>step_end</code></td>
+<td>Executor, immediately after <code>iterOut</code> fires</td>
+<td><code>step</code> — tear down this iteration's ephemerals</td>
+</tr>
+<tr>
+<td><code>run_end</code></td>
+<td>Executor, on clean and error exit</td>
+<td><code>run</code> — final reset</td>
+</tr>
+<tr>
+<td><code>episode_reset</code></td>
+<td>Env nodeset env panels (via the env panel router)</td>
+<td><code>episode</code></td>
+</tr>
+<tr>
+<td><em>custom</em></td>
+<td>Any node or env panel by calling <code>executor.broadcast_signal</code></td>
+<td>user-defined</td>
+</tr>
+</tbody>
+</table>
+<h3 id="74-checkpoints"><span class="num">7.4</span> Checkpoints</h3>
+<p>After the <code>step_end</code> signal fans out, the executor snapshots every container into <code>_checkpoints[step_counter]</code> (sliding window, max 100). <code>restore_step(n)</code> rewinds the containers, resets the step counter to <code>n</code>, and prunes future checkpoints. REST: <code>GET /run/checkpoints</code>, <code>POST /run/restore/{step}</code>.</p>
+<h2 id="8-worker-pool-overrides-adr-eval-002"><span class="num">8.</span> Worker-Pool Overrides (ADR-eval-002)</h2>
+<p>Each <code>GraphExecutor</code> carries two optional per-runner maps so worker-pool batch eval (<code>BatchEvalRunner</code> + <code>EnvWorkerPool</code>) can route unqualified lookups to its own tagged env subprocess instead of the global singleton:</p>
+<table>
+<thead>
+<tr>
+<th>Override</th>
+<th>Resolver</th>
+<th>Consumer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_panel_overrides: {nodeset_name: BaseEnvPanel}</code></td>
+<td><code>executor.get_env_panel(name)</code> — checks overrides, falls back to <code>components.env_panel.get_env_panel</code></td>
+<td><code>set_episode</code> / <code>play</code> orchestration</td>
+</tr>
+<tr>
+<td><code>server_url_overrides: {nodeset_name: url}</code></td>
+<td><code>executor.get_server_url(name)</code> — returns override or <code>None</code> to mean "use the URL baked into the proxy class closure"</td>
+<td><code>server/proxy.py::_make_forward</code> via <code>ctx._executor</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both maps are empty on canvas Play and single-worker eval — bit-identical behaviour.</p>
+<h2 id="9-termination"><span class="num">9.</span> Termination</h2>
+<p>Four ways execution ends (there is no termination node — removed 2026-06-11; the halt signal is the <code>stop</code> BOOL input on the loop's iterOut, checked once per iteration at the boundary):</p>
+<ol>
+<li><strong><code>iterOut.stop</code></strong> — a truthy stop value ends the scope at the iteration boundary; the root scope's stop ends the run. Termination triggers the <strong>final-side emission</strong>: the terminal iteration's values go out once on the iterOut's <code>final_*</code> handles, feeding the after-loop verdict stage (evaluate → graphOut).</li>
+<li><strong>Step budget</strong> — <code>step_counter &gt;= step_budget</code> (default 1000, <code>DEFAULT_STEP_BUDGET</code> in <code>config.py</code>; the executor's <code>step_budget=500</code> attribute is only a pre-run placeholder that <code>run()</code> overwrites with the resolved value); also emits the final side.</li>
+<li><strong>Max firings</strong> — safety limit <code>step_budget × node_count × 3</code> (prevents infinite non-iterating loops); final side emitted best-effort from the last completed iteration.</li>
+<li><strong>Stop event</strong> — the frontend Stop button / API sets the runner's <code>stop_event</code>.</li>
+</ol>
+<p>On every exit path — clean or error — <code>run_end</code> fires, <code>GraphComplete</code> or <code>GraphError</code> hooks run, and the execution logger flushes.</p>
+<h2 id="10-multi-scope-execution"><span class="num">10.</span> Multi-Scope Execution (ADR-dataflow-007 + ADR-executor-003)</h2>
+<p>The two-pivot model in §4 describes <em>one</em> <code>(iterIn, iterOut)</code> pair. A single flat graph can contain <strong>N coexisting pairs</strong> — each defines a <strong>scope</strong> with its own iteration cadence. The simplified single-scope snippet in §3.2 expands to per-scope state inside the executor: <code>scope_state[scope_id]</code> carries a <code>_ScopeState</code> with its own <code>step_counter</code>, termination flag, and pending-input bookkeeping.</p>
+<h3 id="101-scope-forest"><span class="num">10.1</span> Scope forest</h3>
+<p><code>analyze_scopes()</code> (<code>agent_loop/scope_analysis.py</code>) runs before the main loop. It walks every <code>iterIn</code> and uses the <code>pairedWith</code> graph (iterOut→iterIn) plus BFS over the body region to determine which other pivots are interior to each scope. The result is a parent / child tree keyed by the iterIn id; the root is the <em>outermost scope</em> whose stop signal (or budget exhaust) ends the whole run.</p>
+<h3 id="102-per-scope-step-counter"><span class="num">10.2</span> Per-scope step counter + backward compat</h3>
+<p>When <code>iterOut</code> fires, the executor resolves <code>_io_scope_id = node.config["pairedWith"] or self._outermost_scope_id</code> and advances <code>_io_scope.step_counter</code>. For backward compatibility with single-scope graphs, the outermost scope's counter is also mirrored to <code>self.step_counter</code> — code paths that read the engine-wide counter (checkpoints, <code>nav_step</code> broadcast, step-budget check) see unchanged behaviour. Inner scopes get their own counter only.</p>
+<h3 id="103-checkpoint-+-broadcast-roots-only"><span class="num">10.3</span> Checkpoint + nav_step only on root-scope iter</h3>
+<p>Container snapshots into <code>_checkpoints[step]</code> and the consolidated <code>nav_step</code> WebSocket broadcast both fire <strong>only when <code>_io_scope</code> is the outermost scope</strong>. Inner scopes don't checkpoint and don't emit per-iteration nav frames — that keeps a single-outer-scope graph bit-identical to the pre-multi-scope behaviour, and avoids checkpoint storms when a fast inner loop iterates many times per outer step.</p>
+<h3 id="104-scope-re-entry-graphout-latch"><span class="num">10.4</span> Scope re-entry + graphOut latch</h3>
+<ul>
+<li><strong>Scope re-entry</strong>: when an outer scope's <code>iterOut</code> re-queues its paired <code>iterIn</code> and that brings an inner scope's <code>iter_in</code> back onto the ready queue, the executor resets the inner <code>_ScopeState</code> (<code>terminated = False</code>, <code>step_counter = 0</code>). This makes inner scopes function-call-shaped: each outer iteration re-runs the inner loop from scratch.</li>
+<li><strong>graphOut latch</strong>: when a <code>graphOut</code> node lives inside a non-root scope, it <em>buffers</em> its incoming <code>value</code> into <code>state["latched_value"]</code> (flushed by <code>_propagate_graphout_latches</code>) instead of propagating immediately. On the owning scope's termination, the buffered value is flushed to outer-scope downstream — preserves the "scope returns its last value" semantics across iteration boundaries.</li>
+</ul>
+<h3 id="105-termination-is-per-scope"><span class="num">10.5</span> Stop is per-scope</h3>
+<p>In a multi-scope graph, each scope's halt signal lives on its own iterOut's <code>stop</code> input — structurally bound to the right loop. An inner scope's stop ends <em>only</em> that scope (its final side emits, the outer loop continues); only the root scope's stop ends the run.</p>
+<h2 id="11-key-files"><span class="num">11.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+<td><code>GraphExecutor</code>, <code>NodeInstance</code>, <code>_NodeStateProxy</code>, <code>StopExecution</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
+<td><code>NODE_HANDLERS</code> registry + all built-in node classes (IterIn/IterOut, LLMCall, viewer sinks, etc.)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/scope_analysis.py</code></td>
+<td><code>analyze_scopes()</code> — builds the per-run scope forest from <code>pairedWith</code> wiring + body BFS (ADR-dataflow-007)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/state_containers.py</code></td>
+<td><code>StateContainer</code>, <code>BaseState</code>, <code>build_containers()</code>, reducers, <code>on_signal</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/flatten.py</code></td>
+<td><code>flatten_graph()</code> — composite expansion before execution</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/loop_runner.py</code></td>
+<td><code>LoopRunner</code> — pause/stop/resume lifecycle, per-runner principles</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/hooks.py</code></td>
+<td><code>HookRunner</code>, hook event types, fail-open protocol</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/env_worker_pool.py</code></td>
+<td><code>EnvWorkerPool</code>, <code>WorkerHandle</code> — worker-pool plumbing that supplies the per-runner overrides</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_def.py</code></td>
+<td><code>GraphDefinition</code>, <code>validate_graph_connectivity()</code> — load-time rejection of required-but-unwired ports</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/standard/node_io.py</code></td>
+<td><code>get_required_inputs()</code> — class-level required-port registry</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/standard/wire_types.py</code></td>
+<td>Wire-type registry + <code>is_list_type()</code> used by LIST[T] coercion</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NodeInstance dataclass</td>
+<td>Done</td>
+<td>id, type, config, label, state, pending_inputs, init_port_cache</td>
+</tr>
+<tr>
+<td>Entry-node detection</td>
+<td>Done</td>
+<td>Three structural conditions (no iterIn, no incoming, no required) — ADR-dataflow-006</td>
+</tr>
+<tr>
+<td><code>validate_graph_connectivity</code></td>
+<td>Done</td>
+<td>Load-time rejection of required-but-unwired ports at run/eval API boundaries</td>
+</tr>
+<tr>
+<td>Ready queue (FIFO)</td>
+<td>Done</td>
+<td><code>list.pop(0)</code></td>
+</tr>
+<tr>
+<td>Instance-resolved required ports</td>
+<td>Done</td>
+<td><code>_get_required_ports_for_node</code> merges class + <code>_resolve_ports(config)</code> (ADR-dataflow-003)</td>
+</tr>
+<tr>
+<td>Two-pivot iteration</td>
+<td>Done</td>
+<td>Two-sided <code>iterIn</code> + <code>iterOut</code> with auto-prefixed <code>init_X</code> / <code>iterout_X</code> handles (ADR-dataflow-008; <code>initialize</code> removed 2026-06-10)</td>
+</tr>
+<tr>
+<td>LIST[T] coercion at port-binding seam</td>
+<td>Done</td>
+<td><code>_route_value_to_port</code> wraps scalars, extends on list input, fan-in in edge order (ADR-dataflow-005)</td>
+</tr>
+<tr>
+<td>Stop check (Decide)</td>
+<td>Done</td>
+<td><code>iterOut.stop</code> read once per iteration at the boundary; truthy ends the scope + emits the final side</td>
+</tr>
+<tr>
+<td><code>_NodeStateProxy</code></td>
+<td>Done</td>
+<td>Redirects attribute get/set to state dict, exposes <code>ctx._executor</code> back-ref (ADR-eval-002)</td>
+</tr>
+<tr>
+<td>State containers + access grants</td>
+<td>Done</td>
+<td><code>build_containers()</code>, <code>_access_grant_index</code> from <code>graph.access_grants</code> (ADR-dataflow-004, no auto-inject)</td>
+</tr>
+<tr>
+<td><code>graph_state</code> convenience binding</td>
+<td>Done</td>
+<td>Exposed as <code>ctx.graph_state</code> only when an explicit access grant is present</td>
+</tr>
+<tr>
+<td>Reducers (accumulator, lastWrite, counter)</td>
+<td>Done</td>
+<td>Per-iteration clearing via <code>lifetime</code> + signal bus (ephemeral reducer removed 2026-04-18)</td>
+</tr>
+<tr>
+<td>Signal bus</td>
+<td>Done</td>
+<td><code>run_start</code> / <code>run_end</code> / <code>step_start</code> / <code>step_end</code> / <code>episode_reset</code> + custom signals</td>
+</tr>
+<tr>
+<td>Hook boundaries</td>
+<td>Done</td>
+<td>GraphStart / GraphComplete / GraphError + PreNodeExecute / PostNodeExecute, fail-open</td>
+</tr>
+<tr>
+<td>Worker-pool overrides</td>
+<td>Done</td>
+<td><code>env_panel_overrides</code> + <code>server_url_overrides</code> + <code>get_env_panel()</code> / <code>get_server_url()</code> (ADR-eval-002)</td>
+</tr>
+<tr>
+<td><code>StopExecution</code> escape hatch</td>
+<td>Done</td>
+<td>Node code may raise it to abort the run mid-iteration; final side emitted best-effort</td>
+</tr>
+<tr>
+<td>Step budget termination</td>
+<td>Done</td>
+<td>step_counter &gt;= step_budget</td>
+</tr>
+<tr>
+<td>Max firings safety limit</td>
+<td>Done</td>
+<td><code>step_budget × node_count × 3</code></td>
+</tr>
+<tr>
+<td>LoopRunner (pause/stop/resume)</td>
+<td>Done</td>
+<td>Manages asyncio events, wired to API endpoints</td>
+</tr>
+<tr>
+<td>In-memory checkpoint at iterOut</td>
+<td>Done</td>
+<td><code>_checkpoints[step]</code> captured after <code>step_end</code> fans out, sliding window max 100</td>
+</tr>
+<tr>
+<td><code>restore_step(n)</code></td>
+<td>Done</td>
+<td>Restores container state, resets step_counter, prunes future checkpoints</td>
+</tr>
+<tr>
+<td><code>GET /run/checkpoints</code></td>
+<td>Done</td>
+<td>Lists available checkpoint step numbers</td>
+</tr>
+<tr>
+<td><code>POST /run/restore/{step}</code></td>
+<td>Done</td>
+<td>Restores state (gated to paused/done)</td>
+</tr>
+</tbody>
+</table>
+<p>All items fully implemented.</p>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass (B1). §9 step-budget default <strong>500 → 1000</strong> (<code>DEFAULT_STEP_BUDGET</code> in <code>config.py</code>; the executor's <code>step_budget=500</code> is only a pre-run placeholder <code>run()</code> overwrites). §10.4 <strong>"portOut latch" → "graphOut latch"</strong> — the latch node type is <code>graphOut</code> (<code>_propagate_graphout_latches</code>), there is no <code>portOut</code> type. Refreshed the stale §4 anchor slug (<code>three-pivot…006</code> → <code>two-pivot…008</code>). Re-verified against the working tree: termination-node removal / <code>iterOut.stop</code>, max-firings <code>step_budget × node_count × 3</code>, checkpoint window 100, signal + reducer names, multi-scope counter — all CONFIRMED.</li>
+<li>2026-06-11 15:38: two-sided iterOut — termination node removed: §9 rewritten around <code>iterOut.stop</code> + final-side emission; §10.5 &ldquo;Stop is per-scope&rdquo;; §3 snippet drops the defer block; status-table rows updated.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-06-11 13:35: &ldquo;seed node&rdquo; → <strong>entry node</strong> (concept table, §3 snippet, seeding rule, status table); init-side &ldquo;seeds&rdquo; → &ldquo;run-start values&rdquo;.</li>
+<li>2026-06-11 12:08: residual sweep — §5 LIST[T] paragraph now says two-pivot handoff (was: three-pivot).</li>
+<li>2026-06-10 10:45: <code>initialize</code> removed entirely — §4 rewritten to the two-pivot model (<code>port_slots</code>, <code>initPorts</code>/<code>iterout</code> writer namespaces), §3.2 snippet initialize branch dropped, key-files/status updated; graphs carrying <code>initialize</code> now rejected at validation.</li>
+<li>2026-06-09: ADR-dataflow-008 — <code>initialize</code> folded into a two-sided <code>iterIn</code> (left init inputs via <code>initPorts</code>, right loop-carry); added supersession note to §4. Runtime semantics unchanged (executor <code>_absorb_initialize_pivots</code>); 3 pivot types → 2.</li>
+<li>2026-05-18: Added §10 Multi-Scope Execution (ADR-dataflow-007 + ADR-executor-003) covering scope forest, per-scope step counter with backward-compat mirror to <code>self.step_counter</code>, root-only checkpoint + nav_step, scope re-entry / portOut latch, per-scope termination semantics. Annotated the §3.2 iterOut snippet as a simplified single-scope view and pointed to §10 for the real per-scope code path. Added <code>scope_analysis.py</code> to §11 Key Files. Key Files renumbered §10 → §11.</li>
+<li>2026-04-19 22:24: Refreshed to match current engine — three-pivot iteration (ADR-dataflow-006), LIST[T] coercion (ADR-dataflow-005), instance-resolved required ports (ADR-dataflow-003), signal bus + <code>step_start</code> / <code>run_start</code> / <code>run_end</code>, access grants (ADR-dataflow-004, <code>graph_state</code> no longer auto-injected), worker-pool overrides (ADR-eval-002), termination deferral, hook boundaries, <code>NODE_HANDLERS</code> moved from <code>graph_executor.py</code> → <code>builtin_nodes.py</code></li>
+<li>2026-04-03 13:39: Added checkpoint capture to IterOut loop, checkpoint/restore API to Status table</li>
+<li>2026-04-02 14:21: Added Status section</li>
+<li>2026-04-02 13:58: Initial content — algorithm, state management, state containers, termination</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="nested-graph-system.html">← 4. Nested Graph System</a> · <a href="index.html">↑ Capabilities index</a> · <a href="real-time-observability.html">6. Real-Time Observability →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h2" href="#2-core-concepts">2. Core Concepts</a>
+      <a class="toc-h2" href="#3-execution-algorithm">3. Execution Algorithm</a>
+      <a class="toc-h3" href="#31-initialization">3.1 Initialization</a>
+      <a class="toc-h3" href="#32-dataflow-loop">3.2 Dataflow Loop</a>
+      <a class="toc-h3" href="#33-readiness-check">3.3 Readiness Check</a>
+      <a class="toc-h3" href="#34-hooks-around-each-firing">3.4 Hooks Around Each Firing</a>
+      <a class="toc-h2" href="#4-two-pivot-iteration-adr-dataflow-008">4. Two-Pivot Iteration (ADR-dataflow-008)</a>
+      <a class="toc-h2" href="#5-list-typed-ports-adr-dataflow-005">5. List-Typed Ports (ADR-dataflow-005)</a>
+      <a class="toc-h2" href="#6-state-management">6. State Management</a>
+      <a class="toc-h3" href="#61-node-state-_nodestateproxy">6.1 Node State (_NodeStateProxy)</a>
+      <a class="toc-h3" href="#62-config-selfconfig">6.2 Config (self.config)</a>
+      <a class="toc-h2" href="#7-state-containers-signals">7. State Containers &amp; Signals</a>
+      <a class="toc-h3" href="#71-access">7.1 Access</a>
+      <a class="toc-h3" href="#72-reducers">7.2 Reducers</a>
+      <a class="toc-h3" href="#73-signal-bus">7.3 Signal Bus</a>
+      <a class="toc-h3" href="#74-checkpoints">7.4 Checkpoints</a>
+      <a class="toc-h2" href="#8-worker-pool-overrides-adr-eval-002">8. Worker-Pool Overrides (ADR-eval-002)</a>
+      <a class="toc-h2" href="#9-termination">9. Termination</a>
+      <a class="toc-h2" href="#10-multi-scope-execution">10. Multi-Scope Execution (ADR-dataflow-007 + ADR-executor-003)</a>
+      <a class="toc-h3" href="#101-scope-forest">10.1 Scope forest</a>
+      <a class="toc-h3" href="#102-per-scope-step-counter">10.2 Per-scope step counter + backward compat</a>
+      <a class="toc-h3" href="#103-checkpoint-+-broadcast-roots-only">10.3 Checkpoint + nav_step only on root-scope iter</a>
+      <a class="toc-h3" href="#104-scope-re-entry-graphout-latch">10.4 Scope re-entry + graphOut latch</a>
+      <a class="toc-h3" href="#105-termination-is-per-scope">10.5 Stop is per-scope</a>
+      <a class="toc-h2" href="#11-key-files">11. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,613 @@
+{
+  "name": "ToolEQA on HM-EQA",
+  "description": "ToolEQA (Zhai et al., arXiv 2510.20310, ICLR 2026 in review) — tool-augmented active explorer for HM-EQA, monolith-first port. Each iter is one ReAct step inside tooleqa__step (backend env, transformers.agents): build prompt from the Thought/Code/Observation scratchpad, call Qwen2.5-VL with the current rgb, parse code, exec via evaluate_python_code with 6 tools (VisualQA / ObjectLocation2D / ObjectLocation3D / ObjectCrop / GoNextPointTool / final_answer; SegmentInstance dead upstream). VQA→Qwen, locate_2d/3d→env_detany3d, GoNextPointTool→tooleqa_explore__go_next (full Explore-EQA TSDF frontier step + teleport, which itself steps env_hmeqa over HTTP — so env_hmeqa__step is NOT a canvas loop node). Depth rides the ANY wire (lossless metric depth; DEPTH normalizes to [0,1]). PortBench v1 target (zero-shot vs paper Table 5: 62.3% SR / 18.26m).",
+  "version": "v4-monolith",
+  "step_budget": 80,
+  "nodes": [
+    {
+      "id": "reset",
+      "type": "env_hmeqa__reset",
+      "label": "HM-EQA: Reset",
+      "position": {
+        "x": 0,
+        "y": 80
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iter In",
+      "position": {
+        "x": 580,
+        "y": 80
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true
+          },
+          {
+            "name": "depth",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "pose_normal",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "angle",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "cam_pose",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "step_index",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "choices",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "cam_intr",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "tsdf_bnds",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "floor_height",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "max_step",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "episode_id",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "answer_gt",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "step",
+      "type": "tooleqa__step",
+      "label": "ToolEQA Step",
+      "position": {
+        "x": 860,
+        "y": 80
+      },
+      "config": {
+        "output_dir": "",
+        "max_iterations": 60,
+        "qwen_temperature": 0.7,
+        "qwen_max_tokens": 2048
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iter Out",
+      "position": {
+        "x": 1180,
+        "y": 80
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true
+          },
+          {
+            "name": "depth",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "pose_normal",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "angle",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "cam_pose",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "step_index",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "scratchpad",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "agent_state",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "answer",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "success",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "metrics",
+            "wire_type": "ANY",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "graph_out_pred",
+      "type": "graphOut",
+      "label": "Out: pred_letter",
+      "position": {
+        "x": 1780,
+        "y": 240
+      },
+      "config": {
+        "portName": "pred_letter",
+        "wireType": "TEXT"
+      }
+    },
+    {
+      "id": "graph_out_success",
+      "type": "graphOut",
+      "label": "Out: success",
+      "position": {
+        "x": 1780,
+        "y": 320
+      },
+      "config": {
+        "portName": "success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "graph_out_metrics",
+      "type": "graphOut",
+      "label": "Out: metrics",
+      "position": {
+        "x": 1780,
+        "y": 400
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "viewer_obs",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 860,
+        "y": 380
+      },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_scratchpad",
+      "type": "textViewer",
+      "label": "Scratchpad",
+      "position": {
+        "x": 860,
+        "y": 560
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 1780,
+        "y": 500
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_hmeqa__observe_egocentric",
+      "label": "HM-EQA: Observe (egocentric)",
+      "position": {
+        "x": -200,
+        "y": 220
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_init_rgb",
+      "source": "seed_obs",
+      "sourceHandle": "rgb",
+      "target": "iter_in",
+      "targetHandle": "init_rgb"
+    },
+    {
+      "id": "e_reset_init_depth",
+      "source": "seed_obs",
+      "sourceHandle": "depth",
+      "target": "iter_in",
+      "targetHandle": "init_depth"
+    },
+    {
+      "id": "e_reset_init_posen",
+      "source": "seed_obs",
+      "sourceHandle": "pose_normal",
+      "target": "iter_in",
+      "targetHandle": "init_pose_normal"
+    },
+    {
+      "id": "e_reset_init_angle",
+      "source": "seed_obs",
+      "sourceHandle": "angle",
+      "target": "iter_in",
+      "targetHandle": "init_angle"
+    },
+    {
+      "id": "e_reset_init_campose",
+      "source": "seed_obs",
+      "sourceHandle": "cam_pose_matrix",
+      "target": "iter_in",
+      "targetHandle": "init_cam_pose"
+    },
+    {
+      "id": "e_reset_init_q",
+      "source": "reset",
+      "sourceHandle": "question",
+      "target": "iter_in",
+      "targetHandle": "init_question"
+    },
+    {
+      "id": "e_reset_init_epid",
+      "source": "reset",
+      "sourceHandle": "episode_id",
+      "target": "iter_in",
+      "targetHandle": "init_episode_id"
+    },
+    {
+      "id": "e_reset_init_floor",
+      "source": "reset",
+      "sourceHandle": "floor_height",
+      "target": "iter_in",
+      "targetHandle": "init_floor_height"
+    },
+    {
+      "id": "e_reset_init_maxstep",
+      "source": "reset",
+      "sourceHandle": "num_step",
+      "target": "iter_in",
+      "targetHandle": "init_max_step"
+    },
+    {
+      "id": "e_epinfo_init_choices",
+      "source": "reset",
+      "sourceHandle": "choices",
+      "target": "iter_in",
+      "targetHandle": "init_choices"
+    },
+    {
+      "id": "e_epinfo_init_bnds",
+      "source": "reset",
+      "sourceHandle": "tsdf_bnds",
+      "target": "iter_in",
+      "targetHandle": "init_tsdf_bnds"
+    },
+    {
+      "id": "e_epinfo_init_ans",
+      "source": "reset",
+      "sourceHandle": "answer",
+      "target": "iter_in",
+      "targetHandle": "init_answer_gt"
+    },
+    {
+      "id": "e_camintr_init",
+      "source": "seed_obs",
+      "sourceHandle": "intrinsics",
+      "target": "iter_in",
+      "targetHandle": "init_cam_intr"
+    },
+    {
+      "id": "e_iterin_step_rgb",
+      "source": "iter_in",
+      "sourceHandle": "iterout_rgb",
+      "target": "step",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iterin_step_depth",
+      "source": "iter_in",
+      "sourceHandle": "iterout_depth",
+      "target": "step",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_iterin_step_posen",
+      "source": "iter_in",
+      "sourceHandle": "iterout_pose_normal",
+      "target": "step",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_iterin_step_angle",
+      "source": "iter_in",
+      "sourceHandle": "iterout_angle",
+      "target": "step",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_iterin_step_campose",
+      "source": "iter_in",
+      "sourceHandle": "iterout_cam_pose",
+      "target": "step",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_iterin_step_idx",
+      "source": "iter_in",
+      "sourceHandle": "iterout_step_index",
+      "target": "step",
+      "targetHandle": "step_index"
+    },
+    {
+      "id": "e_iterin_step_scr",
+      "source": "iter_in",
+      "sourceHandle": "iterout_scratchpad",
+      "target": "step",
+      "targetHandle": "scratchpad"
+    },
+    {
+      "id": "e_iterin_step_state",
+      "source": "iter_in",
+      "sourceHandle": "iterout_agent_state",
+      "target": "step",
+      "targetHandle": "agent_state"
+    },
+    {
+      "id": "e_iterin_step_q",
+      "source": "iter_in",
+      "sourceHandle": "init_question",
+      "target": "step",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_iterin_step_ch",
+      "source": "iter_in",
+      "sourceHandle": "init_choices",
+      "target": "step",
+      "targetHandle": "choices"
+    },
+    {
+      "id": "e_iterin_step_intr",
+      "source": "iter_in",
+      "sourceHandle": "init_cam_intr",
+      "target": "step",
+      "targetHandle": "cam_intr"
+    },
+    {
+      "id": "e_iterin_step_bnds",
+      "source": "iter_in",
+      "sourceHandle": "init_tsdf_bnds",
+      "target": "step",
+      "targetHandle": "tsdf_bnds"
+    },
+    {
+      "id": "e_iterin_step_floor",
+      "source": "iter_in",
+      "sourceHandle": "init_floor_height",
+      "target": "step",
+      "targetHandle": "floor_height"
+    },
+    {
+      "id": "e_iterin_step_max",
+      "source": "iter_in",
+      "sourceHandle": "init_max_step",
+      "target": "step",
+      "targetHandle": "max_step"
+    },
+    {
+      "id": "e_iterin_step_epid",
+      "source": "iter_in",
+      "sourceHandle": "init_episode_id",
+      "target": "step",
+      "targetHandle": "episode_id"
+    },
+    {
+      "id": "e_iterin_step_ans",
+      "source": "iter_in",
+      "sourceHandle": "init_answer_gt",
+      "target": "step",
+      "targetHandle": "answer_gt"
+    },
+    {
+      "id": "e_step_iterout_rgb",
+      "source": "step",
+      "sourceHandle": "rgb",
+      "target": "iter_out",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_iterout_depth",
+      "source": "step",
+      "sourceHandle": "depth",
+      "target": "iter_out",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_step_iterout_posen",
+      "source": "step",
+      "sourceHandle": "pose_normal",
+      "target": "iter_out",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_step_iterout_angle",
+      "source": "step",
+      "sourceHandle": "angle",
+      "target": "iter_out",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_step_iterout_cam",
+      "source": "step",
+      "sourceHandle": "cam_pose",
+      "target": "iter_out",
+      "targetHandle": "cam_pose"
+    },
+    {
+      "id": "e_step_iterout_idx",
+      "source": "step",
+      "sourceHandle": "step_index",
+      "target": "iter_out",
+      "targetHandle": "step_index"
+    },
+    {
+      "id": "e_step_iterout_scr",
+      "source": "step",
+      "sourceHandle": "next_scratchpad",
+      "target": "iter_out",
+      "targetHandle": "scratchpad"
+    },
+    {
+      "id": "e_step_iterout_state",
+      "source": "step",
+      "sourceHandle": "next_agent_state",
+      "target": "iter_out",
+      "targetHandle": "agent_state"
+    },
+    {
+      "id": "e_step_term__stop",
+      "source": "step",
+      "sourceHandle": "done",
+      "target": "iter_out",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_step_out_pred",
+      "source": "step",
+      "sourceHandle": "final_answer",
+      "target": "graph_out_pred",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_out_succ",
+      "source": "iter_out",
+      "sourceHandle": "final_success",
+      "target": "graph_out_success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_out_met",
+      "source": "iter_out",
+      "sourceHandle": "final_metrics",
+      "target": "graph_out_metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_view_rgb",
+      "source": "step",
+      "sourceHandle": "rgb",
+      "target": "viewer_obs",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_view_scr",
+      "source": "step",
+      "sourceHandle": "next_scratchpad",
+      "target": "viewer_scratchpad",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_step_view_met",
+      "source": "step",
+      "sourceHandle": "metrics",
+      "target": "viewer_metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_hmmig_1",
+      "source": "reset",
+      "sourceHandle": "episode_id",
+      "target": "seed_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_carry_answer",
+      "source": "step",
+      "sourceHandle": "final_answer",
+      "target": "iter_out",
+      "targetHandle": "answer"
+    },
+    {
+      "id": "e_carry_success",
+      "source": "step",
+      "sourceHandle": "success",
+      "target": "iter_out",
+      "targetHandle": "success"
+    },
+    {
+      "id": "e_carry_metrics",
+      "source": "step",
+      "sourceHandle": "metrics",
+      "target": "iter_out",
+      "targetHandle": "metrics"
+    }
+  ]
+}

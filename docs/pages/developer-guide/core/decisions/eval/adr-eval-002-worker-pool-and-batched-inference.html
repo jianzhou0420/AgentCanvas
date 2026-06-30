@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-eval-002 — AgentCanvas</title>
+<meta name="description" content="Worker-pool batch env + batched inference tier">
+<meta property="og:title" content="ADR-eval-002 — AgentCanvas">
+<meta property="og:description" content="Worker-pool batch env + batched inference tier">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Eval</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-eval-002</span>
+  </div>
+  <div class="last-updated">2026-04-17 14:00</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-eval);">ADR-eval-002</h1>
+  <p class="tagline">Worker-pool batch env + batched inference tier</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-17 14:00</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>eval</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-028</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Eval Phase 1 (ADR-eval-001) ships a working <code>BatchEvalRunner</code> (<code>agent_loop/eval_batch.py:117</code>) that runs a graph episode-by-episode through a single <code>LoopRunner</code>, sharing the canvas Play code path via <code>BaseController</code> (ADR-server-002). The two env nodesets in tree — <code>EnvHabitatNodeSet</code> (<code>workspace/nodesets/server/habitat.py:1442</code>) wrapping a single <code>habitat.Env</code> and <code>EnvMP3DNodeSet</code> (<code>workspace/nodesets/server/matterport3d.py:2329</code>) wrapping a single <code>MP3DEnvManager</code> (explicitly singleton at <code>matterport3d.py:94</code>) — both expose <code>set_episode</code>/<code>reset_episode</code> against one in-process simulator; neither uses <code>habitat.VectorEnv</code> or any vectorised binding. The eval loop is consequently sequential (<code>for i in range(total)</code> at <code>eval_batch.py:176</code>) and the API is single-tenant by construction (one <code>_current_run</code> slot at <code>api/execution/eval.py:28</code>, single-mutex <code>ExecutionGuard</code> at <code>state.py:26</code>). For a VLN method evaluated over the 1839 R2R-CE val_unseen episodes — the headline number every paper in the roadmap reports — wall-clock runs at one-episode-at-a-time even on a multi-GPU box; for AAS workflows (TODO F8/F9/F10) where each candidate graph needs a metric on the same split, this becomes the rate limiter for the entire research loop. Roadmap TODO F5 ("Eval Phase 2") names env reset between episodes and run comparison; TODO F7 names Docker server mode for heavy env nodesets — both presuppose the orchestration layer this ADR introduces. Two distinct gains are on the table: env-side throughput (run K episodes against K env subprocesses) and inference-side efficiency (don't load the policy/LLM K times — batch K samples through one model per step). They have to be designed together because the batching collector needs a stable batch key that only exists once the per-worker graph instances are addressable.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Six rules, landing across three phases (PA foundation → PB multi-worker env → PC batched inference). All six are decided here so that PB/PC can be implemented without re-opening the design.</p>
+<p>(1) <strong><code>EnvWorkerPool</code> between <code>BatchEvalRunner</code> and <code>LoopRunner</code></strong> (PA-3, PB-2): a new <code>agent_loop/env_worker_pool.py</code> owns the episode queue and the N concurrent worker coroutines. <code>BatchEvalRunner.execute()</code> no longer iterates episodes itself — it builds a pool, hands it the graph + episode iterator + per-step budget, and <code>await pool.run()</code> returns the per-episode results. At <code>worker_count=1</code> the pool is a single slot exercising the same code path as today. Each worker pulls the next episode from an <code>asyncio.Queue</code>, sets it via its own bound controller proxy, runs a fresh <code>LoopRunner</code> to completion, collects metrics, and pulls again. <code>asyncio.gather</code> over the N workers; <code>stop_event.set()</code> drains the queue gracefully so in-flight episodes finish but no new ones start.</p>
+<p>(2) <strong>Per-<code>LoopRunner</code> <code>controller_overrides</code> binding</strong> (PA-1): <code>LoopRunner.__init__</code> gains <code>controller_overrides: dict[str, BaseController] | None = None</code>. Any executor-side resolution that today calls the global <code>get_controller(name)</code> registry (<code>components/controllers.py:241</code>) now goes through a runner-scoped resolver that checks <code>controller_overrides</code> first, then falls back to the global registry for nodesets the pool didn't shard. Single-worker eval and canvas Play see no change because the override map is empty. Worker K passes <code>{"env_habitat": tagged_proxy_K}</code> so its <code>LoopRunner</code> only ever talks to its own env subprocess. Per-runner binding is preferred over a <code>contextvars</code>-based "current worker" magic — it survives nodes that spawn their own asyncio tasks without copying context, and it makes the binding visible at the runner construction site rather than implicit in task-local state.</p>
+<p>(3) <strong><code>worker_count</code> and <code>per_step_budget_sec</code> on <code>EvalConfig</code></strong> (PA-2): <code>EvalConfig</code> (<code>eval_batch.py:50</code>) gains <code>worker_count: int = 1</code> and <code>per_step_budget_sec: float | None = None</code>. When None, the budget resolves from a new <code>default_per_step_budget_sec: ClassVar[float]</code> on <code>BaseNodeSet</code> (default 5.0; Habitat declares 2.0, LLM-heavy nodesets like MapGPT declare 30.0). The per-episode timeout is <code>asyncio.wait_for(LoopRunner.run, timeout=max_steps * per_step_budget_sec)</code>; an exhausted timeout marks the episode <code>error</code> with <code>error="timeout"</code>, releases the worker, and the queue continues — one stuck worker can never block <code>asyncio.gather</code>. Worker count is fixed by the user via the eval form (and <code>StartEvalV2Request</code>), not auto-detected from GPU count, because the right N depends on whether the bottleneck is env stepping (wants N≈GPU count) or LLM I/O (wants N much higher) — the user knows their hardware and graph shape, the framework doesn't.</p>
+<p>(4) <strong><code>ExecutionGuard</code> stays single-mutex</strong> (no change): one batch eval run holds <code>ExecutionGuard</code> for the whole batch, all N workers run under that one holder, canvas Play returns 409 for the duration. No carve-out for "bulk" mode, no per-nodeset locking, no per-worker sub-holders. This deliberately keeps the guard's invariant ("at most one execution at a time") that the canvas Play path and <code>BatchEvalRunner</code> already rely on. Coexisting canvas Play during a batch eval is rejected as a v1 feature: it would force per-nodeset dependency analysis on every Play click and the UX win is small relative to the engineering cost.</p>
+<p>(5) <strong><code>WorkspaceComponentRegistry</code> spawns N tagged env-nodeset servers</strong> (PB-1): <code>ensure_nodesets_for_graph</code> gains a <code>worker_count: int = 1</code> parameter. For nodesets the eval pool wants sharded (env nodesets — recognised today by their controller carrying eval metadata, see <code>registry.get_eval_metadata_for_nodeset</code>), it spawns N <code>AutoServerApp</code> subprocesses on N consecutive ports and registers N <code>RemoteControllerProxy</code> instances tagged <code>"{name}#{k}"</code> for <code>k ∈ [0, N)</code>. Non-env nodesets (parse/format/control nodes) stay singleton in the main process — they're stateless across episodes and N copies of an LLM prompt formatter would be pure waste. Pool teardown stops all N subprocesses via the existing <code>BaseServer.stop()</code> path; orphan-process protection is the same <code>subprocess.Popen</code> lifecycle that single-worker server mode already uses (<code>server/base_server.py:130</code>). Spawning happens at <code>EvalWorkerPool.__aenter__</code> time so a v1 batch run that doesn't use server-mode env nodesets pays no extra startup cost.</p>
+<p>(6) <strong>Batched inference tier with <code>batched</code>/<code>batch_dim</code> ClassVar opt-in</strong> (PC-1, PC-2, PC-3): heavy GPU nodes (policy_cma, future local-vLLM bindings) opt into a shared model server instead of being duplicated per worker. Five sub-rules: (6a) <code>BaseCanvasNode</code> gains <code>batched: ClassVar[bool] = False</code> and <code>batch_dim: ClassVar[str] = ""</code> — author marks intent; default False = no behaviour change for any existing node. (6b) The <strong>batch key is <code>(node.id, config_hash)</code></strong> — workers run the same graph JSON, so <code>node.id "policy_forward_42"</code> exists in W0..W(N-1) and is by construction the same logical operation; appending <code>config_hash</code> (sha of the resolved <code>config</code> dict) prevents accidental cross-batching when two policy nodes in one graph point at different checkpoints. The registry walks the graph at load: nodes with <code>batched=True</code> get their in-process handler swapped for a <code>BatchedClient</code> keyed by <code>(node.id, config_hash)</code> that submits inputs to a <code>BatchedInferenceServer</code> and awaits its slice. (6c) <strong>The server is pure-functional; the client carries state</strong> — RNN hidden states live with the worker (passed in/out via explicit <code>hidden_in</code>/<code>hidden_out</code> ports on the node), so <code>BatchedInferenceServer</code> never holds per-worker state and the batched forward pass is just <code>model.forward(stack(samples), stack(hidden_ins)) → (stack(actions), stack(hidden_outs))</code>. This deliberately avoids the trap of a stateful per-worker dict on the server, which would re-introduce the cross-worker coupling the worker pool is meant to eliminate. <code>policy_cma__forward</code> (<code>workspace/nodesets/server/policy_cma.py</code>) is the v1 user — its hidden state becomes explicit ports, which is also a cleanup the existing single-worker code already wanted (currently the state lives on <code>_ServerContext</code> at <code>server/auto_server_app.py:33</code>, an attribute-bag side channel). (6d) <strong>Flush trigger: <code>batch_size==worker_count OR flush_timeout_ms</code> elapsed</strong> (default 50 ms). Fixed-size flush alone would deadlock if any worker stalls or terminates early; pure timeout would sacrifice the batching win. The OR rule is the production-standard dynamic-batching shape (Triton, vLLM, TF-Serving). The timeout is per-batch-key, restarts on each new submission, and is configurable per node via the same <code>default_per_step_budget_sec</code> mechanism. (6e) <strong><code>AutoServerApp</code> extension via a <code>@batched_handler</code> decorator</strong> instead of a separate <code>BatchedModelServer</code> base — keeps one server-mode story (one subprocess type, one manifest, one <code>/health</code>) rather than splitting it into batched-vs-not. The decorator marks a <code>ServerFunction</code> as batched; the server-side dispatcher accumulates calls per <code>(node.id, config_hash)</code> and flushes via the rule in (6d). At <code>worker_count=1</code> the <code>BatchedClient</code> is functionally a no-op (queue of size 1 flushes immediately on every call), so single-worker behaviour is bit-identical to today.</p>
+<p><strong>Out of scope</strong> (explicit, deferred to follow-up ADRs): (i) Docker isolation for env subprocesses (TODO F7) — the <code>subprocess.Popen</code> boundary in (5) is designed so swapping in container spawn is a one-file change; not done here. (ii) Per-node parallelism / Pregel supersteps (TODO F3) — different problem, orthogonal axis. (iii) Eval Phase 2 run-comparison UI and replay viewer — separate feature. (iv) LLM-side dynamic batching via local vLLM — Phase C ships PyTorch policy batching only; LLM calls continue through litellm's existing request-level concurrency, which is already efficient because the upstream provider does its own server-side batching. (v) Multi-graph A/B in one batch — needs the run-registry refactor (today's <code>_current_run</code> global slot blocks it) and is its own design.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Vectorised env inside the nodeset</strong> (<code>habitat.VectorEnv</code> or N MatterSim bindings sharing scenes) — rejected: forces a batch dim through every wire type touched by env outputs (IMAGE becomes (N,H,W,3), ACTION becomes (N,), STEP_RESULT becomes a list of N dicts), which contradicts ADR-dataflow-005's "wires move semantic items one-at-a-time" rule and breaks every existing node downstream of the env. The N-binding approach also doesn't scale to MP3D where <code>MP3DEnvManager</code> is explicitly singleton at <code>matterport3d.py:94</code> and the C++ MatterSim binding doesn't cleanly support N independent simulators in one process. (b) <strong>Auto-pick <code>worker_count</code> from <code>torch.cuda.device_count()</code></strong> — rejected: assumes Habitat-style env-per-GPU shape, bad fit for I/O-bound LLM-only graphs (MapGPT, NavGPT) where N=1 GPU could service N=8 workers because the bottleneck is OpenAI/Anthropic round-trip latency, not local compute. The user knows their bottleneck; a config field is honest. (c) <strong><code>contextvars</code>-based per-worker controller resolution</strong> instead of <code>controller_overrides</code> on <code>LoopRunner</code> — rejected: a node that does <code>asyncio.create_task(...)</code> without copying context would silently route to the wrong worker's env, which is exactly the bug class the worker pool is meant to eliminate. Per-runner binding makes the wiring visible at the construction site. (d) <strong>Server-side per-worker state on <code>BatchedInferenceServer</code></strong> (server holds <code>hidden_states[worker_id]</code>) instead of client-carried state via explicit ports — rejected: cross-worker coupling on the server (one worker's slow flush blocks another's read of its own hidden state); harder to checkpoint; harder to migrate workers across server restarts; and it leaks a "worker_id" concept into the server contract that should stay internal to the pool. Pure-functional server + explicit hidden-state ports also mean the same node can be swapped between batched and unbatched mode by toggling <code>batched=True</code> without changing its port surface. (e) <strong>Author-declared "model identity" string</strong> (e.g. <code>model_id = "cma_v1"</code>) as the batch key, instead of <code>(node.id, config_hash)</code> — rejected: it asks the author to invent a global namespace and risks two unrelated graphs sharing a batch key by accident; <code>node.id</code> plus <code>config_hash</code> already gives the right scope (same graph, same config = same logical op) for free, with no author burden. (f) <strong>Eval and canvas coexist during a batch run via per-nodeset locks on <code>ExecutionGuard</code></strong> — rejected: small UX win (canvas Play during a long eval is rare and confusing — the user expects the batch to be the only thing using the env), large engineering cost (per-Play dependency analysis against the active eval's nodeset set), and <code>ExecutionGuard</code> stops being a one-line invariant. Read-only canvas inspection during a run is already supported (no Play, just opening graphs and viewing logs).</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The system has two scarce resources — env subprocesses (CPU/GPU/memory bound by the simulator) and policy/LLM models (VRAM bound by the checkpoint). v1 batches both correctly: env subprocesses scale horizontally via the worker pool, models scale vertically via the batched inference tier. Splitting the design into Phase A / B / C is load-bearing — Phase A is a refactor that ships zero behaviour change at <code>worker_count=1</code>, which means it can land and bake before Phase B introduces concurrency, and Phase B can validate the worker-isolation invariants (one env per worker, no controller bleed) before Phase C adds the cross-worker rendezvous of the batched inference server. The <code>(node.id, config_hash)</code> batch key is the smallest decision in the ADR but the load-bearing one for batched inference: it answers the question "which calls collapse into one forward pass" without inventing a new namespace, and it falls out of an invariant that already exists (workers run the same graph JSON). The pure-functional server with client-carried hidden state is the second load-bearing decision: it keeps the server stateless, which means the batched inference tier can be horizontally scaled later (a pool of model servers, not just N workers behind one server) without re-designing the contract. The <code>ExecutionGuard</code> non-decision is a non-decision deliberately — every line of code that this ADR doesn't change is a line that doesn't need re-validating, and a single global mutex during eval is a property the canvas already assumed. The opt-in <code>batched=True</code> ClassVar means existing nodes are unaffected, and at <code>worker_count=1</code> the <code>BatchedClient</code> is a no-op, so the code paths converge: a v1 user who just sets <code>worker_count=4</code> sees env throughput improve linearly; a v1 user who additionally sets <code>batched=True</code> on policy_cma sees VRAM stay flat. The two TODOs this directly progresses (F5 worker-side, F7 Docker-side) line up cleanly: F7 becomes a one-file swap of the spawn boundary in rule (5), F5's "env reset between episodes" is solved by the fresh-<code>LoopRunner</code>-per-episode + tagged-proxy invariant in rule (1)+(2). The two TODOs it doesn't progress (F3 per-node parallelism, run-comparison UI) are out of scope on purpose — orthogonal axes that would muddy the design if folded in.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>tutorials/batch-eval.md (new — author guide for <code>worker_count</code>, <code>batched=True</code>, per-worker debugging), core/roadmap.md (mark F5 partial: worker pool ✓, run comparison UI ✗; mark F7 unblocked, design ready), core/glossary.md (add <code>EnvWorkerPool</code>, <code>BatchedInferenceServer</code>, <code>BatchedClient</code>, <code>controller_overrides</code> rows), core/codebase-map.md (add <code>agent_loop/env_worker_pool.py</code>, <code>server/batched_inference.py</code>), .claude/PROJECT_OVERVIEW.md (next rebuild)</p>
+<p><strong>Follow-up</strong>: <a href="../server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a> names the N-tagged-subprocess shape as one of two env deployment modes (<code>replicated</code>, the implicit default here) and adds <code>shared</code> as the pure-functional counterpart — reusing this ADR's Phase-C tier end-to-end.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

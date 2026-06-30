@@ -1,0 +1,97 @@
+name: ac-hmeqa
+# ═══════════════════════════════════════════════════════════════════════
+# HM-EQA / explore-eqa conda env (Python 3.9).
+#
+# Lives alongside `vlnce` (Python 3.8, habitat-sim 0.1.7). HM-EQA uses a
+# newer habitat-sim (0.2.x / 0.3.x) and Prismatic VLM (torch 2.2.1, CUDA
+# 12.1), both incompatible with the vlnce stack — separate env required.
+#
+# Consumed by:
+#   workspace/nodesets/server/hmeqa.py  (server_python points here)
+#
+# Activation after `install_ac_hmeqa.sh`:
+#   export HMEQA_PYTHON=/home/$(whoami)/miniforge3/envs/ac-hmeqa/bin/python
+#
+# ═══════════════════════════════════════════════════════════════════════
+channels:
+  - aihabitat
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  # Python version (explore-eqa pins 3.9; Prismatic + habitat-sim latest both support it)
+  - python=3.9
+
+  # C++ runtime (habitat-sim binaries need modern libstdcxx)
+  - libstdcxx-ng>=12.0.0
+
+  # Habitat-Sim headless from aihabitat channel.
+  #
+  # Pinned to 0.3.3 — the latest 0.3.x. The explore-eqa paper README just
+  # says "install latest"; any 0.3.x is paper-faithful. We keep this
+  # tracking the latest 0.3.x by default.
+  #
+  # All 0.3.x versions on this machine SIGSEGV at Simulator() construction
+  # without `nvidia_egl_workaround.so`: NVIDIA driver 570.x (released
+  # 2025-03) returns a bogus pointer from glGetString(GL_VENDOR) on the
+  # headless EGL path, which Magnum's WindowlessEglApplication.cpp:492
+  # strlen's into invalid memory. The shim built by install_ac_hmeqa.sh
+  # intercepts glGetString and forges clearly-invalid returns to NULL so
+  # Magnum's NULL fast-path kicks in. The shim is loaded automatically
+  # via this env's activate.d hook (interactive use) and via the
+  # `EnvHMEQANodeSet.server_env` injection (auto_host server-mode).
+  #
+  # Build glob is `py3.9_headless_linux_*`.
+  - habitat-sim=0.3.3=py3.9_headless_linux_*
+
+  # Core numerics — explore-eqa pins
+  - numpy=1.23.5
+  - scipy=1.12.0
+  - numba=0.59.0
+  - quaternion
+  - matplotlib=3.8.0
+  - imageio
+  - imageio-ffmpeg
+  - pillow
+  - tqdm
+  - attrs
+  - pyyaml
+
+  # Pip-only deps
+  - pip
+  - pip:
+      # PyTorch 2.2.1 + CUDA 12.1 (matches explore-eqa environment.yml)
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.2.1
+      - torchvision==0.17.1
+      - torchaudio==2.2.1
+
+      # Prismatic VLM deps (explore-eqa upstream)
+      - accelerate==0.27.2
+      - transformers==4.34.1
+      - tokenizers==0.14.1
+      - timm==0.9.16
+      - einops==0.7.0
+      - safetensors==0.4.2
+      - draccus==0.7.1
+      - huggingface-hub==0.17.3
+      - omegaconf==2.3.0
+
+      # TSDFPlanner deps (vendored tsdf.py + geom.py)
+      - scikit-image==0.22.0
+      - scikit-learn==1.4.1.post1
+
+      # AgentCanvas backend SDK — the nodeset imports `app.components`
+      # when loaded server-mode via `auto_host`, so the agentcanvas
+      # project itself and its fastapi/pydantic stack must be installed.
+      - fastapi[standard]>=0.115.0
+      - pydantic>=2.10.0
+      - pydantic-settings>=2.6.0
+      - python-dotenv>=1.0.1
+      - httpx>=0.28.0
+      - websockets
+
+      # NOTE: the `app` package is NOT installed as a wheel here — the project
+      # root has no pyproject.toml. Server-mode nodesets get `app` via
+      # PYTHONPATH injected by auto_host when it spawns the subprocess.

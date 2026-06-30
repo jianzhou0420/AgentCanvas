@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-008 — AgentCanvas</title>
+<meta name="description" content="Two-sided iterIn — fold the run-start `initialize` pivot into iterIn&#x27;s left/input side (3 pivots → 2)">
+<meta property="og:title" content="ADR-dataflow-008 — AgentCanvas">
+<meta property="og:description" content="Two-sided iterIn — fold the run-start `initialize` pivot into iterIn&#x27;s left/input side (3 pivots → 2)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-008</span>
+  </div>
+  <div class="last-updated">2026-06-09 21:32</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-008</h1>
+  <p class="tagline">Two-sided iterIn — fold the run-start `initialize` pivot into iterIn's left/input side (3 pivots → 2)</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-06-09 21:32</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Revises</dt><dd><a href='adr-dataflow-006-three-pivot-boundary-nodes.html'>ADR-dataflow-006</a> (pivot count 3 → 2)</dd></dl>
+
+<div class='callout note'><p>Partial revision of <a href="adr-dataflow-006-three-pivot-boundary-nodes.html">ADR-dataflow-006</a>. That ADR introduced the separate <code>initialize</code> pivot to cure iterIn's dual-role multi-fire problem. This ADR <strong>folds <code>initialize</code> back into iterIn's input side</strong> — but keeps everything -006 actually fixed: the <code>init_</code>/<code>iterout_</code> prefix-separation of synthesised slots, and the three temporal phases (pre-loop / in-loop / after-loop). What changes is purely <em>where the init slots are authored</em> (on the iterIn, not on a separate node) and the node-type count.</p></div>
+
+<h2 id='context'>Context</h2>
+<p>ADR-dataflow-006 split the run-start collection role out of <code>iterIn</code> into a separate <code>initialize</code> sink, giving three pivot node types per loop scope (<code>initialize</code>, <code>iterIn</code>, <code>iterOut</code>). Two things made that split look heavier than it needed to be in hindsight. (a) <code>initialize</code> is <strong>already half-dissolved</strong>: its ports are not consumed as a node at all — <code>_synthesize_iterin_ports</code> (<code>graph_def.py</code>) folds the paired <code>initialize.ports</code> into iterIn's unified <code>config.ports</code> surface as <code>init_&lt;X&gt;</code> slots at load, and the executor's run-start transfer just re-prefixes and writes those into <code>iterIn.port_slots</code>. The separate node is effectively a wire-collection anchor for slots iterIn already owns. (b) The platform's north star is <strong>AAS search-space regularisation</strong> (paper&nbsp;#1): the searchable graph vocabulary should be as small and regular as possible, and a pivot type that adds no expressiveness inflates it. The triggering observation (user): the seed nodes feeding <code>initialize</code> could just feed iterIn's left/input side directly, and iterIn would "perfectly take over" the run-start role.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Make <code>iterIn</code> <strong>two-sided</strong> and retire <code>initialize</code> as an authored node. iterIn's <strong>left</strong> side carries the run-start init inputs (captured once, at run start), its <strong>right</strong> side the per-iteration loop-carry outputs; <code>iterOut</code> is unchanged. Concretely:</p>
+<ul>
+  <li><strong>Authoring</strong>: iterIn declares its init ports in a new <code>config.initPorts</code> list (named to dodge the rejected legacy <code>init_ports</code> key). <code>_synthesize_iterin_ports</code> reads <code>initPorts</code> as <code>init_</code>-origin ports (in addition to the legacy paired <code>initialize</code>, kept for back-compat). The frontend mirror <code>synthesizeIterInPortsForId</code> matches.</li>
+  <li><strong>Execution</strong>: a build-time pass <code>_absorb_initialize_pivots</code> (in <code>graph_executor.py</code>, run after <code>flatten_graph</code>) retargets any legacy <code>initialize</code>'s incoming edges onto the paired iterIn with the <code>init_</code> prefix and drops the node. The executor already routes any edge targeting an iterIn into <code>port_slots</code> via <code>_route_value_to_port</code>, so no new routing is needed. The run-start <code>initialize</code>→iterIn transfer block is removed.</li>
+  <li><strong>Frontend</strong>: <code>StripLayout</code> renders left input handles for iterIn's init-origin ports; the paired-drop handler creates <code>iterIn</code>(<code>initPorts:[]</code>)&nbsp;+&nbsp;<code>iterOut</code> only; <code>IterInExpandPanel</code> gains an editable Init-inputs list; <code>initialize</code> is hidden from the palette (static + backend-schema-driven), though still backend-registered so legacy graphs render.</li>
+  <li><strong>Migration</strong>: all 17 in-repo graphs (incl. one composite graph_node) are converted to the <code>initPorts</code> form by <code>scripts/migrations/migrate_initialize_to_initports.py</code>, which is equivalence-gated — it builds the flatten+absorb exec form (synthesised iterIn ports + node-id set + edge-endpoint set) before and after and refuses to write any graph whose exec form is not byte-identical.</li>
+</ul>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep three pivots</strong> — rejected; <code>initialize</code> adds a node type without adding expressiveness, and the AAS search benefits from a smaller, more regular pivot vocabulary. (b) <strong>Hard-eliminate <code>initialize</code> and reject any graph still using it</strong> (as ADR-031 did for <code>init_ports</code>) — rejected; keeping the node-type registered plus an <em>execution-time</em> absorb lets unmigrated / legacy graphs load and run unchanged, and makes JSON migration opt-in per file rather than a flag day. (c) <strong>Keep <code>initialize</code> at runtime but synthesise it as a hidden internal node at load</strong> (authoring drops it, runtime keeps it) — rejected; this retains the runtime concept and injects synthetic nodes that muddy logging / replay / scope-analysis (which key on node ids), the opposite of the user's "iterIn takes over" mental model and of the regularisation goal. (d) <strong>Force after-loop work through an iterOut output side at the same time</strong> (full left/right symmetry on both pivots) — deferred; investigation showed the post-loop pass has no clean terminating-iterOut fire on 3 of 4 exit paths and the two production <code>post_loop</code> graphs feed their <code>evaluate</code> from body nodes, so "everything through iterOut" would stale their inputs. The after-loop stage stays as the existing <code>config.post_loop</code> + <code>_post_loop_pass</code>.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The change is safe because the property ADR-dataflow-006 actually relied on — the <code>init_</code>/<code>iterout_</code> prefix-separation of iterIn's synthesised slots (the real fix for the v3 "obs-freeze" dual-write bug) — is preserved unchanged; it lives on iterIn's port surface, not on the separate node. Relaxing -006's "iterIn takes no canvas wires" invariant is therefore sound: init values now arrive as ordinary incoming edges, but they land in disjoint <code>init_&lt;X&gt;</code> slots, so they cannot collide with the <code>iterout_&lt;X&gt;</code> loop-carry writes. Because the executor already routes iterIn-targeted edges into <code>port_slots</code>, the runtime delta is essentially edge-rewiring plus deleting one node type — small and contained. Behaviour is <em>provably</em> preserved: for all 17 graphs the synthesised iterIn port surface equals the pre-change <code>HEAD</code> version and the flatten+absorb exec form is byte-identical; a 10-episode mapgpt-mp3d eval (gpt-5-mini, 10 workers) completed clean on the migrated graph. The temporal phase decomposition is intact — <strong>pre-loop</strong> = iterIn's left inputs (captured once), <strong>in-loop</strong> = the body, <strong>after-loop</strong> = the existing post-loop pass — so this is a vocabulary reduction (3 → 2 pivot types), not a semantics change.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>core/glossary.md (<code>Initialize</code> entry → deprecated/folded; <code>iterIn</code> now two-sided; new <code>initPorts</code> term), core/architecture.md (§4.1 Execution Engine — three-pivot → two-sided iteration), capabilities/graph-execution-engine.md + capabilities/graph-expressible-agents.md (three-pivot framing), core/codebase-map.md (new <code>_absorb_initialize_pivots</code> helper; <code>scripts/migrations/migrate_initialize_to_initports.py</code>), decisions/dataflow/index.md + decisions/index.md (this entry).</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

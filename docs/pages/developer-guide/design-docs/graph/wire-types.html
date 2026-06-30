@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wire Type System — AgentCanvas</title>
+<meta name="description" content="The typed-port system — the registry, the compatibility rule, LIST[T], serialisation, and canvas colours">
+<meta property="og:title" content="Wire Type System — AgentCanvas">
+<meta property="og:description" content="The typed-port system — the registry, the compatibility rule, LIST[T], serialisation, and canvas colours">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/wire-types.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="wt-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:560px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:12px; fill: var(--fg-dim); }
+  .rxsvg .ok { stroke:#22c55e; stroke-width:1.8; fill:none; marker-end:url(#wtok); }
+  .rxsvg .no { stroke:#ef4444; stroke-width:1.8; fill:none; stroke-dasharray:5 4; marker-end:url(#wtno); }
+  .cdot { display:inline-block; width:12px; height:12px; border-radius:3px;
+    vertical-align:-1px; margin-right:6px; border:1px solid rgba(128,128,128,.35); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/wire-types.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Wire Type System</span>
+  </div>
+  <div class="last-updated">2026-06-16 12:00</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Wire Type System</h1>
+  <p class="tagline">The typed-port system — the registry, the compatibility rule, LIST[T], serialisation, and canvas colours</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="wtok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#22c55e"/></marker>
+  <marker id="wtno" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ef4444"/></marker>
+</defs></svg>
+
+<p class="lede">Every port on every node carries a <strong>wire type</strong> — a short string like <code>IMAGE</code>, <code>TEXT</code>, or <code>CONTROL</code>. The type does four jobs: it <strong>pins one canonical format</strong> (dtype / shape / range / units) so a consumer never defensively normalises, it decides which ports may connect, it picks how the value is serialised when it crosses a process boundary, and it colours the handle on the canvas. This page is the authority on the type system; for the <code>EdgeDef</code>/<code>PortDef</code> schema that holds these strings, see <a href="graph-system.html#21-graphdefinition">Graph System §2.1</a>.</p>
+
+<div class="callout note">
+  <strong>v2 redesign (2026-06-13) — embodied-spanning catalog + format contracts.</strong>
+  The original catalog was VLN-shaped: <code>ACTION</code> meant <code>int 0–3</code>, which only fit discrete nav. v2 makes the catalog span VLN / EQA / VLA / manipulation and hardens the format contract per type:
+  <ul style="margin:.4rem 0 0;padding-left:1.2rem;">
+    <li><strong>Action split by kind</strong>: <code>ACTION</code> → <code>DISCRETE_ACTION</code> (an <code>int</code>/<code>str</code> index into the env's <em>declared</em> valid set — no fixed 0–3) + new <code>CONTROL</code> (continuous motor command). <code>POSE</code> doubles as a goal-pose/teleport action, <code>TEXT</code> as an EQA answer.</li>
+    <li><strong>Canonical format is the contract</strong>: <code>WIRE_FORMAT_SPEC</code> (in <code>wire_types.py</code>) is the single source of truth — <code>IMAGE</code> = uint8 RGB 0–255, <code>DEPTH</code> = float32 metres, etc. Producers must emit exactly this; not runtime-enforced (the load validator still checks only type-name compatibility, §7).</li>
+    <li><strong>Deprecations</strong>: <code>ACTION</code> (alias of <code>DISCRETE_ACTION</code>), <code>OBSERVATION</code>, <code>STEP_RESULT</code> are kept registered for backward-compat but slated for removal — see §13.</li>
+  </ul>
+  Migration of nodesets/graphs is staged in batches; until then legacy <code>ACTION</code> ports stay valid via <code>WIRE_TYPE_ALIASES</code>.
+</div>
+
+<hr>
+
+<h2 id="1-what-a-wire-type-is"><span class="num">1.</span> What a wire type is</h2>
+
+<p>A wire type is a label on a port, nothing more — there is no class hierarchy, no generics, no inheritance. The vocabulary is a flat set of <strong>nine current inner types</strong> (plus three deprecated names kept for backward-compat) and one <strong>modifier</strong> (<code>LIST[T]</code>). A node author writes the label as a plain string in a <code>PortDef</code>; the framework reads it at four moments — edge creation (frontend compatibility), graph load (backend compatibility, §7), transport (serialisation), and render (colour). Values on the wire are <em>not</em> runtime-checked against their type by default: a node can technically emit anything (§7), so the canonical format (§3) is a producer-side contract, not a guard.</p>
+
+<h2 id="2-the-compatibility-rule"><span class="num">2.</span> The compatibility rule, in one sentence</h2>
+
+<div class="callout note">
+  <strong>Two ports may connect iff</strong> either side is <code>ANY</code>, the two types are equal, or it is exactly <code>T → LIST[T]</code>. Everything else — including <code>LIST[T] → T</code> — is rejected.
+</div>
+
+<svg class="rxsvg" viewBox="0 0 520 196" role="img" aria-label="The four cases of the compatibility rule: IMAGE to IMAGE allowed; ANY to anything allowed in both directions; IMAGE to LIST of IMAGE allowed (auto-wrapped); LIST of IMAGE to IMAGE rejected as lossy.">
+  <text x="10" y="24" class="mono">IMAGE</text><path class="ok" d="M70,20 H150"/><text x="160" y="24" class="mono">IMAGE</text><text x="250" y="24" class="dim">equal — allowed</text>
+  <text x="10" y="68" class="mono">ANY</text><path class="ok" d="M70,64 H150"/><text x="160" y="68" class="mono">TEXT</text><text x="250" y="68" class="dim">ANY on either side — allowed</text>
+  <text x="10" y="112" class="mono">IMAGE</text><path class="ok" d="M70,108 H150"/><text x="160" y="112" class="mono">LIST[IMAGE]</text><text x="270" y="112" class="dim">T → LIST[T] — auto-wrapped</text>
+  <text x="10" y="156" class="mono">LIST[IMAGE]</text><path class="no" d="M90,152 H150"/><text x="160" y="156" class="mono">IMAGE</text><text x="250" y="156" class="dim">lossy — rejected</text>
+  <text x="10" y="186" class="dim">green = connects · red dashed = blocked</text>
+</svg>
+
+<p>The full algebra and the source function are in §6; the surprising part — <em>where</em> this rule is actually enforced — is in §7.</p>
+
+<h2 id="3-the-registry"><span class="num">3.</span> The registry at a glance</h2>
+
+<p>The canonical set lives in <code>agentcanvas/backend/app/standard/wire_types.py</code> as <code>WIRE_TYPES</code>; the format column is the machine-readable <code>WIRE_FORMAT_SPEC</code> in the same file. Nine current inner types, plus the <code>LIST[T]</code> modifier:</p>
+
+<table>
+<thead><tr><th>Type</th><th>Canonical format (the ONE on-wire shape)</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td><code>IMAGE</code></td><td><code>np.ndarray (H, W, 3) uint8</code>, RGB, <strong>0–255</strong></td><td>RGB frame — producer converts float/CHW</td></tr>
+<tr><td><code>DEPTH</code></td><td><code>np.ndarray (H, W) float32</code>, <strong>metres</strong>, invalid = 0.0</td><td>Depth map — never normalised on-wire</td></tr>
+<tr><td><code>POSE</code></td><td><code>dict{position:[x,y,z] m, orientation:[x,y,z,w] unit quat}</code></td><td>Agent pose / goal-pose action (renamed from <code>STATE</code>, ADR-dataflow-004)</td></tr>
+<tr><td><code>DISCRETE_ACTION</code></td><td><code>int | str</code> — index/id into the env's declared valid set</td><td>Discrete action (VLN 0–3, RxR 0–5, MP3D viewpoint id)</td></tr>
+<tr><td><code>CONTROL</code></td><td><code>dict{pos:[3], rot:[3] axis-angle rad, gripper:[-1,1] (+1=open), joint_position?:[N]}</code></td><td>Continuous motor command (VLA / manipulation)</td></tr>
+<tr><td><code>TEXT</code></td><td><code>str</code></td><td>Prompts, responses, instructions, EQA answers</td></tr>
+<tr><td><code>BOOL</code></td><td><code>bool</code></td><td>Boolean signal (e.g. <code>done</code> / <code>terminated</code>)</td></tr>
+<tr><td><code>METRICS</code></td><td><code>dict[str, float]</code></td><td>SPL / SR / nDTW / SDTW</td></tr>
+<tr><td><code>ANY</code></td><td>arbitrary — no format contract</td><td>Escape hatch for unstructured / prototype data + gym <code>info</code></td></tr>
+<tr><td><code>LIST[T]</code></td><td><code>list[T]</code></td><td><strong>Modifier</strong> — wraps any inner <code>T</code> so a port carries many values per firing (§5)</td></tr>
+</tbody>
+</table>
+
+<p><strong>Deprecated</strong> (still in <code>WIRE_TYPES</code> so legacy graphs load; see §13): <code>ACTION</code> (→ <code>DISCRETE_ACTION</code> via <code>WIRE_TYPE_ALIASES</code>), and the dead composites <code>OBSERVATION</code> / <code>STEP_RESULT</code> (no nodeset emits them — flat <code>rgb</code>/<code>depth</code> ports + the gym tuple <code>reward</code>/<code>terminated</code>/<code>truncated</code>/<code>info</code> won).</p>
+
+<p>That is the whole type system. The rest of this page is detail: what each type's value looks like (§4), how the list modifier behaves (§5), the exact compatibility algebra and where it's enforced (§6–§7), how values cross process boundaries (§8), how handles are coloured (§9), how this relates to the separate <em>state</em> value types (§10), and the deprecation/migration plan (§13).</p>
+
+<h2 id="4-per-type-semantics"><span class="num">4.</span> Per-type semantics</h2>
+
+<p>Most types are obvious from the table. The two action types and the two fixed-shape dicts are worth pinning down:</p>
+
+<pre class="hl">
+<span class="n">POSE</span>     <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">position</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">]</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">orientation</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">qx</span><span class="p">,</span> <span class="n">qy</span><span class="p">,</span> <span class="n">qz</span><span class="p">,</span> <span class="n">qw</span><span class="p">]</span><span class="p">}</span>
+<span class="n">CONTROL</span>  <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">pos</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">dx</span><span class="p">,</span> <span class="n">dy</span><span class="p">,</span> <span class="n">dz</span><span class="p">]</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">rot</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">rx</span><span class="p">,</span> <span class="n">ry</span><span class="p">,</span> <span class="n">rz</span><span class="p">]</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">gripper</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">}</span>  <span class="c1"># rot = axis-angle rad; gripper +1 open / -1 close</span>
+<span class="n">METRICS</span>  <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">spl</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mf">0.42</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">sr</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ndtw</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mf">0.65</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">sdtw</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mf">0.65</span><span class="p">}</span>
+</pre>
+
+<p><code>DISCRETE_ACTION</code> is an <code>int</code> or <code>str</code> index/id into the env's <em>declared</em> valid set — the env owns the set, the type no longer hardwires 0–3. So discrete Habitat nav (<code>0=STOP, 1=FORWARD, 2=TURN_LEFT, 3=TURN_RIGHT</code>), RxR (0–5), and MP3D panoramic viewpoint-id selection all share this one type. <code>CONTROL</code> is a named-field continuous motor command (delta end-effector + gripper, optionally absolute joint positions) — deliberately a self-describing dict rather than a bare 7-vector, so it isn't a raw-ndarray escape. <code>POSE</code> doubles as a "go-to-pose / teleport" action (greedy-follower nav, HM-EQA free-pose), and <code>TEXT</code> doubles as an EQA free-text answer. The <code>STATE → POSE</code> rename (ADR-dataflow-004) freed the word “state” to mean a stored memory slot (<a href="state-containers.html">state containers</a>). The deprecated composites <code>OBSERVATION</code> (<code>IMAGE</code>+<code>DEPTH</code>) and <code>STEP_RESULT</code> (<code>OBSERVATION</code>+<code>POSE</code>+<code>BOOL</code>+<code>METRICS?</code>) are documented in §13.</p>
+
+<div class="callout note">
+  <strong>Why <code>DEPTH</code> is float32 metres, not a normalised proxy.</strong> Two reasons. <strong>(1)</strong> Geometry consumers — TSDF integration, point-cloud projection, metric waypoint planning — need true metric depth, not a per-frame-normalised <code>[0,1]</code> map. <strong>(2)</strong> A class of models encodes <em>high-dynamic-range</em> metric depth that an 8-bit / normalised representation would destroy. <a href="https://vision-banana.github.io/">Vision Banana</a> (Google DeepMind, 2026 — an instruction-tuned <em>Nano Banana Pro</em> / Gemini-3 image model) is the sharp example: it estimates metric depth via a <em>strictly reversible power-law mapping of metric distance 0→∞ onto the edges of the RGB colour cube</em>, then decodes that pseudo-colour map back to exact metres. The decoded signal spans the full metric range with fine precision — precisely what <code>float32</code> (transported losslessly, §8) preserves and what the old normalise-to-PNG depth path obliterated.
+</div>
+
+<h2 id="5-list-modifier"><span class="num">5.</span> The <code>LIST[T]</code> modifier</h2>
+
+<p><code>LIST[T]</code> (<a href="../../core/decisions/dataflow/adr-dataflow-005-list-wire-type-modifier.html">ADR-dataflow-005</a>) is a modifier, not a new type: any inner <code>T</code> can be wrapped so a port carries <code>list[T]</code>. It exists for multi-image VLM calls (MapGPT), multi-LLM debate transcripts (DiscussNav), and population fan-in for search operators.</p>
+
+<p>The design rule is <strong>consumer-side coercion</strong>: producers stay scalar (a node that emits one <code>T</code> keeps its port <code>T</code>), and a consumer opts in by declaring its input <code>LIST[T]</code>. Whatever arrives, the executor guarantees the handler sees a <code>list[T]</code>:</p>
+
+<table>
+<thead><tr><th>Producer side</th><th>Edge</th><th>What the consumer's handler receives</th></tr></thead>
+<tbody>
+<tr><td><code>T</code> (one producer)</td><td><code>T → LIST[T]</code></td><td><code>[value]</code> — wrapped</td></tr>
+<tr><td><code>T</code> × N (fan-in)</td><td><code>N×T → LIST[T]</code></td><td><code>[v1, …, vN]</code> — concatenated in edge-declaration order</td></tr>
+<tr><td><code>LIST[T]</code> (one producer)</td><td><code>LIST[T] → LIST[T]</code></td><td>passthrough</td></tr>
+<tr><td><code>LIST[T]</code> × N (fan-in)</td><td><code>N×LIST[T] → LIST[T]</code></td><td>flattened + concatenated</td></tr>
+</tbody>
+</table>
+
+<p>The coercion happens in exactly one place — the executor's port-binding seam, <code>_route_value_to_port</code> in <code>graph_executor.py</code>. Producers, viewers, state containers, and serializers are all unchanged. Fan-in order follows the graph JSON's edge order, which keeps positional prompt references (“Image 3 is the third viewpoint”) stable across runs.</p>
+
+<p><strong>Use it</strong> when a node genuinely produces or consumes many items per firing. <strong>Don't</strong> wrap a scalar producer “just in case” — the executor wraps at the consumer, so it's redundant. Nested <code>LIST[LIST[T]]</code> is not supported; flatten in the producer or route through a composite.</p>
+
+<p>Declaring a list port in Python is just the wrapped string; on the canvas, the <code>PortListEditor</code> offers an inner type plus a <strong>list</strong> checkbox, and the saved <code>wire_type</code> becomes <code>LIST[&lt;inner&gt;]</code>. List handles render with a <strong>doubled outer ring</strong> in the inner type's colour (§9).</p>
+
+<h2 id="6-compatibility-algebra"><span class="num">6.</span> The compatibility algebra in full</h2>
+
+<p><code>validate_edge_wire_type(source_type, target_type) → (ok, reason)</code> in <code>graph_def.py</code> is the canonical rule. Six cases, in order:</p>
+
+<table>
+<thead><tr><th>#</th><th>Case</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>source or target missing / empty</td><td>allowed (schema-less edges fall through to runtime)</td></tr>
+<tr><td>2</td><td><code>ANY</code> on either side</td><td>allowed (escape hatch, symmetric)</td></tr>
+<tr><td>3</td><td>types equal</td><td>allowed</td></tr>
+<tr><td>4</td><td>scalar <code>T</code> → <code>LIST[U]</code></td><td>allowed <strong>iff</strong> <code>T == U</code>, else <code>type mismatch</code></td></tr>
+<tr><td>5</td><td><code>LIST[T]</code> → scalar</td><td><strong>rejected</strong> — <code>lossy connection rejected</code></td></tr>
+<tr><td>6</td><td>both-list or both-scalar, different inner types</td><td><strong>rejected</strong> — <code>type mismatch</code></td></tr>
+</tbody>
+</table>
+
+<p>Note the asymmetry between cases 4 and 5: widening one value into a singleton list is safe and automatic, but narrowing a list to a scalar would silently drop data, so it is refused.</p>
+
+<h2 id="7-where-enforced"><span class="num">7.</span> Validation — and where it actually happens</h2>
+
+<div class="callout">
+  <p><strong>Type compatibility is enforced at graph load and at the canvas, with runtime coverage staged.</strong> As of 2026-06-13 <code>validate_edge_wire_type</code> is wired into the backend load path via <code>validate_edge_wire_types</code> / <code>wire_type_report</code> — it is no longer dead code. Coverage is bounded by where a port's declared type can be <em>resolved</em>: builtin and <code>iterIn</code>/<code>iterOut</code> ports are always resolvable; a nodeset node's ports are only resolvable once its nodeset is loaded (its proxy class is registered in <code>NODE_HANDLERS</code>). An unresolved port is treated as allowed, so coverage degrades safely rather than producing false rejections.</p>
+</div>
+
+<p>What enforces what:</p>
+<ul>
+  <li><strong>Canvas drag (frontend, live):</strong> <code>isCompatibleWireConnection</code> (<code>layoutUtils.ts</code>) runs inside <code>useFlowStore.onConnect</code> before an edge enters the store. On a mismatch the drag is <strong>silently dropped</strong> (React Flow snaps the wire back) — it mirrors the §6 algebra exactly, stripping <code>LIST[…]</code> before comparing inner types. <strong>One asymmetry vs the backend:</strong> it does <em>not</em> canonicalise deprecated aliases, so a legacy <code>ACTION</code> → migrated <code>DISCRETE_ACTION</code> edge — which the backend accepts via <code>canonical_wire_type</code> (§13) — is rejected on the canvas during the migration window.</li>
+  <li><strong>Graph load (backend, hard 400):</strong> <code>validate_graph_connectivity</code> (<code>graph_def.py</code>) runs at <code>POST /api/navigate/run</code> and <code>POST /api/eval/v2/start</code>. Alongside its required-but-unwired-port check it now calls <code>validate_edge_wire_types</code>, raising HTTP 400 on a mismatch. At load time only builtin/iterIn types are resolvable (nodesets are loaded just after), so this layer hard-checks the builtin/iterIn edges.</li>
+  <li><strong>Runtime (backend, warn-only — staged):</strong> after <code>ensure_nodesets_for_graph</code> populates <code>NODE_HANDLERS</code>, the run/eval paths re-run <code>validate_edge_wire_types</code> over the <em>whole</em> graph (nodeset env↔method edges now resolvable) and <strong>log</strong> any mismatch. This is warn-only pending a clean-sweep before promotion to a hard 400.</li>
+  <li><strong>Standalone dev tool:</strong> <code>python -m app.tools.validate_graph &lt;name|--all&gt;</code> statically imports each nodeset module to read its declared ports (no simulator, no GPU, no backend — heavy runtimes load lazily) and runs the same <code>wire_type_report</code> core. The dev endpoint <code>POST /api/graphs/validate</code> exposes the same check (non-raising; optional <code>?ensure</code> loads nodesets for full coverage).</li>
+  <li><strong>Runtime value guards (opt-in):</strong> the <code>is_valid_*</code> guards in <code>wire_types.py</code> are advisory — a handler may call them to assert its inputs, but nothing enforces them automatically.</li>
+</ul>
+
+<pre class="hl">
+<span class="n">is_valid_image</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>            <span class="c1"># ndarray, ndim==3, shape[2]==3</span>
+<span class="n">is_valid_depth</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>            <span class="c1"># ndarray, ndim==2</span>
+<span class="n">is_valid_discrete_action</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>  <span class="c1"># int | str — env owns the valid set</span>
+<span class="n">is_valid_control</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>          <span class="c1"># dict with pos/rot/gripper/joint_position</span>
+<span class="n">is_valid_pose</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>             <span class="c1"># dict with &quot;position&quot; and &quot;orientation&quot;</span>
+<span class="n">is_valid_list_of</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">IMAGE</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">obj</span><span class="p">)</span> <span class="c1"># list whose items each pass is_valid_image</span>
+</pre>
+
+<div class="callout note">
+  <p><strong>Implication for code-generated graphs.</strong> A graph authored on the canvas can never reach the backend wire-mismatched. But a graph produced by code — most importantly the AAS architect, which edits graphs through the API rather than the canvas — gets <em>no</em> wire-type safety net at load: a <code>DEPTH → TEXT</code> edge is accepted and only surfaces (if at all) as a runtime error inside a handler. Treat the frontend rule as the contract; if you generate graphs, run them through the §6 algebra yourself.</p>
+</div>
+
+<h2 id="8-serialization"><span class="num">8.</span> Serialisation across boundaries</h2>
+
+<p>The same wire type takes a different concrete form on each of three transports. Authors never serialise by hand — the framework converts at the boundary, keyed on <code>wire_type</code>:</p>
+
+<table>
+<thead><tr><th>Type</th><th>In-process (node ↔ node)</th><th>WebSocket (backend → UI)</th><th>HTTP (framework ↔ server-mode nodeset)</th></tr></thead>
+<tbody>
+<tr><td><code>IMAGE</code></td><td>raw <code>np.ndarray</code></td><td>base64 PNG (lossless uint8)</td><td>base64 PNG (lossless uint8, compact)</td></tr>
+<tr><td><code>DEPTH</code></td><td>raw <code>np.ndarray</code></td><td>base64 PNG heatmap (<strong>lossy</strong>, display-only)</td><td><code>__ndarray__</code> marker (<strong>lossless</strong> float32 metres)</td></tr>
+<tr><td><code>DISCRETE_ACTION</code> / <code>BOOL</code></td><td><code>int</code>|<code>str</code> / <code>bool</code></td><td>number-or-string / boolean</td><td>number-or-string / boolean</td></tr>
+<tr><td><code>POSE</code> / <code>CONTROL</code> / <code>METRICS</code></td><td><code>dict</code></td><td>object</td><td>object (nested arrays → <code>__ndarray__</code>)</td></tr>
+<tr><td>any other dict holding ndarrays</td><td>native</td><td>object</td><td><code>__ndarray__</code> markers</td></tr>
+</tbody>
+</table>
+
+<p>In-process there is no serialisation at all — the executor moves <code>result["rgb"]</code> into the next node's pending inputs by reference. Over WebSocket and HTTP, JSON can't hold a numpy array, so two helper layers handle it:</p>
+
+<ul>
+  <li><strong>Display codecs (lossy, display-only)</strong> — <code>app/standard/wire_types.py</code>: <code>image_to_base64</code> / <code>base64_to_image</code>, <code>depth_to_base64</code> / <code>base64_to_depth</code>, and <code>serialize_for_display(wire_type, value)</code> which viewer sinks use to build <code>viewer_data</code> payloads. <code>depth_to_base64</code> normalises float32 metres to a 0–255 heatmap — fine for the viewer, <strong>never</strong> for the data path.</li>
+  <li><strong>HTTP transport (data path, lossless)</strong> — <code>app/server/serialization.py</code>: <code>serialize_value</code> / <code>deserialize_value</code> round-trip wire values for server-mode <code>/call/{fn}</code> traffic. <code>IMAGE</code> goes to a base64 PNG (lossless for uint8, compresses natural frames); <strong>everything else numpy — including <code>DEPTH</code> — rides the <code>{"__ndarray__": …, "dtype": …, "shape": …}</code> marker</strong> via <code>_make_json_safe</code> / <code>_restore_ndarrays</code> (<code>np.frombuffer</code> on the receiver), 4× smaller and lossless versus nested JSON lists.</li>
+</ul>
+
+<div class="callout warn">
+  <strong>Why DEPTH does not use PNG on the data path.</strong> PNG is 8/16-bit integer — it cannot represent <code>float32</code> metres. The earlier <code>serialize_value</code> DEPTH branch encoded depth as a normalised PNG, so a server-mode env's depth arrived at a parent-process consumer as a <code>[0,1]</code> array with the metric scale destroyed (a silent correctness bug for any geometry/TSDF/projection node). Fixed 2026-06-13: <code>DEPTH</code> now transports via the lossless <code>__ndarray__</code> marker; the PNG depth codec is display-only and the dead copy in <code>serialization.py</code> was removed.
+</div>
+
+<p>The single rule behind all of this: <strong>one canonical format per type, and the data path is always lossless</strong>. Native Python in-process, JSON-safe over the network (PNG for images, <code>__ndarray__</code> for every other array), lossy encodings confined to the display path — so the same handler code runs, with the same numeric values, whether a node is in-process or remote.</p>
+
+<h2 id="9-colours"><span class="num">9.</span> Canvas colours</h2>
+
+<p>A handle's colour is its <strong>wire type</strong>, not its node category — don't confuse the two: <strong>handle = wire type</strong>, <strong>node frame = category</strong> (the frame tint comes from <code>CATEGORY_STYLES</code> in the same file). The canonical map is <code>WIRE_COLORS</code> in <code>layoutUtils.ts</code>; <code>getWireColor</code> strips a <code>LIST[…]</code> wrapper before lookup, so a <code>LIST[IMAGE]</code> handle uses the <code>IMAGE</code> colour with a doubled ring (§5):</p>
+
+<table>
+<thead><tr><th>Type</th><th>Colour</th><th>Hex</th></tr></thead>
+<tbody>
+<tr><td><code>IMAGE</code></td><td><span class="cdot" style="background:#22c55e"></span>green</td><td><code>#22c55e</code></td></tr>
+<tr><td><code>DEPTH</code></td><td><span class="cdot" style="background:#06b6d4"></span>cyan</td><td><code>#06b6d4</code></td></tr>
+<tr><td><code>ACTION</code></td><td><span class="cdot" style="background:#f59e0b"></span>amber</td><td><code>#f59e0b</code></td></tr>
+<tr><td><code>POSE</code></td><td><span class="cdot" style="background:#8b5cf6"></span>violet</td><td><code>#8b5cf6</code></td></tr>
+<tr><td><code>TEXT</code></td><td><span class="cdot" style="background:#6b7280"></span>grey</td><td><code>#6b7280</code></td></tr>
+<tr><td><code>BOOL</code></td><td><span class="cdot" style="background:#ef4444"></span>red</td><td><code>#ef4444</code></td></tr>
+<tr><td><code>METRICS</code></td><td><span class="cdot" style="background:#3b82f6"></span>blue</td><td><code>#3b82f6</code></td></tr>
+<tr><td><code>OBSERVATION</code></td><td><span class="cdot" style="background:#22c55e"></span>green</td><td><code>#22c55e</code></td></tr>
+<tr><td><code>STEP_RESULT</code></td><td><span class="cdot" style="background:#ec4899"></span>pink</td><td><code>#ec4899</code></td></tr>
+<tr><td><code>ANY</code></td><td><span class="cdot" style="background:#9ca3af"></span>slate</td><td><code>#9ca3af</code></td></tr>
+</tbody>
+</table>
+
+<p>Any type without an entry falls back to the <code>ANY</code> slate. (<code>POSE</code> and <code>STEP_RESULT</code> were added to <code>WIRE_COLORS</code> on 2026-06-13 — before that, the <code>STATE → POSE</code> rename had left <code>POSE</code> handles rendering as slate.)</p>
+
+<div class="callout note">
+  <strong>v2 colours pending the frontend migration.</strong> <code>DISCRETE_ACTION</code> and <code>CONTROL</code> are backend-only as of the 2026-06-13 catalog change — <code>WIRE_COLORS</code> (frontend) has no entry yet, so their handles render slate until the frontend batch lands. Until then a legacy <code>ACTION</code> handle keeps its amber. Suggested when migrating: <code>DISCRETE_ACTION</code> inherits <code>ACTION</code>'s amber <code>#f59e0b</code>; <code>CONTROL</code> takes a distinct hue (e.g. orange <code>#fb923c</code>) to read apart from discrete actions.</p>
+</div>
+
+<h2 id="10-wire-vs-state-value-types"><span class="num">10.</span> Wire types vs state value types</h2>
+
+<p>A wire type travels through an edge once per firing — ephemeral, per-step. A <strong>state value type</strong> is the type of a slot in a <a href="state-containers.html">state container</a> — persistent memory that accumulates across iterations. The two registries overlap but are not the same: <code>STATE_VALUE_TYPES</code> drops the raw frame types (a container holds memory, not pixels) and adds domain memory types (<code>POINTCLOUD</code>, <code>OCCUPANCY_MAP</code>, <code>EMBEDDING</code>, <code>EPISODE_CONTEXT</code>).</p>
+
+<pre class="hl">
+<span class="n">STATE_VALUE_TYPES</span> <span class="o">=</span> <span class="p">{</span>                  <span class="c1"># state_containers.py — memory, not raw frames</span>
+    <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">BOOL</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">METRICS</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">POSE</span><span class="s2">&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;</span><span class="s2">POINTCLOUD</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">OCCUPANCY_MAP</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">EMBEDDING</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">EPISODE_CONTEXT</span><span class="s2">&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="n">_REMOVED_VALUE_TYPES</span> <span class="o">=</span> <span class="p">{</span>               <span class="c1"># rejected at build_container() with a ValueError</span>
+    <span class="s2">&quot;</span><span class="s2">STATE</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">IMAGE</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">DEPTH</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ACTION</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">OBSERVATION</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">STEP_RESULT</span><span class="s2">&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre>
+
+<p>Depth on the reducers, lifetimes, and grants is in <a href="state-containers.html">State Containers</a>; this contrast is all that belongs here.</p>
+
+<h2 id="11-adding-a-wire-type"><span class="num">11.</span> Adding a new wire type</h2>
+
+<p>Three touch-points, all mechanical:</p>
+<ol>
+  <li><strong>Register</strong> the constant in <code>WIRE_TYPES</code> <em>and</em> add its canonical-format line to <code>WIRE_FORMAT_SPEC</code> (<code>app/standard/wire_types.py</code>) — the spec is the contract a node author trusts. For <code>LIST[T]</code> support you do nothing — the modifier wraps any inner type automatically.</li>
+  <li><strong>Colour</strong> it: add a key to <code>WIRE_COLORS</code> (<code>layoutUtils.ts</code>), else handles render slate. Add it to the <code>PortListEditor</code> dropdown if authors should be able to pick it.</li>
+  <li><strong>Serialise</strong> it (only if it isn't already JSON-safe): add a branch to <code>serialize_for_display</code> / the HTTP transport, and optionally a <code>is_valid_&lt;type&gt;</code> guard.</li>
+</ol>
+
+<h2 id="12-file-reference"><span class="num">12.</span> File reference</h2>
+
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>agentcanvas/backend/app/standard/wire_types.py</code></td><td><code>WIRE_TYPES</code> registry + <code>WIRE_FORMAT_SPEC</code> (canonical-format contract) + <code>WIRE_TYPE_ALIASES</code>/<code>canonical_wire_type</code> (deprecated-name resolution), <code>LIST[T]</code> helpers (<code>is_list_type</code>/<code>unwrap_list</code>/<code>wrap_list</code>), type guards, image codecs, <code>serialize_for_display</code></td></tr>
+<tr><td><code>agentcanvas/backend/app/components/bases.py</code></td><td><code>PortDef</code> dataclass (<code>name</code>, <code>wire_type</code>, <code>description</code>, <code>optional</code>) + <code>BaseCanvasNode</code></td></tr>
+<tr><td><code>agentcanvas/backend/app/graph_def.py</code></td><td><code>validate_edge_wire_type</code> (the algebra) + <code>wire_type_report</code>/<code>validate_edge_wire_types</code> (whole-graph check, the shared core) + <code>validate_graph_connectivity</code> (required-port + wire-type check at load)</td></tr>
+<tr><td><code>agentcanvas/backend/app/tools/validate_graph.py</code></td><td>standalone dev CLI — static nodeset port introspection + <code>wire_type_report</code></td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td><td><code>_route_value_to_port</code> — the single <code>LIST[T]</code> coercion seam</td></tr>
+<tr><td><code>agentcanvas/backend/app/server/serialization.py</code></td><td>HTTP transport — <code>serialize_value</code>/<code>deserialize_value</code>, <code>__ndarray__</code> markers</td></tr>
+<tr><td><code>…/canvas/nodes/agentloop/inner/layouts/layoutUtils.ts</code></td><td><code>WIRE_COLORS</code> + <code>getWireColor</code> (frontend handle colours, <code>LIST[…]</code>-aware) + <code>isCompatibleWireConnection</code></td></tr>
+<tr><td><code>…/canvas/nodes/agentloop/inner/layouts/PortListEditor.tsx</code></td><td>The <code>port_list</code> editor — inner-type dropdown + list checkbox</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/state_containers.py</code></td><td><code>STATE_VALUE_TYPES</code> — the separate state-memory registry (§10)</td></tr>
+</tbody>
+</table>
+
+<h2 id="13-deprecation-migration"><span class="num">13.</span> Deprecation &amp; migration plan</h2>
+
+<p>The v2 catalog change (2026-06-13) is <strong>additive and backward-compatible</strong> — the new types ship and the old names stay registered so every existing graph still loads. Nodeset/graph migration runs in later batches.</p>
+
+<table>
+<thead><tr><th>Deprecated</th><th>Replacement</th><th>Why it's safe to keep for now</th></tr></thead>
+<tbody>
+<tr><td><code>ACTION</code></td><td><code>DISCRETE_ACTION</code></td><td><code>WIRE_TYPE_ALIASES = {ACTION: DISCRETE_ACTION}</code>; <code>canonical_wire_type</code> resolves both sides of an edge before the §6 compatibility check, so a legacy <code>ACTION</code> port connects to a migrated <code>DISCRETE_ACTION</code> port (and vice-versa, and under <code>LIST[…]</code>).</td></tr>
+<tr><td><code>OBSERVATION</code></td><td>flat <code>rgb</code> <code>IMAGE</code> + <code>depth</code> <code>DEPTH</code> ports</td><td>Dead — no nodeset emits or consumes it (every env splits observations into flat ports). Kept in <code>WIRE_TYPES</code> only so a stray legacy declaration wouldn't fail load.</td></tr>
+<tr><td><code>STEP_RESULT</code></td><td>gym tuple: <code>reward</code> + <code>terminated</code>/<code>truncated</code> <code>BOOL</code> + <code>info</code> <code>ANY</code></td><td>Dead — superseded by the flat gym-step ports across all env nodesets.</td></tr>
+</tbody>
+</table>
+
+<p>Staged removal, per batch:</p>
+<ol>
+  <li><strong>Backend catalog + spec</strong> (done 2026-06-13): add <code>DISCRETE_ACTION</code> / <code>CONTROL</code> + <code>WIRE_FORMAT_SPEC</code>, alias <code>ACTION</code>, loosen/extend the <code>is_valid_*</code> guards, canonicalise in <code>validate_edge_wire_type</code>.</li>
+  <li><strong>Nodeset PortDefs</strong>: flip <code>ACTION</code> → <code>DISCRETE_ACTION</code> across env/policy/method nodesets; introduce <code>CONTROL</code> on the VLA envs (<code>env_simpler</code>, <code>env_libero</code>) and <code>policy_vla</code> in place of the JSON-in-<code>TEXT</code> action smuggling; converge each producer onto the §3 canonical formats.</li>
+  <li><strong>Frontend</strong>: add <code>DISCRETE_ACTION</code> / <code>CONTROL</code> to <code>WIRE_COLORS</code> + the <code>PortListEditor</code> dropdown (§9).</li>
+  <li><strong>Drop the deprecated names</strong> from <code>WIRE_TYPES</code> + <code>WIRE_TYPE_ALIASES</code> once no PortDef references them; promote the runtime whole-graph check (§7) from warn to hard 400 after a clean sweep.</li>
+</ol>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: <strong>§7 reconciled with code; FE/BE alias asymmetry noted.</strong> Confirmed against the working tree that wire-type validation is wired into the load path — <code>validate_graph_connectivity</code> calls <code>validate_edge_wire_types</code> (HTTP 400 on a builtin/iterIn mismatch), the run/eval paths re-run it warn-only post-nodeset-load, and the <code>app.tools.validate_graph</code> CLI + <code>POST /api/graphs/validate</code> share the <code>wire_type_report</code> core. This <strong>supersedes</strong> the 2026-06-13 12:45 entry below, which recorded the then-true &ldquo;frontend-only / <code>validate_edge_wire_type</code> uncalled&rdquo; state. Added the §7 frontend-bullet note that <code>isCompatibleWireConnection</code> does not canonicalise <code>ACTION</code>→<code>DISCRETE_ACTION</code>, so a legacy↔migrated edge the backend accepts is rejected on canvas drag.</li>
+<li>2026-06-13 23:10: <strong>DEPTH transport fixed to lossless <code>__ndarray__</code>.</strong> <code>serialize_value</code>/<code>deserialize_value</code> no longer route <code>DEPTH</code> through the normalise-to-PNG codec (which destroyed float32 metric scale across the server-mode HTTP boundary); <code>DEPTH</code> now uses the <code>__ndarray__</code> marker like every non-IMAGE array. The dead <code>_depth_to_base64</code>/<code>_base64_to_depth</code> in <code>serialization.py</code> were removed; the lossy depth heatmap codec survives in <code>wire_types.py</code> for display only. §8 table + prose updated.</li>
+<li>2026-06-13 22:30: <strong>v2 catalog — embodied-spanning types + format contracts.</strong> Added <code>DISCRETE_ACTION</code> (generalises <code>ACTION</code>; <code>int</code>|<code>str</code> into the env-declared set, no fixed 0–3) and <code>CONTROL</code> (continuous motor dict); added <code>WIRE_FORMAT_SPEC</code> as the single-source-of-truth format contract (IMAGE uint8 0–255, DEPTH float32 metres, …). Deprecated <code>ACTION</code> (aliased) + the dead composites <code>OBSERVATION</code>/<code>STEP_RESULT</code>; <code>validate_edge_wire_type</code> now canonicalises deprecated names so legacy graphs still connect. Backward-compatible; nodeset/frontend migration staged (§13). is_valid_* block regenerated through the Pygments pipeline.</li>
+<li>2026-06-13 12:45: <strong>Full rewrite for the inverted-pyramid structure and code-accuracy.</strong> Restructured so the compatibility rule (one sentence + figure) and the registry table come first, details after. Key corrections vs code: <strong>(a)</strong> documented that <code>validate_edge_wire_type</code> is presently uncalled — type compatibility is frontend-only (silent drop in <code>onConnect</code>); added the implication for API/AAS-architect-generated graphs (§7). <strong>(b)</strong> <code>PortDef</code> import path fixed to <code>app.components.bases</code> (was wrongly <code>app.standard.node_io</code>). <strong>(c)</strong> colour table rebuilt from live <code>WIRE_COLORS</code> hexes; <code>POSE</code> now violet and <code>STEP_RESULT</code> now pink after the matching <code>layoutUtils.ts</code> fix (the <code>STATE → POSE</code> rename had left <code>POSE</code> rendering slate). All code blocks regenerated through the Pygments pipeline. Dropped the stale outer-graph / minimap colour tables (the latter still listed the removed <code>termination</code> node).</li>
+<li>2026-06-11 12:08: §5 server-side validation bullet updated to two-pivot loop graphs (ADR-dataflow-008; <code>initialize</code> removed 2026-06-10).</li>
+<li>2026-05-18: reference + colour-map refresh — named the two validators, added <code>app/server/serialization.py</code> HTTP transport, split image-codec vs HTTP-transport helpers, rewrote handle-colour-by-wire-type vs frame-by-category.</li>
+<li>2026-04-20: audit — fixed <code>is_valid_state</code> → <code>is_valid_pose</code>; corrected the state-value-type table to match <code>STATE_VALUE_TYPES</code> (raw frame types rejected).</li>
+<li>2026-04-19 18:11: style compliance retrofit — added ToC + numbered sections.</li>
+<li>2026-04-07 19:14: HTTP transport switched to binary <code>__ndarray__</code> markers (4× smaller, lossless).</li>
+<li>2026-03-31 19:19: added dual-wire / state-value-type section, ANY type, cross-reference to state-containers (ADR-dataflow-002).</li>
+<li>2026-03-27: Initial content — type catalog, three transport layers, serialization, port declarations, validation, canvas colors.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-a-wire-type-is">1. What a wire type is</a>
+      <a class="toc-h2" href="#2-the-compatibility-rule">2. The compatibility rule, in one sentence</a>
+      <a class="toc-h2" href="#3-the-registry">3. The registry at a glance</a>
+      <a class="toc-h2" href="#4-per-type-semantics">4. Per-type semantics</a>
+      <a class="toc-h2" href="#5-list-modifier">5. The LIST[T] modifier</a>
+      <a class="toc-h2" href="#6-compatibility-algebra">6. The compatibility algebra in full</a>
+      <a class="toc-h2" href="#7-where-enforced">7. Validation — and where it actually happens</a>
+      <a class="toc-h2" href="#8-serialization">8. Serialisation across boundaries</a>
+      <a class="toc-h2" href="#9-colours">9. Canvas colours</a>
+      <a class="toc-h2" href="#10-wire-vs-state-value-types">10. Wire types vs state value types</a>
+      <a class="toc-h2" href="#11-adding-a-wire-type">11. Adding a new wire type</a>
+      <a class="toc-h2" href="#12-file-reference">12. File reference</a>
+      <a class="toc-h2" href="#13-deprecation-migration">13. Deprecation &amp; migration plan</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SIMPLER NodeSet — AgentCanvas</title>
+<meta name="description" content="The SIMPLER NodeSet ( EnvSimplerNodeSet ) wraps SAPIEN + ManiSkill2_real2sim for SIMPLER — the VLA evaluation benchmark (Li et al. 2024, real-to-sim manipulation). 25 tasks total split across two…">
+<meta property="og:title" content="SIMPLER NodeSet — AgentCanvas">
+<meta property="og:description" content="The SIMPLER NodeSet ( EnvSimplerNodeSet ) wraps SAPIEN + ManiSkill2_real2sim for SIMPLER — the VLA evaluation benchmark (Li et al. 2024, real-to-sim manipulation). 25 tasks total split across two…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/simpler.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="SIMPLER">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/simpler.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">SIMPLER</span>
+  </div>
+  <div class="last-updated">2026-06-11 13:46</div>
+</div>
+  <header class="page-header guide">
+  <h1>SIMPLER NodeSet</h1>
+</header>
+
+<p>The <strong>SIMPLER NodeSet</strong> (<code>EnvSimplerNodeSet</code>) wraps <strong>SAPIEN + ManiSkill2_real2sim</strong> for <a href="https://github.com/simpler-env/SimplerEnv">SIMPLER</a> — the VLA evaluation benchmark (Li et al. 2024, real-to-sim manipulation). 25 tasks total split across two embodiments: WidowX/Bridge (4 tasks) and Google Robot (21 tasks).</p>
+<p>Sibling of <a href="#">LIBERO</a> — the two are deliberately a matched pair for first-release VLA evaluation. LIBERO uses MuJoCo + robosuite + Franka Panda; SIMPLER uses SAPIEN + ManiSkill2 + WidowX or Google Robot. Same observation-bundle shape, same TEXT-JSON 7-vec action contract.</p>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<h3 id="purpose">Purpose</h3>
+<p>SIMPLER is purpose-built to evaluate pre-trained VLA checkpoints (RT-1, OpenVLA, Octo, etc.) without re-training: &lt;1 GB assets, ~30 s/episode, real-to-sim camera matching, deterministic seeds. It pairs with LIBERO as the first-release VLA env coverage in AgentCanvas.</p>
+<h3 id="architecture">Architecture</h3>
+<p>Three-layer pattern mirroring <a href="#">LIBERO</a>:</p>
+<ol>
+<li><strong><code>SimplerEnvManager</code></strong> (singleton) — one <code>simpler_env.make(task_id)</code> instance, rebuilt on every <code>set_episode</code> (each task is a different SAPIEN scene). Pinned single-thread executor for SAPIEN GL/physics affinity. Caches the task-by-embodiment registry once on <code>initialize()</code>.</li>
+<li><strong>Five canvas tool nodes</strong> — <code>reset</code>, <code>step</code>, <code>get_observation</code>, <code>episode_info</code>, <code>evaluate</code>.</li>
+<li><strong><code>EnvSimplerNodeSet</code></strong> — <code>server_python</code> reads <code>$SIMPLER_PYTHON</code>, defaults to <code>/home/$(whoami)/miniforge3/envs/ac-simpler/bin/python</code> (created by <code>scripts/install/install_ac_simpler.sh</code>).</li>
+</ol>
+<h3 id="server-mode-only">Server-Mode Only</h3>
+<p>The nodeset always runs server-mode: SAPIEN + numpy&lt;2 conflict with the default <code>agentcanvas</code> env's pins. The framework auto-routes the nodeset into the <code>ac-simpler</code> subprocess when loaded via <code>?mode=server</code>.</p>
+<p><code>parallelism = "replicated"</code> — each batch-eval worker gets its own SAPIEN scene; per-worker isolation is mandatory because the scene is stateful.</p>
+<hr>
+<div class="callout warn"><strong>Interface migrated (2026-06-09).</strong> This nodeset now implements the <a href="template.html">gym-like env interface</a> — <code>reset</code> (metadata only), <code>step_*</code> (control signals, no observation), <code>observe_*</code> (pull perception), <code>evaluate</code>. The node list below predates the migration and may be stale; the template's migration map (§6) and capability matrix (§3) are authoritative.</div>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Display Name</th>
+<th>Input Ports</th>
+<th>Output Ports</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_simpler__reset</code></td>
+<td>SIMPLER: Reset</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>instruction</code>, <code>episode_id</code>, <code>observation</code> (LIST[IMAGE]), <code>pose</code> (POSE, None), <code>agentview_image</code>, <code>wrist_image</code> (None), <code>state</code>, <code>split</code>, <code>task_id</code>, <code>max_steps</code></td>
+<td>Reset to env panel-selected episode; idempotent</td>
+</tr>
+<tr>
+<td><code>env_simpler__step</code></td>
+<td>SIMPLER: Step</td>
+<td><code>action</code> (TEXT)</td>
+<td>reset bundle + <code>done</code>, <code>reward</code>, <code>success</code>, <code>step_index</code>, <code>truncated</code></td>
+<td>7-vec or K-step chunk; clip + step; early-break</td>
+</tr>
+<tr>
+<td><code>env_simpler__get_observation</code></td>
+<td>SIMPLER: Get Observation</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td>same as <code>reset</code></td>
+<td>Read-only obs snapshot</td>
+</tr>
+<tr>
+<td><code>env_simpler__episode_info</code></td>
+<td>SIMPLER: Episode Info</td>
+<td>(none)</td>
+<td><code>split</code>, <code>task_id</code>, <code>episode_id</code>, <code>instruction</code>, <code>max_steps</code>, <code>step_index</code>, <code>cumulative_reward</code>, <code>success</code>, <code>done</code></td>
+<td>Metadata only</td>
+</tr>
+<tr>
+<td><code>env_simpler__evaluate</code></td>
+<td>SIMPLER: Evaluate</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>success</code> (BOOL), <code>metrics</code> (METRICS)</td>
+<td>Post-hoc success + metrics</td>
+</tr>
+</tbody>
+</table>
+<p>The port list intentionally mirrors LIBERO's so a graph written against LIBERO can be ported to SIMPLER by node-type rename only — <code>wrist_image</code> is kept as a port even though SIMPLER has no wrist cam (it always emits <code>None</code>).</p>
+<hr>
+<h2 id="3-action-contract"><span class="num">3.</span> Action Contract</h2>
+<p>7-vec TEXT JSON, single step or K-step chunk:</p>
+<div class="highlight"><pre><span></span><code>&quot;[ax, ay, az, arx, ary, arz, grip]&quot;        # single step
+&quot;[[ax, ay, az, arx, ary, arz, grip], ...]&quot; # K-step chunk
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Index</th>
+<th>Meaning</th>
+<th>Range</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0–2</td>
+<td>Delta end-effector position (XYZ, metres)</td>
+<td><code>[-1, 1]</code></td>
+</tr>
+<tr>
+<td>3–5</td>
+<td>Delta orientation (axis-angle, radians)</td>
+<td><code>[-π/2, π/2]</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>Gripper</td>
+<td><code>[-1, 1]</code> (−1 close, +1 open — same as LIBERO)</td>
+</tr>
+</tbody>
+</table>
+<p>NaN/Inf → <code>nan_to_num</code>; per-channel clipping done inside the manager. Both Bridge and Google Robot share this 7D shape; per-embodiment differences (camera name, control frequency) are dispatched on <code>split</code>.</p>
+<p><code>step()</code> accepts one action at a time at the env layer; the manager loops K times for chunk inputs and early-breaks on <code>terminated or truncated</code>.</p>
+<hr>
+<h2 id="4-observation-bundle"><span class="num">4.</span> Observation Bundle</h2>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Wire Type</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentview_image</code></td>
+<td>IMAGE</td>
+<td>Third-person camera (480×640 for Bridge, 512×640 for Google Robot), uint8 RGB</td>
+</tr>
+<tr>
+<td><code>wrist_image</code></td>
+<td>IMAGE</td>
+<td>Always <code>None</code> (SIMPLER has no wrist cam — port kept for LIBERO portability)</td>
+</tr>
+<tr>
+<td><code>observation</code></td>
+<td>LIST[IMAGE]</td>
+<td><code>[agentview_image]</code> (single-view; LIBERO emits two-view)</td>
+</tr>
+<tr>
+<td><code>state</code></td>
+<td>ANY</td>
+<td>Flat float32 proprio: <code>qpos + qvel + base_pose</code> (23-D for WidowX, 29-D for Google Robot)</td>
+</tr>
+<tr>
+<td><code>pose</code></td>
+<td>POSE</td>
+<td>Always <code>None</code> (manipulation, not navigation)</td>
+</tr>
+<tr>
+<td><code>instruction</code></td>
+<td>TEXT</td>
+<td><code>env.unwrapped.get_language_instruction()</code></td>
+</tr>
+<tr>
+<td><code>episode_id</code></td>
+<td>TEXT</td>
+<td><code>"{split}/{task_id}/{episode_index}"</code></td>
+</tr>
+<tr>
+<td><code>split</code>, <code>task_id</code>, <code>max_steps</code>, <code>step_index</code>, <code>reward</code>, <code>success</code>, <code>done</code>, <code>truncated</code></td>
+<td>(per LIBERO)</td>
+<td>Bookkeeping</td>
+</tr>
+</tbody>
+</table>
+<p><code>max_steps</code> is read per-task from <code>env.spec.max_episode_steps</code> (60 for <code>widowx_spoon_on_towel</code>, 80 for Google Robot tasks; back-stop fallback 60).</p>
+<p><strong>Camera dispatch</strong> — <code>_SPLIT_CAMERA = {"bridge": "3rd_view_camera", "google_robot": "overhead_camera"}</code>. The wrapper pulls the first preference by name and falls back to the first available camera if naming changes upstream.</p>
+<hr>
+<h2 id="5-env panel-integration"><span class="num">5.</span> Env panel Integration</h2>
+<p>Three cascaded <code>select</code> fields:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Options</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>split</code></td>
+<td><code>bridge</code></td>
+<td><code>bridge</code> (4 tasks) or <code>google_robot</code> (21 tasks)</td>
+</tr>
+<tr>
+<td><code>task_id</code></td>
+<td>first of split</td>
+<td>depends on split — filtered from <code>simpler_env.ENVIRONMENTS</code> by prefix</td>
+</tr>
+<tr>
+<td><code>episode_index</code></td>
+<td><code>0</code></td>
+<td><code>range(50)</code> (seeds 2022–2071), 50 per task → 1250 total episodes</td>
+</tr>
+</tbody>
+</table>
+<p>The cascade follows LIBERO's pattern: changing <code>split</code> resets <code>task_id</code> to the first task of that split and <code>episode_index</code> to 0; changing <code>task_id</code> resets <code>episode_index</code> to 0. All field changes emit <code>signal_name="episode_reset"</code> so <code>lifetime="episode"</code> state containers clear automatically.</p>
+<p>Episode counts: <code>{"bridge": 200, "google_robot": 1050}</code> — exposed via <code>get_eval_metadata()</code>.</p>
+<p>Required actions <code>play / pause / stop / reset</code> exactly per the env-nodeset Tier-1 env panel contract (see <a href="../../design-docs/components/env-panels.html">Env Panels design doc</a>).</p>
+<hr>
+<h2 id="6-environment-setup"><span class="num">6.</span> Environment Setup</h2>
+<h3 id="install">Install</h3>
+<div class="highlight"><pre><span></span><code>bash<span class="w"> </span>scripts/install/install_ac_simpler.sh
+</code></pre></div>
+<p>Idempotent. Creates conda env <code>ac-simpler</code> (Python 3.10), clones <code>simpler-env/ManiSkill2_real2sim</code> and <code>simpler-env/SimplerEnv</code> into <code>third_party/</code>, installs both editable, pins <code>numpy&lt;2</code> + <code>setuptools&lt;81</code> (SAPIEN compat), and runs an obs-key/proprio probe.</p>
+<h3 id="pins-verified-2026-05-01">Pins (verified 2026-05-01)</h3>
+<table>
+<thead>
+<tr>
+<th>Package</th>
+<th>Pin</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>numpy</code></td>
+<td><code>&lt;2</code></td>
+<td>numpy 2.x triggers segfaults in SAPIEN's step path</td>
+</tr>
+<tr>
+<td><code>setuptools</code></td>
+<td><code>&lt;81</code></td>
+<td>SAPIEN's <code>renderer_config.py</code> imports <code>pkg_resources</code> (removed in setuptools 81+)</td>
+</tr>
+<tr>
+<td><code>opencv-python-headless</code></td>
+<td><code>&lt;4.10</code></td>
+<td>keeps <code>numpy&lt;2</code> pin satisfied</td>
+</tr>
+</tbody>
+</table>
+<h3 id="hardware">Hardware</h3>
+<ul>
+<li><strong>NVIDIA GPU + Vulkan ICD required</strong> — SAPIEN cannot run CPU-only.</li>
+<li>The install script does a <code>vulkaninfo</code> precheck and prints a warning (does not auto-install) if Vulkan is missing.</li>
+<li>Headless: SAPIEN renders without <code>DISPLAY</code>; expect a one-line <code>GLFW: X11 failed to open display</code> warning at first import — harmless.</li>
+</ul>
+<h3 id="activation">Activation</h3>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">SIMPLER_PYTHON</span><span class="o">=</span>/home/<span class="k">$(</span>whoami<span class="k">)</span>/miniforge3/envs/ac-simpler/bin/python
+</code></pre></div>
+<p><code>EnvSimplerNodeSet.server_python</code> reads this env var; without it the default fallback <code>python</code> is used.</p>
+<hr>
+<h2 id="7-smoke-verification"><span class="num">7.</span> Smoke Verification</h2>
+<p><code>workspace/graphs/simpler_smoke.json</code> — Tier-1 fixed-action DAG:</p>
+<div class="highlight"><pre><span></span><code>env_simpler__reset → example__source(&quot;[0,0,0,0,0,0,1]&quot;) → env_simpler__step → env_simpler__evaluate → metrics
+</code></pre></div>
+<p>Pick the split / task / episode in the SIMPLER env panel panel, click Play. Expected on a fresh run:</p>
+<ul>
+<li><code>instruction</code> shows the task language (e.g. "put the spoon on the towel").</li>
+<li><code>agentview_image</code> viewer renders the third-person camera.</li>
+<li><code>step_index = 1</code>, <code>success = False</code> (one fixed action won't solve the task).</li>
+<li><code>metrics = {success: 0.0, num_steps: 1, split: "bridge", task_id: "widowx_spoon_on_towel", cumulative_reward: 0.0}</code>.</li>
+</ul>
+<p>A real VLA-policy node consuming <code>(observation, instruction)</code> and emitting an action TEXT is a separate task — see roadmap E11 follow-ups.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#purpose">Purpose</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h3" href="#server-mode-only">Server-Mode Only</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h2" href="#3-action-contract">3. Action Contract</a>
+      <a class="toc-h2" href="#4-observation-bundle">4. Observation Bundle</a>
+      <a class="toc-h2" href="#5-env panel-integration">5. Env panel Integration</a>
+      <a class="toc-h2" href="#6-environment-setup">6. Environment Setup</a>
+      <a class="toc-h3" href="#install">Install</a>
+      <a class="toc-h3" href="#pins-verified-2026-05-01">Pins (verified 2026-05-01)</a>
+      <a class="toc-h3" href="#hardware">Hardware</a>
+      <a class="toc-h3" href="#activation">Activation</a>
+      <a class="toc-h2" href="#7-smoke-verification">7. Smoke Verification</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

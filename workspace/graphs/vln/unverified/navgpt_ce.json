@@ -1,0 +1,770 @@
+{
+  "name": "NavGPT-CE",
+  "description": "NavGPT reasoning graph for continuous VLN-CE — panoramic 8-direction perception with VLM captioning, plan decomposition, observation summarizer, orchestrator reasoning, and LLM-based history update. Faithful adaptation of NavGPT (Zhou et al., 2023) discrete panoramic pipeline to continuous environments.",
+  "nodes": [
+    {
+      "id": "episode_info",
+      "type": "env_habitat__reset",
+      "label": "Habitat: Episode Info",
+      "position": {
+        "x": 0,
+        "y": 830
+      },
+      "config": {}
+    },
+    {
+      "id": "skill_action_format",
+      "type": "navgpt__action_output_format",
+      "label": "Skill: Action Format",
+      "position": {
+        "x": 0,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_panorama",
+      "type": "env_habitat__observe_panorama",
+      "label": "Habitat: Panorama (seed)",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "config": {
+        "n_views": 12,
+        "representation": "composite"
+      }
+    },
+    {
+      "id": "seed_localize",
+      "type": "env_habitat__observe_egocentric",
+      "label": "Habitat: Localize",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 0,
+        "y": 600
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true
+          },
+          {
+            "name": "pose",
+            "wire_type": "POSE",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "vlm_caption",
+      "type": "llmCall",
+      "label": "VLM Panorama Caption",
+      "position": {
+        "x": 280,
+        "y": 600
+      },
+      "config": {
+        "temperature": 0.2,
+        "max_tokens": 1024,
+        "template": "You are looking at a panoramic composite of views from an indoor location, arranged in a grid. Each sub-image is labeled with its direction or heading angle at the top.\n\nFor each labeled view, describe what you see in 1-2 sentences. Focus on: room type, key objects and landmarks (furniture, doors, corridors, stairs), spatial layout, doorways, and any visible text or signs. Be factual and concise.\n\nFormat your response as:\n<direction_label>: <description>\n<direction_label>: <description>\n...\n\nCover every labeled view in the composite image."
+      }
+    },
+    {
+      "id": "obs_summary_llm",
+      "type": "llmCall",
+      "label": "Obs Summary LLM",
+      "position": {
+        "x": 560,
+        "y": 600
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 100,
+        "mode": "single_turn",
+        "template": "Here is a panoramic scene description from 8 directions at the current viewpoint:\n{scene}\n\nSummarize the overall scene in one concise sentence, highlighting the most navigation-relevant features (doorways, corridors, room type):"
+      }
+    },
+    {
+      "id": "format_history",
+      "type": "navgpt__format_history",
+      "label": "Format History",
+      "position": {
+        "x": 280,
+        "y": 440
+      },
+      "config": {
+        "max_entries": 20
+      }
+    },
+    {
+      "id": "orchestrator_llm",
+      "type": "llmCall",
+      "label": "Orchestrator LLM",
+      "position": {
+        "x": 840,
+        "y": 600
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "scene",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "summary",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "pose",
+            "wire_type": "POSE"
+          },
+          {
+            "name": "instruction",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "system_prompt",
+            "wire_type": "TEXT"
+          }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 300,
+        "mode": "single_turn",
+        "template": "You are an intelligent embodied agent navigating an indoor environment. You follow a plan derived from a natural language instruction by observing a 360° panorama and choosing discrete actions at each step.\n\nAvailable actions:\n- FORWARD  — move 0.25 m ahead in your current heading direction\n- LEFT     — turn left 15°\n- RIGHT    — turn right 15°\n- STOP     — you have reached the destination\n\nAction plan:\n{plan}\n\nHistory (recent steps):\n{history}\n\n360° panoramic observation (multiple directions from current viewpoint):\n{scene}\n\nScene summary: {summary}\n\nCurrent position: {pos}, heading {heading}° (0°=North, 90°=East, 180°=South, 270°=West)\nYour current heading is the 'Front' or '0°' direction in the panorama.\n\nInstruction: {instruction}\n\nStep: {step}\n\nBased on the action plan, history, and what you see in ALL directions of the panorama, decide your next action.\n- Compare what is visible in each direction with what the plan expects you to see next.\n- To face a direction that is currently to your right, use RIGHT repeatedly (each turn is 15°).\n- To face a direction that is currently to your left, use LEFT repeatedly.\n- Avoid revisiting places you have already been (check the history).\n- If the destination is visible and you are close, use STOP.\n\nOutput exactly in this format:\nThought: <brief reasoning about which direction matches the plan>\nAction: <FORWARD|LEFT|RIGHT|STOP>"
+      }
+    },
+    {
+      "id": "parse_action",
+      "type": "navgpt__parse_action",
+      "label": "Parse Action",
+      "position": {
+        "x": 1120,
+        "y": 600
+      },
+      "config": {}
+    },
+    {
+      "id": "env_step",
+      "type": "env_habitat__step_discrete",
+      "label": "Habitat: Step",
+      "position": {
+        "x": 1400,
+        "y": 600
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_panorama",
+      "type": "env_habitat__observe_panorama",
+      "label": "Habitat: Panorama (loop)",
+      "position": {
+        "x": 1680,
+        "y": 600
+      },
+      "config": {
+        "n_views": 12,
+        "representation": "composite"
+      }
+    },
+    {
+      "id": "history_update_llm",
+      "type": "llmCall",
+      "label": "History Update LLM",
+      "position": {
+        "x": 1400,
+        "y": 440
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 300,
+        "mode": "single_turn",
+        "write_to_state": "history",
+        "template": "You are tracking a navigation agent's step-by-step history.\n\nPrevious history:\n{history}\n\nAction just taken: {action}\nNew panoramic observation at this viewpoint:\n{summary}\n\nAppend one concise line summarizing this step to the history.\n\nUpdated history:"
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 1960,
+        "y": 600
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true
+          },
+          {
+            "name": "pose",
+            "wire_type": "POSE",
+            "persist": true
+          },
+          {
+            "name": "action",
+            "wire_type": "ACTION",
+            "persist": true
+          },
+          {
+            "name": "response",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_obs",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 1960,
+        "y": 1030
+      },
+      "config": {
+        "rows": 1,
+        "cols": 2,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH"
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_thinking",
+      "type": "textScroll",
+      "label": "Thinking Log",
+      "position": {
+        "x": 840,
+        "y": 1030
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_action",
+      "type": "actionLog",
+      "label": "Action Log",
+      "position": {
+        "x": 1120,
+        "y": 1030
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 1680,
+        "y": 1030
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__rgb",
+      "type": "graphOut",
+      "label": "rgb",
+      "position": {
+        "x": 1400,
+        "y": 1030
+      },
+      "config": {
+        "portName": "rgb",
+        "wireType": "IMAGE"
+      }
+    },
+    {
+      "id": "output_port__pose",
+      "type": "graphOut",
+      "label": "pose",
+      "position": {
+        "x": 1400,
+        "y": 1120
+      },
+      "config": {
+        "portName": "pose",
+        "wireType": "POSE"
+      }
+    },
+    {
+      "id": "output_port__action",
+      "type": "graphOut",
+      "label": "action",
+      "position": {
+        "x": 1400,
+        "y": 1210
+      },
+      "config": {
+        "portName": "action",
+        "wireType": "ACTION"
+      }
+    },
+    {
+      "id": "output_port__done",
+      "type": "graphOut",
+      "label": "done",
+      "position": {
+        "x": 1400,
+        "y": 1300
+      },
+      "config": {
+        "portName": "done",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 1400,
+        "y": 1390
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "loop_observe",
+      "type": "env_habitat__observe_egocentric",
+      "label": "Habitat: Observe (egocentric)",
+      "position": {
+        "x": 1400,
+        "y": 740
+      },
+      "config": {}
+    },
+    {
+      "id": "evaluate",
+      "type": "env_habitat__evaluate",
+      "label": "Habitat: Evaluate",
+      "position": {
+        "x": 1620,
+        "y": 740
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_pano_to_iter",
+      "source": "seed_panorama",
+      "target": "iter_in",
+      "sourceHandle": "composite",
+      "targetHandle": "init_rgb"
+    },
+    {
+      "id": "e_loc_to_iter",
+      "source": "seed_localize",
+      "target": "iter_in",
+      "sourceHandle": "pose",
+      "targetHandle": "init_pose"
+    },
+    {
+      "id": "e_iter_rgb_to_vlm",
+      "source": "iter_in",
+      "target": "vlm_caption",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_vlm_to_obs_sum",
+      "source": "vlm_caption",
+      "target": "obs_summary_llm",
+      "sourceHandle": "response",
+      "targetHandle": "scene"
+    },
+    {
+      "id": "e_vlm_to_orchestrator",
+      "source": "vlm_caption",
+      "target": "orchestrator_llm",
+      "sourceHandle": "response",
+      "targetHandle": "scene"
+    },
+    {
+      "id": "e_obs_sum_to_orchestrator",
+      "source": "obs_summary_llm",
+      "target": "orchestrator_llm",
+      "sourceHandle": "response",
+      "targetHandle": "summary"
+    },
+    {
+      "id": "e_iter_to_history",
+      "source": "iter_in",
+      "target": "format_history",
+      "sourceHandle": "iterout_pose",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_state_to_orchestrator",
+      "source": "iter_in",
+      "target": "orchestrator_llm",
+      "sourceHandle": "iterout_pose",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_instr_to_orchestrator",
+      "source": "episode_info",
+      "target": "orchestrator_llm",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_skill_to_llm",
+      "source": "skill_action_format",
+      "target": "orchestrator_llm",
+      "sourceHandle": "text",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_orch_to_parse",
+      "source": "orchestrator_llm",
+      "target": "parse_action",
+      "sourceHandle": "response",
+      "targetHandle": "response"
+    },
+    {
+      "id": "e_parse_to_step",
+      "source": "parse_action",
+      "target": "env_step",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_history_to_his_update",
+      "source": "format_history",
+      "target": "history_update_llm",
+      "sourceHandle": "history",
+      "targetHandle": "history"
+    },
+    {
+      "id": "e_parse_to_his_update",
+      "source": "parse_action",
+      "target": "history_update_llm",
+      "sourceHandle": "action_name",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_obs_sum_to_his_update",
+      "source": "obs_summary_llm",
+      "target": "history_update_llm",
+      "sourceHandle": "response",
+      "targetHandle": "summary"
+    },
+    {
+      "id": "e_step_state_to_loop_pano",
+      "source": "env_step",
+      "target": "loop_panorama",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_loop_pano_to_out",
+      "source": "loop_panorama",
+      "target": "iter_out",
+      "sourceHandle": "composite",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_state_to_out",
+      "source": "loop_observe",
+      "target": "iter_out",
+      "sourceHandle": "pose",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_parse_action_to_out",
+      "source": "parse_action",
+      "target": "iter_out",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_orch_resp_to_out",
+      "source": "orchestrator_llm",
+      "target": "iter_out",
+      "sourceHandle": "response",
+      "targetHandle": "response"
+    },
+    {
+      "id": "e_step_done_to_term__stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_step_rgb_to_viewer",
+      "source": "loop_observe",
+      "target": "viewer_obs",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_orch_to_thinking",
+      "source": "orchestrator_llm",
+      "target": "viewer_thinking",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_parse_to_action_log",
+      "source": "parse_action",
+      "target": "viewer_action",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_metrics_to_viewer",
+      "source": "evaluate",
+      "target": "viewer_metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_step_rgb_to_output__po",
+      "source": "loop_observe",
+      "sourceHandle": "rgb",
+      "target": "output_port__rgb",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_state_to_output__po",
+      "source": "loop_observe",
+      "sourceHandle": "pose",
+      "target": "output_port__pose",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_parse_action_to_output__po",
+      "source": "parse_action",
+      "sourceHandle": "action",
+      "target": "output_port__action",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_done_to_output__po",
+      "source": "env_step",
+      "sourceHandle": "terminated",
+      "target": "output_port__done",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_metrics_to_output__po",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_mig_1",
+      "source": "env_step",
+      "sourceHandle": "info",
+      "target": "loop_observe",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ],
+  "containers": [
+    {
+      "id": "nav_memory",
+      "label": "Navigation Memory",
+      "position": {
+        "x": 840,
+        "y": 1290
+      },
+      "states": {
+        "visited_viewpoints": {
+          "type": "accumulator",
+          "value_type": "TEXT"
+        },
+        "scene_descriptions": {
+          "type": "accumulator",
+          "value_type": "TEXT"
+        }
+      }
+    },
+    {
+      "id": "graph_state",
+      "label": "Navigation State",
+      "states": {
+        "action_history": {
+          "type": "accumulator",
+          "value_type": "TEXT"
+        },
+        "step": {
+          "type": "counter",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": 0
+          }
+        },
+        "instruction": {
+          "type": "lastWrite",
+          "value_type": "TEXT"
+        },
+        "plan": {
+          "type": "lastWrite",
+          "value_type": "TEXT"
+        },
+        "history": {
+          "type": "lastWrite",
+          "value_type": "TEXT"
+        }
+      },
+      "position": {
+        "x": 893,
+        "y": 1480
+      }
+    }
+  ],
+  "step_budget": 150,
+  "access_grants": [
+    {
+      "id": "se_step_to_memory",
+      "node_id": "env_step",
+      "container_id": "nav_memory"
+    },
+    {
+      "id": "se_orchestrator_to_memory",
+      "node_id": "orchestrator_llm",
+      "container_id": "nav_memory"
+    },
+    {
+      "id": "se_history_to_memory",
+      "node_id": "format_history",
+      "container_id": "nav_memory"
+    },
+    {
+      "id": "ag_graph_state_episode_info",
+      "node_id": "episode_info",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_skill_action_format",
+      "node_id": "skill_action_format",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_seed_panorama",
+      "node_id": "seed_panorama",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_seed_localize",
+      "node_id": "seed_localize",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_iter_in",
+      "node_id": "iter_in",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_vlm_caption",
+      "node_id": "vlm_caption",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_obs_summary_llm",
+      "node_id": "obs_summary_llm",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_format_history",
+      "node_id": "format_history",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_orchestrator_llm",
+      "node_id": "orchestrator_llm",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_parse_action",
+      "node_id": "parse_action",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_env_step",
+      "node_id": "env_step",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_loop_panorama",
+      "node_id": "loop_panorama",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_history_update_llm",
+      "node_id": "history_update_llm",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_iter_out",
+      "node_id": "iter_out",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_termination",
+      "node_id": "termination",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_output_port",
+      "node_id": "output_port",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_obs",
+      "node_id": "viewer_obs",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_thinking",
+      "node_id": "viewer_thinking",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_action",
+      "node_id": "viewer_action",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_metrics",
+      "node_id": "viewer_metrics",
+      "container_id": "graph_state"
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-executor-003 — AgentCanvas</title>
+<meta name="description" content="Multi-scope execution — per-scope state, settle isolation, portOut latch propagation">
+<meta property="og:title" content="ADR-executor-003 — AgentCanvas">
+<meta property="og:description" content="Multi-scope execution — per-scope state, settle isolation, portOut latch propagation">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/executor/adr-executor-003-multi-scope-execution.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/executor/adr-executor-003-multi-scope-execution.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Executor</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-executor-003</span>
+  </div>
+  <div class="last-updated">2026-05-09</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-executor);">ADR-executor-003</h1>
+  <p class="tagline">Multi-scope execution — per-scope state, settle isolation, portOut latch propagation</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-09</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>executor</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Companion</dt><dd><a href='../dataflow/adr-dataflow-007.html'>ADR-dataflow-007</a></dd></dl>
+
+<div class='callout note'><p>Scope split. This is the executor-side half of the multi-scope iteration change. The dataflow / authoring side (multiple three-pivot triples in one graph; portIn/portOut as the structural IO interface for inner scopes; topology-determined nesting) is in <a href="../dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a>. Both landed together.</p></div>
+
+<h2 id='context'>Context</h2>
+<p>ADR-executor-002 settled the three-pivot scheduling for a single iteration scope: one <code>step_counter</code>, one <code>_termination_ids</code> set, one <code>terminated</code> flag, one settle loop drained on every iter_out cycle. Hierarchical agents (VoxPoser-class) need two coexisting iteration cadences — an outer reasoning loop wrapping an inner execution loop — and the existing executor cannot represent that: an inner-scope termination would halt the run; the settle loop would drain across both scopes; step-budget exhaustion at any scope would terminate the outermost. The dataflow side (ADR-dataflow-007) reshapes the graph to allow N (Initialize, iterIn, iterOut) triples and adds <code>analyze_scopes()</code> to compute the scope forest. The executor must match: per-scope counters, per-scope termination dispatch, per-scope step-budget exhaust paths, per-scope settle drain, and a new latch-and-propagate semantics for portOut nodes inside non-graph scopes (so outer sees the FINAL inner result rather than every inner iter's value).</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong><code>_ScopeState</code> per scope</strong>: <code>dict[scope_id, _ScopeState]</code> keyed by <code>iter_in</code> id (the scope's canonical key) plus one synthetic <code>GRAPH_SCOPE_ID = ""</code> entry for graph-scope nodes (run-start seeds, post-loop sinks, graph-scope terminations). Each entry carries <code>step_counter</code>, <code>step_budget</code> (resolved with fallback chain: scope's own <code>iter_in.config.step_budget</code> → parent scope → graph), <code>terminated</code>, <code>termination_node_ids</code>, <code>member_node_ids</code>, <code>portout_node_ids</code>, <code>iter_out_id</code>. Seeded once at run-start from <code>analyze_scopes(graph)</code>. (2) <strong>iter_out cycling is scope-aware</strong>: when an <code>iter_out</code> fires, look up its scope (<code>config.pairedWith == iter_in_id</code>), advance THAT scope's counter, pull-check THAT scope's terminations only. Inner termination ends the inner scope (set <code>_io_scope.terminated = True</code>) and propagates inner portOut latches; outer scope continues. Root-scope (= graph-scope or outermost author scope) termination sets the global <code>terminated</code> flag and breaks the main loop. (3) <strong>portOut latch + propagation</strong>. portOut nodes inside a non-graph scope SKIP standard edge propagation and instead BUFFER the incoming <code>value</code> into <code>state["latched_value"]</code>. When the owning scope terminates, <code>_propagate_portout_latches(scope, ready_queue)</code> walks every portOut in that scope, routes its latched value through outgoing edges, and queues newly-ready downstream targets. portOuts in graph-scope (e.g. <code>eval_graph</code> metric harvest) keep the legacy propagate-on-fire behaviour — the change is gated by <code>_scope_of(node_id) != GRAPH_SCOPE_ID</code>. (4) <strong>Termination latch via <code>state["latched_done"]</code></strong>. The pull-check at the iter-boundary reads <code>_term.pending_inputs.get("done") OR _term.state.get("latched_done")</code> so a termination that fired earlier in the same iter (and had its pending_inputs cleared) is still observed at the canonical halt-decision point. The <code>_fire_node</code> termination path latches <code>state["latched_done"] = True</code> and only raises <code>StopExecution</code> if the termination's scope == graph-scope (root); inner-scope terminations let the iter-boundary pull-check do the scope-bounded halt. The latch is cleared on scope re-entry. (5) <strong>Scope re-entry reset on inner iter_in</strong>: when the inner scope's <code>iter_in</code> fires and that scope's <code>_ScopeState.terminated</code> is True (i.e. we're re-entering from outer), reset <code>terminated = False</code> and <code>step_counter = 0</code>. This makes inner scopes function-call-shaped: each outer iter gets a fresh inner loop. (6) <strong>Settle-loop scope isolation</strong>: after iter_out fires, the settle drain processes only nodes whose innermost scope == the just-cycled iter_out's scope; peer-scope and outer-scope nodes are left for their own iter_out cycle. (7) <strong>Per-scope step_budget exhaust</strong>: each scope's <code>step_counter &gt;= step_budget</code> check halts THAT scope only. If the scope is non-root, propagate inner portOut latches and <code>continue</code> the main loop (outer keeps running). If root, set the global <code>terminated</code> flag and break. (8) <strong>Backward compat fast-path</strong>: <code>forest.is_single_scope == True</code> (<code>len(forest.scopes) &lt;= 1</code>) means the executor takes paths that mirror the pre-refactor behaviour — one <code>_ScopeState</code> (the outermost or the synthetic graph scope), the legacy <code>_termination_ids</code> list as a fallback, no per-scope dispatch on the hot path.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Per-scope sub-executors</strong> — spawn a child <code>GraphExecutor</code> for each inner scope, hand it the inner subgraph, run to completion, harvest portOut as the return value — rejected; reintroduces the executor-instance nesting that ADR-dataflow-007 explicitly avoids, prevents shared state-container access across scopes, and forks the lifecycle/signal model. (b) <strong>Streaming portOut (no latch)</strong> — propagate portOut on every inner-iter fire — rejected on the dataflow side; outer would see N values per outer iter, breaking function-return semantics. (c) <strong>Author-supplied <code>scope_id</code> on every node</strong> to bypass <code>_scope_of(node_id)</code> lookups — rejected; <code>analyze_scopes()</code> runs once at run-start, the lookup is <code>dict.get</code>, perf is not a concern. (d) <strong>Reset inner ctx state on scope re-entry</strong> (so inner-body node-instance ctx clears between outer iters) — deferred; today inner ctx persists across outer iters. Inner-body authors that need per-scope ctx detect their own re-entry (e.g. <code>dispense_waypoint</code> resets cursor when input trajectory identity changes). A future <code>lifetime="scope"</code> for state containers would generalise this.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The change is one new branch per cycling step (look up scope, dispatch on scope id) plus one new propagation mode (latch-and-flush on scope termination); no new firing modes, no new state-machine, no executor-instance nesting. The single-scope fast-path makes the existing 17 graphs byte-identical to pre-refactor — covered by 12 scope-analysis tests + 7 executor-multi-scope tests + a clean validation pass on every graph. The latch + scope-bounded pull-check pattern resolves a concrete ordering hazard: inner termination fires mid-iter, the iter_out boundary pull is the canonical halt point — without the latch, <code>pending_inputs</code> clears between fire and pull and the halt is missed. The scope re-entry reset lets the same inner scope structure run multiple times per run (essential for the outer-reasoning + inner-execution shape) without authors having to wire reset signals manually. portOut as latched return value is the smallest possible semantic upgrade: outer scopes see the final inner result the way a function call sees its return value, so the inner scope is a complete, reusable sub-function — exactly the structural promise the dataflow side makes.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>design-docs/graph-executor.md (new "Multi-scope execution" section), design-docs/loop-control-system.md (cross-link to multi-scope), core/glossary.md (new terms: <code>scope state</code>, <code>latched value</code>, <code>scope re-entry</code>), core/codebase-map.md (new types: <code>_ScopeState</code>; new method: <code>_propagate_portout_latches</code>)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

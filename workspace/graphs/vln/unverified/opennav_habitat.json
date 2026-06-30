@@ -1,0 +1,882 @@
+{
+  "name": "Open-Nav (Habitat VLN-CE)",
+  "kind": "graph",
+  "description": "Faithful AgentCanvas port of [Open-Nav](https://arxiv.org/abs/2409.18794) (Qiao et al., ICRA 2025). Spatial-temporal chain-of-thought VLN-CE pipeline: Stage 1 instruction parse (action + landmark detection, once per episode), Stage 2 progress estimation, Stage 3 ensemble decision (3 navigator samples → fusion → tie-break → random fallback). Uses env_habitat for the simulator, opennav_waypoint for the frozen TRM_net + image encoders, opennav_perception for RAM tagging + SpatialBot depth-aware captions, and the opennav method nodeset for prompts/parsers/decision logic. Step cap is 6 or 8 depending on parsed action count, mirroring base_il_trainer_llm.py:394.",
+  "nodes": [
+    {
+      "id": "episode_info",
+      "type": "env_habitat__reset",
+      "label": "Habitat: Episode Info",
+      "position": {
+        "x": 0,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "detect_actions_prompt",
+      "type": "opennav__detect_actions_prompt",
+      "label": "Stage 1a — Detect Actions Prompt",
+      "position": {
+        "x": 280,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "detect_actions_llm",
+      "type": "llmCall",
+      "label": "Stage 1a — Action Detection LLM",
+      "position": {
+        "x": 560,
+        "y": 480
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "detect_landmarks_prompt",
+      "type": "opennav__detect_landmarks_prompt",
+      "label": "Stage 1b — Detect Landmarks Prompt",
+      "position": {
+        "x": 280,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "detect_landmarks_llm",
+      "type": "llmCall",
+      "label": "Stage 1b — Landmark Detection LLM",
+      "position": {
+        "x": 560,
+        "y": 160
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "compute_step_cap",
+      "type": "opennav__compute_step_cap",
+      "label": "Compute Step Cap (6/8)",
+      "position": {
+        "x": 840,
+        "y": 480
+      },
+      "config": {
+        "threshold": 6,
+        "short_cap": 6,
+        "long_cap": 8
+      }
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 1120,
+        "y": 480
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out"
+      }
+    },
+    {
+      "id": "panorama_rgbd",
+      "type": "env_habitat__observe_panorama",
+      "label": "Habitat: Panorama (RGB-D 12)",
+      "position": {
+        "x": 1400,
+        "y": 480
+      },
+      "config": {
+        "n_views": 12
+      }
+    },
+    {
+      "id": "predict_waypoints",
+      "type": "opennav_waypoint__predict",
+      "label": "Predict Waypoints (TRM_net)",
+      "position": {
+        "x": 1680,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "bin_to_directions",
+      "type": "opennav_waypoint__bin_to_directions",
+      "label": "Bin To Directions",
+      "position": {
+        "x": 1960,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "ram_tag",
+      "type": "opennav_perception__tag",
+      "label": "RAM Tag (per candidate)",
+      "position": {
+        "x": 2240,
+        "y": 880
+      },
+      "config": {}
+    },
+    {
+      "id": "spatial_caption",
+      "type": "opennav_perception__caption",
+      "label": "SpatialBot Caption (per candidate)",
+      "position": {
+        "x": 2240,
+        "y": 480
+      },
+      "config": {
+        "max_new_tokens": 200
+      }
+    },
+    {
+      "id": "format_observation",
+      "type": "opennav__format_observation",
+      "label": "Format Observation",
+      "position": {
+        "x": 2520,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "review_history",
+      "type": "opennav__review_history",
+      "label": "Review History",
+      "position": {
+        "x": 0,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "estimate_completion_prompt",
+      "type": "opennav__estimate_completion_prompt",
+      "label": "Stage 2 — Completion Prompt",
+      "position": {
+        "x": 1400,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "estimate_completion_llm",
+      "type": "llmCall",
+      "label": "Stage 2 — Completion LLM",
+      "position": {
+        "x": 1680,
+        "y": 320
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "parse_executed_actions",
+      "type": "opennav__parse_executed_actions",
+      "label": "Parse Executed Actions",
+      "position": {
+        "x": 1960,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "decision",
+      "type": "opennav__decision",
+      "label": "Stage 3 — Decision (3-sample ensemble + fuse + test)",
+      "position": {
+        "x": 2800,
+        "y": 480
+      },
+      "config": {
+        "llm_profile": "",
+        "num_samples": 3,
+        "error_threshold": 2,
+        "max_tokens": 512
+      }
+    },
+    {
+      "id": "resolve_action",
+      "type": "opennav__resolve_action",
+      "label": "Resolve (angle, distance)",
+      "position": {
+        "x": 3080,
+        "y": 640
+      },
+      "config": {}
+    },
+    {
+      "id": "step_hightolow",
+      "type": "env_habitat__step_hightolow",
+      "label": "Habitat: Step (HIGHTOLOW)",
+      "position": {
+        "x": 3360,
+        "y": 640
+      },
+      "config": {}
+    },
+    {
+      "id": "obs_summary_prompt",
+      "type": "opennav__observation_summary_prompt",
+      "label": "Obs Summary Prompt",
+      "position": {
+        "x": 3360,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "obs_summary_llm",
+      "type": "llmCall",
+      "label": "Obs Summary LLM",
+      "position": {
+        "x": 3640,
+        "y": 480
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 256,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "thought_summary_prompt",
+      "type": "opennav__thought_summary_prompt",
+      "label": "Thought Summary Prompt",
+      "position": {
+        "x": 3080,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "thought_summary_llm",
+      "type": "llmCall",
+      "label": "Thought Summary LLM",
+      "position": {
+        "x": 3360,
+        "y": 0
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_tokens": 256,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "select_direction_observation",
+      "type": "opennav__select_direction_observation",
+      "label": "Select Direction Observation",
+      "position": {
+        "x": 3080,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "append_history",
+      "type": "opennav__append_history",
+      "label": "Append History",
+      "position": {
+        "x": 3920,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "increment_step",
+      "type": "opennav__increment",
+      "label": "Increment Step",
+      "position": {
+        "x": 1400,
+        "y": 760
+      },
+      "config": {}
+    },
+    {
+      "id": "step_cap_compare",
+      "type": "opennav__step_cap_compare",
+      "label": "Step Cap Compare",
+      "position": {
+        "x": 3640,
+        "y": 640
+      },
+      "config": {}
+    },
+    {
+      "id": "nav_history_container",
+      "type": "stateContainer",
+      "label": "nav_history",
+      "position": {
+        "x": 0,
+        "y": 1190
+      },
+      "config": {
+        "name": "nav_history",
+        "reducer": "accumulator",
+        "value_type": "TEXT"
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 1680,
+        "y": 760
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "step",
+            "wire_type": "POSE",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_obs",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 2520,
+        "y": 1420
+      },
+      "config": {
+        "rows": 1,
+        "cols": 2,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH"
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_thinking",
+      "type": "textScroll",
+      "label": "Decision Thoughts",
+      "position": {
+        "x": 2800,
+        "y": 1420
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_action",
+      "type": "actionLog",
+      "label": "HIGHTOLOW Actions",
+      "position": {
+        "x": 3360,
+        "y": 1420
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 3640,
+        "y": 1420
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 3680,
+        "y": 640
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_habitat__evaluate",
+      "label": "Habitat: Evaluate",
+      "position": {
+        "x": 3360,
+        "y": 780
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_inst_to_actions_prompt",
+      "source": "episode_info",
+      "target": "detect_actions_prompt",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_actions_prompt_to_llm_sys",
+      "source": "detect_actions_prompt",
+      "target": "detect_actions_llm",
+      "sourceHandle": "system",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_actions_prompt_to_llm_user",
+      "source": "detect_actions_prompt",
+      "target": "detect_actions_llm",
+      "sourceHandle": "user",
+      "targetHandle": "template"
+    },
+    {
+      "id": "e_inst_to_lm_prompt",
+      "source": "episode_info",
+      "target": "detect_landmarks_prompt",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_lm_prompt_to_llm_sys",
+      "source": "detect_landmarks_prompt",
+      "target": "detect_landmarks_llm",
+      "sourceHandle": "system",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_lm_prompt_to_llm_user",
+      "source": "detect_landmarks_prompt",
+      "target": "detect_landmarks_llm",
+      "sourceHandle": "user",
+      "targetHandle": "template"
+    },
+    {
+      "id": "e_actions_to_step_cap",
+      "source": "detect_actions_llm",
+      "target": "compute_step_cap",
+      "sourceHandle": "response",
+      "targetHandle": "actions"
+    },
+    {
+      "id": "e_step_cap_to_iter",
+      "source": "compute_step_cap",
+      "target": "iter_in",
+      "sourceHandle": "step_length",
+      "targetHandle": "step_length"
+    },
+    {
+      "id": "e_inst_seed_to_iter",
+      "source": "episode_info",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_actions_seed_to_iter",
+      "source": "detect_actions_llm",
+      "target": "iter_in",
+      "sourceHandle": "response",
+      "targetHandle": "actions"
+    },
+    {
+      "id": "e_lm_seed_to_iter",
+      "source": "detect_landmarks_llm",
+      "target": "iter_in",
+      "sourceHandle": "response",
+      "targetHandle": "landmarks"
+    },
+    {
+      "id": "e_iter_to_pano",
+      "source": "iter_in",
+      "target": "panorama_rgbd",
+      "sourceHandle": "step",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_pano_to_predict",
+      "source": "panorama_rgbd",
+      "target": "predict_waypoints",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_predict_to_bin",
+      "source": "predict_waypoints",
+      "target": "bin_to_directions",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_pano_to_ram_views",
+      "source": "panorama_rgbd",
+      "target": "ram_tag",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_pano_to_caption_views",
+      "source": "panorama_rgbd",
+      "target": "spatial_caption",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_bin_to_ram_cands",
+      "source": "bin_to_directions",
+      "target": "ram_tag",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_bin_to_caption_cands",
+      "source": "bin_to_directions",
+      "target": "spatial_caption",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_bin_to_format_cands",
+      "source": "bin_to_directions",
+      "target": "format_observation",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_ram_to_format",
+      "source": "ram_tag",
+      "target": "format_observation",
+      "sourceHandle": "tags",
+      "targetHandle": "tags"
+    },
+    {
+      "id": "e_caption_to_format",
+      "source": "spatial_caption",
+      "target": "format_observation",
+      "sourceHandle": "captions",
+      "targetHandle": "captions"
+    },
+    {
+      "id": "e_iter_step_to_format",
+      "source": "iter_in",
+      "target": "format_observation",
+      "sourceHandle": "step",
+      "targetHandle": "step"
+    },
+    {
+      "id": "e_history_to_estimate_prompt",
+      "source": "review_history",
+      "target": "estimate_completion_prompt",
+      "sourceHandle": "history_traj",
+      "targetHandle": "history_traj"
+    },
+    {
+      "id": "e_iter_lm_to_estimate",
+      "source": "iter_in",
+      "target": "estimate_completion_prompt",
+      "sourceHandle": "landmarks",
+      "targetHandle": "landmarks"
+    },
+    {
+      "id": "e_iter_inst_to_estimate",
+      "source": "iter_in",
+      "target": "estimate_completion_prompt",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_estimate_prompt_to_llm_sys",
+      "source": "estimate_completion_prompt",
+      "target": "estimate_completion_llm",
+      "sourceHandle": "system",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_estimate_prompt_to_llm_user",
+      "source": "estimate_completion_prompt",
+      "target": "estimate_completion_llm",
+      "sourceHandle": "user",
+      "targetHandle": "template"
+    },
+    {
+      "id": "e_estimate_to_parse",
+      "source": "estimate_completion_llm",
+      "target": "parse_executed_actions",
+      "sourceHandle": "response",
+      "targetHandle": "llm_out"
+    },
+    {
+      "id": "e_format_to_decision_obs",
+      "source": "format_observation",
+      "target": "decision",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_format_to_decision_ids",
+      "source": "format_observation",
+      "target": "decision",
+      "sourceHandle": "candidate_ids",
+      "targetHandle": "candidate_ids"
+    },
+    {
+      "id": "e_iter_inst_to_decision",
+      "source": "iter_in",
+      "target": "decision",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iter_lm_to_decision",
+      "source": "iter_in",
+      "target": "decision",
+      "sourceHandle": "landmarks",
+      "targetHandle": "landmarks"
+    },
+    {
+      "id": "e_iter_step_to_decision",
+      "source": "iter_in",
+      "target": "decision",
+      "sourceHandle": "step",
+      "targetHandle": "step"
+    },
+    {
+      "id": "e_history_to_decision",
+      "source": "review_history",
+      "target": "decision",
+      "sourceHandle": "history_traj",
+      "targetHandle": "history_traj"
+    },
+    {
+      "id": "e_executed_to_decision",
+      "source": "parse_executed_actions",
+      "target": "decision",
+      "sourceHandle": "executed_actions",
+      "targetHandle": "executed_actions"
+    },
+    {
+      "id": "e_bin_to_decision_cands",
+      "source": "bin_to_directions",
+      "target": "decision",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_decision_to_resolve_vp",
+      "source": "decision",
+      "target": "resolve_action",
+      "sourceHandle": "next_vp",
+      "targetHandle": "next_vp"
+    },
+    {
+      "id": "e_bin_to_resolve_cands",
+      "source": "bin_to_directions",
+      "target": "resolve_action",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_resolve_to_step_angle",
+      "source": "resolve_action",
+      "target": "step_hightolow",
+      "sourceHandle": "angle",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_resolve_to_step_distance",
+      "source": "resolve_action",
+      "target": "step_hightolow",
+      "sourceHandle": "distance",
+      "targetHandle": "distance"
+    },
+    {
+      "id": "e_blocks_to_select",
+      "source": "format_observation",
+      "target": "select_direction_observation",
+      "sourceHandle": "blocks",
+      "targetHandle": "blocks"
+    },
+    {
+      "id": "e_decision_vp_to_select",
+      "source": "decision",
+      "target": "select_direction_observation",
+      "sourceHandle": "next_vp",
+      "targetHandle": "next_vp"
+    },
+    {
+      "id": "e_select_to_obs_sum_prompt",
+      "source": "select_direction_observation",
+      "target": "obs_summary_prompt",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_select_direction_to_append",
+      "source": "select_direction_observation",
+      "target": "append_history",
+      "sourceHandle": "direction_id",
+      "targetHandle": "direction_id"
+    },
+    {
+      "id": "e_obs_sum_prompt_to_llm_sys",
+      "source": "obs_summary_prompt",
+      "target": "obs_summary_llm",
+      "sourceHandle": "system",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_obs_sum_prompt_to_llm_user",
+      "source": "obs_summary_prompt",
+      "target": "obs_summary_llm",
+      "sourceHandle": "user",
+      "targetHandle": "template"
+    },
+    {
+      "id": "e_decision_to_thought_sum_prompt",
+      "source": "decision",
+      "target": "thought_summary_prompt",
+      "sourceHandle": "decision_thought",
+      "targetHandle": "thought"
+    },
+    {
+      "id": "e_thought_sum_prompt_to_llm_sys",
+      "source": "thought_summary_prompt",
+      "target": "thought_summary_llm",
+      "sourceHandle": "system",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_thought_sum_prompt_to_llm_user",
+      "source": "thought_summary_prompt",
+      "target": "thought_summary_llm",
+      "sourceHandle": "user",
+      "targetHandle": "template"
+    },
+    {
+      "id": "e_iter_step_to_append",
+      "source": "iter_in",
+      "target": "append_history",
+      "sourceHandle": "step",
+      "targetHandle": "step"
+    },
+    {
+      "id": "e_decision_vp_to_append",
+      "source": "decision",
+      "target": "append_history",
+      "sourceHandle": "next_vp",
+      "targetHandle": "viewpoint"
+    },
+    {
+      "id": "e_obs_sum_to_append",
+      "source": "obs_summary_llm",
+      "target": "append_history",
+      "sourceHandle": "response",
+      "targetHandle": "observation_summary"
+    },
+    {
+      "id": "e_thought_sum_to_append",
+      "source": "thought_summary_llm",
+      "target": "append_history",
+      "sourceHandle": "response",
+      "targetHandle": "thought_summary"
+    },
+    {
+      "id": "e_iter_step_to_increment",
+      "source": "iter_in",
+      "target": "increment_step",
+      "sourceHandle": "step",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_increment_to_iter_out",
+      "source": "increment_step",
+      "target": "iter_out",
+      "sourceHandle": "next",
+      "targetHandle": "step"
+    },
+    {
+      "id": "e_increment_to_cap_step",
+      "source": "increment_step",
+      "target": "step_cap_compare",
+      "sourceHandle": "next",
+      "targetHandle": "step"
+    },
+    {
+      "id": "e_iter_cap_to_compare",
+      "source": "iter_in",
+      "target": "step_cap_compare",
+      "sourceHandle": "step_length",
+      "targetHandle": "step_length"
+    },
+    {
+      "id": "e_habitat_done_to_compare",
+      "source": "step_hightolow",
+      "target": "step_cap_compare",
+      "sourceHandle": "terminated",
+      "targetHandle": "habitat_done"
+    },
+    {
+      "id": "e_cap_to_term__stop",
+      "source": "step_cap_compare",
+      "target": "iter_out",
+      "sourceHandle": "done",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_format_to_viewer_obs",
+      "source": "format_observation",
+      "target": "viewer_obs",
+      "sourceHandle": "observation",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_decision_to_viewer_thinking",
+      "source": "decision",
+      "target": "viewer_thinking",
+      "sourceHandle": "decision_thought",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_step_to_viewer_metrics",
+      "source": "evaluate",
+      "target": "viewer_metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_output_63__po",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ]
+}

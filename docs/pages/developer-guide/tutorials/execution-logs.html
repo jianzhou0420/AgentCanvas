@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tutorial: Using the Execution Log System — AgentCanvas</title>
+<meta name="description" content="The execution log system (ADR-observability-003) records per-node I/O for every firing during graph execution. It captures what went in , what came out , and how long it took — automatically, for…">
+<meta property="og:title" content="Tutorial: Using the Execution Log System — AgentCanvas">
+<meta property="og:description" content="The execution log system (ADR-observability-003) records per-node I/O for every firing during graph execution. It captures what went in , what came out , and how long it took — automatically, for…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/tutorials/execution-logs.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/tutorials/execution-logs.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Tutorials</a>
+    <span class="sep">/</span>
+    <span class="here">Tutorial: Using the Execution Log System</span>
+  </div>
+  <div class="last-updated">2026-05-18 22:30</div>
+</div>
+  <header class="page-header guide">
+  <h1>Tutorial: Using the Execution Log System</h1>
+</header>
+
+<p>The execution log system (ADR-observability-003) records per-node I/O for every firing during graph execution. It captures <strong>what went in</strong>, <strong>what came out</strong>, and <strong>how long it took</strong> — automatically, for every node. Nodes can also emit <strong>voluntary logs</strong> with domain-specific details (LLM prompts, token counts, parsed actions) that the executor cannot see from the outside.</p>
+<p>This tutorial walks through adding logging to a custom nodeset, running a graph, and inspecting the results via REST API, JSONL files, and the frontend Log Viewer.</p>
+<blockquote>
+<p><strong>Reference</strong>: For the full system specification, see <a href="../design-docs/operations/execution-logs.html">Execution Logs</a>.</p>
+</blockquote>
+<hr>
+<h2 id="1-prerequisites"><span class="num">1.</span> Prerequisites</h2>
+<ul>
+<li>The <code>agentcanvas</code> conda environment activated</li>
+<li>The AgentCanvas backend running (<code>cd agentcanvas &amp;&amp; bash run_dev.sh</code>)</li>
+<li>Familiarity with <a href="../design-docs/components/base-canvas-node.html">BaseCanvasNode</a> and <a href="../design-docs/components/nodesets.html">NodeSets</a></li>
+</ul>
+<hr>
+<h2 id="2-how-it-works"><span class="num">2.</span> How It Works</h2>
+<p>The log system has two layers:</p>
+<div class="highlight"><pre><span></span><code>┌──────────────────────────────────────────────────────┐
+│  Node forward()                                      │
+│                                                      │
+│    self._self_log(&quot;prompt&quot;, prompt)     ◄── Interior │
+│    self._self_log(&quot;tokens&quot;, 142)            (opt-in) │
+│    return {&quot;action&quot;: 1}                              │
+│                                                      │
+├──────────────────────────────────────────────────────┤
+│  GraphExecutor (wraps every firing)               │
+│                                                      │
+│    inputs  = {port: value}              ◄── Exterior │
+│    outputs = {port: value}                  (auto)   │
+│    duration_ms = 25.4                                │
+│    port_wire_types = {port: &quot;TEXT&quot;}                   │
+│                                                      │
+│    → log_node() → ring buffer + JSONL                │
+│    → exec_log WS event → frontend                    │
+└──────────────────────────────────────────────────────┘
+</code></pre></div>
+<p><strong>Exterior layer</strong> — automatic, zero effort. The executor records port data, timing, and wire types for every firing.</p>
+<p><strong>Interior layer</strong> — opt-in. Nodes call <code>self._self_log(key, value)</code> inside <code>forward()</code> to record domain-specific data. These entries appear in the <code>inner_log</code> array of the log entry.</p>
+<hr>
+<h2 id="3-building-a-logged-nodeset"><span class="num">3.</span> Building a Logged NodeSet</h2>
+<p>This tutorial ships with a ready-to-run example:</p>
+<ul>
+<li><strong>NodeSet</strong>: <code>workspace/nodesets/example.py</code> — five nodes with different logging patterns</li>
+<li><strong>Graph</strong>: <code>workspace/graphs/text_analysis_demo.json</code> — a DAG wiring five custom nodes + two in-graph viewers</li>
+</ul>
+<p>No external dependencies beyond numpy. The nodeset is auto-discovered by <code>WorkspaceComponentRegistry</code> at startup.</p>
+<h3 id="31-the-nodeset-file"><span class="num">3.1</span> The NodeSet File</h3>
+<p>Open <code>workspace/nodesets/example.py</code> to see the full implementation. Here are the key highlights:</p>
+<p><strong>TextSource</strong> — Entry node (no inputs). Outputs configurable text from a <code>textarea</code> config field:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">TextSource</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;example__source&quot;</span>
+    <span class="n">input_ports</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>  <span class="c1"># no inputs → fires first as seed</span>
+    <span class="n">output_ports</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;TEXT&quot;</span><span class="p">,</span> <span class="s2">&quot;The configured text&quot;</span><span class="p">)]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">text</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;default text...&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;text_length&quot;</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;preview&quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">[:</span><span class="mi">80</span><span class="p">])</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">text</span><span class="p">}</span>
+</code></pre></div>
+<p><strong>WordCounter</strong> — Logs simple scalars:</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="n">text</span> <span class="o">=</span> <span class="n">inputs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
+    <span class="n">words</span> <span class="o">=</span> <span class="n">text</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
+    <span class="n">unique</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">w</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">words</span><span class="p">)</span>
+
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;word_count&quot;</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">words</span><span class="p">))</span>          <span class="c1"># scalar int</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;unique_words&quot;</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">unique</span><span class="p">))</span>        <span class="c1"># scalar int</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;avg_word_length&quot;</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span>           <span class="c1"># scalar float</span>
+        <span class="nb">sum</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">words</span><span class="p">)</span> <span class="o">/</span> <span class="nb">max</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">words</span><span class="p">),</span> <span class="mi">1</span><span class="p">),</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="p">))</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">words</span><span class="p">)),</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">text</span><span class="p">}</span>
+</code></pre></div>
+<p><strong>SentimentTag</strong> — Logs a structured dict:</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="c1"># ... keyword matching ...</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;analysis&quot;</span><span class="p">,</span> <span class="p">{</span>                       <span class="c1"># structured dict</span>
+        <span class="s2">&quot;positive_matches&quot;</span><span class="p">:</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">pos_hits</span><span class="p">),</span>
+        <span class="s2">&quot;negative_matches&quot;</span><span class="p">:</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">neg_hits</span><span class="p">),</span>
+        <span class="s2">&quot;positive_score&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">pos_hits</span><span class="p">),</span>
+        <span class="s2">&quot;negative_score&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">neg_hits</span><span class="p">),</span>
+        <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="n">sentiment</span><span class="p">,</span>
+    <span class="p">})</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;sentiment&quot;</span><span class="p">:</span> <span class="n">sentiment</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">text</span><span class="p">}</span>
+</code></pre></div>
+<p><strong>TextSummary</strong> — Logs multiple entries to trace the pipeline:</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="c1"># ...</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;input_lengths&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="p">),</span> <span class="o">...</span><span class="p">})</span>  <span class="c1"># entry 1</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;format_mode&quot;</span><span class="p">,</span> <span class="n">fmt</span><span class="p">)</span>                          <span class="c1"># entry 2</span>
+    <span class="c1"># ... build summary ...</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;output_length&quot;</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">summary</span><span class="p">))</span>               <span class="c1"># entry 3</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;summary&quot;</span><span class="p">:</span> <span class="n">summary</span><span class="p">}</span>
+</code></pre></div>
+<p><strong>RandomTriangleImage</strong> — Generates an IMAGE and logs shape/color metadata:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">RandomTriangleImage</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;example__random_triangle&quot;</span>
+    <span class="n">output_ports</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;rgb&quot;</span><span class="p">,</span> <span class="s2">&quot;IMAGE&quot;</span><span class="p">,</span> <span class="s2">&quot;Generated RGB image&quot;</span><span class="p">)]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">w</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;width&quot;</span><span class="p">,</span> <span class="mi">320</span><span class="p">))</span>
+        <span class="n">h</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;height&quot;</span><span class="p">,</span> <span class="mi">240</span><span class="p">))</span>
+        <span class="n">img</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">h</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="mi">255</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+
+        <span class="n">color</span> <span class="o">=</span> <span class="p">[</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">30</span><span class="p">,</span> <span class="mi">230</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)]</span>
+        <span class="n">pts</span> <span class="o">=</span> <span class="p">[(</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">w</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">h</span><span class="o">-</span><span class="mi">1</span><span class="p">))</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)]</span>
+        <span class="n">_fill_triangle</span><span class="p">(</span><span class="n">img</span><span class="p">,</span> <span class="n">pts</span><span class="p">,</span> <span class="n">color</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;image_shape&quot;</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">img</span><span class="o">.</span><span class="n">shape</span><span class="p">))</span>    <span class="c1"># asset logging trigger</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;triangle_color&quot;</span><span class="p">,</span> <span class="n">color</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;vertices&quot;</span><span class="p">,</span> <span class="n">pts</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;rgb&quot;</span><span class="p">:</span> <span class="n">img</span><span class="p">}</span>  <span class="c1"># IMAGE wire type → saved as sidecar JPEG</span>
+</code></pre></div>
+<p>Because the output port has wire type <code>IMAGE</code>, the executor's <code>log_serialize_with_assets()</code> automatically saves the numpy array as a JPEG file in <code>outputs/runs/{id}/assets/</code> — no extra code needed.</p>
+<h3 id="32-in-graph-viewers"><span class="num">3.2</span> In-Graph Viewers</h3>
+<p>The graph also includes two <strong>built-in viewer nodes</strong> — sink nodes that display data directly on the canvas during execution:</p>
+<table>
+<thead>
+<tr>
+<th>Viewer</th>
+<th>Node Type</th>
+<th>Input Port</th>
+<th>What It Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Observation Viewer</strong></td>
+<td><code>imageViewer</code></td>
+<td><code>rgb</code> (IMAGE)</td>
+<td>Renders the generated triangle image inline on the canvas</td>
+</tr>
+<tr>
+<td><strong>Scroll Text</strong></td>
+<td><code>textScroll</code></td>
+<td><code>text</code> (TEXT)</td>
+<td>Accumulates summaries across iterations as a scrollable stack on the canvas</td>
+</tr>
+</tbody>
+</table>
+<p>Viewer nodes are built into the framework (<code>graph_executor.py</code>). They have no output ports — they consume data and display it. Wire any IMAGE or TEXT port to them to get live visual feedback without leaving the canvas.</p>
+<h3 id="33-key-patterns-demonstrated"><span class="num">3.3</span> Key Patterns Demonstrated</h3>
+<table>
+<thead>
+<tr>
+<th>Node</th>
+<th>Logging Pattern</th>
+<th>What It Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TextSource</code></td>
+<td><code>_self_log("key", scalar)</code></td>
+<td>Entry node with config-driven output</td>
+</tr>
+<tr>
+<td><code>WordCounter</code></td>
+<td><code>_self_log("key", scalar)</code></td>
+<td>Simple key-value pairs (numbers, strings)</td>
+</tr>
+<tr>
+<td><code>SentimentTag</code></td>
+<td><code>_self_log("key", dict)</code></td>
+<td>Structured analysis data</td>
+</tr>
+<tr>
+<td><code>TextSummary</code></td>
+<td>Multiple <code>_self_log()</code> calls</td>
+<td>Step-by-step pipeline tracing</td>
+</tr>
+<tr>
+<td><code>RandomTriangleImage</code></td>
+<td><code>_self_log("key", list)</code></td>
+<td>IMAGE wire type with sidecar asset logging</td>
+</tr>
+</tbody>
+</table>
+<p>All five nodes also get <strong>automatic exterior logging</strong> for free — the executor captures their <code>inputs</code>, <code>outputs</code>, <code>duration_ms</code>, and <code>port_wire_types</code> without any code in the nodes. The two viewer nodes also appear in the log — they log <code>received_ports</code>.</p>
+<hr>
+<h2 id="4-running-and-generating-logs"><span class="num">4.</span> Running and Generating Logs</h2>
+<h3 id="41-start-the-dashboard"><span class="num">4.1</span> Start the Dashboard</h3>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>agentcanvas<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>bash<span class="w"> </span>run_dev.sh
+<span class="c1"># Backend:  http://localhost:8000  (Swagger: /docs)</span>
+<span class="c1"># Frontend: http://localhost:5173</span>
+</code></pre></div>
+<p>The <code>example</code> nodeset is auto-discovered at startup from <code>workspace/nodesets/</code>. You can verify via API:</p>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/components/nodesets&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<h3 id="42-open-and-run-the-graph"><span class="num">4.2</span> Open and Run the Graph</h3>
+<p>The graph file <code>workspace/graphs/text_analysis_demo.json</code> wires five custom nodes + two built-in viewers into a DAG:</p>
+<div class="highlight"><pre><span></span><code>                          ┌─── count ──────────────┐
+                          │                        ▼
+[Text Source]─── text ──►[Word Counter]          [Text Summary]──►[Summary Viewer]
+             └── text ──►[Sentiment  ]─ sentiment ►  (textScroll)
+                          Tagger     ─── text ────►
+
+[Random Triangle]── rgb ──►[Image Viewer]
+                           (imageViewer)
+</code></pre></div>
+<p><strong>Steps to run:</strong></p>
+<ol>
+<li>Open the frontend at <code>http://localhost:5173</code></li>
+<li>In the <strong>Explorer sidebar</strong> (left), expand the <strong>Graphs</strong> section</li>
+<li>Click <strong>Text Analysis Demo</strong> to open it in the canvas</li>
+<li>Seven nodes appear on the canvas — five custom nodes + two viewer sinks</li>
+<li>Optionally, click the <strong>Text Source</strong> node and edit the text in its config textarea</li>
+<li>Click the <strong>Play</strong> button (▶) in the ExecutionToolbar</li>
+<li>Watch all nodes fire — the <strong>Image Viewer</strong> shows a random colored triangle, and the <strong>Summary Viewer</strong> shows the analysis text inline on the canvas</li>
+</ol>
+<p>The graph runs, the executor captures logs automatically, and you're ready to inspect them.</p>
+<h3 id="43-view-logs-in-the-log-viewer"><span class="num">4.3</span> View Logs in the Log Viewer</h3>
+<p>After execution completes:</p>
+<ol>
+<li>Navigate to the <strong>Log Viewer</strong> page (click the Logs icon in the header, or click "Open" in the OutputDrawer's Logs tab)</li>
+<li>The <strong>sidebar</strong> lists your recent execution — click it</li>
+<li>The <strong>LogSummaryBar</strong> shows: 7 firings, 0 errors, 7 node types</li>
+<li>Browse all seven entries in <strong>Overall</strong> mode — the Random Triangle entry shows a 24×24 inline thumbnail of the generated image</li>
+<li>Switch to <strong>Detail</strong> mode to see full inputs, outputs, and <code>inner_log</code> for each node. The image entry shows the full-size triangle (rendered from the sidecar JPEG asset)</li>
+<li>Switch to <strong>Canvas</strong> mode to see a step-by-step replay — use First/Prev/Next/Last to step through each node firing with highlighting</li>
+</ol>
+<p>Each entry shows both the automatic data (inputs, outputs, timing) and the voluntary <code>inner_log</code> entries from <code>_self_log()</code>. IMAGE outputs appear as <code>{"__type": "asset", "path": "assets/...jpg"}</code> references — the Log Viewer renders them as inline images.</p>
+<h3 id="44-view-logs-in-the-canvas-outputdrawer"><span class="num">4.4</span> View Logs in the Canvas OutputDrawer</h3>
+<p>You can also inspect logs without leaving the canvas:</p>
+<ol>
+<li>While on the canvas page, open the <strong>OutputDrawer</strong> (bottom panel)</li>
+<li>Click the <strong>Logs</strong> tab</li>
+<li>Live <code>exec_log</code> events appear as the graph runs</li>
+<li>Click any entry to expand its details</li>
+</ol>
+<hr>
+<h2 id="5-querying-logs-via-rest-api"><span class="num">5.</span> Querying Logs via REST API</h2>
+<p>Two routers cover all programmatic log access:</p>
+<ul>
+<li><strong><code>/api/logs/...</code></strong> — generic, execution-id-keyed. 6 endpoints: list, entries, node-history, summary, graph snapshot, asset (§ 5.1-5.6). Works for canvas runs and eval episodes alike (the latter use composite <code>execution_id = "{run_id}_ep{NNNN}"</code>).</li>
+<li><strong><code>/api/replay/...</code></strong> — eval-only, walks the ADR-eval-004 per-episode directory layout directly. 3 endpoints (§ 5.7).</li>
+</ul>
+<p>Examples below use the <code>execution_id</code> from the run above.</p>
+<h3 id="51-list-recent-executions"><span class="num">5.1</span> List Recent Executions</h3>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;executions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exec_1775571161675_abc123&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;canvas&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;size_bytes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2847</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;modified&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1775571162.5</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="52-get-all-log-entries-for-a-run"><span class="num">5.2</span> Get All Log Entries for a Run</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Replace with your actual execution_id</span>
+<span class="nv">EXEC_ID</span><span class="o">=</span><span class="s2">&quot;exec_1775571161675_abc123&quot;</span>
+
+curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<p>Each entry contains both the automatic exterior data and the voluntary interior log:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exec_1775571161675_abc123&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;entries&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-10T19:15:01.234&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exec_1775571161675_abc123&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;canvas&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;step&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;counter&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;example__word_count&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;node_label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Word Counter&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;duration_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.42</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;inputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The weather today is great and wonderful but the traffic is terrible&quot;</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;outputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;12&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The weather today is great and wonderful but the traffic is terrible&quot;</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;inner_log&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;word_count&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;unique_words&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">11</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;avg_word_length&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">5.3</span><span class="p">}</span>
+<span class="w">      </span><span class="p">],</span>
+<span class="w">      </span><span class="nt">&quot;port_wire_types&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="53-filter-by-node-or-iteration"><span class="num">5.3</span> Filter by Node or Iteration</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Get entries for a specific node</span>
+curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">?node_id=sentiment&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+
+<span class="c1"># Get entries for a specific node type (useful in dataflow graphs with multiple firings)</span>
+curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">?node_type=example__sentiment&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+
+<span class="c1"># Get only step N&#39;s firings (dataflow graphs; § 9.3)</span>
+curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">?step=3&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<p>All three filters compose (<code>?node_type=…&amp;step=…</code>).</p>
+<h3 id="54-get-one-nodes-history"><span class="num">5.4</span> Get One Node's History</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># All firings of a specific node across all steps</span>
+curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">/node/summary&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<h3 id="55-get-execution-summary"><span class="num">5.5</span> Get Execution Summary</h3>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">/summary&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exec_1775571161675_abc123&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;canvas&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-10T19:15:01.234&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;ended_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-10T19:15:01.258&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;total_steps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;total_firings&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;error_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_types_fired&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="s2">&quot;example__word_count&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="s2">&quot;example__sentiment&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="s2">&quot;example__summary&quot;</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="56-graph-snapshot--asset-fetch"><span class="num">5.6</span> Graph Snapshot &amp; Asset Fetch</h3>
+<p>Two more endpoints round out the <code>/api/logs</code> surface:</p>
+<div class="highlight"><pre><code># Replay needs the graph topology that was running — saved per execution as graph.json
+curl -s "localhost:8000/api/logs/${EXEC_ID}/graph" | python -m json.tool
+
+# Sidecar asset (image/depth/etc. saved by log_serialize_with_assets — § 9.1)
+curl -o image.jpg "localhost:8000/api/logs/${EXEC_ID}/assets/s0_f0_My__Vision__rgb.jpg"
+</code></pre></div>
+
+<h3 id="57-eval-side-replay-endpoints"><span class="num">5.7</span> Eval-Side Replay Endpoints (per ADR-eval-004)</h3>
+<p>For batch eval runs the frontend's Replay tab uses a different router that walks the per-episode directory layout directly. The <code>/api/logs/...</code> endpoints above still work (pass the composite <code>execution_id = "{run_id}_ep{NNNN}"</code>), but these are faster for episode-shaped queries:</p>
+<div class="highlight"><pre><code># List all episodes in an eval run (paginated, with status + worker_id)
+curl -s "localhost:8000/api/replay/${RUN_ID}/episodes" | python -m json.tool
+
+# One episode's full log + summary, by integer episode_index
+curl -s "localhost:8000/api/replay/${RUN_ID}/episode/47" | python -m json.tool
+
+# One episode's asset
+curl -o triangle.jpg "localhost:8000/api/replay/${RUN_ID}/episode/47/assets/s0_f2_Triangle__rgb.jpg"
+</code></pre></div>
+<hr>
+<h2 id="6-reading-jsonl-files-directly"><span class="num">6.</span> Reading JSONL Files Directly</h2>
+<p>Logs persist as JSONL files on disk. Each line is one <code>NodeLogEntry</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Find the log file</span>
+ls<span class="w"> </span>outputs/runs/
+
+<span class="c1"># Read it (one JSON object per line)</span>
+cat<span class="w"> </span>outputs/runs/<span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span>/log.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool<span class="w"> </span>--json-lines
+
+<span class="c1"># Count firings</span>
+wc<span class="w"> </span>-l<span class="w"> </span>outputs/runs/<span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span>/log.jsonl
+
+<span class="c1"># Extract just the inner_log entries using jq</span>
+cat<span class="w"> </span>outputs/runs/<span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span>/log.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.inner_log[]&#39;</span>
+</code></pre></div>
+<h3 id="61-storage-layout"><span class="num">6.1</span> Storage Layout</h3>
+<div class="highlight"><pre><span></span><code>outputs/
+├── runs/                                    # Canvas executions
+│   └── exec_1775571161675_abc123/
+│       ├── graph.json                       # Graph snapshot (for canvas replay)
+│       ├── log.jsonl                        # One NodeLogEntry per line
+│       └── assets/                          # Sidecar images (if any)
+│           ├── s0_f0_Word__Counter__rgb.jpg
+│           └── ...
+└── eval_runs/                               # Eval executions (ADR-eval-004)
+    └── {run_id}/                             # run_id = &quot;20260515_143052&quot; (timestamp)
+        ├── spec.json  shared_urls.json
+        ├── summary.json  graph.json
+        ├── stdout.log  stderr.log  _DONE
+        └── episodes/
+            └── ep{idx:04d}/                  # one self-contained dir per episode
+                ├── log.jsonl                 # this episode&#39;s firings; execution_id = &quot;{run_id}_ep{idx:04d}&quot;
+                ├── assets/                   # this episode&#39;s images
+                └── episode.json              # self-describing record
+</code></pre></div>
+<h3 id="62-programmatic-access"><span class="num">6.2</span> Programmatic Access</h3>
+<div class="highlight"><pre><span></span><code><span class="sd">&quot;&quot;&quot;Read and analyze log files programmatically.&quot;&quot;&quot;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">read_log</span><span class="p">(</span><span class="n">execution_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">source</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;runs&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Read all log entries for a given execution.</span>
+
+<span class="sd">    Canvas: ``execution_id`` is the standalone id, file at</span>
+<span class="sd">    ``outputs/runs/{execution_id}/log.jsonl``.</span>
+
+<span class="sd">    Eval: ``execution_id`` is the composite ``{run_id}_ep{idx:04d}``;</span>
+<span class="sd">    pass ``source=&quot;eval_runs&quot;`` and the function resolves it to</span>
+<span class="sd">    ``outputs/eval_runs/{run_id}/episodes/ep{idx:04d}/log.jsonl``.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">source</span> <span class="o">==</span> <span class="s2">&quot;eval_runs&quot;</span> <span class="ow">and</span> <span class="s2">&quot;_ep&quot;</span> <span class="ow">in</span> <span class="n">execution_id</span><span class="p">:</span>
+        <span class="n">run_id</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">ep</span> <span class="o">=</span> <span class="n">execution_id</span><span class="o">.</span><span class="n">rpartition</span><span class="p">(</span><span class="s2">&quot;_ep&quot;</span><span class="p">)</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;outputs&quot;</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;eval_runs&quot;</span> <span class="o">/</span> <span class="n">run_id</span> <span class="o">/</span> <span class="s2">&quot;episodes&quot;</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">&quot;ep</span><span class="si">{</span><span class="n">ep</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">/</span> <span class="s2">&quot;log.jsonl&quot;</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;outputs&quot;</span><span class="p">)</span> <span class="o">/</span> <span class="n">source</span> <span class="o">/</span> <span class="n">execution_id</span> <span class="o">/</span> <span class="s2">&quot;log.jsonl&quot;</span>
+    <span class="n">entries</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">f</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">line</span><span class="o">.</span><span class="n">strip</span><span class="p">():</span>
+                <span class="n">entries</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">line</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">entries</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_inner_logs</span><span class="p">(</span><span class="n">entries</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span> <span class="n">node_type</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Extract voluntary inner_log entries for a specific node type.&quot;&quot;&quot;</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">entries</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">entry</span><span class="p">[</span><span class="s2">&quot;node_type&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">node_type</span><span class="p">:</span>
+            <span class="n">result</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">entry</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;inner_log&quot;</span><span class="p">,</span> <span class="p">[]))</span>
+    <span class="k">return</span> <span class="n">result</span>
+
+
+<span class="c1"># Usage</span>
+<span class="n">entries</span> <span class="o">=</span> <span class="n">read_log</span><span class="p">(</span><span class="s2">&quot;exec_1775571161675_abc123&quot;</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Total firings: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">entries</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Node types: </span><span class="si">{</span><span class="nb">set</span><span class="p">(</span><span class="n">e</span><span class="p">[</span><span class="s1">&#39;node_type&#39;</span><span class="p">]</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">entries</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="c1"># Get sentiment analysis details</span>
+<span class="n">sentiment_logs</span> <span class="o">=</span> <span class="n">get_inner_logs</span><span class="p">(</span><span class="n">entries</span><span class="p">,</span> <span class="s2">&quot;example__sentiment&quot;</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">log</span> <span class="ow">in</span> <span class="n">sentiment_logs</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="n">log</span><span class="p">[</span><span class="s1">&#39;key&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">log</span><span class="p">[</span><span class="s1">&#39;value&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</code></pre></div>
+<hr>
+<h2 id="7-frontend-log-viewer-reference"><span class="num">7.</span> Frontend Log Viewer Reference</h2>
+<p>See <a href="#43-view-logs-in-the-log-viewer">Section 4.3</a> for the step-by-step walkthrough. Here's a summary of the three view modes:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Best For</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Overall</strong></td>
+<td>Quick scan — compact rows with 24×24 inline thumbnails, click to expand side detail pane</td>
+</tr>
+<tr>
+<td><strong>Detail</strong></td>
+<td>Deep inspection — every entry auto-expanded inline with full inputs, outputs, inner_log</td>
+</tr>
+<tr>
+<td><strong>Canvas</strong></td>
+<td>Replay — read-only React Flow graph with step-by-step node highlighting</td>
+</tr>
+</tbody>
+</table>
+<h3 id="71-canvas-replay-controls"><span class="num">7.1</span> Canvas Replay Controls</h3>
+<ul>
+<li><strong>Step navigation</strong>: First / Prev / Play-Pause / Next / Last</li>
+<li><strong>Node highlighting</strong>: blue glow (firing), green outline (completed), red (error)</li>
+<li><strong>Auto-play</strong>: steps through at 800ms intervals</li>
+<li><strong>Resizable detail panel</strong>: drag handle between canvas and detail area (80px–600px)</li>
+</ul>
+<h3 id="72-value-renderers"><span class="num">7.2</span> Value Renderers</h3>
+<p>The Log Viewer uses specialized renderers based on wire type:</p>
+<table>
+<thead>
+<tr>
+<th>Renderer</th>
+<th>Wire Types</th>
+<th>What It Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TextRenderer</code></td>
+<td>TEXT, large_string</td>
+<td>Text with copy button, collapse for long strings</td>
+</tr>
+<tr>
+<td><code>ActionRenderer</code></td>
+<td>ACTION</td>
+<td>Color-coded navigation action badge (STOP/FORWARD/LEFT/RIGHT)</td>
+</tr>
+<tr>
+<td><code>ImageRenderer</code></td>
+<td>IMAGE, DEPTH, OBSERVATION</td>
+<td>Inline image with click-to-zoom</td>
+</tr>
+<tr>
+<td><code>MetricsRenderer</code></td>
+<td>METRICS</td>
+<td>Key-value metric cards</td>
+</tr>
+<tr>
+<td><code>JsonTreeRenderer</code></td>
+<td>STATE, ANY, fallback</td>
+<td>Collapsible JSON tree</td>
+</tr>
+<tr>
+<td><code>PrimitiveRenderer</code></td>
+<td>BOOL, string, number</td>
+<td>Type-colored scalar display</td>
+</tr>
+</tbody>
+</table>
+<p>For the text analysis demo, you'll see <code>TextRenderer</code> for all ports and <code>JsonTreeRenderer</code> for the structured <code>analysis</code> inner_log entry from <code>SentimentTag</code>.</p>
+<hr>
+<h2 id="8-standalone-script-logger-without-the-server"><span class="num">8.</span> Standalone Script: Logger Without the Server</h2>
+<p>You can use <code>ExecutionLogger</code> directly in a standalone Python script — no backend server needed. This is useful for testing, scripting, or building custom analysis tools.</p>
+<p>Save this as <code>scripts/log_demo.py</code> and run it:</p>
+<div class="highlight"><pre><span></span><code><span class="ch">#!/usr/bin/env python</span>
+<span class="sd">&quot;&quot;&quot;Standalone demo of the ExecutionLogger — no server needed.</span>
+
+<span class="sd">Run from the repo root:</span>
+<span class="sd">    python scripts/log_demo.py</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+
+<span class="c1"># Add backend to path so we can import the logging module</span>
+<span class="n">backend_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="vm">__file__</span><span class="p">),</span> <span class="s2">&quot;..&quot;</span><span class="p">,</span> <span class="s2">&quot;agentcanvas&quot;</span><span class="p">,</span> <span class="s2">&quot;backend&quot;</span><span class="p">)</span>
+<span class="n">sys</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="n">backend_dir</span><span class="p">))</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">app.logging.logger</span><span class="w"> </span><span class="kn">import</span> <span class="n">ExecutionLogger</span><span class="p">,</span> <span class="n">log_serialize</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+    <span class="c1"># ── 1. Create a logger with a persist directory ──</span>
+    <span class="n">execution_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;demo_</span><span class="si">{</span><span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">())</span><span class="si">}</span><span class="s2">&quot;</span>
+    <span class="n">persist_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s2">&quot;outputs&quot;</span><span class="p">,</span> <span class="s2">&quot;runs&quot;</span><span class="p">,</span> <span class="n">execution_id</span><span class="p">)</span>
+
+    <span class="n">logger</span> <span class="o">=</span> <span class="n">ExecutionLogger</span><span class="p">(</span>
+        <span class="n">execution_id</span><span class="o">=</span><span class="n">execution_id</span><span class="p">,</span>
+        <span class="n">source</span><span class="o">=</span><span class="s2">&quot;canvas&quot;</span><span class="p">,</span>
+        <span class="n">persist_dir</span><span class="o">=</span><span class="n">persist_dir</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Logger created: </span><span class="si">{</span><span class="n">execution_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Persist dir:    </span><span class="si">{</span><span class="n">persist_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="c1"># ── 2. Simulate node firings ──</span>
+
+    <span class="c1"># Firing 1: Word Counter</span>
+    <span class="n">t0</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.001</span><span class="p">)</span>  <span class="c1"># simulate work</span>
+    <span class="n">elapsed</span> <span class="o">=</span> <span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">-</span> <span class="n">t0</span><span class="p">)</span> <span class="o">*</span> <span class="mi">1000</span>
+
+    <span class="n">logger</span><span class="o">.</span><span class="n">log_node</span><span class="p">(</span>
+        <span class="n">step</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="n">node_id</span><span class="o">=</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span>
+        <span class="n">node_type</span><span class="o">=</span><span class="s2">&quot;example__word_count&quot;</span><span class="p">,</span>
+        <span class="n">node_label</span><span class="o">=</span><span class="s2">&quot;Word Counter&quot;</span><span class="p">,</span>
+        <span class="n">duration_ms</span><span class="o">=</span><span class="n">elapsed</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;The weather is great and wonderful&quot;</span><span class="p">},</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="s2">&quot;6&quot;</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;The weather is great and wonderful&quot;</span><span class="p">},</span>
+        <span class="n">inner_log</span><span class="o">=</span><span class="p">[</span>
+            <span class="p">{</span><span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;word_count&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">6</span><span class="p">},</span>
+            <span class="p">{</span><span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;unique_words&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">6</span><span class="p">},</span>
+        <span class="p">],</span>
+        <span class="n">port_wire_types</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;TEXT&quot;</span><span class="p">,</span> <span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="s2">&quot;TEXT&quot;</span><span class="p">},</span>
+    <span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;  Logged: Word Counter (step 0)&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Firing 2: Sentiment Tagger</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">log_node</span><span class="p">(</span>
+        <span class="n">step</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="n">node_id</span><span class="o">=</span><span class="s2">&quot;sentiment&quot;</span><span class="p">,</span>
+        <span class="n">node_type</span><span class="o">=</span><span class="s2">&quot;example__sentiment&quot;</span><span class="p">,</span>
+        <span class="n">node_label</span><span class="o">=</span><span class="s2">&quot;Sentiment Tagger&quot;</span><span class="p">,</span>
+        <span class="n">duration_ms</span><span class="o">=</span><span class="mf">0.3</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;The weather is great and wonderful&quot;</span><span class="p">},</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;sentiment&quot;</span><span class="p">:</span> <span class="s2">&quot;positive&quot;</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;The weather is great and wonderful&quot;</span><span class="p">},</span>
+        <span class="n">inner_log</span><span class="o">=</span><span class="p">[</span>
+            <span class="p">{</span><span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;analysis&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;positive_matches&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;great&quot;</span><span class="p">,</span> <span class="s2">&quot;wonderful&quot;</span><span class="p">],</span>
+                <span class="s2">&quot;negative_matches&quot;</span><span class="p">:</span> <span class="p">[],</span>
+                <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="s2">&quot;positive&quot;</span><span class="p">,</span>
+            <span class="p">}},</span>
+        <span class="p">],</span>
+        <span class="n">port_wire_types</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;TEXT&quot;</span><span class="p">,</span> <span class="s2">&quot;sentiment&quot;</span><span class="p">:</span> <span class="s2">&quot;TEXT&quot;</span><span class="p">},</span>
+    <span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;  Logged: Sentiment Tagger (step 0)&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Firing 3: Text Summary</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">log_node</span><span class="p">(</span>
+        <span class="n">step</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+        <span class="n">node_id</span><span class="o">=</span><span class="s2">&quot;summary&quot;</span><span class="p">,</span>
+        <span class="n">node_type</span><span class="o">=</span><span class="s2">&quot;example__summary&quot;</span><span class="p">,</span>
+        <span class="n">node_label</span><span class="o">=</span><span class="s2">&quot;Text Summary&quot;</span><span class="p">,</span>
+        <span class="n">duration_ms</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;The weather is great and wonderful&quot;</span><span class="p">,</span> <span class="s2">&quot;word_count&quot;</span><span class="p">:</span> <span class="s2">&quot;6&quot;</span><span class="p">,</span> <span class="s2">&quot;sentiment&quot;</span><span class="p">:</span> <span class="s2">&quot;positive&quot;</span><span class="p">},</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;summary&quot;</span><span class="p">:</span> <span class="s2">&quot;6 words, positive sentiment&quot;</span><span class="p">},</span>
+        <span class="n">inner_log</span><span class="o">=</span><span class="p">[</span>
+            <span class="p">{</span><span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;format_mode&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="s2">&quot;brief&quot;</span><span class="p">},</span>
+            <span class="p">{</span><span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;output_length&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">27</span><span class="p">},</span>
+        <span class="p">],</span>
+        <span class="n">port_wire_types</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;summary&quot;</span><span class="p">:</span> <span class="s2">&quot;TEXT&quot;</span><span class="p">},</span>
+    <span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;  Logged: Text Summary (step 0)&quot;</span><span class="p">)</span>
+
+    <span class="c1"># ── 3. Flush to disk ──</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Flushed to: </span><span class="si">{</span><span class="n">persist_dir</span><span class="si">}</span><span class="s2">/log.jsonl&quot;</span><span class="p">)</span>
+
+    <span class="c1"># ── 4. Read back and display ──</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">── Log Entries ──</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">jsonl_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">persist_dir</span><span class="p">,</span> <span class="s2">&quot;log.jsonl&quot;</span><span class="p">)</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">jsonl_path</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">line</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">f</span><span class="p">):</span>
+            <span class="n">entry</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">] </span><span class="si">{</span><span class="n">entry</span><span class="p">[</span><span class="s1">&#39;node_label&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2"> (step </span><span class="si">{</span><span class="n">entry</span><span class="p">[</span><span class="s1">&#39;step&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">entry</span><span class="p">[</span><span class="s1">&#39;duration_ms&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">ms)&quot;</span><span class="p">)</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;    inputs:  </span><span class="si">{</span><span class="nb">list</span><span class="p">(</span><span class="n">entry</span><span class="p">[</span><span class="s1">&#39;inputs&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;    outputs: </span><span class="si">{</span><span class="nb">list</span><span class="p">(</span><span class="n">entry</span><span class="p">[</span><span class="s1">&#39;outputs&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">entry</span><span class="p">[</span><span class="s2">&quot;inner_log&quot;</span><span class="p">]:</span>
+                <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;    inner_log:&quot;</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">entry</span><span class="p">[</span><span class="s2">&quot;inner_log&quot;</span><span class="p">]:</span>
+                    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;      </span><span class="si">{</span><span class="n">item</span><span class="p">[</span><span class="s1">&#39;key&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">item</span><span class="p">[</span><span class="s1">&#39;value&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="nb">print</span><span class="p">()</span>
+
+    <span class="c1"># ── 5. Query the ring buffer ──</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;── Ring Buffer Query ──</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">summary</span> <span class="o">=</span> <span class="n">logger</span><span class="o">.</span><span class="n">get_summary</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Total firings: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total_firings</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Node types:    </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">node_types_fired</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Errors:        </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">error_count</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Filter by node type</span>
+    <span class="n">sentiment_entries</span> <span class="o">=</span> <span class="n">logger</span><span class="o">.</span><span class="n">get_entries</span><span class="p">(</span><span class="n">node_type</span><span class="o">=</span><span class="s2">&quot;example__sentiment&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Sentiment node entries: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">sentiment_entries</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">sentiment_entries</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  inner_log: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">inner_log</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="c1"># ── 6. Demonstrate log_serialize ──</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">── log_serialize() Examples ──</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+
+    <span class="n">samples</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;short_string&quot;</span><span class="p">:</span> <span class="s2">&quot;hello world&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;long_string&quot;</span><span class="p">:</span> <span class="s2">&quot;x&quot;</span> <span class="o">*</span> <span class="mi">2000</span><span class="p">,</span>
+        <span class="s2">&quot;numpy_array&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">480</span><span class="p">,</span> <span class="mi">640</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">),</span>
+        <span class="s2">&quot;nested_dict&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;c&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]}}},</span>
+        <span class="s2">&quot;bytes_data&quot;</span><span class="p">:</span> <span class="sa">b</span><span class="s2">&quot;</span><span class="se">\x00</span><span class="s2">&quot;</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">,</span>
+    <span class="p">}</span>
+
+    <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">samples</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="n">serialized</span> <span class="o">=</span> <span class="n">log_serialize</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="n">name</span><span class="si">:</span><span class="s2">15s</span><span class="si">}</span><span class="s2"> → </span><span class="si">{</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">serialized</span><span class="p">,</span><span class="w"> </span><span class="n">default</span><span class="o">=</span><span class="nb">str</span><span class="p">)[:</span><span class="mi">80</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+    <span class="n">main</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="81-running-the-standalone-script"><span class="num">8.1</span> Running the Standalone Script</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># From the repo root</span>
+python<span class="w"> </span>scripts/log_demo.py
+</code></pre></div>
+<p>Expected output:</p>
+<div class="highlight"><pre><span></span><code>Logger created: demo_1775571200
+Persist dir:    outputs/runs/demo_1775571200
+
+  Logged: Word Counter (step 0)
+  Logged: Sentiment Tagger (step 0)
+  Logged: Text Summary (step 0)
+
+Flushed to: outputs/runs/demo_1775571200/log.jsonl
+
+── Log Entries ──
+
+[0] Word Counter (step 0, 1.2ms)
+    inputs:  [&#39;text&#39;]
+    outputs: [&#39;count&#39;, &#39;text&#39;]
+    inner_log:
+      word_count: 6
+      unique_words: 6
+
+[1] Sentiment Tagger (step 0, 0.3ms)
+    inputs:  [&#39;text&#39;]
+    outputs: [&#39;sentiment&#39;, &#39;text&#39;]
+    inner_log:
+      analysis: {&#39;positive_matches&#39;: [&#39;great&#39;, &#39;wonderful&#39;], ...}
+
+[2] Text Summary (step 0, 0.1ms)
+    inputs:  [&#39;text&#39;, &#39;word_count&#39;, &#39;sentiment&#39;]
+    outputs: [&#39;summary&#39;]
+    inner_log:
+      format_mode: brief
+      output_length: 27
+
+── Ring Buffer Query ──
+
+Total firings: 3
+Node types:    [&#39;example__word_count&#39;, &#39;example__sentiment&#39;, &#39;example__summary&#39;]
+Errors:        0
+
+── log_serialize() Examples ──
+
+  short_string    → &quot;hello world&quot;
+  long_string     → {&quot;__type&quot;: &quot;large_string&quot;, &quot;length&quot;: 2000, &quot;preview&quot;: &quot;xxxxxxxx...&quot;}
+  numpy_array     → {&quot;__type&quot;: &quot;ndarray&quot;, &quot;shape&quot;: [480, 640, 3], &quot;dtype&quot;: &quot;uint8&quot;}
+  nested_dict     → {&quot;a&quot;: {&quot;b&quot;: {&quot;c&quot;: [1, 2, 3]}}}
+  bytes_data      → {&quot;__type&quot;: &quot;bytes&quot;, &quot;length&quot;: 1024}
+</code></pre></div>
+<hr>
+<h2 id="9-advanced-patterns"><span class="num">9.</span> Advanced Patterns</h2>
+<h3 id="91-logging-images-as-sidecar-assets"><span class="num">9.1</span> Logging Images as Sidecar Assets</h3>
+<p>When a node outputs IMAGE or DEPTH wire types, the logger saves them as sidecar files instead of embedding them in JSONL. This happens automatically via <code>log_serialize_with_assets()</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">MyVisionNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;my_nodeset__vision&quot;</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;rgb&quot;</span><span class="p">,</span> <span class="s2">&quot;IMAGE&quot;</span><span class="p">,</span> <span class="s2">&quot;RGB observation&quot;</span><span class="p">)]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+        <span class="n">rgb</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">480</span><span class="p">,</span> <span class="mi">640</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>  <span class="c1"># your image here</span>
+
+        <span class="c1"># No special logging needed — the executor handles IMAGE wire type</span>
+        <span class="c1"># The image is saved as: assets/s{step}_f{idx}_{label}__rgb.jpg</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;rgb&quot;</span><span class="p">:</span> <span class="n">rgb</span><span class="p">}</span>
+</code></pre></div>
+<p>The JSONL entry references the asset file:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;outputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;rgb&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;__type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;asset&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assets/s0_f0_My__Vision__rgb.jpg&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;IMAGE&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;uint8&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Serve the image via the REST API:</p>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-o<span class="w"> </span>image.jpg<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">/assets/s0_f0_My__Vision__rgb.jpg&quot;</span>
+</code></pre></div>
+<h3 id="92-overriding-the-log-method"><span class="num">9.2</span> Overriding the <code>log()</code> Method</h3>
+<p>The default <code>log()</code> returns the raw <code>_self_log()</code> buffer. Override it to add computed summaries or filter sensitive data:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">SecureNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;my_nodeset__secure&quot;</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">api_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;api_key&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;api_key_present&quot;</span><span class="p">,</span> <span class="nb">bool</span><span class="p">(</span><span class="n">api_key</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;api_key_value&quot;</span><span class="p">,</span> <span class="n">api_key</span><span class="p">)</span>  <span class="c1"># sensitive!</span>
+        <span class="c1"># ... do work ...</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="s2">&quot;ok&quot;</span><span class="p">}</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">log</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Filter out sensitive values before they hit the log file.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">[</span>
+            <span class="n">entry</span> <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_log_buffer</span>
+            <span class="k">if</span> <span class="n">entry</span><span class="p">[</span><span class="s2">&quot;key&quot;</span><span class="p">]</span> <span class="o">!=</span> <span class="s2">&quot;api_key_value&quot;</span>
+        <span class="p">]</span>
+</code></pre></div>
+<h3 id="93-logging-in-dataflow-cyclic-graphs"><span class="num">9.3</span> Logging in Dataflow (Cyclic) Graphs</h3>
+<p>In dataflow graphs with <code>IterIn</code>/<code>IterOut</code>, the same node fires multiple times across iterations. The <code>step</code> field tracks which iteration each firing belongs to:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProgressTracker</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;my_nodeset__progress&quot;</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">step</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="s2">&quot;step&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+
+        <span class="c1"># Log per-iteration progress</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;iteration&quot;</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;progress&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;Step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2"> of estimated 10&quot;</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;iteration_</span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">}</span>
+</code></pre></div>
+<p>Query a specific iteration:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Get logs for step 3 only</span>
+curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;localhost:8000/api/logs/</span><span class="si">${</span><span class="nv">EXEC_ID</span><span class="si">}</span><span class="s2">?step=3&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>json.tool
+</code></pre></div>
+<h3 id="94-flush-timing"><span class="num">9.4</span> Flush Timing</h3>
+<p>The write queue is flushed at three points — not after every single firing:</p>
+<table>
+<thead>
+<tr>
+<th>When</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>IterOut</code> boundary</td>
+<td>Batch-write at end of each iteration</td>
+</tr>
+<tr>
+<td><code>GraphComplete</code></td>
+<td>Final flush on success</td>
+</tr>
+<tr>
+<td><code>GraphError</code></td>
+<td>Flush even on failure (preserves debug data)</td>
+</tr>
+</tbody>
+</table>
+<p>This batching reduces disk I/O while ensuring no data loss. In-memory queries via the ring buffer are always up-to-date.</p>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-05-18: § 5 intro rewritten to distinguish <code>/api/logs/*</code> (generic, 6 endpoints) from <code>/api/replay/*</code> (eval per-episode, 3 endpoints, post ADR-eval-004); § 5.3 gains the <code>?step=N</code> iteration filter (composes with <code>?node_type</code> and <code>?node_id</code>); new § 5.6 walks the graph-snapshot + asset endpoints that were previously only implied by § 9.1; new § 5.7 documents the eval-specific replay router that the frontend Replay tab uses.</li>
+<li>2026-05-15 12:30: Updated eval-side storage layout and <code>read_log()</code> example to reflect per-episode dirs at <code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/log.jsonl</code> (ADR-eval-004)</li>
+<li>2026-04-10 19:47: Added runnable files (example.py nodeset + text_analysis_demo.json graph), canvas UI workflow, TextSource seed node, value renderer reference</li>
+<li>2026-04-10 19:13: Initial tutorial — two-layer logging, custom nodeset example, REST API queries, standalone script, advanced patterns</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-prerequisites">1. Prerequisites</a>
+      <a class="toc-h2" href="#2-how-it-works">2. How It Works</a>
+      <a class="toc-h2" href="#3-building-a-logged-nodeset">3. Building a Logged NodeSet</a>
+      <a class="toc-h3" href="#31-the-nodeset-file">3.1 The NodeSet File</a>
+      <a class="toc-h3" href="#32-in-graph-viewers">3.2 In-Graph Viewers</a>
+      <a class="toc-h3" href="#33-key-patterns-demonstrated">3.3 Key Patterns Demonstrated</a>
+      <a class="toc-h2" href="#4-running-and-generating-logs">4. Running and Generating Logs</a>
+      <a class="toc-h3" href="#41-start-the-dashboard">4.1 Start the Dashboard</a>
+      <a class="toc-h3" href="#42-open-and-run-the-graph">4.2 Open and Run the Graph</a>
+      <a class="toc-h3" href="#43-view-logs-in-the-log-viewer">4.3 View Logs in the Log Viewer</a>
+      <a class="toc-h3" href="#44-view-logs-in-the-canvas-outputdrawer">4.4 View Logs in the Canvas OutputDrawer</a>
+      <a class="toc-h2" href="#5-querying-logs-via-rest-api">5. Querying Logs via REST API</a>
+      <a class="toc-h3" href="#51-list-recent-executions">5.1 List Recent Executions</a>
+      <a class="toc-h3" href="#52-get-all-log-entries-for-a-run">5.2 Get All Log Entries for a Run</a>
+      <a class="toc-h3" href="#53-filter-by-node-or-iteration">5.3 Filter by Node or Iteration</a>
+      <a class="toc-h3" href="#54-get-one-nodes-history">5.4 Get One Node's History</a>
+      <a class="toc-h3" href="#55-get-execution-summary">5.5 Get Execution Summary</a>
+      <a class="toc-h3" href="#56-graph-snapshot--asset-fetch">5.6 Graph Snapshot &amp; Asset Fetch</a>
+      <a class="toc-h3" href="#57-eval-side-replay-endpoints">5.7 Eval-Side Replay Endpoints (per ADR-eval-004)</a>
+      <a class="toc-h2" href="#6-reading-jsonl-files-directly">6. Reading JSONL Files Directly</a>
+      <a class="toc-h3" href="#61-storage-layout">6.1 Storage Layout</a>
+      <a class="toc-h3" href="#62-programmatic-access">6.2 Programmatic Access</a>
+      <a class="toc-h2" href="#7-frontend-log-viewer-reference">7. Frontend Log Viewer Reference</a>
+      <a class="toc-h3" href="#71-canvas-replay-controls">7.1 Canvas Replay Controls</a>
+      <a class="toc-h3" href="#72-value-renderers">7.2 Value Renderers</a>
+      <a class="toc-h2" href="#8-standalone-script-logger-without-the-server">8. Standalone Script: Logger Without the Server</a>
+      <a class="toc-h3" href="#81-running-the-standalone-script">8.1 Running the Standalone Script</a>
+      <a class="toc-h2" href="#9-advanced-patterns">9. Advanced Patterns</a>
+      <a class="toc-h3" href="#91-logging-images-as-sidecar-assets">9.1 Logging Images as Sidecar Assets</a>
+      <a class="toc-h3" href="#92-overriding-the-log-method">9.2 Overriding the log() Method</a>
+      <a class="toc-h3" href="#93-logging-in-dataflow-cyclic-graphs">9.3 Logging in Dataflow (Cyclic) Graphs</a>
+      <a class="toc-h3" href="#94-flush-timing">9.4 Flush Timing</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

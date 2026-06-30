@@ -1,0 +1,130 @@
+# =============================================================================
+# ac-vla-policy — single-shot conda env spec
+# =============================================================================
+# One-stop env for ALL VLA policies running through workspace/nodesets/policy/
+# policy_vla: Pi0, SmolVLA, Diffusion Policy, DROID-DP, RT-1-X. The same
+# env hosts the AgentCanvas server-mode subprocess for these nodes.
+#
+# Why one yaml (not the previous "create from vlaworkspace yaml + pip patch"
+# two-step):
+#   - the VLA stack no longer depends on the private vlaworkspace repo; lerobot
+#     + libero are cloned from public upstream and openpi-client is vendored in
+#     the policy_vla nodeset, so duplicating the pin set here is fine.
+#   - libstdcxx-ng>=12.0.0 must land BEFORE pytorch/TF/cuda packages get
+#     loaded, otherwise nccl / cuFFT crash with "CXXABI_1.3.15 not found"
+#     on Ubuntu 20.04 (same fix used in vlnce.yaml / hmeqa.yaml / mp3d.yaml).
+#   - Pinning typing_extensions>=4.12 here overrides tf-agents 0.19.0's
+#     hard `==4.5.0` — torch 2.6 needs `TypeIs` (added in 4.10).
+#
+# Patches that must run BEFORE this yaml is applied (install_ac_vla_policy.sh
+# does this in Step 1, before `mamba env create`):
+#   - scripts/install/patches/libero_benchmark_init.patch  →  third_party/libero
+#   - scripts/install/patches/libero_venv_gymnasium.patch  →  third_party/libero
+#   - touch third_party/libero/libero/__init__.py
+#     (LIBERO upstream forgets to ship this; without it find_packages() returns
+#     empty and `import libero` fails after pip install -e .)
+# =============================================================================
+
+name: ac-vla-policy
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+
+dependencies:
+  - python=3.10.13
+
+  # C++ runtime (fixes CXXABI_1.3.15 missing on Ubuntu 20.04 — same pattern
+  # as scripts/install/envs/ac_vlnce.yaml, hmeqa.yaml, mp3d.yaml). MUST appear
+  # before pytorch / cuda-toolkit so its libstdc++.so.6 wins on env activation.
+  - libstdcxx-ng>=12.0.0
+
+  - cmake
+  - cython
+
+  # PyTorch + CUDA 12.4 (vlaworkspace pins)
+  - conda-forge::pytorch=2.6.0
+  - conda-forge::torchvision=0.21.0
+  - conda-forge::torchaudio=2.6.0
+  - nvidia::cuda-toolkit=12.4
+
+  - lightning=2.6.0
+  - diffusers
+
+  # Core scientific.
+  # numpy>=1.25,<2.0 — numpy 2.x breaks mujoco rendering; jax/jaxlib 0.5.3 wants >=1.25.
+  - numpy>=1.25,<2.0
+  - scipy
+  - einops
+  - pandas
+  - h5py
+  - msgpack-python
+  - matplotlib
+  - hydra-core
+  - omegaconf
+  - conda-forge::scikit-learn=1.7.2
+
+  # HuggingFace stack
+  - conda-forge::huggingface_hub=0.34.3
+  - conda-forge::transformers=4.53.2
+  - conda-forge::peft=0.18.0
+  - conda-forge::tokenizers=0.21.4
+
+  # JAX ecosystem (Pi0 jax fast path)
+  - conda-forge::jax=0.5.3
+  - conda-forge::jaxlib=0.5.3
+  - conda-forge::flax=0.10.2
+  - conda-forge::optax=0.2.6
+  - conda-forge::chex=0.1.90
+  - conda-forge::jaxtyping=0.2.36
+  - conda-forge::fsspec=2024.9.0       # datasets 3.2.0 wants fsspec<2025
+  - conda-forge::gcsfs=2024.9.0
+  - conda-forge::beartype=0.18.5
+
+  # Logging
+  - conda-forge::wandb=0.23.0
+  - conda-forge::tensorboard=2.20.0
+
+  # Utilities
+  - tqdm
+  - termcolor
+  - psutil
+  - natsort
+  - click
+  - colorama
+  - multiprocess
+  - conda-forge::pytest=9.0.2
+  - conda-forge::numpydantic=1.6.9
+
+  - conda-forge::pytorch3d
+
+  - pip:
+      # Conflict avoidance (jaxtyping wants typeguard==2.13.3, tyro wants >=4)
+      - tyro==0.9.22
+      - typeguard==4.4.2
+
+      - datasets==4.1.1
+
+      # Not on conda-forge / version conflicts
+      - sentencepiece==0.2.1
+      - orbax-checkpoint==0.11.13
+      - tqdm-loggable==0.2
+      - augmax==0.4.1
+      - ml_collections==1.1.0
+      - tensorboardx==2.6.4
+      - mujoco==2.3.2
+      - gymnasium==0.29.1
+      - zarr
+      - imagecodecs
+      - av==12.0.0
+      - opencv-python<4.10            # <4.10 required for numpy<2.0
+      - num2words                     # SmolVLA tokenizer runtime dep
+
+      # NOTE: TF stack (tensorflow / tf-agents / tensorflow-hub / ...),
+      # typing_extensions floor, AgentCanvas server-mode deps (uvicorn /
+      # fastapi / ...), and editable installs of lerobot / libero /
+      # openpi-client are NOT in this yaml. They live in the install script's
+      # Steps 2b/2c/2d/2e because mamba's strict pip resolver refuses to
+      # globally satisfy tf-agents 0.19.0 + the VLA pin set in one shot — the
+      # original two-batch flow (VLA pip first, TF after) avoids the global
+      # re-resolve and works in practice.

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-observability-003 — AgentCanvas</title>
+<meta name="description" content="Node output log system — two-layer execution logging">
+<meta property="og:title" content="ADR-observability-003 — AgentCanvas">
+<meta property="og:description" content="Node output log system — two-layer execution logging">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/observability/adr-observability-003-execution-logs.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/observability/adr-observability-003-execution-logs.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Observability</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-observability-003</span>
+  </div>
+  <div class="last-updated">2026-04-07</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-observability);">ADR-observability-003</h1>
+  <p class="tagline">Node output log system — two-layer execution logging</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-07</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>observability</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-022</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Both canvas graph execution and batch eval produce per-node events (firings, errors, state changes) that were only logged to stdout via Python <code>logging.info()</code> — not persisted, not structured, not queryable after process exit. Debugging agent reasoning required re-running graphs. The user specifically needed visibility into LLM prompts assembled <em>inside</em> <code>node.forward()</code>, which the executor cannot see from outside.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>Two-layer capture</strong>: automatic exterior (executor wraps every <code>_fire_node()</code> with timing + port I/O capture) and voluntary interior (nodes call <code>self._self_log(key, value)</code> inside <code>forward()</code> for domain-specific details). (2) Add <code>_log_buffer</code>, <code>_self_log()</code>, and <code>log()</code> to <strong>BaseCanvasNode</strong> — <code>log()</code> is overridable for filtering/transforming. (3) <strong>ExecutionLogger</strong> with <code>collections.deque</code> ring buffer (2000 entries), JSONL file persistence to <code>outputs/runs/</code> (canvas) or <code>outputs/eval_runs/</code> (eval), and <code>log_serialize()</code> that recursively truncates large strings &gt;1KB and summarizes numpy arrays/tensors. (4) <strong><code>exec_log</code> WS event</strong> broadcasts summaries per node firing (suppressed in eval mode via <code>suppress_nav_events</code>). (5) <strong>REST API</strong> at <code>/api/logs</code> with 4 GET endpoints for querying. (6) <strong>Frontend LogPanel</strong> in OutputDrawer with timeline view grouped by step, expandable I/O, filterable. (7) Logger injected via <code>LoopRunner(logger=)</code> → <code>GraphExecutor(logger=)</code> chain; canvas auto-creates logger; eval creates one per <code>EvalRun</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Hook-based logging — register a built-in "logging hook" that captures I/O via the existing <code>PreNodeExecute</code>/<code>PostNodeExecute</code> hook system. Rejected: hooks are for user-configurable behavior, not framework infrastructure; timing would be less precise (hooks fire after execute, can't wrap it); double-serialization overhead. (b) Automatic-only port I/O capture without <code>_self_log()</code> — rejected: cannot see node-internal details like assembled LLM prompts, API parameters, or token counts. (c) OpenTelemetry tracing — rejected: over-engineered for a research tool; adds external dependency for no benefit.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p><code>_fire_node()</code> is the single chokepoint where all nodes execute — hooking there gives 100% automatic coverage with ~10 lines. The voluntary <code>_self_log()</code> layer lets node authors expose domain-specific internals (prompts, rewards, token counts) without the executor needing to understand node semantics. JSONL is simpler than SQLite for append-heavy, read-rarely logs — no schema migrations, no connection management, and directly <code>grep</code>/<code>jq</code>-able from the terminal. The <code>exec_log</code> WS event is suppressed in eval mode to prevent flooding (500K+ messages for large batch runs).</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>glossary.md, architecture.md, roadmap.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

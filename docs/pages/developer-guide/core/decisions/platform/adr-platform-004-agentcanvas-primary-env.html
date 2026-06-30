@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-platform-004 — AgentCanvas</title>
+<meta name="description" content="agentcanvas as general-purpose env, vlnce retained for Habitat-Sim binary constraint">
+<meta property="og:title" content="ADR-platform-004 — AgentCanvas">
+<meta property="og:description" content="agentcanvas as general-purpose env, vlnce retained for Habitat-Sim binary constraint">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/platform/adr-platform-004-agentcanvas-primary-env.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/platform/adr-platform-004-agentcanvas-primary-env.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Platform</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-platform-004</span>
+  </div>
+  <div class="last-updated">2026-04-07</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-platform);">ADR-platform-004</h1>
+  <p class="tagline">agentcanvas as general-purpose env, vlnce retained for Habitat-Sim binary constraint</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-07</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>platform</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-020</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>All development ran in the <code>ac-vlnce</code> conda env (Python 3.8, PyTorch 1.9+cu111, Habitat-Sim 0.1.7). Python 3.8 is EOL and blocks modern AI/ML libraries (transformers&gt;=4.40, SAM2/3, LLM SDKs, openai&gt;=1.0) that require Python 3.10+. The only thing that actually forces Python 3.8 is the habitat-sim 0.1.7 binary — everything else (web backend, nodesets, torch, HuggingFace) works on modern Python. The plugin server system (ADR-server-001) already supports cross-environment execution via <code>server_python</code> and <code>?mode=server</code>.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Create <strong><code>agentcanvas</code></strong> (Python 3.10+) as the <strong>general-purpose environment</strong> for all development, research, and runtime — the web backend, all nodesets in local mode, modern PyTorch 2.x, transformers, and any AI/ML tooling. This is THE environment; not a lightweight subset. (2) Retain <code>vlnce</code> (Python 3.8) <strong>only</strong> because habitat-sim 0.1.7's binary requires it. The two nodesets that depend on it (<code>habitat.py</code>, <code>policy_cma.py</code>) declare <code>server_python</code> pointing to the vlnce interpreter and run via <code>?mode=server</code> (ADR-server-001). The Hydra eval harness (<code>vlnworkspace/</code>) also stays on vlnce since it imports habitat directly. (3) Establish a <strong>framework import boundary</strong>: the core backend (<code>agentcanvas/backend/app/</code>) must never directly import habitat, habitat_sim, vlnce_baselines, or habitat_baselines. General ML libraries (torch, numpy, PIL) are fine in nodesets. (4) Add an <strong>import guard test</strong> (<code>test_import_boundary.py</code>) that enforces this boundary. (5) <code>from __future__ import annotations</code> remains in all backend files for cross-version compatibility during the transition. (6) Backend framework deps documented in <code>agentcanvas/backend/requirements.txt</code>; ML deps installed via conda/pip in the agentcanvas env.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Keep vlnce as the single env — rejected: Python 3.8 is EOL, blocks modern AI/ML library adoption, fragile upgrade path. (b) Lightweight backend-only env (no torch) — rejected: forces all ML nodesets into server mode unnecessarily; most nodesets need modern torch + transformers and should run in local mode. (c) Docker-based isolation — rejected: overkill for a research project. (d) Per-nodeset envs — rejected: over-engineering, only habitat is actually locked to 3.8.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The constraint is singular: habitat-sim 0.1.7 requires Python 3.8. Everything else — the web backend, SAM, LLM tools, future HF-based nodesets — works on modern Python. <code>agentcanvas</code> is the general-purpose env where all development and research happens; <code>vlnce</code> is a legacy dependency, not a co-equal environment. The framework import guard ensures habitat-specific code never leaks into the core backend.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>CLAUDE.md (environment section), roadmap.md (TODO #20)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

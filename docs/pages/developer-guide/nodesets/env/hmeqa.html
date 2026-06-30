@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HM-EQA NodeSet — AgentCanvas</title>
+<meta name="description" content="The HM-EQA NodeSet ( EnvHMEQANodeSet ) wraps Habitat-Sim + HM3D semantic meshes for House-Mesh Embodied Question Answering (Ren et al. 2024, explore-eqa ). Each episode is a question about a specific…">
+<meta property="og:title" content="HM-EQA NodeSet — AgentCanvas">
+<meta property="og:description" content="The HM-EQA NodeSet ( EnvHMEQANodeSet ) wraps Habitat-Sim + HM3D semantic meshes for House-Mesh Embodied Question Answering (Ren et al. 2024, explore-eqa ). Each episode is a question about a specific…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="HM-EQA">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/hmeqa.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">HM-EQA</span>
+  </div>
+  <div class="last-updated">2026-06-11 15:37</div>
+</div>
+  <header class="page-header guide">
+  <h1>HM-EQA NodeSet</h1>
+</header>
+
+<p>The <strong>HM-EQA NodeSet</strong> (<code>EnvHMEQANodeSet</code>) wraps <strong>Habitat-Sim + HM3D semantic meshes</strong> for House-Mesh Embodied Question Answering (Ren et al. 2024, <code>explore-eqa</code>). Each episode is a question about a specific scene+floor; the agent explores via free-pose teleports and emits a letter answer (A/B/C/D).</p>
+<p>Sibling of <a href="habitat.html">Habitat</a> — not an extension. The two cannot share an environment: Habitat NodeSet pins <code>habitat-sim 0.1.7</code> + Python 3.8 (VLN-CE); HM-EQA uses a newer habitat-sim + Python 3.9 + torch 2.2.1. Different conda env (<code>hmeqa</code>), different simulator instance.</p>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<h3 id="purpose">Purpose</h3>
+<p>House-Mesh Embodied Question Answering asks multi-choice questions over HM3D semantic scenes. Each episode = one question + one scene + one floor + one initial pose. The 500-question <code>val</code> split ships in the HM-EQA repo's CSVs (HM3D train-split license gates the training Qs).</p>
+<h3 id="architecture">Architecture</h3>
+<p>Three-layer pattern mirroring <a href="habitat.html">Habitat</a>:</p>
+<ol>
+<li><strong><code>HMEQAEnvManager</code></strong> (singleton) — per-episode simulator rebuild (one <code>.glb</code> per episode), pinned single-thread executor for GL affinity, loads <code>questions.csv</code> + <code>scene_init_poses.csv</code> once.</li>
+<li><strong>Canvas tool nodes</strong> — 5 tools (reset / step / episode_info / cam_intrinsics / evaluate).</li>
+<li><strong><code>EnvHMEQANodeSet</code></strong> — <code>server_python</code> points to <code>$HMEQA_PYTHON</code>, so the framework auto-routes the nodeset into a <code>ac-hmeqa</code> subprocess when loaded via <code>?mode=server</code>.</li>
+</ol>
+<h3 id="server-mode-only">Server-Mode Only</h3>
+<p>The nodeset always runs server-mode: <code>habitat-sim</code> isn't installed in the default <code>agentcanvas</code> env. Set <code>HMEQA_PYTHON=/home/$(whoami)/miniforge3/envs/ac-hmeqa/bin/python</code> before loading, or rely on the default.</p>
+<hr>
+<div class="callout warn"><strong>Interface migrated (2026-06-09).</strong> This nodeset now implements the <a href="template.html">gym-like env interface</a> — <code>reset</code> (metadata only), <code>step_*</code> (control signals, no observation), <code>observe_*</code> (pull perception), <code>evaluate</code>. The node list below predates the migration and may be stale; the template's migration map (§6) and capability matrix (§3) are authoritative.</div>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Display Name</th>
+<th>Input Ports</th>
+<th>Output Ports</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_hmeqa__reset</code></td>
+<td>HM-EQA: Reset</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>rgb</code>, <code>depth</code>, <code>pose</code>, <code>cam_pose_matrix</code>, <code>pose_normal</code>, <code>angle</code>, <code>floor_height</code>, <code>question</code>, <code>episode_id</code>, <code>num_step</code></td>
+<td>Start/restart the episode selected on the env panel; emits initial obs + question</td>
+</tr>
+<tr>
+<td><code>env_hmeqa__step</code></td>
+<td>HM-EQA: Step (teleport)</td>
+<td><code>action</code> (TEXT JSON)</td>
+<td><code>rgb</code>, <code>depth</code>, <code>pose</code>, <code>cam_pose_matrix</code>, <code>pose_normal</code>, <code>angle</code>, <code>floor_height</code>, <code>question</code>, <code>episode_id</code>, <code>step_index</code>, <code>done</code></td>
+<td>Free-pose teleport; emits post-step obs; fires <code>done=True</code> when <code>step_index &gt;= num_step</code></td>
+</tr>
+<tr>
+<td><code>env_hmeqa__episode_info</code></td>
+<td>HM-EQA: Episode Info</td>
+<td>(none)</td>
+<td><code>question</code>, <code>raw_question</code>, <code>choices</code>, <code>answer</code>, <code>scene</code>, <code>floor</code>, <code>episode_id</code>, <code>num_step</code>, <code>tsdf_bnds</code>, <code>floor_height</code></td>
+<td>Episode metadata incl. 3×2 TSDF voxel-volume bounds for the planner</td>
+</tr>
+<tr>
+<td><code>env_hmeqa__cam_intrinsics</code></td>
+<td>HM-EQA: Cam Intrinsics</td>
+<td>(none)</td>
+<td><code>cam_intr</code> (3×3)</td>
+<td>Pinhole intrinsics — episode-constant, derived from <code>hfov</code> + img size</td>
+</tr>
+<tr>
+<td><code>env_hmeqa__evaluate</code></td>
+<td>HM-EQA: Evaluate</td>
+<td><code>pred_letter</code> (TEXT)</td>
+<td><code>success</code> (BOOL), <code>gt</code> (TEXT), <code>metrics</code> (METRICS)</td>
+<td>Post-hoc success check — compare predicted letter to GT</td>
+</tr>
+</tbody>
+</table>
+<h3 id="output-port-highlights">Output-port highlights</h3>
+<ul>
+<li><strong><code>cam_pose_matrix</code></strong> (ANY): 4×4 extrinsic in the <strong>TSDF frame</strong> (already composed via <code>pose_habitat_to_normal</code> → <code>pose_normal_to_tsdf</code>). Feeds directly into <code>TSDFPlanner.integrate</code>.</li>
+<li><strong><code>pose_normal</code></strong> (ANY): 3-vector agent position in normal frame. Feeds <code>TSDFPlanner.find_next_pose</code>.</li>
+<li><strong><code>tsdf_bnds</code></strong> (ANY): <code>[[x_lo, x_hi], [y_lo, y_hi], [z_lo, z_hi]]</code> derived from the HM3D mesh bounds + floor height; constructs the planner on first step.</li>
+<li><strong><code>num_step</code></strong> (ANY): scene-size-driven budget — <code>int(sqrt(scene_size) * max_step_room_size_ratio)</code>, typically 10–20 steps.</li>
+</ul>
+<hr>
+<h2 id="3-action-contract"><span class="num">3.</span> Action Contract</h2>
+<p>Free-pose teleport, sent as <strong>JSON TEXT</strong>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;position_normal&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">x</span><span class="p">,</span><span class="w"> </span><span class="err">y</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;angle&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.5708</span><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li><code>position_normal</code>: <code>[x, y]</code> in the normal frame. The env appends the episode's <code>floor_height</code> and converts to habitat coordinates internally.</li>
+<li><code>angle</code>: yaw in radians.</li>
+</ul>
+<p>There is <strong>no mid-episode "answer" action</strong>. Answer emission is post-hoc on the method side — see <a href="../method/explore-eqa.html">ExploreEQA NodeSet</a> aggregate step. This deliberately sidesteps the action-manifest unification tracked as TODO #46 — once a second multi-action env shows up we'll bundle them.</p>
+<p>Source reference: <code>workspace/nodesets/_upstream/explore-eqa/upstream/run_vlm_exp.py:313-321</code>.</p>
+<hr>
+<h2 id="4-observation-bundle"><span class="num">4.</span> Observation Bundle</h2>
+<p>Every <code>reset</code> and <code>step</code> returns the same 10/11-port bundle. The bundle is designed so a downstream method nodeset (e.g. <a href="../method/explore-eqa.html">ExploreEQA</a>) can run <code>TSDFPlanner.integrate</code>, <code>find_prompt_points_within_view</code>, and <code>find_next_pose</code> without needing any env-side knowledge.</p>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Wire Type</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rgb</code></td>
+<td>IMAGE</td>
+<td><code>H×W×3</code> uint8 (alpha dropped)</td>
+</tr>
+<tr>
+<td><code>depth</code></td>
+<td>DEPTH</td>
+<td><code>H×W</code> float32 in meters</td>
+</tr>
+<tr>
+<td><code>pose</code></td>
+<td>POSE</td>
+<td>habitat-frame agent pose (canvas UI only)</td>
+</tr>
+<tr>
+<td><code>cam_pose_matrix</code></td>
+<td>ANY</td>
+<td>4×4 TSDF-frame camera extrinsic</td>
+</tr>
+<tr>
+<td><code>pose_normal</code></td>
+<td>ANY</td>
+<td>3-vector normal-frame position</td>
+</tr>
+<tr>
+<td><code>angle</code></td>
+<td>ANY</td>
+<td>yaw (radians)</td>
+</tr>
+<tr>
+<td><code>floor_height</code></td>
+<td>ANY</td>
+<td>episode-constant z (normal frame)</td>
+</tr>
+<tr>
+<td><code>question</code></td>
+<td>TEXT</td>
+<td>formatted multi-choice question (tail: <code>\nA. &lt;choice&gt;\nB. ...</code>)</td>
+</tr>
+<tr>
+<td><code>episode_id</code></td>
+<td>TEXT</td>
+<td>episode index as string</td>
+</tr>
+<tr>
+<td><code>step_index</code></td>
+<td>ANY</td>
+<td>step counter (step only)</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>BOOL</td>
+<td><code>step_index &gt;= num_step</code> (step only)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="black-image-guard">Black-image guard</h3>
+<p>The env tracks <code>is_black</code> in the bundle when the agent falls through the floor / outside the mesh. The HM-EQA method nodeset skips TSDF integration on black frames (matching upstream behaviour).</p>
+<hr>
+<h2 id="5-configuration"><span class="num">5.</span> Configuration</h2>
+<p>Controlled via module-level <code>_DEFAULTS</code> in <code>workspace/nodesets/env/env_hmeqa/__init__.py</code>. Override via env vars if needed:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>img_width</code></td>
+<td>640</td>
+<td>pixels</td>
+</tr>
+<tr>
+<td><code>img_height</code></td>
+<td>480</td>
+<td>pixels</td>
+</tr>
+<tr>
+<td><code>hfov</code></td>
+<td>120</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>camera_height</code></td>
+<td>1.5</td>
+<td>m (above floor) — paper <code>cfg/vlm_exp.yaml</code> line 18</td>
+</tr>
+<tr>
+<td><code>camera_tilt_deg</code></td>
+<td>-30.0</td>
+<td>negative = tilted downward</td>
+</tr>
+<tr>
+<td><code>tsdf_grid_size</code></td>
+<td>0.1</td>
+<td>m — consumed by the method-side <code>TSDFPlanner</code></td>
+</tr>
+<tr>
+<td><code>init_clearance</code></td>
+<td>0.5</td>
+<td>m — initial pose clearance radius</td>
+</tr>
+<tr>
+<td><code>max_step_room_size_ratio</code></td>
+<td>3.0</td>
+<td><code>num_step = int(sqrt(scene_size) * ratio)</code></td>
+</tr>
+<tr>
+<td><code>black_pixel_ratio</code></td>
+<td>0.5</td>
+<td>frame is "black" if <code>#black-pixels &gt; ratio * H * W</code> — paper <code>cfg/vlm_exp.yaml</code> line 30</td>
+</tr>
+<tr>
+<td><code>seed</code></td>
+<td>42</td>
+<td>pathfinder seed</td>
+</tr>
+</tbody>
+</table>
+<p>Paper-baseline values are mirrored from <code>workspace/nodesets/_upstream/explore-eqa/upstream/cfg/vlm_exp.yaml</code>.</p>
+<p>Data layout (ADR-platform-005):</p>
+<div class="highlight"><pre><span></span><code>data/hm3d/hmeqa/questions.csv           HM-EQA Q&amp;A
+data/hm3d/hmeqa/scene_init_poses.csv    per-(scene, floor) init
+data/hm3d/hmeqa/Open_Sans/              annotation font (method-side)
+data/hm3d/hm3dsem/{scene}/{scene[6:]}.basis.glb       meshes (HuggingFace-gated)
+data/hm3d/hm3dsem/{scene}/{scene[6:]}.basis.navmesh   navmesh
+</code></pre></div>
+<p>Environment variable overrides:</p>
+<ul>
+<li><code>HMEQA_PYTHON</code> — hmeqa-env Python interpreter path (default <code>/home/$(whoami)/miniforge3/envs/ac-hmeqa/bin/python</code>)</li>
+<li><code>HMEQA_DATA_ROOT</code> — override the CSV/font dir</li>
+<li><code>HMEQA_SCENE_ROOT</code> — override the HM3D mesh dir</li>
+</ul>
+<hr>
+<h2 id="6-env panel-integration"><span class="num">6.</span> Env panel Integration</h2>
+<p><code>HMEQAEnvPanel</code> is a two-field cascade:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Options</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>split</code></td>
+<td>select</td>
+<td><code>val</code> (only split shipped in the CSV)</td>
+</tr>
+<tr>
+<td><code>episode_index</code></td>
+<td>select</td>
+<td>0 .. ~500</td>
+</tr>
+</tbody>
+</table>
+<p>Actions: <code>play</code>, <code>pause</code>, <code>stop</code>, <code>reset</code>. The <code>play</code> button triggers <code>run_start</code>; Reset re-applies the currently-selected episode without touching graph state.</p>
+<p>The <code>split</code> field is retained as a single-option select to give future train/test splits a zero-migration path.</p>
+<hr>
+<h2 id="7-environment-setup"><span class="num">7.</span> Environment Setup</h2>
+<p>One-time install:</p>
+<div class="highlight"><pre><span></span><code>bash<span class="w"> </span>scripts/install/install_ac_hmeqa.sh<span class="w">      </span><span class="c1"># creates the hmeqa conda env</span>
+bash<span class="w"> </span>scripts/data/fetch_episodes_vln.sh<span class="w"> </span>--hmeqa<span class="w"> </span><span class="c1"># stages CSVs + fonts</span>
+</code></pre></div>
+<p>HM3D mesh download is <strong>manual</strong> — gated by HuggingFace auth:</p>
+<ol>
+<li>Request access at <a href="https://aihabitat.org/datasets/hm3d-semantics">https://aihabitat.org/datasets/hm3d-semantics</a></li>
+<li><code>huggingface-cli login</code> with a read token</li>
+<li>Download <code>hm3d-train-habitat-v0.2.tar</code> and extract to <code>data/hm3d/hm3dsem/</code></li>
+</ol>
+<p>See also:</p>
+<ul>
+<li><a href="../method/explore-eqa.html">ExploreEQA NodeSet</a> — the method side that consumes this env</li>
+<li><a href="habitat.html">Habitat NodeSet</a> — the VLN-CE sibling</li>
+</ul>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-11 15:37: workspace/nodesets paths updated to the role-directory layout (ADR-platform-008): env/ method/ policy/ model/ common/ other/, server/ eliminated; renames sam→model_sam, ram_perception→model_ram, others split into geometry + mock_frontier.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-04-24: Initial nodeset page — 5 tools, server-mode-only, sibling of <code>habitat.py</code></li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#purpose">Purpose</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h3" href="#server-mode-only">Server-Mode Only</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#output-port-highlights">Output-port highlights</a>
+      <a class="toc-h2" href="#3-action-contract">3. Action Contract</a>
+      <a class="toc-h2" href="#4-observation-bundle">4. Observation Bundle</a>
+      <a class="toc-h3" href="#black-image-guard">Black-image guard</a>
+      <a class="toc-h2" href="#5-configuration">5. Configuration</a>
+      <a class="toc-h2" href="#6-env panel-integration">6. Env panel Integration</a>
+      <a class="toc-h2" href="#7-environment-setup">7. Environment Setup</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

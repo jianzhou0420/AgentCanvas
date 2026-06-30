@@ -1,0 +1,548 @@
+{
+  "name": "ToolEQA on HM-EQA",
+  "description": "ToolEQA (Zhai et al., arXiv 2510.20310, ICLR 2026 in review) — tool-augmented active explorer for HM-EQA. Each iter is one ReAct step: build prompt from prior Thought/Code/Observation transcript, call Qwen2.5-VL with current rgb, parse code, exec via transformers.agents.python_interpreter.evaluate_python_code with 6 tools (VisualQA / ObjectLocation2D / ObjectLocation3D / ObjectCrop / GoNextPointTool / final_answer; SegmentInstance is dead in upstream's active toolbox). Discrete GoNextPointTool commands (move_forward 0.5m / turn_left 45° / turn_right 45° / turn_around 180°) are translated to free-pose JSON for env_hmeqa__step. Read tools call env_detany3d (server-mode, DetAny3D + GroundingDINO + SAM). PortBench v1 target (zero-shot vs paper Table 5: 62.3% SR / 18.26m).",
+  "version": "v3",
+  "step_budget": 80,
+  "nodes": [
+    {
+      "id": "reset",
+      "type": "env_hmeqa__reset",
+      "label": "HM-EQA: Reset",
+      "position": {
+        "x": 0,
+        "y": 80
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iter In",
+      "position": {
+        "x": 540,
+        "y": 80
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH",
+            "persist": true
+          },
+          {
+            "name": "pose_normal",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "angle",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "episode_id",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "step_idx",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "max_step",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "scratchpad",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "agent_state",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "choices",
+            "wire_type": "ANY",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "step",
+      "type": "tooleqa__step",
+      "label": "ToolEQA Step",
+      "position": {
+        "x": 820,
+        "y": 80
+      },
+      "config": {
+        "output_dir": "",
+        "vlm_profile": "",
+        "max_iterations": 60,
+        "temperature": 0.7,
+        "max_tokens": 2048
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_hmeqa__step_pose",
+      "label": "HM-EQA: Step",
+      "position": {
+        "x": 1180,
+        "y": 80
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iter Out",
+      "position": {
+        "x": 1480,
+        "y": 80
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH",
+            "persist": true
+          },
+          {
+            "name": "pose_normal",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "angle",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "step_idx",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "scratchpad",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "agent_state",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "answer",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_hmeqa__evaluate",
+      "label": "HM-EQA: Evaluate",
+      "position": {
+        "x": 1480,
+        "y": 360
+      },
+      "config": {}
+    },
+    {
+      "id": "graph_out_success",
+      "type": "graphOut",
+      "label": "Out: success",
+      "position": {
+        "x": 1780,
+        "y": 320
+      },
+      "config": {
+        "portName": "success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "graph_out_metrics",
+      "type": "graphOut",
+      "label": "Out: metrics",
+      "position": {
+        "x": 1780,
+        "y": 400
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "graph_out_pred",
+      "type": "graphOut",
+      "label": "Out: pred_letter",
+      "position": {
+        "x": 1780,
+        "y": 240
+      },
+      "config": {
+        "portName": "pred_letter",
+        "wireType": "TEXT"
+      }
+    },
+    {
+      "id": "viewer_obs",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 820,
+        "y": 360
+      },
+      "config": {
+        "rows": 1,
+        "cols": 2,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH"
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_scratchpad",
+      "type": "textViewer",
+      "label": "Scratchpad",
+      "position": {
+        "x": 820,
+        "y": 560
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 1780,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_hmeqa__observe_egocentric",
+      "label": "HM-EQA: Observe (egocentric)",
+      "position": {
+        "x": -200,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_hmeqa__observe_egocentric",
+      "label": "HM-EQA: Observe (egocentric)",
+      "position": {
+        "x": 1360,
+        "y": 220
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_init_rgb",
+      "source": "seed_obs",
+      "sourceHandle": "rgb",
+      "target": "iter_in",
+      "targetHandle": "init_rgb"
+    },
+    {
+      "id": "e_reset_init_depth",
+      "source": "seed_obs",
+      "sourceHandle": "depth",
+      "target": "iter_in",
+      "targetHandle": "init_depth"
+    },
+    {
+      "id": "e_reset_init_posen",
+      "source": "seed_obs",
+      "sourceHandle": "pose_normal",
+      "target": "iter_in",
+      "targetHandle": "init_pose_normal"
+    },
+    {
+      "id": "e_reset_init_angle",
+      "source": "seed_obs",
+      "sourceHandle": "angle",
+      "target": "iter_in",
+      "targetHandle": "init_angle"
+    },
+    {
+      "id": "e_reset_init_question",
+      "source": "reset",
+      "sourceHandle": "question",
+      "target": "iter_in",
+      "targetHandle": "init_question"
+    },
+    {
+      "id": "e_reset_init_epid",
+      "source": "reset",
+      "sourceHandle": "episode_id",
+      "target": "iter_in",
+      "targetHandle": "init_episode_id"
+    },
+    {
+      "id": "e_reset_init_numstep",
+      "source": "reset",
+      "sourceHandle": "num_step",
+      "target": "iter_in",
+      "targetHandle": "init_max_step"
+    },
+    {
+      "id": "e_epinfo_init_choices",
+      "source": "reset",
+      "sourceHandle": "choices",
+      "target": "iter_in",
+      "targetHandle": "init_choices"
+    },
+    {
+      "id": "e_iterin_step_choices",
+      "source": "iter_in",
+      "sourceHandle": "init_choices",
+      "target": "step",
+      "targetHandle": "choices"
+    },
+    {
+      "id": "e_iterin_step_rgb",
+      "source": "iter_in",
+      "sourceHandle": "iterout_rgb",
+      "target": "step",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iterin_step_posen",
+      "source": "iter_in",
+      "sourceHandle": "iterout_pose_normal",
+      "target": "step",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_iterin_step_angle",
+      "source": "iter_in",
+      "sourceHandle": "iterout_angle",
+      "target": "step",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_iterin_step_q",
+      "source": "iter_in",
+      "sourceHandle": "init_question",
+      "target": "step",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_iterin_step_scr",
+      "source": "iter_in",
+      "sourceHandle": "iterout_scratchpad",
+      "target": "step",
+      "targetHandle": "scratchpad"
+    },
+    {
+      "id": "e_iterin_step_state",
+      "source": "iter_in",
+      "sourceHandle": "iterout_agent_state",
+      "target": "step",
+      "targetHandle": "agent_state"
+    },
+    {
+      "id": "e_iterin_step_idx",
+      "source": "iter_in",
+      "sourceHandle": "iterout_step_idx",
+      "target": "step",
+      "targetHandle": "step_idx"
+    },
+    {
+      "id": "e_iterin_step_max",
+      "source": "iter_in",
+      "sourceHandle": "init_max_step",
+      "target": "step",
+      "targetHandle": "max_step"
+    },
+    {
+      "id": "e_iterin_step_epid",
+      "source": "iter_in",
+      "sourceHandle": "init_episode_id",
+      "target": "step",
+      "targetHandle": "episode_id"
+    },
+    {
+      "id": "e_step_envstep",
+      "source": "step",
+      "sourceHandle": "action_json",
+      "target": "env_step",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_envstep_iterout_rgb",
+      "source": "loop_obs",
+      "sourceHandle": "rgb",
+      "target": "iter_out",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_envstep_iterout_dep",
+      "source": "loop_obs",
+      "sourceHandle": "depth",
+      "target": "iter_out",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_envstep_iterout_pn",
+      "source": "loop_obs",
+      "sourceHandle": "pose_normal",
+      "target": "iter_out",
+      "targetHandle": "pose_normal"
+    },
+    {
+      "id": "e_envstep_iterout_ang",
+      "source": "loop_obs",
+      "sourceHandle": "angle",
+      "target": "iter_out",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_envstep_iterout_idx",
+      "source": "env_step",
+      "sourceHandle": "step_index",
+      "target": "iter_out",
+      "targetHandle": "step_idx"
+    },
+    {
+      "id": "e_step_iterout_scr",
+      "source": "step",
+      "sourceHandle": "next_scratchpad",
+      "target": "iter_out",
+      "targetHandle": "scratchpad"
+    },
+    {
+      "id": "e_step_iterout_state",
+      "source": "step",
+      "sourceHandle": "next_agent_state",
+      "target": "iter_out",
+      "targetHandle": "agent_state"
+    },
+    {
+      "id": "e_step_term__stop",
+      "source": "step",
+      "sourceHandle": "done",
+      "target": "iter_out",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_step_eval",
+      "source": "iter_out",
+      "sourceHandle": "final_answer",
+      "target": "evaluate",
+      "targetHandle": "pred_letter"
+    },
+    {
+      "id": "e_eval_out_succ",
+      "source": "evaluate",
+      "sourceHandle": "success",
+      "target": "graph_out_success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_eval_out_met",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "graph_out_metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_step_out_pred",
+      "source": "step",
+      "sourceHandle": "final_answer",
+      "target": "graph_out_pred",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_envstep_view_rgb",
+      "source": "loop_obs",
+      "sourceHandle": "rgb",
+      "target": "viewer_obs",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_envstep_view_depth",
+      "source": "loop_obs",
+      "sourceHandle": "depth",
+      "target": "viewer_obs",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_step_view_scr",
+      "source": "step",
+      "sourceHandle": "next_scratchpad",
+      "target": "viewer_scratchpad",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_eval_view_met",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "viewer_metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_hmmig_1",
+      "source": "reset",
+      "sourceHandle": "episode_id",
+      "target": "seed_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_hmmig_2",
+      "source": "env_step",
+      "sourceHandle": "info",
+      "target": "loop_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_carry_answer",
+      "source": "step",
+      "sourceHandle": "final_answer",
+      "target": "iter_out",
+      "targetHandle": "answer"
+    }
+  ]
+}

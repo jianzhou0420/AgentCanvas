@@ -1,0 +1,1037 @@
+{
+  "name": "DiscussNav-MP3D",
+  "description": "DiscussNav (Long et al., 2024) multi-LLM discussion VLN port for R2R / MP3D. Uses 12-direction panorama scan, RAM tags + InstructBLIP captions, completion-estimation LLM, pred_vp with n=5 sampling, thought-fusion + decision-testing experts, then env step. step_budget=7 mirrors paper hyperparameter. [LLM profile switched 2026-05-10 from openai-gpt4 \u2192 openai (gpt-4o) for ~10x cost cut + automatic prompt caching on stable system_prompt prefixes; revert if multi-expert quality regresses.]",
+  "nodes": [
+    {
+      "id": "reset",
+      "type": "env_mp3d__reset",
+      "label": "MP3D: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {
+        "n_headings": 12
+      }
+    },
+    {
+      "id": "decompose_actions_llm",
+      "type": "llmCall",
+      "label": "DiscussNav: Decompose Actions",
+      "position": {
+        "x": 280,
+        "y": -180
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "required": true
+          }
+        ],
+        "template": "Can you decompose actions in the instruction \"{instruction}\"? Actions: ",
+        "system_prompt": "You are an action decomposition expert. Your task is to detect all actions in the given navigation instruction. You need to ensure the integrity of each action.",
+        "profile": "gpt-5-mini",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "n": 1,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "detect_landmarks_llm",
+      "type": "llmCall",
+      "label": "DiscussNav: Detect Landmarks",
+      "position": {
+        "x": 560,
+        "y": -180
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "actions",
+            "wire_type": "TEXT",
+            "required": true
+          }
+        ],
+        "template": "Can you extract landmarks in the instruction \"{actions}\"? Landmarks: ",
+        "system_prompt": "You are a landmark extraction expert. Your task is to detect all landmarks in the given navigation instruction. You need to ensure the integrity of each landmarks.",
+        "profile": "gpt-5-mini",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "n": 1,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "init_decompose",
+      "type": "discussnav__init_decompose",
+      "label": "DiscussNav: Init Decompose",
+      "position": {
+        "x": 840,
+        "y": -180
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Start",
+      "position": {
+        "x": 0,
+        "y": 480
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "actions",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "landmarks",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "viewpoint_id",
+            "wire_type": "TEXT",
+            "persist": false
+          },
+          {
+            "name": "heading",
+            "wire_type": "TEXT",
+            "persist": false
+          },
+          {
+            "name": "navigable_json",
+            "wire_type": "TEXT",
+            "persist": false
+          },
+          {
+            "name": "views",
+            "wire_type": "LIST[IMAGE]",
+            "persist": false
+          },
+          {
+            "name": "view_meta",
+            "wire_type": "TEXT",
+            "persist": false
+          },
+          {
+            "name": "step_budget",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "panorama_to_views",
+      "type": "discussnav__panorama_to_views",
+      "label": "Panorama \u2192 Views",
+      "position": {
+        "x": 280,
+        "y": 360
+      },
+      "config": {}
+    },
+    {
+      "id": "tag_panorama",
+      "type": "model_ram__tag_panorama",
+      "label": "RAM: Tag Panorama (12 dirs)",
+      "position": {
+        "x": 560,
+        "y": 360
+      },
+      "config": {}
+    },
+    {
+      "id": "instructblip_caption",
+      "type": "model_instructblip__caption",
+      "label": "InstructBLIP: Caption Panorama",
+      "position": {
+        "x": 560,
+        "y": 540
+      },
+      "config": {
+        "model_name": "Salesforce/instructblip-flan-t5-xl",
+        "prompt": "Describe this indoor scene in details",
+        "device": "auto",
+        "max_length": 256,
+        "num_beams": 5
+      }
+    },
+    {
+      "id": "observation_aggregator",
+      "type": "discussnav__observation_aggregator",
+      "label": "DiscussNav: Observation",
+      "position": {
+        "x": 840,
+        "y": 480
+      },
+      "config": {}
+    },
+    {
+      "id": "history_reader",
+      "type": "discussnav__history_reader",
+      "label": "DiscussNav: History Reader",
+      "position": {
+        "x": 280,
+        "y": 720
+      },
+      "config": {}
+    },
+    {
+      "id": "estimate_completion_llm",
+      "type": "llmCall",
+      "label": "DiscussNav: Estimate Completion",
+      "position": {
+        "x": 840,
+        "y": 720
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "actions",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "landmarks",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "history_traj",
+            "wire_type": "TEXT",
+            "required": true
+          }
+        ],
+        "template": "Given Navigation History \"{history_traj}\" and Landmarks \"{landmarks}\", estimate what actions in instruction \"{actions}\" have been executed.",
+        "system_prompt": "You are a completion estimation expert. Your task is to estimate what actions in the instruction have been executed based on navigation history and landmarks.                 All actions in the instruction are given following the temporal order. Your answer includes two parts: \"Thought\" and \"Executed Actions\".                 In the \"Thought\", you must follow procedures to analyze as detailed as possible what actions have been executed:                 (1) What given landmarks of actions have appeared in the navigation history?                 (2) Analyze the direction change at each step in the navigation history.                 (3) Estimate each action in the instruction based on each step in the navigation history to check their completion.                 In the \"Executed Actions\", you must only write down actions that have been executed without other words.                 You must strictly refer original actions in the given instruction to estimate.",
+        "profile": "gpt-5-mini",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "n": 1,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "thought_fusion",
+      "type": "discussnav__thought_fusion",
+      "label": "DiscussNav: Thought Fusion",
+      "position": {
+        "x": 1400,
+        "y": 480
+      },
+      "config": {
+        "profile": "gpt-5-mini",
+        "temperature": 1.0,
+        "max_tokens": 2000
+      }
+    },
+    {
+      "id": "decision_test",
+      "type": "discussnav__decision_test",
+      "label": "DiscussNav: Decision Test",
+      "position": {
+        "x": 1680,
+        "y": 480
+      },
+      "config": {
+        "profile": "gpt-5-mini",
+        "max_tokens": 2000,
+        "max_retries": 3,
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "step",
+      "type": "env_mp3d__step_waypoint",
+      "label": "MP3D: Step",
+      "position": {
+        "x": 1960,
+        "y": 480
+      },
+      "config": {
+        "n_headings": 12
+      }
+    },
+    {
+      "id": "history_writer",
+      "type": "discussnav__history_writer",
+      "label": "DiscussNav: History Writer",
+      "position": {
+        "x": 1960,
+        "y": 720
+      },
+      "config": {
+        "profile": "gpt-5-mini",
+        "max_tokens": 2000
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2240,
+        "y": 480
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "viewpoint_id",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "heading",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "navigable_json",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "views",
+            "wire_type": "LIST[IMAGE]",
+            "persist": true
+          },
+          {
+            "name": "view_meta",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_mp3d__evaluate",
+      "label": "MP3D: Evaluate",
+      "position": {
+        "x": 2240,
+        "y": 360
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_thinking",
+      "type": "textScroll",
+      "label": "Thinking Log",
+      "position": {
+        "x": 1400,
+        "y": 1000
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_action",
+      "type": "actionLog",
+      "label": "Action Log",
+      "position": {
+        "x": 1680,
+        "y": 1000
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_history",
+      "type": "textScroll",
+      "label": "History",
+      "position": {
+        "x": 1960,
+        "y": 1000
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 2240,
+        "y": 1000
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_panorama",
+      "type": "imageViewer",
+      "label": "Panorama Viewer",
+      "position": {
+        "x": 1120,
+        "y": 1000
+      },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "views",
+            "wire_type": "LIST[IMAGE]"
+          }
+        ]
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 2520,
+        "y": 480
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "seed_nav",
+      "type": "env_mp3d__observe_navigable",
+      "label": "MP3D: Observe (navigable)",
+      "position": {
+        "x": -220,
+        "y": 140
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_pano",
+      "type": "env_mp3d__observe_panorama",
+      "label": "MP3D: Observe (panorama)",
+      "position": {
+        "x": -440,
+        "y": 140
+      },
+      "config": {
+        "n_headings": 12
+      }
+    },
+    {
+      "id": "loop_nav",
+      "type": "env_mp3d__observe_navigable",
+      "label": "MP3D: Observe (navigable)",
+      "position": {
+        "x": 2120,
+        "y": 620
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_pano",
+      "type": "env_mp3d__observe_panorama",
+      "label": "MP3D: Observe (panorama)",
+      "position": {
+        "x": 2280,
+        "y": 620
+      },
+      "config": {
+        "n_headings": 12
+      }
+    },
+    {
+      "id": "pred_vp",
+      "type": "discussnav__pred_vp",
+      "label": "DiscussNav: pred_vp",
+      "position": {
+        "x": 1120,
+        "y": 720
+      },
+      "config": {
+        "profile": "gpt-5-mini",
+        "num_predictions": 5,
+        "num_retry": 5,
+        "temperature": 1.0,
+        "max_tokens": 2000
+      }
+    },
+    {
+      "id": "horizon_stop",
+      "type": "discussnav__horizon_stop",
+      "label": "DiscussNav: Horizon Stop",
+      "position": {
+        "x": 1400,
+        "y": 880
+      },
+      "config": {}
+    },
+    {
+      "id": "translate_llm",
+      "type": "llmCall",
+      "label": "DiscussNav: Translate to English",
+      "position": {
+        "x": 80,
+        "y": -300
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "required": true
+          }
+        ],
+        "template": "Please translate the sentence \"{instruction}\" into English. Your translation is: ",
+        "system_prompt": "",
+        "profile": "gpt-5-mini",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "n": 1,
+        "mode": "single_turn"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_decompose_to_landmarks",
+      "source": "decompose_actions_llm",
+      "target": "detect_landmarks_llm",
+      "sourceHandle": "response",
+      "targetHandle": "actions"
+    },
+    {
+      "id": "e_decompose_to_init_decompose",
+      "source": "decompose_actions_llm",
+      "target": "init_decompose",
+      "sourceHandle": "response",
+      "targetHandle": "actions_response"
+    },
+    {
+      "id": "e_landmarks_to_init_decompose",
+      "source": "detect_landmarks_llm",
+      "target": "init_decompose",
+      "sourceHandle": "response",
+      "targetHandle": "landmarks_response"
+    },
+    {
+      "id": "e_reset_inst_to_init",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_init_decompose_actions_to_init",
+      "source": "init_decompose",
+      "target": "iter_in",
+      "sourceHandle": "actions",
+      "targetHandle": "init_actions"
+    },
+    {
+      "id": "e_init_decompose_landmarks_to_init",
+      "source": "init_decompose",
+      "target": "iter_in",
+      "sourceHandle": "landmarks",
+      "targetHandle": "init_landmarks"
+    },
+    {
+      "id": "e_reset_vp_to_init",
+      "source": "seed_nav",
+      "target": "iter_in",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "init_viewpoint_id"
+    },
+    {
+      "id": "e_reset_heading_to_init",
+      "source": "seed_nav",
+      "target": "iter_in",
+      "sourceHandle": "heading",
+      "targetHandle": "init_heading"
+    },
+    {
+      "id": "e_reset_nav_to_init",
+      "source": "seed_nav",
+      "target": "iter_in",
+      "sourceHandle": "navigable_json",
+      "targetHandle": "init_navigable_json"
+    },
+    {
+      "id": "e_reset_pano_to_init",
+      "source": "seed_pano",
+      "target": "iter_in",
+      "sourceHandle": "views",
+      "targetHandle": "init_views"
+    },
+    {
+      "id": "e_reset_dirs_to_init",
+      "source": "seed_pano",
+      "target": "iter_in",
+      "sourceHandle": "view_meta",
+      "targetHandle": "init_view_meta"
+    },
+    {
+      "id": "e_iter_in_pano_to_p2v",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "iterout_views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_iter_in_dirs_to_p2v",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "iterout_view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_iter_in_initpano_to_p2v",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "init_views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_iter_in_initdirs_to_p2v",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "init_view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_p2v_to_tag",
+      "source": "panorama_to_views",
+      "target": "tag_panorama",
+      "sourceHandle": "view_tiles",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_tag_to_agg",
+      "source": "tag_panorama",
+      "target": "observation_aggregator",
+      "sourceHandle": "tags_per_dir",
+      "targetHandle": "tags_per_dir"
+    },
+    {
+      "id": "e_blip_to_agg",
+      "source": "instructblip_caption",
+      "target": "observation_aggregator",
+      "sourceHandle": "captions_per_dir",
+      "targetHandle": "captions_per_dir"
+    },
+    {
+      "id": "e_iter_in_nav_to_agg",
+      "source": "iter_in",
+      "target": "observation_aggregator",
+      "sourceHandle": "iterout_navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_iter_in_initnav_to_agg",
+      "source": "iter_in",
+      "target": "observation_aggregator",
+      "sourceHandle": "init_navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_iter_in_inst_to_agg",
+      "source": "iter_in",
+      "target": "observation_aggregator",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iter_in_vp_to_history_reader",
+      "source": "iter_in",
+      "target": "history_reader",
+      "sourceHandle": "iterout_viewpoint_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_in_initvp_to_history_reader",
+      "source": "iter_in",
+      "target": "history_reader",
+      "sourceHandle": "init_viewpoint_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_in_actions_to_estimate",
+      "source": "iter_in",
+      "target": "estimate_completion_llm",
+      "sourceHandle": "init_actions",
+      "targetHandle": "actions"
+    },
+    {
+      "id": "e_iter_in_landmarks_to_estimate",
+      "source": "iter_in",
+      "target": "estimate_completion_llm",
+      "sourceHandle": "init_landmarks",
+      "targetHandle": "landmarks"
+    },
+    {
+      "id": "e_history_to_estimate",
+      "source": "history_reader",
+      "target": "estimate_completion_llm",
+      "sourceHandle": "history_traj",
+      "targetHandle": "history_traj"
+    },
+    {
+      "id": "e_fusion_to_decision",
+      "source": "thought_fusion",
+      "target": "decision_test",
+      "sourceHandle": "fused_json",
+      "targetHandle": "fused_json"
+    },
+    {
+      "id": "e_obs_to_decision",
+      "source": "observation_aggregator",
+      "target": "decision_test",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_iter_in_inst_to_decision",
+      "source": "iter_in",
+      "target": "decision_test",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_decision_to_step",
+      "source": "decision_test",
+      "target": "step",
+      "sourceHandle": "next_vp",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_decision_vp_to_history",
+      "source": "decision_test",
+      "target": "history_writer",
+      "sourceHandle": "next_vp",
+      "targetHandle": "next_vp"
+    },
+    {
+      "id": "e_decision_thought_to_history",
+      "source": "decision_test",
+      "target": "history_writer",
+      "sourceHandle": "final_thought",
+      "targetHandle": "final_thought"
+    },
+    {
+      "id": "e_obs_to_history_writer",
+      "source": "observation_aggregator",
+      "target": "history_writer",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_manifest_to_history_writer",
+      "source": "observation_aggregator",
+      "target": "history_writer",
+      "sourceHandle": "manifest",
+      "targetHandle": "manifest"
+    },
+    {
+      "id": "e_step_vp_to_iter_out",
+      "source": "loop_nav",
+      "target": "iter_out",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_step_heading_to_iter_out",
+      "source": "loop_nav",
+      "target": "iter_out",
+      "sourceHandle": "heading",
+      "targetHandle": "heading"
+    },
+    {
+      "id": "e_step_nav_to_iter_out",
+      "source": "loop_nav",
+      "target": "iter_out",
+      "sourceHandle": "navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_step_pano_to_iter_out",
+      "source": "loop_pano",
+      "target": "iter_out",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_step_dirs_to_iter_out",
+      "source": "loop_pano",
+      "target": "iter_out",
+      "sourceHandle": "view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_eval_to_metrics",
+      "source": "evaluate",
+      "target": "viewer_metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_decision_to_action_log",
+      "source": "decision_test",
+      "target": "viewer_action",
+      "sourceHandle": "next_vp",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_history_to_viewer",
+      "source": "history_writer",
+      "target": "viewer_history",
+      "sourceHandle": "history_text",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_reset_pano_to_viewer",
+      "source": "seed_pano",
+      "target": "viewer_panorama",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_step_pano_to_viewer",
+      "source": "loop_pano",
+      "target": "viewer_panorama",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_eval_to_output",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_mp3dmig_1",
+      "source": "step",
+      "sourceHandle": "info",
+      "target": "loop_nav",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_mp3dmig_2",
+      "source": "step",
+      "sourceHandle": "info",
+      "target": "loop_pano",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_initdec_sb_iterin",
+      "source": "init_decompose",
+      "sourceHandle": "step_budget",
+      "target": "iter_in",
+      "targetHandle": "init_step_budget"
+    },
+    {
+      "id": "e_iterin_sb_horizon",
+      "source": "iter_in",
+      "sourceHandle": "init_step_budget",
+      "target": "horizon_stop",
+      "targetHandle": "step_budget"
+    },
+    {
+      "id": "e_iterin_inst_predvp",
+      "source": "iter_in",
+      "sourceHandle": "init_instruction",
+      "target": "pred_vp",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iterin_act_predvp",
+      "source": "iter_in",
+      "sourceHandle": "init_actions",
+      "target": "pred_vp",
+      "targetHandle": "actions"
+    },
+    {
+      "id": "e_iterin_lmk_predvp",
+      "source": "iter_in",
+      "sourceHandle": "init_landmarks",
+      "target": "pred_vp",
+      "targetHandle": "landmarks"
+    },
+    {
+      "id": "e_hist_traj_predvp",
+      "source": "history_reader",
+      "sourceHandle": "history_traj",
+      "target": "pred_vp",
+      "targetHandle": "history_traj"
+    },
+    {
+      "id": "e_est_predvp",
+      "source": "estimate_completion_llm",
+      "sourceHandle": "response",
+      "target": "pred_vp",
+      "targetHandle": "estimation"
+    },
+    {
+      "id": "e_obs_predvp",
+      "source": "observation_aggregator",
+      "sourceHandle": "observation",
+      "target": "pred_vp",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_manifest_predvp",
+      "source": "observation_aggregator",
+      "sourceHandle": "manifest",
+      "target": "pred_vp",
+      "targetHandle": "manifest"
+    },
+    {
+      "id": "e_predvp_preds_fusion",
+      "source": "pred_vp",
+      "sourceHandle": "predictions",
+      "target": "thought_fusion",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_predvp_thoughts_fusion",
+      "source": "pred_vp",
+      "sourceHandle": "thoughts",
+      "target": "thought_fusion",
+      "targetHandle": "thoughts"
+    },
+    {
+      "id": "e_predvp_break_horizon",
+      "source": "pred_vp",
+      "sourceHandle": "break_flag",
+      "target": "horizon_stop",
+      "targetHandle": "break_flag"
+    },
+    {
+      "id": "e_predvp_thinking_viewer",
+      "source": "pred_vp",
+      "sourceHandle": "thinking",
+      "target": "viewer_thinking",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_horizon_stop_iterout",
+      "source": "horizon_stop",
+      "sourceHandle": "stop",
+      "target": "iter_out",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_tiles_instructblip",
+      "source": "panorama_to_views",
+      "sourceHandle": "view_tiles",
+      "target": "instructblip_caption",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_iterin_navjson_to_p2v_iterout",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "iterout_navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_iterin_navjson_to_p2v_init",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "init_navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_iterin_heading_to_p2v_iterout",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "iterout_heading",
+      "targetHandle": "agent_heading_deg"
+    },
+    {
+      "id": "e_iterin_heading_to_p2v_init",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "init_heading",
+      "targetHandle": "agent_heading_deg"
+    },
+    {
+      "id": "e_p2v_dirids_to_agg",
+      "source": "panorama_to_views",
+      "target": "observation_aggregator",
+      "sourceHandle": "dir_ids",
+      "targetHandle": "dir_ids"
+    },
+    {
+      "id": "e_reset_inst_to_translate",
+      "source": "reset",
+      "target": "translate_llm",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_translate_to_decompose",
+      "source": "translate_llm",
+      "target": "decompose_actions_llm",
+      "sourceHandle": "response",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iterin_inst_to_p2v",
+      "source": "iter_in",
+      "target": "panorama_to_views",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    }
+  ],
+  "containers": [
+    {
+      "id": "graph_state",
+      "label": "DiscussNav Navigation State",
+      "states": {
+        "nav_history": {
+          "type": "lastWrite",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": []
+          },
+          "lifetime": "run"
+        }
+      },
+      "position": {
+        "x": 600,
+        "y": 1180
+      }
+    }
+  ],
+  "access_grants": [
+    {
+      "id": "ag_observation_aggregator",
+      "node_id": "observation_aggregator",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_history_reader",
+      "node_id": "history_reader",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_history_writer",
+      "node_id": "history_writer",
+      "container_id": "graph_state"
+    }
+  ],
+  "step_budget": 7,
+  "kind": "graph"
+}

@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop Control System — AgentCanvas</title>
+<meta name="description" content="The two-sided iterIn / iterOut pivots — loop-carry, stop, the final side, scopes, and nesting">
+<meta property="og:title" content="Loop Control System — AgentCanvas">
+<meta property="og:description" content="The two-sided iterIn / iterOut pivots — loop-carry, stop, the final side, scopes, and nesting">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/loop-control-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="lc-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:700px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#lca); }
+  .rxsvg .edgeA { stroke: var(--designdoc); stroke-width:1.7; fill:none; marker-end:url(#lcaA); }
+  .rxsvg .edgeAd { stroke: var(--designdoc); stroke-width:1.7; fill:none; stroke-dasharray:6 5; marker-end:url(#lcaA); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/loop-control-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Loop Control System</span>
+  </div>
+  <div class="last-updated">2026-06-13 12:45</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Loop Control System</h1>
+  <p class="tagline">The two-sided iterIn / iterOut pivots — loop-carry, stop, the final side, scopes, and nesting</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="lca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="lcaA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--designdoc)"/></marker>
+</defs></svg>
+
+<p class="lede">A drawn graph is acyclic, but an agent must loop — observe, act, observe again. The loop control system is the one structure that expresses iteration: a paired <strong>iterIn</strong> / <strong>iterOut</strong>, the <em>loop pivots</em>. iterIn opens each iteration and hands the body its inputs; iterOut closes it, collects what carries forward, and decides whether to go round again. This page is the deep reference on that subsystem — the pivots, what flows between them, and how nested loops (<em>scopes</em>) are analysed. How the executor actually schedules the firing is <a href="graph-executor.html">Graph Executor</a>; the JSON schema is <a href="graph-system.html">Graph System</a>.</p>
+
+<hr>
+
+<h2 id="1-what-a-pivot-is"><span class="num">1.</span> What a loop pivot is</h2>
+
+<p>Plain dataflow stops when data stops flowing — fine for a pipeline, not for an agent. The engine recognises exactly one looping structure: a paired <strong>iterIn</strong> and <strong>iterOut</strong>. They are not wired to each other; they are linked by id (<code>config.pairedWith</code>), and the executor hands iterOut's collected values back to iterIn between iterations. Everything drawn between them — predict, env step, whatever — is the <strong>loop body</strong>, ordinary nodes with no special treatment. Each pivot is <strong>two-sided</strong>: iterIn has an init side (run-start inputs) and an output side (per-iteration values to the body); iterOut has an input side (loop-carry values + a <code>stop</code> signal) and a final side (values emitted once, when the loop ends).</p>
+
+<div class="callout note"><p>This is the current model since <a href="../../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a> + <a href="../../core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a>. The earlier three-node model (a separate <code>initialize</code> seed node and a separate <code>termination</code> node) is <strong>gone</strong>: init values moved onto iterIn's init side, and the halt signal moved onto iterOut's <code>stop</code> input. Graphs that still carry those node types are rejected at load (§9).</p></div>
+
+<h2 id="2-smallest-loop"><span class="num">2.</span> The smallest loop</h2>
+
+<p>One iterIn, one iterOut, one carried value (<code>obs</code>), and a <code>stop</code> signal from the body. The three handle families you'll meet — <code>init_*</code>, <code>iterout_*</code>, <code>final_*</code> — all appear here:</p>
+
+<svg class="rxsvg" viewBox="0 0 700 250" role="img" aria-label="The smallest loop. An entry node feeds init_obs into iterIn. iterIn emits obs to the body (a step node). The body produces the next obs into iterOut and a done BOOL into iterOut's stop input. iterOut is linked to iterIn by a dashed pairing arc that carries obs back. When stop fires, iterOut emits final_obs once into an after-loop node.">
+  <rect x="6" y="60" width="104" height="40" rx="7" class="box"/><text x="58" y="85" text-anchor="middle">entry</text>
+  <text x="58" y="118" text-anchor="middle" class="dim">init_obs</text>
+  <rect x="150" y="60" width="104" height="40" rx="7" class="accent"/><text x="202" y="85" text-anchor="middle" class="at">iterIn</text>
+  <rect x="300" y="60" width="104" height="40" rx="7" class="box"/><text x="352" y="85" text-anchor="middle">body · step</text>
+  <rect x="446" y="60" width="104" height="40" rx="7" class="accent"/><text x="498" y="85" text-anchor="middle" class="at">iterOut</text>
+  <path class="edge" d="M110,80 H150"/>
+  <path class="edge" d="M254,80 H300"/><text x="277" y="72" text-anchor="middle" class="dim">iterout_obs / init_obs</text>
+  <path class="edge" d="M404,80 H446"/><text x="425" y="72" text-anchor="middle" class="dim">obs</text>
+  <path class="edge" d="M352,100 C352,134 470,128 488,102"/><text x="392" y="134" class="dim">done → stop</text>
+  <path class="edgeAd" d="M498,60 C498,16 202,16 202,58"/>
+  <text x="350" y="13" text-anchor="middle" class="dim at">loop-carry — handed back by pairing (no wire)</text>
+  <path class="edgeA" d="M498,100 C498,150 452,150 452,170"/><text x="540" y="150" class="dim at">final_obs · once</text>
+  <rect x="392" y="170" width="120" height="34" rx="7" class="box"/><text x="452" y="191" text-anchor="middle" class="mono">after-loop node</text>
+  <text x="6" y="236" class="dim">solid = wire you draw · blue dashed = pairing linkage (not an edge)</text>
+</svg>
+
+<p>Its two configs — note there is no edge between the pivots, only <code>pairedWith</code>:</p>
+
+<pre class="hl">
+<span class="c1">// iterIn — declares the init side; output handles are synthesised at load</span>
+<span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterIn_1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterIn&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;pairedWith&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterOut_1&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;initPorts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;obs&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;persist&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+
+<span class="c1">// iterOut — carry ports on the input side, stop halt input, final_* on the output side</span>
+<span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterOut_1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterOut&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;pairedWith&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterIn_1&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;ports&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;obs&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;persist&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+</pre>
+
+<h2 id="3-mental-model"><span class="num">3.</span> The four-moment mental model</h2>
+
+<p>Hold the whole subsystem as four moments in the life of a value:</p>
+
+<table>
+<thead><tr><th>Moment</th><th>Where</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td><strong>Seed</strong></td><td>iterIn init side, run-start</td><td>The entry node's values land on <code>init_&lt;name&gt;</code>; iterIn emits them to the body on iteration 0.</td></tr>
+<tr><td><strong>Carry</strong></td><td>iterOut → iterIn, each boundary</td><td>iterOut collects <code>config.ports</code> values and the executor transfers them into iterIn's <code>iterout_&lt;name&gt;</code> slots; iterIn re-fires, opening the next iteration.</td></tr>
+<tr><td><strong>Stop</strong></td><td>iterOut <code>stop</code> input, each boundary</td><td>If the BOOL wired into <code>stop</code> is truthy (or the step budget is hit), the scope terminates after this iteration.</td></tr>
+<tr><td><strong>Finalise</strong></td><td>iterOut final side, once</td><td>At termination iterOut emits each carry port on <code>final_&lt;name&gt;</code> plus a constant <code>final_stop</code> — exactly once — feeding the after-loop verdict stage.</td></tr>
+</tbody>
+</table>
+
+<p>§4 details seed and carry (the port-synthesis machinery), §5 stop, §6 finalise. The runtime <em>timing</em> of these — the order in which the boundary phases run — belongs to the executor (<a href="graph-executor.html#43-iterout-boundary">Graph Executor §4.3</a>); here we describe the contract, not the schedule.</p>
+
+<h2 id="4-port-synthesis"><span class="num">4.</span> Port synthesis &amp; the persist matrix</h2>
+
+<p>iterIn never carries a hand-written port list. Its effective <code>config.ports</code> is <strong>synthesised at load</strong> by <code>_synthesize_iterin_ports</code> from two writers, with prefixes that keep the two value sources distinct on the same iterIn:</p>
+
+<ul>
+  <li>iterIn's own <code>initPorts</code> → handles prefixed <code>init_&lt;name&gt;</code>, default <code>persist=false</code> (one-shot: the slot empties after iteration 0).</li>
+  <li>the paired iterOut's <code>config.ports</code> → handles prefixed <code>iterout_&lt;name&gt;</code>, default <code>persist=true</code> (refreshed every iteration).</li>
+</ul>
+
+<p>A direct canvas edge into iterIn that targets an undeclared handle is also accepted as an init-writer surrogate (the handle name is used verbatim). The <code>persist</code> flag and the writer origin give four legal per-port configurations:</p>
+
+<table>
+<thead><tr><th>Origin</th><th><code>persist</code></th><th>Behaviour</th></tr></thead>
+<tbody>
+<tr><td>init</td><td><code>false</code> (default)</td><td>Seed once; the slot empties after iteration 0 — pure run-start input.</td></tr>
+<tr><td>init</td><td><code>true</code></td><td>A run-invariant the body reads every iteration (instruction, episode config) — set this for anything the body needs past iteration 0.</td></tr>
+<tr><td>iterout</td><td><code>true</code> (default)</td><td>Standard loop-carry: refreshed by iterOut each boundary.</td></tr>
+<tr><td>iterout</td><td><code>false</code></td><td>Loop-carry that must be re-supplied every iteration or the slot goes empty — rare.</td></tr>
+</tbody>
+</table>
+
+<p>A name may legitimately appear on <strong>both</strong> sides (<code>init_X</code> for iteration 0, <code>iterout_X</code> for 1+) — that's the normal pattern for an observation that the entry node seeds and the loop then refreshes. It is only safe when the init entry is one-shot; §10 has the freeze hazard if it isn't.</p>
+
+<h2 id="5-stop"><span class="num">5.</span> Loop-carry &amp; the stop signal</h2>
+
+<p>At each iteration boundary the executor reads iterOut's collected outputs and routes every <code>config.ports</code> value <code>X</code> into the paired iterIn's <code>iterout_X</code> slot, then re-queues iterIn. A <code>persist=false</code> slot clears after its consumer fires; a <code>persist=true</code> slot holds until overwritten. That transfer <em>is</em> the loop — there is no drawn back-edge.</p>
+
+<p>Termination is decided once per iteration, at the iterOut boundary, from iterOut's own <code>stop</code> input (a class-level optional BOOL). If <code>stop</code> is truthy the scope ends after the current iteration; if it's unwired, the loop runs purely to its <code>step_budget</code>. <code>stop</code> is special only in that it does <em>not</em> participate in loop-carry (it isn't mirrored to the final side and a bare <code>stop</code> arrival doesn't make iterOut ready — readiness still needs the carry ports). There is no separate termination node and no termination condition string; the halt is just this BOOL.</p>
+
+<h2 id="6-final-side"><span class="num">6.</span> The final side &amp; the after-loop band</h2>
+
+<p>When a scope terminates, iterOut emits <strong>once</strong> on its final side: one <code>final_&lt;name&gt;</code> per carry port (mirroring the terminal iteration's values) plus a constant <code>final_stop=True</code>. These are real wires — verdict nodes (evaluate, graphOut) connect to them with ordinary edges — but they deliver exactly once, at the end.</p>
+
+<p>The set of nodes downstream of a root iterOut's <code>final_*</code> edges is the <strong>after-loop band</strong>: the verdict stage that runs once, after the loop. Its defining rule (enforced by the validator, §9) is <em>purity</em> — a band node may take inputs only from the final side or from other band nodes, never from the loop body. Anything the verdict needs must <em>ride the pivot</em>: expose it as an iterOut carry port and read it from <code>final_&lt;name&gt;</code>. This is what makes “the verdict reflects the terminal iteration” a structural guarantee rather than a scheduling accident — the rationale is in <a href="../../core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a>, the runtime drain in <a href="graph-executor.html#51-post-loop-pass">Graph Executor §5.1</a>.</p>
+
+<h2 id="7-scopes"><span class="num">7.</span> Scopes: what a loop is, in code</h2>
+
+<p>A <strong>scope</strong> is one iterIn/iterOut pair together with the body it bounds. The executor and validator work in terms of a <code>ScopeInfo</code> (<code>scope_analysis.py</code>), keyed by the iterIn node id:</p>
+
+<pre class="hl">
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ScopeInfo</span><span class="p">:</span>                    <span class="c1"># scope_analysis.py — one (iterIn, iterOut) pair</span>
+    <span class="n">scope_id</span><span class="p">:</span> <span class="nb">str</span>                   <span class="c1"># the iterIn node id — canonical key for the scope</span>
+    <span class="n">iter_out_id</span><span class="p">:</span> <span class="nb">str</span>                <span class="c1"># its paired iterOut</span>
+    <span class="n">parent_scope_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>     <span class="c1"># None = root scope</span>
+    <span class="n">child_scope_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>      <span class="c1"># scopes nested directly inside this one</span>
+    <span class="n">member_node_ids</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>       <span class="c1"># body nodes, by innermost membership</span>
+    <span class="n">graphin_node_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>     <span class="c1"># graphIn boundary nodes serving this scope</span>
+    <span class="n">graphout_node_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>    <span class="c1"># graphOut boundary / latch nodes</span>
+    <span class="n">step_budget</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span>         <span class="c1"># resolved from iter_in.config.step_budget</span>
+</pre>
+
+<p>Nodes outside any pivot pair belong to the implicit <strong>graph scope</strong> (id <code>GRAPH_SCOPE_ID = ""</code>) — entry nodes and the after-loop band live there. A graph with zero or one scopes is <code>is_single_scope</code>, and the executor takes a fast path that mirrors the pre-nesting behaviour exactly; multi-scope graphs go through the general machinery of §8.</p>
+
+<h2 id="8-nesting"><span class="num">8.</span> Nested scopes &amp; the forest</h2>
+
+<p>Loops can nest — an outer planning loop containing an inner action loop. <code>analyze_scopes(graph)</code> builds the full <code>ScopeForest</code> (and returns any topology errors) by a pure analysis of the flat graph:</p>
+
+<ol>
+  <li><strong>Membership</strong> — a node belongs to a scope if it is reachable forward from that iterIn <em>and</em> backward from its iterOut; the intersection is the body. A node in several nested bodies is assigned to the <strong>innermost</strong> one (<code>member_node_ids</code>).</li>
+  <li><strong>Nesting</strong> — scopes are arranged by pivot containment: the parent is the innermost scope whose body contains this scope's pivots, giving <code>parent_scope_id</code> / <code>child_scope_ids</code> and the <code>root_scope_ids</code> at the top.</li>
+  <li><strong>Boundaries</strong> — graphIn/graphOut nodes are attached to the scope they serve; an inner scope's graphOut acts as a latch so the outer body can read the inner loop's result.</li>
+  <li><strong>Validation</strong> — cross-scope wires that bypass the graphIn/graphOut boundary, duplicate <code>pairedWith</code>, or unpaired pivots are reported as errors.</li>
+</ol>
+
+<svg class="rxsvg" viewBox="0 0 700 200" role="img" aria-label="A nested scope. An outer dashed box (the outer scope) contains an outer iterIn and iterOut and, between them, an inner dashed box (the inner scope) with its own iterIn and iterOut. The inner scope's graphOut latches its result so the outer body can read it.">
+  <rect x="20" y="24" width="660" height="150" rx="10" class="ghost"/><text x="34" y="44" class="dim at">outer scope (root)</text>
+  <rect x="40" y="92" width="96" height="38" rx="7" class="accent"/><text x="88" y="115" text-anchor="middle" class="at">iterIn ᵒ</text>
+  <rect x="564" y="92" width="96" height="38" rx="7" class="accent"/><text x="612" y="115" text-anchor="middle" class="at">iterOut ᵒ</text>
+  <rect x="190" y="58" width="320" height="104" rx="9" class="ghost"/><text x="204" y="78" class="dim at">inner scope</text>
+  <rect x="210" y="96" width="92" height="36" rx="7" class="accent"/><text x="256" y="118" text-anchor="middle" class="at">iterIn ⁱ</text>
+  <rect x="318" y="96" width="80" height="36" rx="7" class="box"/><text x="358" y="118" text-anchor="middle">body</text>
+  <rect x="410" y="96" width="92" height="36" rx="7" class="accent"/><text x="456" y="118" text-anchor="middle" class="at">iterOut ⁱ</text>
+  <path class="edge" d="M136,111 H210"/>
+  <path class="edge" d="M302,114 H318"/><path class="edge" d="M398,114 H410"/>
+  <path class="edge" d="M502,111 H564"/><text x="533" y="103" text-anchor="middle" class="dim">latched result</text>
+</svg>
+
+<p>The forest also writes a per-node <code>node_to_scope</code> map and the <code>graph_scope_node_ids</code> (everything outside any author scope). The executor consults all of this to run each scope's boundary independently. This nesting machinery is <a href="../../core/decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a> + <a href="../../core/decisions/executor/adr-executor-003-multi-scope-execution.html">ADR-executor-003</a>.</p>
+
+<h2 id="9-validator"><span class="num">9.</span> Validator contract (loop-specific)</h2>
+
+<p><code>validate_graph_connectivity</code> (<code>graph_def.py</code>) enforces the loop rules at graph load; the full catalogue (and the non-loop rules) is in <a href="graph-system.html#42-validation-rules">Graph System §4.2</a>. The loop-specific ones:</p>
+
+<ul>
+  <li><strong>Removed pivots rejected</strong> — an <code>initialize</code> or <code>termination</code> node fails with a migration hint (init values → iterIn <code>initPorts</code>; halt → iterOut <code>stop</code>).</li>
+  <li><strong>Pairing integrity</strong> — every iterIn's <code>pairedWith</code> points at an iterOut and vice-versa; no duplicate or dangling pairing.</li>
+  <li><strong>iterIn handles</strong> — legacy <code>init_ports</code>/<code>loop_ports</code> schemas rejected; outgoing edges may only reference synthesised <code>init_*</code>/<code>iterout_*</code> handles (plus <code>step</code>).</li>
+  <li><strong>iterOut handles</strong> — non-empty <code>config.ports</code>; incoming edges target carry ports or <code>stop</code>; outgoing edges source only from <code>final_*</code>/<code>final_stop</code>.</li>
+  <li><strong>After-loop band purity</strong> — band nodes are graph-scope and take inputs only from the final side or other band nodes (§6).</li>
+</ul>
+
+<h2 id="10-hazards"><span class="num">10.</span> Edge cases &amp; hazards</h2>
+
+<ul>
+  <li><strong>Dual-wire freeze.</strong> Wiring both <code>init_X</code> and <code>iterout_X</code> into the same consumer input with the init entry set <code>persist=true</code> freezes that input at its iteration-0 value (the persisted init slot keeps winning). Keep the init entry one-shot when a name is dual-sided. This was the root cause of the 2026-05-05 CMA “100% LEFT spin”.</li>
+  <li><strong>Run-invariants must persist.</strong> The mirror trap: anything the body reads every iteration that comes only from the init side must be <code>persist=true</code>, or it vanishes after iteration 0.</li>
+  <li><strong>Budget-only loops.</strong> Leave <code>stop</code> unwired and the loop runs to <code>step_budget</code> — intended for fixed-length rollouts.</li>
+  <li><strong>Signals don't filter by scope.</strong> State-container <code>reset_on</code> matches a signal name, not a scope, so an inner scope's <code>step_end</code> can clear an outer node's step-lifetime slot — see <a href="state-containers.html#6-lifetimes">State Containers §6</a>.</li>
+</ul>
+
+<h2 id="11-references"><span class="num">11.</span> References</h2>
+
+<ul>
+<li><a href="../../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a> — two-sided iterIn (init side); <code>initialize</code> node removed.</li>
+<li><a href="../../core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a> — two-sided iterOut (<code>stop</code> input + final side); <code>termination</code> node removed; after-loop band.</li>
+<li><a href="../../core/decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a> + <a href="../../core/decisions/executor/adr-executor-003-multi-scope-execution.html">ADR-executor-003</a> — multi-scope iteration &amp; execution.</li>
+<li><a href="../../core/decisions/dataflow/adr-dataflow-006-three-pivot-boundary-nodes.html">ADR-dataflow-006</a> + <a href="../../core/decisions/executor/adr-executor-002-three-pivot-scheduling.html">ADR-executor-002</a> — the superseded three-pivot model (historical context for the 008/009 collapse).</li>
+<li><a href="graph-executor.html">Graph Executor</a> — how the pivots actually fire; <a href="graph-system.html">Graph System</a> — the JSON schema &amp; validation; <a href="state-containers.html">State Containers</a> — loop-carried vs container state.</li>
+<li>Source: <code>scope_analysis.py</code> (<code>analyze_scopes</code>, <code>ScopeForest</code>, <code>ScopeInfo</code>, <code>GRAPH_SCOPE_ID</code>), <code>graph_def.py</code> (<code>_synthesize_iterin_ports</code>, <code>validate_graph_connectivity</code>), <code>builtin_nodes.py</code> (<code>IterInNode</code>, <code>IterOutNode</code>), <code>graph_executor.py</code> (boundary, transfer, final emission), <code>portResolution.ts</code> (frontend synthesis mirror).</li>
+</ul>
+
+<h2 id="12-changelog"><span class="num">12.</span> Changelog</h2>
+<ul>
+<li>2026-06-13 12:45: <strong>Full rewrite for the two-sided model and inverted-pyramid structure.</strong> The page taught the dead three-pivot model throughout; rebuilt around two two-sided pivots. Concept-first ordering: what a pivot is → smallest loop (with config) → four-moment mental model, then port synthesis, stop, final side, scopes, nesting, validator, hazards. Removed every <code>initialize</code> / <code>termination</code> / three-pivot / <code>terminationCondition</code> / <code>latched_done</code> reference; replaced the stale <code>ScopeInfo</code> listing (which had phantom <code>initialize_id</code> / <code>termination_node_ids</code> / <code>termination_condition</code> fields) with the real 8-field struct; dropped line-number citations (drift-prone) in favour of file + symbol names. Executor-internal detail (settle drain, <code>_max_settle</code>, checkpoint gating) now linked to Graph Executor rather than re-explained. New SVG figures for the smallest loop and a nested scope; code blocks via the Pygments pipeline.</li>
+<li>2026-06-11 15:38: <code>termination</code> node removed (stop port + final side on iterOut) — historical-reading note (now superseded by this rewrite).</li>
+<li>2026-06-10 10:45: <code>initialize</code> node removed (no legacy load path); init slots authored via <code>iterIn.config.initPorts</code>.</li>
+<li>2026-05-18: multi-scope + safety-rails refresh — multi-scope iteration (ADR-dataflow-007 + ADR-executor-003), signal contract with <code>scope_id</code>, settle drain + graphOut latch + root-only checkpoints, dual-wire freeze warning, <code>persist=true</code>-for-run-invariants footnote.</li>
+<li>2026-04-21: shipped always-prefix auto-synthesis — iterIn surface synthesised by <code>_synthesize_iterin_ports</code>; per-port <code>persist</code> on writer entries; config version 3.</li>
+<li>2026-04-20: unified port surface — single <code>ports</code> list + per-entry <code>persist</code> (partially superseded by 2026-04-21); codebase audit pass.</li>
+<li>2026-04-19 18:11: style compliance retrofit — added ToC + numbered sections + changelog.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-a-pivot-is">1. What a loop pivot is</a>
+      <a class="toc-h2" href="#2-smallest-loop">2. The smallest loop</a>
+      <a class="toc-h2" href="#3-mental-model">3. The four-moment mental model</a>
+      <a class="toc-h2" href="#4-port-synthesis">4. Port synthesis &amp; the persist matrix</a>
+      <a class="toc-h2" href="#5-stop">5. Loop-carry &amp; the stop signal</a>
+      <a class="toc-h2" href="#6-final-side">6. The final side &amp; the after-loop band</a>
+      <a class="toc-h2" href="#7-scopes">7. Scopes: what a loop is, in code</a>
+      <a class="toc-h2" href="#8-nesting">8. Nested scopes &amp; the forest</a>
+      <a class="toc-h2" href="#9-validator">9. Validator contract (loop-specific)</a>
+      <a class="toc-h2" href="#10-hazards">10. Edge cases &amp; hazards</a>
+      <a class="toc-h2" href="#11-references">11. References</a>
+      <a class="toc-h2" href="#12-changelog">12. Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

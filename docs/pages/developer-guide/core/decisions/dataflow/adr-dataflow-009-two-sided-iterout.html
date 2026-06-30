@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-009 — AgentCanvas</title>
+<meta name="description" content="Two-sided iterOut — fold the termination node into a stop port; add the final side + after-loop band">
+<meta property="og:title" content="ADR-dataflow-009 — AgentCanvas">
+<meta property="og:description" content="Two-sided iterOut — fold the termination node into a stop port; add the final side + after-loop band">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-009</span>
+  </div>
+  <div class="last-updated">2026-06-11 15:58</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-009</h1>
+  <p class="tagline">Two-sided iterOut — fold the termination node into a stop port; add the final side + after-loop band</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-06-11 15:58</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Revises</dt><dd><a href='adr-dataflow-008-two-sided-iterin.html'>ADR-dataflow-008</a> (executes its deferred alternative&nbsp;(d): after-loop work now rides iterOut's output side; <code>config.post_loop</code> retired)</dd></dl>
+
+<div class='callout note'><p>Symmetric completion of <a href="adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a>. That ADR made <code>iterIn</code> two-sided (init inputs on the left, loop-carry outputs on the right) and explicitly <em>deferred</em> the mirror move on <code>iterOut</code>. This ADR performs it: <code>iterOut</code> gains a <code>stop</code> halt input on its loop side and a <code>final_*</code> output side that fires exactly once at scope termination. The standalone <code>termination</code> node type and the <code>config.post_loop</code> / <code>terminationCondition</code> mechanisms are removed entirely.</p></div>
+
+<h2 id='context'>Context</h2>
+<p>Termination and evaluation were authored as ordinary dataflow nodes, but their correctness requirements are <strong>phase-shaped</strong>: a termination check must be consulted exactly once per iteration, and an evaluate node's verdict must reflect the <em>terminal</em> iteration's values. The executor held this together with four special cases — a termination defer guard, a settle-pass skip for termination nodes, a <code>latched_done</code> latch, and the <code>config.post_loop</code> flag with its pop-without-clear guard — the same shape of accumulated special-casing that preceded the <code>initialize</code> removal in ADR-dataflow-008. The cost was real, not aesthetic: TODO&nbsp;#64 (the terminal step's success never reached the evaluate snapshot; smartway_ce recorded SR&nbsp;0.000 with 5/20 episodes actually succeeding), the explore-eqa post-loop upstream-dependency collapse (SR&nbsp;0.43&nbsp;→&nbsp;0 when a re-fired evaluate resolved a node-fed input to <code>None</code>), a zombie <code>terminationCondition</code> field threaded through backend and frontend but read by nothing, and silent episode completion at <code>step_count=0</code> still reporting <code>completed</code>.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Make <code>iterOut</code> <strong>two-sided</strong> and retire the <code>termination</code> node type (hard removal — graphs carrying one are rejected at load with a migration hint, mirroring the <code>initialize</code> precedent). Concretely:</p>
+<ul>
+  <li><strong>stop port</strong>: <code>iterOut</code> gains a class-level optional <code>BOOL</code> input <code>stop</code>. The executor's Decide phase reads <code>result["stop"]</code> from the just-fired iterOut once per iteration; truthy terminates the scope. Unwired = budget-only loop. <code>stop</code> does not participate in loop-carry transfer, and a bare <code>stop</code> arrival does not make iterOut ready (readiness still requires the carry ports).</li>
+  <li><strong>Final side</strong>: at scope termination (stop, budget exhaustion, or best-effort on the error path) iterOut emits exactly once on <code>final_&lt;name&gt;</code> handles — a default mirror of <em>all</em> <code>config.ports</code>, no trimming option — plus a constant <code>final_stop=True</code> as the standard verdict trigger. Verdict nodes (evaluate, graphOut) connect to the final side with ordinary canvas edges.</li>
+  <li><strong>After-loop band</strong>: the set of after-loop nodes is the downstream closure of the root iterOut's <code>final_*</code> edges — derived from topology, replacing the authored <code>config.post_loop</code> flag. Validator purity rule: band nodes may not take inputs from the loop body ("verdict inputs ride the pivot" — expose them as iterOut carry ports). Eval graphs' <code>metrics</code>/<code>success</code> graphOuts must be band-fed.</li>
+  <li><strong>Verdict-required</strong>: an <code>eval_graph</code> episode that ends with no collected metrics is recorded as <code>status="error"</code>, closing the silent-completion exit.</li>
+  <li><strong>Deletions</strong>: the four executor special cases above, the <code>TerminationNode</code> class and registry entry, the <code>terminationCondition</code> field across backend and frontend, and termination-specific scope-analysis / layout logic. <code>StopExecution</code> survives only as a node-side escape hatch.</li>
+</ul>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep <code>termination</code> as authoring sugar</strong>, lowered to the stop port at load — rejected (user decision): it preserves a node type that adds no expressiveness, inflating the AAS search vocabulary the same way <code>initialize</code> did. (b) <strong>A <code>finalPorts</code> trimming option</strong> so authors could expose only a subset on the final side — rejected (user decision): the final side defaults to mirroring all carry ports; an unconsumed <code>final_*</code> handle costs nothing. (c) <strong>Keep in-loop evaluate nodes</strong> with a latch for per-step metric streams — rejected (user decision): per-step telemetry is the viewer sinks' job (<code>step.info → viewer</code>, opt-in); the verdict comes only from the final side, so "evaluate fires mid-loop with stale terminal values" is no longer expressible. (d) <strong>Soft-deprecate with an execution-time absorb</strong> (the -008 treatment of <code>initialize</code>) — rejected: all 24 in-repo graphs were migrated in the same change by <code>tools/migrate_termination.py</code>, so there is no legacy population to keep alive, and a hard validator error with a migration hint is clearer than silent rewriting.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The refactor converts episode-verdict correctness from a scheduling accident into a structural guarantee: the final side emits the terminal iteration's values by construction, so the #64 class of bug (verdict snapshot lags the terminal step) cannot be written in the new vocabulary, and the band purity rule makes the explore-eqa class (band node starved by a loop-body dependency) a load-time validator error instead of a silent SR collapse. Four executor special cases disappear outright, and the pivot vocabulary stays at two node types with symmetric two-sided semantics — pre-loop = iterIn's init side, in-loop = the body, after-loop = iterOut's final side — completing the regularisation arc that ADR-dataflow-006 started and -008 advanced. Verified by 117 backend tests (including a #64 regression test asserting the after-loop consumer receives the terminal step's value, budget-exhaustion emission, and best-effort error-path emission), <code>tsc --noEmit</code> clean, and 24/24 + 1 composite in-repo graphs migrated and loading clean. Real-eval re-verification (smartway_ce expected SR&nbsp;≈&nbsp;0.25) rides the existing TODO&nbsp;#64/#65 re-verification wave.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>Updated in the same change-set (commits <code>7095f196</code> + <code>3760c002</code>): core/glossary.html (Termination&nbsp;→ Removed; new <code>stop</code> port / Final side / After-loop band terms), design-docs/graph/graph-executor.html (Part&nbsp;I rewritten: guards 4&nbsp;→&nbsp;2, Decide/Settle/Record, §4.6 trace, §5.1 after-loop band, §8 exit-paths table), capabilities/graph-execution-engine.html (§9, §10.5), design-docs/graph/loop-control-system.html (historical note), nodesets/env/template.html (decision&nbsp;E), nodesets/method/explore-eqa.html, core/roadmap.html (#62/#63/#64 notes), .claude/tutorials/skill-graph-json.md, .claude/commands/architect/myloop seeds + AAS mirror, decisions/dataflow/index.html + decisions/index.html (this entry).</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

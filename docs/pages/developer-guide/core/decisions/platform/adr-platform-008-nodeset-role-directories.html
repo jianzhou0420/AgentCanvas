@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-platform-008 — AgentCanvas</title>
+<meta name="description" content="Nodeset role-directory layout: workspace/nodesets/ organized by role ( env/ method/ policy/ model/ common/ other/ ); server/ eliminated — deployment expressed only by server_python">
+<meta property="og:title" content="ADR-platform-008 — AgentCanvas">
+<meta property="og:description" content="Nodeset role-directory layout: workspace/nodesets/ organized by role ( env/ method/ policy/ model/ common/ other/ ); server/ eliminated — deployment expressed only by server_python">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/platform/adr-platform-008-nodeset-role-directories.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/platform/adr-platform-008-nodeset-role-directories.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Platform</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-platform-008</span>
+  </div>
+  <div class="last-updated">2026-06-11 15:37</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-platform);">ADR-platform-008</h1>
+  <p class="tagline">Nodeset role-directory layout: <code>workspace/nodesets/</code> organized by role (<code>env/ method/ policy/ model/ common/ other/</code>); <code>server/</code> eliminated — deployment expressed only by <code>server_python</code></p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-06-11 15:37</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>platform</code></a></dd>
+</dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Pre-2026-06-11 <code>workspace/nodesets/</code> had exactly one organizing axis: <strong>deployment</strong>. The root held nodesets that run inside the backend's <code>agentcanvas</code> interpreter; <code>server/</code> (a scanner "bucket" — a directory without <code>__init__.py</code>) held nodesets that run in their own conda env via auto_host. That axis was pure convention: the engine's actual routing reads the <code>server_python</code> ClassVar (ADR-server-001 / auto-routing), and <code>WorkspaceComponentRegistry._scan_subdir</code> assigns no semantic meaning to directory names.</p>
+<p>The layout had accreted real problems: (a) <code>server/</code> mixed four roles — environments (<code>habitat.py</code>, <code>libero/</code>…), policies (<code>policy_*</code>), generic model servers (<code>vlm_*</code>, <code>ram_perception.py</code>), and even pure method logic (<code>explore_eqa.py</code>, <code>tooleqa_explore.py</code>) parked there only because it needed the <code>hmeqa</code> interpreter; (b) one method's parts scattered across the tree by interpreter — smartway lived in four places (root <code>smartway/</code>, <code>smartway_mono/</code>, <code>server/smartway_perception/</code>, <code>server/smartway_waypoint/</code>); (c) file stems didn't match nodeset names for six envs (<code>habitat.py</code> → <code>name="env_habitat"</code>); (d) loose non-nodeset files sat at scanner-visible levels (<code>hmeqa_renderer.py</code>, <code>test_matterport3d_path_resolution.py</code>) and got imported on every scan; (e) grab-bags existed (<code>others.py</code> — "tools that don't belong to a specific system"). The doc-site nodeset catalog was meanwhile organized by role — two taxonomies for one corpus. Tracked as TODO #40.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Directory encodes <strong>role</strong>; deployment is not a tree concern at all. Codified in <code>.claude/standard/nodeset-layout.md</code>; the full tree migrated the same day.</p>
+<ol>
+  <li><strong>Seven top-level directories</strong>: <code>env/</code> (gym-contract simulators + EnvPanel), <code>method/</code> (one paper/system's reasoning core <em>and its owned parts</em>), <code>policy/</code> (trained-policy inference), <code>model/</code> (generic foundation/perception servers), <code>common/</code> (deliberately cross-method tools), <code>other/</code> (quarantine for the not-yet-classifiable, entry requires a docstring rationale), <code>_upstream/</code> (frozen vendored reference, ADR-platform-007). All role dirs are scanner buckets — never an <code>__init__.py</code> in them.</li>
+  <li><strong><code>server/</code> is gone.</strong> A nodeset needing its own interpreter declares <code>server_python</code> and lives wherever its role puts it.</li>
+  <li><strong>Stem = <code>name</code> ClassVar, full role prefix included</strong> (<code>env/env_habitat.py</code> ⇔ <code>name="env_habitat"</code>). The directory+prefix redundancy is deliberate: the registry and <code>node_type</code> namespaces are flat, so the name must be self-identifying outside its directory (editor tabs, grep hits, AAS diffs).</li>
+  <li><strong>Ownership beats modality</strong> for the method-owned vs generic-model boundary (TODO #56 made operational): a second unrelated method could load it unchanged → <code>model/</code> (<code>vlm_</code>/<code>model_</code> prefix); tuned to one method → <code>method/</code> as <code>{method}_{part}</code>. Method families share the <code>{method}</code> prefix, so same-directory alphabetical sorting reunites scattered parts physically.</li>
+  <li><strong>Sidecars live inside their owner's folder package</strong>; a <code>_</code>-prefixed module may sit loose in a role bucket only when shared by 2+ nodesets there (<code>method/_explore_eqa_tsdf.py</code>, imported by <code>explore_eqa</code> and <code>tooleqa_explore</code>).</li>
+</ol>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep the deployment axis, tighten naming only</strong> (the first draft of <code>nodeset-layout.md</code>, written hours earlier) — rejected on review: it codifies the symptom. The dominant queries ("which envs exist", "where are smartway's parts") still require knowing each nodeset's interpreter history, and the doc-site/code taxonomy split persists.</p>
+<p>(b) <strong>Ownership-first tree</strong> (each method directory owns everything it uses, envs duplicated or symlinked) — rejected: envs are shared infrastructure with no single owner; the scanner's one-bucket depth can't express it; the auto_host unit is a file, not a directory closure.</p>
+<p>(c) <strong>Role directory without name prefix</strong> (<code>env/habitat.py</code> deriving <code>env_habitat</code>) — rejected: reintroduces "open the file to learn the name", and flat <code>node_type</code> strings still need the prefix anyway, so derivation saves nothing downstream.</p>
+<p>(d) <strong>Role encoded in names only, directories stay deployment-split</strong> — rejected for the same reason as (a); also keeps method families physically scattered.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p><strong>The tree has two readers and both think in roles.</strong> Humans browse by "what envs do we have"; the coding agents of Paper #1 (AAS implementer) and Paper #2 (porting agents) use paths as retrieval keys — <code>env/</code> answers the env-enumeration query in one hop instead of a scan-plus-classify. The doc-site catalog was already role-organized; this collapses two taxonomies into one.</p>
+<p><strong>Deployment is a private implementation detail.</strong> The engine reads <code>server_python</code>; encoding the same fact in the path put private information in the public interface while crowding out the semantic axis. Relocation is now free (a role reclassification is a <code>git mv</code> that touches no behavior), and the contested classification axis (method-owned vs generic, TODO #56) lives in the cheap medium — names and one-line judgments — rather than directory structure.</p>
+<p><strong>Zero engine cost.</strong> <code>_scan_subdir</code> already supports any number of top-level buckets with packages inside (precedent: <code>server/policy_vla/</code>); the migration was <code>git mv</code> + reference sweep. Migration verification: registry-scan diff before/after (36 discovered, set-identical modulo the three intended renames <code>sam→model_sam</code>, <code>ram_perception→model_ram</code>, <code>others→geometry+mock_frontier</code>), 117 backend tests, and a libero end-to-end smoke (run <code>20260611_152007</code>, 1390 steps — bit-parity with pre-migration baselines). The scan diff caught the one real breakage (smartway's cross-package import of <code>smartway_mono</code>) before any runtime did.</p>
+<p><strong>Accepted costs</strong>: (i) historical architect <code>design_runs</code> overlays reference pre-migration relative paths and can no longer replay — explicitly waived by the user ("旧的都不用了"); (ii) ~107 vendored absolute self-imports (<code>policy_vla</code>, <code>policy_vlnce</code>) and nine <code>__file__</code>-relative path chains needed mechanical depth fixes, each programmatically verified to resolve to the repo root.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<ul>
+  <li><code>.claude/standard/nodeset-layout.md</code> — the standard itself (role grammar, naming, decision table, migration map).</li>
+  <li><code>.claude/standard/component-creation.md</code>, <code>.claude/tutorials/skill-nodeset.md</code>, <code>.claude/tutorials/skill-env-nodeset.md</code>, <code>CLAUDE.md</code> — guidance aligned; standard registered in the index table.</li>
+  <li><code>.claude/PROJECT_OVERVIEW.md</code> — repo map + nodeset catalog repointed.</li>
+  <li><code>core/codebase-map.html</code>, <code>core/glossary.html</code>, <code>design-docs/components/nodesets.html</code>, <code>design-docs/operations/plugin-servers.html</code>, <code>nodesets/env/*.html</code>, <code>nodesets/method/*.html</code>, <code>tutorials/habitat-nodeset.html</code> — path references updated to role layout (same session, /commit doc pass).</li>
+  <li><code>workspace/nodesets/</code> — 35 nodesets relocated; <code>workspace/graphs/vln/unverified/discussnav_mp3d.json</code> — one node_type updated.</li>
+</ul>
+
+<h2 id='changelog'>Changelog</h2>
+<ul>
+  <li><code>2026-06-11 15:37</code>: Initial draft; standard written and full tree migration executed + verified in the same session.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

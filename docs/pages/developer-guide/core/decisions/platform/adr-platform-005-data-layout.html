@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-platform-005 — AgentCanvas</title>
+<meta name="description" content="Hybrid data-layout unification (`data/habitat` + `data/mp3d` + `data/opennav` + `data/outputs`)">
+<meta property="og:title" content="ADR-platform-005 — AgentCanvas">
+<meta property="og:description" content="Hybrid data-layout unification (`data/habitat` + `data/mp3d` + `data/opennav` + `data/outputs`)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/platform/adr-platform-005-data-layout.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/platform/adr-platform-005-data-layout.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Platform</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-platform-005</span>
+  </div>
+  <div class="last-updated">2026-04-17 16:20</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-platform);">ADR-platform-005</h1>
+  <p class="tagline">Hybrid data-layout unification (`data/habitat` + `data/mp3d` + `data/opennav` + `data/outputs`)</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-17 16:20</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>platform</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-030</code></dd></dl>
+
+<blockquote class="adr-superseded-note">
+<p><strong>⚠ Partially superseded (2026-05-15).</strong> The <code>data/outputs/{eval, eval_mock, eval_native}</code> consolidation decided below is no longer in effect: <a href="../eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a> re-rooted all eval, canvas, and design-run outputs at the top-level <code>outputs/</code> tree (<code>outputs/eval_runs/{run_id}/</code>, <code>outputs/runs/</code>, <code>outputs/design_runs/</code>), and no live code writes to <code>data/outputs/</code> anymore. The <code>data/habitat</code> / <code>data/mp3d</code> / <code>data/opennav</code> portions of this ADR remain in force.</p>
+</blockquote>
+
+
+
+<h2 id='context'>Context</h2>
+<p>The pre-2026-04-17 <code>data/</code> tree was a flat mix of framework-shaped children (<code>scene_datasets/</code>, <code>datasets/</code>, <code>checkpoints/</code>, <code>ddppo-models/</code>) that VLN-CE and habitat-sim both hardcode relative to <code>data/</code>, plus tool-specific dirs (<code>opennav/</code> for RAM + SpatialBot + waypoint predictor + Open-Nav DDPPO), plus empty eval output dirs (<code>eval_output/</code>, <code>eval_mock_output/</code>, <code>eval_native_output/</code>), plus an MP3D skybox bucket that had to exist at <code>data/v1/scans/</code> (another hardcoded VLN-CE/MatterSim location) but was undownloaded. Two classes of pain: (1) future env nodesets (RxR-CE, REVERIE, AI2-THOR) had no obvious slot and would force a second migration; (2) three files under <code>workspace/nodesets/server/opennav_*.py</code> hardcoded absolute <code>/path/to/vlnworkspace/data/opennav/...</code> paths, breaking any clone on a different host. A separate MatterSim skybox preprocessing step (merged <code>&lt;vp&gt;_skybox_small.jpg</code> 3072×512 files) was also missing, which blocked panorama rendering once scans were downloaded.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Adopt Option-C hybrid layout: <code>data/habitat/{scene_datasets, datasets, checkpoints, ddppo-models}</code> as a VLN-CE-native framework mirror; <code>data/mp3d/v1/scans/&lt;scan&gt;/matterport_skybox_images.zip</code> as an asset-kind namespace consumed today by MatterSim and open to any future simulator reading the same asset; <code>data/opennav/</code> as a tool-agnostic perception namespace (RAM + SpatialBot + waypoint + DDPPO) kept in place to avoid moving 6.4 GB of weights; <code>data/outputs/{eval, eval_mock, eval_native}</code> consolidation. VLN-CE back-compat via <strong>4 child symlinks</strong> (<code>third_party/VLN-CE/data/{datasets,scene_datasets,checkpoints,ddppo-models} → ../../../data/habitat/&lt;name&gt;</code>) inside a <strong>real parent directory</strong> so submodule-tracked siblings <code>connectivity_graphs.pkl</code> + <code>res/</code> are preserved. opennav nodesets refactored to <code>_REPO_ROOT</code> + env-var-first defaults (no more absolute paths). New <code>scripts/data/migrate_data_layout.sh</code> runs the whole thing atomically via same-filesystem <code>rename(2)</code> with a <code>--dry-run</code> gate, idempotent guards on every step, and a preflight that checks <code>stat -c %m</code>, free space, the <code>.gitignore /data</code> anchor, and the submodule-artifact preservation invariant. A separate <code>scripts/data/gen_skybox_rgb_mp3d.sh</code> handles the MatterSim per-scan merge step (unzip → inline cv2 merge of 6 faces into <code>3072×512</code> → cleanup raw faces), avoiding the upstream <code>downsize_skybox.downsizeWithMerge</code> helper because its <code>camera_parameters()</code> dependency requires <code>undistorted_camera_parameters/*.conf</code> from a different MP3D bundle we don't download. <code>workspace/nodesets/server/matterport3d.py</code> fixed to pass the scans dir (not its parent) to <code>sim.setDatasetPath</code>, and to anchor <code>MATTERPORT_DATA_DIR</code> suffix-stripping on <code>os.sep + "scans"</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Asset-kind-only layout</strong> (<code>data/scenes/mp3d_glb</code>, <code>data/episodes/r2r_ce</code>, etc.) — rejected because VLN-CE's hardcoded <code>data/scene_datasets</code>, <code>data/datasets</code>, <code>data/checkpoints</code>, <code>data/ddppo-models</code> would then need one symlink per asset class, multiplying the symlink surface. (b) <strong>Pure-framework layout</strong> with <code>data/habitat</code>, <code>data/mattersim</code>, <code>data/shared</code> — rejected because <code>data/shared/</code> would hold only <code>opennav/</code> today, i.e. gratuitous wrapping. (c) <strong>Single parent-level VLN-CE symlink</strong> <code>third_party/VLN-CE/data → data/habitat</code> — rejected because it would mask submodule-tracked <code>connectivity_graphs.pkl</code> + <code>res/</code> (consumed by <code>TOP_DOWN_MAP_VLNCE</code> codepath and submodule READMEs). (d) <strong>Naming the asset namespace <code>data/mattersim/</code></strong> instead of <code>data/mp3d/</code> — rejected because MatterSim is an archived upstream toolkit; MP3D is the durable asset class, and future consumers of the same skybox archive shouldn't force another rename. (e) <strong>Physical relocation of <code>data/opennav/</code></strong> into a new <code>data/shared/perception/</code> — rejected to avoid moving 6.4 GB of already-downloaded weights for zero correctness gain. (f) <strong>Reusing <code>downsize_skybox.downsizeWithMerge</code></strong> from the Matterport3DSimulator submodule for the merge step — rejected because it needs <code>undistorted_camera_parameters/*.conf</code>, a separate MP3D release bundle not in our download set; the inline cv2 merger derives pano ids from <code>*_skybox0_sami.jpg</code> filenames post-extraction instead.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The hybrid is honest about what the shapes actually are — <code>habitat/</code> is a framework mirror (VLN-CE hardcodes <code>data/...</code>, and the 4 existing <code>install_ac_vlnce.sh</code>-created symlinks already have this shape; the retarget is the minimum diff), <code>mp3d/</code> is an asset-kind namespace (consumer-agnostic — survives a MatterSim replacement), <code>opennav/</code> is a tool namespace. Child-level symlinks preserve the submodule artifacts at the parent level; a parent-level symlink would delete them. Same-filesystem atomic <code>rename(2)</code> is O(1) and needs no copy / no duplicate disk space — the whole migration is a bounded script with idempotent guards. New env nodesets (RxR-CE, REVERIE, AI2-THOR) slot in as sibling top-level dirs without a second migration. The <code>_REPO_ROOT</code>-relative opennav defaults make the clone portable; env-var-first precedence (<code>OPENNAV_RAM_CKPT</code>, <code>OPENNAV_SPATIALBOT_PATH</code>, <code>OPENNAV_WAYPOINT_CKPT</code>, <code>OPENNAV_DDPPO_CKPT</code>) retains operator flexibility. Splitting into 3 PRs (PR-1 opennav cleanup, PR-2 migration+rewrites, PR-3 17 GB download) bounded blast radius; the skybox preprocessing was a follow-up exposed only after rendering was exercised.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>core/roadmap.md (Done entry + TODO #43 closure), core/blueprint.md (no change — data layout is deployment/install, not canvas/executor), core/architecture.md (no change — framework import boundary already documented in ADR-platform-004)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

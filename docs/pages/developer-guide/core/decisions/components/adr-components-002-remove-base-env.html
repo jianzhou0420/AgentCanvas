@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-002 — AgentCanvas</title>
+<meta name="description" content="Remove BaseEnv — environments are NodeSets">
+<meta property="og:title" content="ADR-components-002 — AgentCanvas">
+<meta property="og:description" content="Remove BaseEnv — environments are NodeSets">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-002-remove-base-env.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-002-remove-base-env.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-002</span>
+  </div>
+  <div class="last-updated">2026-03-28</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-002</h1>
+  <p class="tagline">Remove BaseEnv — environments are NodeSets</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-28</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-011</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p><code>BaseEnv</code> and <code>BaseNodeSet</code> had nearly identical interfaces (<code>get_tools()</code>, <code>initialize()</code>, <code>shutdown()</code>). <code>BaseEnv</code> added only <code>create_manager()</code> which returned a <code>BaseEnvManager</code> singleton. The <code>env_mgr</code> parameter was threaded through the entire execution pipeline (<code>LoopRunner.run()</code> → <code>GraphExecutor.run()</code> → <code>_fire_node()</code> → <code>handler.execute(inputs, ctx, env_mgr)</code>) just for 7 out of 18+ node handlers. The other 11+ nodes received and ignored it. This created an unnecessary abstraction layer and made the executor domain-aware.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Delete <code>BaseEnv</code> class and <code>BaseEnvManager</code> ABC. (2) Environments become <code>BaseNodeSet</code> subclasses (e.g. <code>EnvHabitatNodeSet</code>) that expose an <code>env_mgr</code> property via duck typing. (3) Remove <code>env_mgr</code> from the execute signature: <code>execute(inputs, ctx, env_mgr)</code> → <code>execute(inputs, ctx)</code>. (4) Remove built-in env nodes (<code>envObserve</code>, <code>envStep</code>, <code>envState</code>, <code>envInfo</code>) — replaced by nodeset tools wired on the canvas. (5) Nodes that still need simulator access (<code>IterInNode</code>, <code>VLMCallNode</code>, <code>PolicyForwardNode</code>) fetch it internally via <code>registry.get_env_mgr()</code>. (6) <code>WorkspaceComponentRegistry.get_env_mgr()</code> finds the first loaded nodeset with an <code>env_mgr</code> attribute. (7) Delete <code>workspace/envs/</code> directory and <code>app/env/</code> directory.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Keep <code>BaseEnv</code> as separate concept — rejected, redundant with <code>BaseNodeSet</code>. (b) Create <code>EnvNodeSet</code> ABC inheriting <code>BaseNodeSet</code> — rejected, unnecessary abstraction layer; duck typing (<code>getattr(ts, "env_mgr", None)</code>) is simpler and achieves the same result.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>One fewer concept to learn. The executor becomes fully domain-agnostic — it fires nodes and passes data through wires with zero knowledge of environments. Environment tools appear in the sidebar catalog alongside all other tools. A single <code>EnvHabitatNodeSet</code> file works both locally (<code>?mode=local</code>) and as an auto-hosted server (<code>?mode=server</code>), leveraging ADR-server-001.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>architecture.md, blueprint.md, glossary.md, roadmap.md, nodesets.md, capabilities/customizable-node-system.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

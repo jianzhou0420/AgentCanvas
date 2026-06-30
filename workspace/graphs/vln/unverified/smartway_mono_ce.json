@@ -1,0 +1,520 @@
+{
+  "name": "SmartWay-CE (mono) (monolith port)",
+  "description": "SmartWay (IROS 2025) zero-shot VLN-CE on R2R-CE — Phase-1 monolith via /implement-graph. Method-side collapses to 3 nodes (plan_step / decide_action / update_history) — minimum the topology allows given LLM and env_step boundaries.",
+  "nodes": [
+    {
+      "id": "episode_info",
+      "type": "env_habitat__reset",
+      "label": "Habitat: Episode Info",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Start",
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "panorama_rgbd",
+      "type": "env_habitat__observe_panorama",
+      "label": "Habitat: Panorama (RGB-D 12)",
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "config": {
+        "n_views": 12
+      }
+    },
+    {
+      "id": "waypoint_predict",
+      "type": "smartway_waypoint__predict",
+      "label": "SmartWay: Predict Waypoints",
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "perception_tag",
+      "type": "smartway_perception__tag",
+      "label": "SmartWay: RAM+ Tag",
+      "position": {
+        "x": 1120,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "plan_step",
+      "type": "smartway_mono__plan_step",
+      "label": "SmartWay (mono): Plan Step",
+      "position": {
+        "x": 1400,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "planner_llm",
+      "type": "llmCall",
+      "label": "SmartWay: Planner LLM (gpt-4o)",
+      "position": {
+        "x": 1680,
+        "y": 0
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "system_prompt",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "plan",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "rgb",
+            "wire_type": "LIST[IMAGE]"
+          },
+          {
+            "name": "image_labels",
+            "wire_type": "LIST[TEXT]"
+          }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 600,
+        "mode": "single_turn",
+        "profile": "gpt-4o",
+        "model": "gpt-4o-2024-08-06",
+        "response_format": "json_object",
+        "template": "{plan}"
+      }
+    },
+    {
+      "id": "decide_action",
+      "type": "smartway_mono__decide_action",
+      "label": "SmartWay (mono): Decide Action",
+      "position": {
+        "x": 1960,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "step_hightolow",
+      "type": "env_habitat__step_hightolow",
+      "label": "Habitat: Step (HIGHTOLOW)",
+      "position": {
+        "x": 2240,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "update_history",
+      "type": "smartway_mono__update_history",
+      "label": "SmartWay (mono): Update History",
+      "position": {
+        "x": 2520,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "evaluate",
+      "type": "env_habitat__evaluate",
+      "label": "Habitat: Evaluate",
+      "position": {
+        "x": 2520,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2800,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "step",
+            "wire_type": "ANY",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "viewer_thinking",
+      "type": "textScroll",
+      "label": "Thinking Log",
+      "position": {
+        "x": 1680,
+        "y": 400
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_action",
+      "type": "actionLog",
+      "label": "Action Log",
+      "position": {
+        "x": 1960,
+        "y": 400
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 2240,
+        "y": 400
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 3080,
+        "y": 0
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_episode_inst_to_init",
+      "source": "episode_info",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_iter_step_to_pano",
+      "source": "iter_in",
+      "target": "panorama_rgbd",
+      "sourceHandle": "step",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_inst_to_plan",
+      "source": "iter_in",
+      "target": "plan_step",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_pano_to_predict",
+      "source": "panorama_rgbd",
+      "target": "waypoint_predict",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_predict_to_tag",
+      "source": "waypoint_predict",
+      "target": "perception_tag",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_predict_to_plan",
+      "source": "waypoint_predict",
+      "target": "plan_step",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_tag_to_plan",
+      "source": "perception_tag",
+      "target": "plan_step",
+      "sourceHandle": "tags",
+      "targetHandle": "tags"
+    },
+    {
+      "id": "e_plan_task_to_llm",
+      "source": "plan_step",
+      "target": "planner_llm",
+      "sourceHandle": "task_description",
+      "targetHandle": "system_prompt"
+    },
+    {
+      "id": "e_plan_prompt_to_llm",
+      "source": "plan_step",
+      "target": "planner_llm",
+      "sourceHandle": "prompt",
+      "targetHandle": "plan"
+    },
+    {
+      "id": "e_plan_images_to_llm",
+      "source": "plan_step",
+      "target": "planner_llm",
+      "sourceHandle": "images",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_plan_image_labels_to_llm",
+      "source": "plan_step",
+      "target": "planner_llm",
+      "sourceHandle": "image_labels",
+      "targetHandle": "image_labels"
+    },
+    {
+      "id": "e_llm_to_decide",
+      "source": "planner_llm",
+      "target": "decide_action",
+      "sourceHandle": "response",
+      "targetHandle": "response"
+    },
+    {
+      "id": "e_plan_options_to_decide",
+      "source": "plan_step",
+      "target": "decide_action",
+      "sourceHandle": "only_options",
+      "targetHandle": "only_options"
+    },
+    {
+      "id": "e_plan_cands_to_decide",
+      "source": "plan_step",
+      "target": "decide_action",
+      "sourceHandle": "candidates_dict",
+      "targetHandle": "candidates_dict"
+    },
+    {
+      "id": "e_decide_angle_to_step",
+      "source": "decide_action",
+      "target": "step_hightolow",
+      "sourceHandle": "angle",
+      "targetHandle": "angle"
+    },
+    {
+      "id": "e_decide_dist_to_step",
+      "source": "decide_action",
+      "target": "step_hightolow",
+      "sourceHandle": "distance",
+      "targetHandle": "distance"
+    },
+    {
+      "id": "e_decide_idx_to_hist",
+      "source": "decide_action",
+      "target": "update_history",
+      "sourceHandle": "picked_index",
+      "targetHandle": "picked_index"
+    },
+    {
+      "id": "e_decide_stop_to_hist",
+      "source": "decide_action",
+      "target": "update_history",
+      "sourceHandle": "is_stop",
+      "targetHandle": "is_stop"
+    },
+    {
+      "id": "e_decide_return_to_hist",
+      "source": "decide_action",
+      "target": "update_history",
+      "sourceHandle": "is_return",
+      "targetHandle": "is_return"
+    },
+    {
+      "id": "e_plan_actions_to_hist",
+      "source": "plan_step",
+      "target": "update_history",
+      "sourceHandle": "only_actions",
+      "targetHandle": "only_actions"
+    },
+    {
+      "id": "e_decide_dist_to_hist",
+      "source": "decide_action",
+      "target": "update_history",
+      "sourceHandle": "distance",
+      "targetHandle": "distance"
+    },
+    {
+      "id": "e_step_done_to_hist",
+      "source": "step_hightolow",
+      "target": "update_history",
+      "sourceHandle": "terminated",
+      "targetHandle": "step_done"
+    },
+    {
+      "id": "e_step_pose_to_iter_out",
+      "source": "step_hightolow",
+      "target": "iter_out",
+      "sourceHandle": "info",
+      "targetHandle": "step"
+    },
+    {
+      "id": "e_decide_stop_to_term__stop",
+      "source": "decide_action",
+      "target": "iter_out",
+      "sourceHandle": "is_stop",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_evaluate_metrics_to_viewer",
+      "source": "evaluate",
+      "target": "viewer_metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_evaluate_metrics_to_out",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_llm_to_thinking",
+      "source": "planner_llm",
+      "target": "viewer_thinking",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_llm_to_action_log",
+      "source": "planner_llm",
+      "target": "viewer_action",
+      "sourceHandle": "response",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ],
+  "containers": [
+    {
+      "id": "graph_state",
+      "label": "SmartWay (mono) Navigation State",
+      "states": {
+        "history": {
+          "type": "lastWrite",
+          "value_type": "TEXT",
+          "config": {
+            "initial_value": ""
+          },
+          "lifetime": "episode"
+        },
+        "planning": {
+          "type": "lastWrite",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": [
+              "Navigation has just started, with no planning yet."
+            ]
+          },
+          "lifetime": "episode"
+        },
+        "backtrack": {
+          "type": "lastWrite",
+          "value_type": "BOOL",
+          "config": {
+            "initial_value": false
+          },
+          "lifetime": "episode"
+        },
+        "nodes_list": {
+          "type": "lastWrite",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": []
+          },
+          "lifetime": "episode"
+        },
+        "graph": {
+          "type": "lastWrite",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": {}
+          },
+          "lifetime": "episode"
+        },
+        "trajectory": {
+          "type": "lastWrite",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": []
+          },
+          "lifetime": "episode"
+        },
+        "last_distance": {
+          "type": "lastWrite",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": 0.0
+          },
+          "lifetime": "episode"
+        },
+        "last_picked_index": {
+          "type": "lastWrite",
+          "value_type": "TEXT",
+          "lifetime": "step"
+        },
+        "last_picked_type": {
+          "type": "lastWrite",
+          "value_type": "TEXT",
+          "lifetime": "step"
+        }
+      },
+      "position": {
+        "x": 1680,
+        "y": 720
+      }
+    }
+  ],
+  "access_grants": [
+    {
+      "id": "ag_plan_step",
+      "node_id": "plan_step",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_decide_action",
+      "node_id": "decide_action",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_update_history",
+      "node_id": "update_history",
+      "container_id": "graph_state"
+    }
+  ],
+  "step_budget": 15
+}

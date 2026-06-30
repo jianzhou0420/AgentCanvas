@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch Eval System — AgentCanvas</title>
+<meta name="description" content="Two processes · JobScheduler admission · eval-subprocess cold-start · replicated-spawn vs shared-borrow · per-worker routing">
+<meta property="og:title" content="Batch Eval System — AgentCanvas">
+<meta property="og:description" content="Two processes · JobScheduler admission · eval-subprocess cold-start · replicated-spawn vs shared-borrow · per-worker routing">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/batch-eval.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="be-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#bea); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/batch-eval.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Batch Eval System</span>
+  </div>
+  <div class="last-updated">2026-06-16</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Batch Eval System</h1>
+  <p class="tagline">Two processes · JobScheduler admission · eval-subprocess cold-start · replicated-spawn vs shared-borrow · per-worker routing</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="bea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+
+
+<p class="lede">The batch-eval system runs one saved graph across many episodes — optionally fanned out over N parallel workers — and aggregates metrics, persists each run, and streams progress. Today it runs in <strong>two processes</strong>: a <code>POST /api/eval/v2/start</code> only loads the shared model singletons in the long-lived backend and <em>queues</em> the run; the actual <code>BatchEvalRunner</code> executes in a <strong>separate subprocess</strong> that <code>JobScheduler</code> spawns once GPU admission clears. Its hard promise is that <code>worker_count</code> is a <em>speed</em> dial, never a <em>result</em> dial — 1 worker and 8 workers score bit-identically. For how to launch / tune / debug see <a href="../../tutorials/batch-eval.html">tutorials/batch-eval</a>; for the rationale see <a href="../../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> + <a href="../../core/decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>; for the surrounding runtime objects see <a href="backend-overview.html">backend-overview</a> + <a href="component-registry.html">component-registry</a>.</p>
+<p class="diagram-label"><strong>One batch run, two processes.</strong> The backend (top) loads the heavy model singletons once and queues the run; <code>JobScheduler</code> spawns an eval subprocess (bottom) that <em>borrows</em> those model servers by URL but <em>spawns and owns</em> its own N tagged env servers. The whole class stack — <code>BatchEvalRunner ⊃ EnvWorkerPool ⊃ LoopRunner ⊃ GraphExecutor</code> — lives inside the subprocess.</p>
+<svg class="rxsvg" viewBox="0 0 720 600" role="img" aria-label="Two-process batch-eval topology. Top box: the long-lived backend process. It contains JobScheduler (queue, FIFO plus VRAM admission, submit writes spec.json, tick reaps then admits then spawns), WorkspaceComponentRegistry (holds shared model singleton handles), and a shared VLM auto_host child process (Prismatic or policy, loaded once, hosting a BatchedInferenceServer that coalesces K callers into one forward pass). On POST /start the backend runs ensure_shared_nodesets_for_graph for shared singletons only, then submit(spec), returning queued. JobScheduler then _spawns an eval subprocess via Popen of python -m app.eval_subprocess_main with start_new_session. Bottom box: the eval subprocess, one per run. It cold-starts by calling scan_all to re-discover nodesets from disk, register_remote_nodeset to borrow the backend's shared model server by URL with no second load, and ensure_nodesets_for_graph(N) to spawn its own env auto_host copies tagged hash-0 through hash-N-1, owned by the subprocess via PR_SET_PDEATHSIG. Inside the subprocess the class stack nests BatchEvalRunner, then EnvWorkerPool with N WorkerHandles, then a fresh per-episode LoopRunner, then GraphExecutor which fires nodes and harvests metrics from graphOut last_inputs. GraphExecutor routes env step and observe calls to its own tagged env server, and routes shared model calls back to the borrowed backend server where they are coalesced. worker_count is a speed dial, not a result dial: one and N workers score bit-identically.">
+  <!-- ── Backend process ── -->
+  <rect class="box" x="24" y="14" width="672" height="178" rx="8"/>
+  <text x="40" y="36" font-size="13" font-weight="600">Backend process — one, long-lived (the user's :8000)</text>
+  <text class="dim" x="40" y="54">POST /start → ensure_shared_nodesets_for_graph (shared singletons only) → submit(spec) → { queued }</text>
+
+  <rect class="accent" x="40" y="68" width="196" height="116" rx="6"/>
+  <text class="at" x="138" y="90" text-anchor="middle">JobScheduler</text>
+  <text class="dim" x="138" y="110" text-anchor="middle">queue · FIFO + VRAM admit</text>
+  <text class="dim" x="138" y="128" text-anchor="middle">submit → spec.json</text>
+  <text class="dim" x="138" y="146" text-anchor="middle">tick: reap → admit → spawn</text>
+
+  <rect class="box" x="250" y="68" width="196" height="116" rx="6"/>
+  <text x="348" y="90" text-anchor="middle" font-size="12">WorkspaceComponentRegistry</text>
+  <text class="dim" x="348" y="112" text-anchor="middle">holds shared model</text>
+  <text class="dim" x="348" y="128" text-anchor="middle">singleton handles</text>
+
+  <rect class="box" x="460" y="68" width="216" height="116" rx="6"/>
+  <text x="568" y="90" text-anchor="middle" font-size="12">shared VLM auto_host</text>
+  <text class="dim" x="568" y="108" text-anchor="middle">Prismatic / policy — loads ONCE</text>
+  <text class="mono" x="568" y="130" text-anchor="middle">BatchedInferenceServer</text>
+  <text class="mono" x="568" y="146" text-anchor="middle">K callers → 1 forward pass</text>
+
+  <path class="edge" d="M446,126 L460,126"/>
+
+  <!-- ── Eval subprocess ── -->
+  <rect class="accent" x="24" y="250" width="672" height="336" rx="8" fill="none"/>
+  <text class="at" x="40" y="274" font-size="13">Eval subprocess — one per run (spawned on admission)</text>
+  <text class="dim" x="40" y="292">cold start: scan_all() · register_remote_nodeset(url) · ensure_nodesets_for_graph(N)</text>
+
+  <rect class="box" x="40" y="306" width="404" height="264" rx="6"/>
+  <text x="242" y="326" text-anchor="middle" font-size="12">BatchEvalRunner — queue · aggregate · persist</text>
+
+  <rect class="ghost" x="72" y="348" width="356" height="204" rx="6"/>
+  <rect class="ghost" x="66" y="342" width="356" height="204" rx="6"/>
+  <rect class="box"   x="60" y="336" width="356" height="204" rx="6"/>
+  <text x="200" y="356" text-anchor="middle" font-size="12">EnvWorkerPool — N WorkerHandles</text>
+
+  <rect class="box" x="80" y="374" width="316" height="152" rx="6"/>
+  <text x="238" y="394" text-anchor="middle" font-size="12">LoopRunner — one per episode (fresh)</text>
+
+  <rect class="accent" x="100" y="414" width="276" height="96" rx="6"/>
+  <text class="at" x="238" y="438" text-anchor="middle">GraphExecutor</text>
+  <text class="dim" x="238" y="456" text-anchor="middle">fires nodes · ready queue</text>
+  <text class="dim" x="238" y="474" text-anchor="middle">graphOut _last_inputs → metrics</text>
+
+  <!-- env auto_host tier owned by the subprocess -->
+  <rect class="ghost" x="476" y="348" width="200" height="150" rx="6"/>
+  <rect class="ghost" x="470" y="342" width="200" height="150" rx="6"/>
+  <rect class="box"   x="464" y="336" width="200" height="150" rx="6"/>
+  <text x="564" y="358" text-anchor="middle" font-size="12">env auto_host</text>
+  <text x="564" y="376" text-anchor="middle" font-size="12">#0 … #N-1</text>
+  <text class="dim" x="564" y="398" text-anchor="middle">spawned + owned here</text>
+  <text class="dim" x="564" y="414" text-anchor="middle">(PR_SET_PDEATHSIG)</text>
+  <text class="mono" x="564" y="440" text-anchor="middle">replicated nodeset</text>
+
+  <!-- GraphExecutor → own env server -->
+  <path class="edge" d="M378,452 L464,424"/>
+  <text class="mono" x="392" y="500" text-anchor="start">env step/observe → own #k</text>
+
+  <!-- ── cross-process arrows ── -->
+  <path class="edge" d="M138,184 L138,250"/>
+  <text class="mono" x="146" y="222" text-anchor="start">_spawn Popen · start_new_session</text>
+
+  <path class="edge" d="M600,250 L582,184"/>
+  <text class="mono" x="470" y="210" text-anchor="start">register_remote_nodeset(url):</text>
+  <text class="mono" x="470" y="226" text-anchor="start">borrow + route shared calls (coalesced)</text>
+</svg>
+<hr>
+<h2 id="1-what-the-system-does"><span class="num">1.</span> What the system does</h2>
+<p>Batch eval answers one question: take a graph the user already drew and ran on the canvas, and run it unattended across many episodes — then report aggregate metrics. The solution has three moves, and the whole page is those three moves traced through code:</p>
+<ol>
+<li><strong>Isolate the run in its own OS process.</strong> A crashing episode, a leaked GL context, or a CUDA OOM cannot take the interactive backend down with it, because by default the run executes in a subprocess <code>JobScheduler</code> spawned just for it (§ 2–§ 4).</li>
+<li><strong>Load each scarce resource once, at the right scope.</strong> The heavy model singletons (a VLM, a policy network) stay in the long-lived backend and are <em>borrowed</em> by every run over HTTP; the stateful env simulators are <em>replicated</em> per worker inside the run's own process (§ 4).</li>
+<li><strong>Drive N episodes concurrently.</strong> N worker coroutines each pinned to their own env, results merged under a lock (§ 5).</li>
+</ol>
+<p>The promise that survives all three moves: <code>worker_count</code> changes how fast the run finishes, never what it scores. Two properties the code is built to keep — both verifiable, both with a cost named in § 5 / § 7:</p>
+<ul>
+<li><strong>Worker count must not change the result.</strong> One execution path parameterized by N; at <code>worker_count=1</code> the pool, the per-worker queues, and the inference coalescer all degenerate to single-tenant rather than taking a separate code path.</li>
+<li><strong>Partial results still count.</strong> A timed-out or crashed episode still returns whatever metrics + step count were harvested up to the failure (<code>eval_batch.py · BatchEvalRunner._run_one_episode</code>); failure is just another way an episode finishes.</li>
+</ul>
+<p>The smallest run is a single POST — a graph name and an episode count; everything else defaults. On the default path the response is <code>queued</code>, not <code>running</code>: the backend has only enqueued the run, and nothing executes until the scheduler admits it (§ 3).</p>
+<pre class="hl">
+POST<span class="w"> </span>/api/eval/v2/start
+<span class="o">{</span><span class="w"> </span><span class="s2">&quot;graph_name&quot;</span>:<span class="w"> </span><span class="s2">&quot;navgpt_mp3d&quot;</span>,<span class="w"> </span><span class="s2">&quot;episode_count&quot;</span>:<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="o">}</span>
+<span class="c1"># → { &quot;run_id&quot;: &quot;20260616_…&quot;, &quot;status&quot;: &quot;queued&quot;, &quot;via_subprocess&quot;: true }</span>
+<span class="c1">#   default path: the backend only QUEUES the run; nothing executes yet.</span>
+</pre>
+<h2 id="2-two-processes"><span class="num">2.</span> Two processes, by default</h2>
+<p><strong>A batch run is split across two OS processes that each load a different half of the world.</strong> The request handler <code>start_eval_v2</code> (<code>api/execution/eval.py · start_eval_v2</code>) branches on one flag:</p>
+<pre class="hl">
+<span class="n">use_subprocess</span> <span class="o">=</span> <span class="n">req</span><span class="o">.</span><span class="n">via_subprocess</span> <span class="ow">and</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">AGENTCANVAS_EVAL_SUBPROCESS</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">1</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="s2">&quot;</span><span class="s2">0</span><span class="s2">&quot;</span>
+</pre>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>How the backend loads nodesets</th>
+<th>Where <code>BatchEvalRunner</code> runs</th>
+<th>Admission gate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Subprocess</strong> (default, <code>via_subprocess=True</code>)</td>
+<td><code>ensure_shared_nodesets_for_graph(graph)</code> — loads <em>only</em> shared singletons in the backend; env / replicated nodesets are explicitly skipped (the subprocess owns those).</td>
+<td>In a <code>JobScheduler</code>-spawned subprocess.</td>
+<td><code>JobScheduler</code> queue + VRAM admission.</td>
+</tr>
+<tr>
+<td><strong>Legacy in-process</strong> (<code>via_subprocess=False</code> or <code>AGENTCANVAS_EVAL_SUBPROCESS=0</code>)</td>
+<td><code>ensure_nodesets_for_graph(graph, worker_count)</code> — loads <em>everything</em> in the backend process.</td>
+<td>In the backend process, as an <code>asyncio</code> task.</td>
+<td><code>ExecutionGuard</code> single-tenant lock (canvas vs eval).</td>
+</tr>
+</tbody>
+</table>
+<p>The reason for the split is the second move of § 1. A VLM or policy network is many gigabytes and takes minutes to load; running it once per backend and serving every run is the whole point of having a backend. So on the default path the backend only ever loads the <em>shared</em> half: <code>ensure_shared_nodesets_for_graph</code> walks the graph's nodeset prefixes and, for each, <code>continue</code>s past anything whose <code>parallelism != "shared"</code> (<code>registry.py · ensure_shared_nodesets_for_graph</code>). The env simulators — stateful, per-call, one-GL-context-per-process — cannot be shared, so they are deliberately <em>not</em> loaded here; the subprocess will spawn its own (§ 4). The backend then computes the URLs of the shared servers it has up and hands them to the subprocess via the spec (§ 3).</p>
+<div class="callout note">
+<p><strong>Why a second process at all, rather than another <code>asyncio</code> task?</strong> Isolation (§ 1, move 1) and admission. The interactive backend serves the canvas; an eval run that segfaults SAPIEN or OOMs the GPU must not take it down, and concurrent runs from sibling sessions must be queued against finite VRAM rather than racing. A separate process gives both for free — the kernel reaps it on crash, and the scheduler meters it before it starts. The legacy in-process path predates the scheduler and survives only for canvas-style debugging, where <code>ExecutionGuard</code> already enforces one-run-at-a-time.</p>
+</div>
+<h2 id="3-admission-and-spawn"><span class="num">3.</span> Admission &amp; spawn — <code>JobScheduler</code></h2>
+<p><strong><code>submit</code> only enqueues; nothing runs until a later <code>tick</code> admits it.</strong> On the subprocess path the handler builds a spec — the eval config, a scheduling block (<code>marginal_vram_mb</code>, <code>exclusive_gpu</code>, <code>priority</code>), the full graph JSON, the shared-server URLs, and an optional active-workspace overlay — and calls <code>scheduler.submit(spec)</code> (<code>eval.py · start_eval_v2</code>), which returns immediately with <code>{run_id, status: "queued"}</code>.</p>
+<p><code>submit</code> (<code>job_scheduler.py · submit</code>) generates a second-precision <code>run_id</code> (with a collision suffix), creates <code>outputs/eval_runs/{run_id}/</code>, writes <code>spec.json</code> and <code>shared_urls.json</code>, bumps the shared-singleton refcounts, writes an initial <code>summary.json</code> with <code>status="pending"</code>, appends a <code>_QueuedJob</code>, and returns. It <strong>does not spawn</strong>.</p>
+<p>Spawning happens on the scheduler's <code>tick</code> (driven ~1 s by <code>main.py · _scheduler_loop</code>), which runs <code>_reap → _admit → _drain_pending_unloads</code> in that order so VRAM freed by a finished job is available to admission in the same tick. <code>_admit</code> (<code>job_scheduler.py · _admit</code>) walks the queue <strong>FIFO</strong> and starts the first job that fits:</p>
+<ul>
+<li><strong>Canvas lock.</strong> If canvas Play holds <code>ExecutionGuard</code> in the backend, admission is refused outright (the wired-in <code>_canvas_lock_held</code> callback) — the interactive canvas always wins the GPU.</li>
+<li><strong>VRAM fit.</strong> <code>free = usable_vram_mb − Σ marginal_vram_mb(running)</code>; a job is skipped if its <code>marginal_vram_mb</code> exceeds <code>free</code>. <code>usable</code> is total VRAM minus a ~16 GB headroom, set at startup from <code>nvidia-smi</code> (<code>main.py</code> lifespan).</li>
+<li><strong>Exclusive GPU.</strong> An <code>exclusive_gpu</code> job can't start while anything else runs, and nothing starts while an exclusive job runs.</li>
+<li><strong>Priority is stored but ignored.</strong> The <code>priority</code> field rides on <code>_QueuedJob</code> and surfaces in <code>list_active()</code>, but admission is pure FIFO over queue order (the M1 comment in <code>_admit</code>).</li>
+</ul>
+<p>When a job fits, <code>_spawn</code> (<code>job_scheduler.py · _spawn</code>) launches the subprocess. The command line is fixed; the spec never travels on argv or stdin (it's read from <code>spec.json</code>), and <code>start_new_session=True</code> puts the child in its own process group so cancel can <code>SIGTERM</code> the whole tree:</p>
+<pre class="hl">
+<span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">(</span>
+    <span class="p">[</span><span class="n">sys</span><span class="o">.</span><span class="n">executable</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">-m</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">app.eval_subprocess_main</span><span class="s2">&quot;</span><span class="p">,</span>
+     <span class="s2">&quot;</span><span class="s2">--run-dir</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">run_dir</span><span class="p">)</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">--backend-url</span><span class="s2">&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_backend_url</span><span class="p">]</span><span class="p">,</span>
+    <span class="n">cwd</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_backend_dir</span><span class="p">,</span> <span class="n">env</span><span class="o">=</span><span class="n">env</span><span class="p">,</span> <span class="n">stdin</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">DEVNULL</span><span class="p">,</span>
+    <span class="n">start_new_session</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># setsid → own pgid for clean cancel</span>
+<span class="p">)</span>
+</pre>
+<p><code>_reap</code> polls each child; on exit it reads the child's final <code>summary.json</code> status, or marks the run <code>aborted</code> if the child died without touching <code>_DONE</code>, then releases the shared-singleton refcounts and drops the job from <code>_running</code> (which is what frees its VRAM reservation). <code>cancel</code> (<code>job_scheduler.py · cancel</code>) removes a still-<em>queued</em> job immediately (status <code>cancelled</code> + <code>_DONE</code>); for a <em>running</em> job it <code>SIGTERM</code>s the process group and lets <code>_reap</code> finalize. <code>JobScheduler</code> itself lives once per process on <code>ProcessServices.job_scheduler</code> (<code>state.py</code>), constructed in the backend's lifespan.</p>
+<h2 id="4-subprocess-cold-start"><span class="num">4.</span> The eval subprocess cold-starts its own world</h2>
+<p><strong>The subprocess is a cold Python process — not a fork — so it re-discovers everything from disk before it can run a single node.</strong> <code>eval_subprocess_main.main</code> sets <code>PR_SET_PDEATHSIG</code> (so it and its env children die if the backend dies), parses <code>--run-dir</code>, reads <code>spec.json</code> + <code>shared_urls.json</code>, and builds a fresh <code>WorkspaceComponentRegistry</code> (<code>eval_subprocess_main · _build_local_registry_for_run</code>). Its registry shares nothing with the backend's — <code>get_services()</code> returns a per-process <code>ProcessServices</code> (<code>state.py</code>) — so three steps stand between a cold process and a runnable graph:</p>
+<pre class="hl">
+<span class="n">registry</span><span class="o">.</span><span class="n">scan_all</span><span class="p">(</span><span class="p">)</span>                                    <span class="c1"># cold: re-discover nodesets from disk</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">url</span> <span class="ow">in</span> <span class="n">shared_urls</span><span class="o">.</span><span class="n">items</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+    <span class="k">await</span> <span class="n">registry</span><span class="o">.</span><span class="n">register_remote_nodeset</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">url</span><span class="p">)</span>  <span class="c1"># borrow parent&#x27;s VLM by URL (no 2nd load)</span>
+<span class="n">load_result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">registry</span><span class="o">.</span><span class="n">ensure_nodesets_for_graph</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">worker_count</span><span class="o">=</span><span class="n">worker_count</span><span class="p">)</span>
+</pre>
+<ol>
+<li><strong><code>scan_all()</code> — re-discover from disk.</strong> The backend ran this in its lifespan; the subprocess must redo it or the graph's node types resolve to no handler. This is load-bearing: a missing handler is a <em>silent</em> failure, not an error (§ 7). <a href="../operations/reload-and-code-freshness.html">reload-and-code-freshness</a> covers why each subprocess re-scans (and why that's a feature, not a bug — edits are picked up fresh per launch).</li>
+<li><strong><code>register_remote_nodeset(name, url)</code> — borrow, don't load.</strong> For each shared server the backend has up, the subprocess fetches its manifest over HTTP, generates proxy node classes pointed at the backend's URL, and installs a no-op server shim (<code>registry.py · register_remote_nodeset</code>). The borrowed process is the backend's — the shim's <code>stop()</code> is intentionally a no-op, so the subprocess exiting never kills the shared VLM. This is how the 14 GB model loads once and serves every run.</li>
+<li><strong><code>ensure_nodesets_for_graph(graph, worker_count=N)</code> — spawn the env servers it owns.</strong> For each remaining nodeset declared <code>replicated</code>, with <code>worker_count &gt; 1</code>, the registry spawns N tagged <code>auto_host</code> subprocesses (<code>env_habitat#0 … #N-1</code>) via <code>_load_nodeset_as_server</code> — direct <code>python -m app.server.auto_host</code> children so the one-hop <code>PR_SET_PDEATHSIG</code> reaps them with the run.</li>
+</ol>
+<p>The subprocess then builds <code>EvalConfig</code> + <code>EvalRun</code> from the spec, wraps <code>run.episodes</code> in a list subclass that atomic-rewrites <code>summary.json</code> on every episode boundary (<code>_install_episode_writer</code> — this is the live-progress channel for the backend's status poll, since the subprocess has no WebSocket clients, § 6.3), runs <code>BatchEvalRunner.execute()</code>, and in a <code>finally</code> calls <code>shutdown_all()</code> to kill its env servers, <code>save_run</code>, and <code>touch_done</code> (the <code>_DONE</code> marker <code>_reap</code> looks for).</p>
+<h2 id="5-inside-one-run"><span class="num">5.</span> Inside one run — the class stack</h2>
+<p>Everything below this point is identical on both the subprocess and legacy paths — it's the class stack from the diagram, <code>BatchEvalRunner ⊃ EnvWorkerPool ⊃ LoopRunner ⊃ GraphExecutor</code>, plus the shared inference tier the proxy calls reach.</p>
+<h3 id="51-envworkerpool"><span class="num">5.1</span> <code>EnvWorkerPool</code> — slots, chunks, pinned leases</h3>
+<p><strong>The pool turns N tagged env servers into N leasable worker slots, and pins each episode chunk to one slot.</strong> <code>BatchEvalRunner.execute</code> opens an <code>EnvWorkerPool(worker_count, env_nodeset)</code> as an async context manager. On enter, if <code>worker_count &gt; 1</code> and there's an env nodeset, the pool looks up each tagged env panel proxy (<code>get_env_panel("env_habitat#k")</code>) and tagged server URL (<code>get_server_url(env, tag=k)</code>) and packs them into a <code>WorkerHandle</code>'s <code>env_panel_overrides</code> + <code>server_url_overrides</code> (<code>env_worker_pool.py · EnvWorkerPool.__aenter__</code>); at <code>worker_count=1</code> the overrides are empty and lookups fall through to the global registry — bit-identical to canvas Play.</p>
+<p><code>execute</code> then splits the index list into N <em>contiguous</em> chunks (<code>_partition_contiguous</code>, numpy <code>array_split</code> distribution) and gives each worker its own <code>asyncio.Queue</code>; worker <code>k</code> only ever drains queue <code>k</code>, and leases its slot via <code>acquire_specific(worker_id)</code> (a pinned lease that rotates other handles back through the available queue until its own is free). The pinning exists for one reason: a SAPIEN-backed env (SIMPLER) crashes its subprocess after ~15 cross-task <code>set_episode()</code> rebuilds, so each contiguous chunk must stay on one subprocess to bound task switches (<code>env_worker_pool.py · EnvWorkerPool.acquire_specific</code>). N worker coroutines run under one <code>asyncio.gather</code>; they share no step barrier — worker 0 may be on step 8 while worker 1 is on step 2.</p>
+<h3 id="52-one-episode"><span class="num">5.2</span> One episode — <code>LoopRunner → GraphExecutor</code></h3>
+<p><strong>Each episode is a fresh <code>LoopRunner</code> — the clean-state guarantee is structural, not a reset path.</strong> One iteration of a worker's loop (<code>eval_batch.py · BatchEvalRunner._run_one_episode</code>):</p>
+<ol>
+<li><strong>Set the episode</strong> on the worker's tagged env panel: push each cascade field (e.g. <code>dataset → split</code> for Habitat, <code>split → task_id</code> for SIMPLER) via <code>on_field_change</code>, push <code>episode_index</code>, <code>on_action("play")</code> to commit, <code>on_load()</code> to read back episode id / scene / instruction and the env's per-episode <code>step_budget</code> (scene-adaptive envs like HM-EQA publish one).</li>
+<li><strong>Resolve the step budget</strong>: API override → env value → graph value → <code>DEFAULT_STEP_BUDGET</code>; a resolved budget <code>&lt; 1</code> is refused (it would silently complete a 0-step episode). The wall-clock timeout is <code>resolved_budget × per_step_budget</code>.</li>
+<li><strong>Build a fresh <code>LoopRunner(env_panel_overrides, server_url_overrides)</code></strong> and <code>asyncio.wait_for(runner.run(graph, principles, step_budget_override=resolved_budget), timeout)</code>. The override carries the resolved budget so parallel workers never mutate the shared graph object.</li>
+<li><strong>Harvest metrics</strong> from the executor's <code>graphOut</code> sinks and build the <code>EpisodeResult</code> — in the success branch <em>and</em> the timeout / exception branches (the partial-results property of § 1).</li>
+<li><strong>Evict + aggregate</strong>: drop this episode's key from any nodeset-owned keyed container (<code>_evict_episode_state</code>, worker-safe), then under <code>results_lock</code> append the result, recompute <code>aggregate_metrics</code> + <code>aggregate_by_task</code>, broadcast.</li>
+</ol>
+<p>Inside <code>runner.run</code>, <code>LoopRunner</code> builds a <code>GraphExecutor</code> carrying the same overrides and calls <code>executor.run(...)</code> (<code>loop_runner.py · LoopRunner.run</code>). The executor resolves its loop bound (<code>step_budget_override → graph.step_budget → DEFAULT</code>) and fires nodes off a ready queue (<code>graph_executor.py · GraphExecutor.run</code>). Two seams matter for eval:</p>
+<ul>
+<li><strong>Per-worker routing.</strong> Each in-graph proxy call (e.g. <code>env_habitat__step_native</code>) asks the executor for a URL override; <code>get_server_url(nodeset)</code> returns this worker's tagged subprocess URL, and <code>server/proxy.py · _make_forward</code> routes the HTTP call there instead of the URL baked into the proxy class (empty override = baked URL = single-worker / canvas).</li>
+<li><strong>Metric harvest.</strong> The executor snapshots each <code>graphOut</code>'s pending inputs into <code>node.state["_last_inputs"]</code> after the terminal iteration (<code>graph_executor.py</code>); <code>_collect_metrics</code> reads only graph-scope <code>graphOut</code> sinks (<code>_scope_of(node) == GRAPH_SCOPE_ID</code>), treats a <code>portName == "metrics"</code> value as a dict to flatten, and any other scalar port as <code>metrics[portName]</code>. An eval graph that "completed" with <em>no</em> metrics is recorded as an error (<code>"no verdict"</code>) so a 0-step drain can't alias to <code>success=0</code> and poison SR.</li>
+</ul>
+<h3 id="53-shared-inference"><span class="num">5.3</span> Shared inference — <code>BatchedInferenceServer</code></h3>
+<p><strong>The shared model server coalesces the K workers' concurrent calls into one forward pass.</strong> When K workers hit the same borrowed server, their requests converge server-side, so the rendezvous lives there, not in the clients (<code>server/batched_inference.py</code>). Each call is keyed by <code>(function_name, config_hash)</code> — two callers with identical config share one <code>_BatchQueue</code>; differing checkpoints stay separate. A queue flushes <code>flush_timeout_ms</code> (default 50 ms) after the <em>last</em> arrival (restart-on-submit timer), so a late caller joins the still-forming batch rather than forcing a partial one out. A server-level <code>_inference_lock</code> serialises handler calls across all keys (single-in-flight), bounding peak device memory to one batch. The contract is pure-functional: no per-caller state, so RNN hidden states must ride explicit <code>hidden_in</code> / <code>hidden_out</code> ports on the wire.</p>
+<h2 id="6-failure-observability"><span class="num">6.</span> Failure &amp; observability</h2>
+<h3 id="61-termination-paths"><span class="num">6.1</span> Termination paths</h3>
+<p>Five ways an episode ends, all returning a populated <code>EpisodeResult</code> (<code>eval_batch.py · BatchEvalRunner._run_one_episode</code>):</p>
+<table>
+<thead>
+<tr><th>Path</th><th><code>status</code></th><th><code>error</code></th><th>Metrics</th><th><code>step_count</code></th></tr>
+</thead>
+<tbody>
+<tr><td>Normal completion</td><td><code>completed</code></td><td><code>None</code></td><td>full</td><td>full</td></tr>
+<tr><td>Per-episode timeout (<code>asyncio.wait_for</code>)</td><td><code>error</code></td><td><code>"timeout after Xs"</code></td><td>partial (last harvest)</td><td>up to fail</td></tr>
+<tr><td>Mid-graph exception</td><td><code>error</code></td><td><code>str(exc)</code></td><td>partial</td><td>up to fail</td></tr>
+<tr><td>Init region failed (e.g. model load, budget&lt;1)</td><td><code>error</code></td><td><code>str(exc)</code></td><td>empty <code>{}</code></td><td>0</td></tr>
+<tr><td>Completed but no <code>graphOut</code> snapshot</td><td><code>error</code></td><td><code>"no verdict: …"</code></td><td>empty <code>{}</code></td><td>any</td></tr>
+</tbody>
+</table>
+<p>The pool is never blocked by a single stuck episode — each is bounded by <code>asyncio.wait_for</code> at the orchestrator level, and the worker resumes its queue the instant the episode ends. <code>runner</code> is pre-bound to <code>None</code> before the try-block so even a failure during <code>LoopRunner</code> construction is inspectable.</p>
+<h3 id="62-persistence"><span class="num">6.2</span> Persistence</h3>
+<p>The run dir is laid out so one episode's trajectory can be reconstructed from its own subdir alone (<a href="../../core/decisions/eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a>):</p>
+<ul class="filetree">
+<li><code>outputs/eval_runs/{run_id}/</code> — <em>run_id = timestamp + collision suffix, e.g. <code>20260616_143052</code></em>
+  <ul>
+  <li><code>spec.json</code>, <code>shared_urls.json</code> — input contract written by <code>JobScheduler.submit</code> before spawn</li>
+  <li><code>summary.json</code> — run summary; rewritten on every episode boundary in subprocess mode (<code>_install_episode_writer</code>) and once more by <code>save_run</code> at exit</li>
+  <li><code>graph.json</code> — graph frozen at <code>BatchEvalRunner</code> construction (edits to the source graph afterward don't affect the run)</li>
+  <li><code>stdout.log</code>, <code>stderr.log</code>, <code>_DONE</code> — child output + the terminal marker <code>_reap</code> reads</li>
+  <li><code>episodes/ep{idx:04d}/</code> — one self-contained dir per episode
+    <ul>
+    <li><code>log.jsonl</code> — this episode's node-firing log only</li>
+    <li><code>assets/</code> — this episode's image artefacts only</li>
+    <li><code>episode.json</code> — self-describing per-episode record</li>
+    </ul>
+  </li>
+  </ul>
+</li>
+</ul>
+<p><strong>Active-workspace overlay (ADR-components-009).</strong> A run may carry an <code>active_workspace_dir</code> in its spec; <code>JobScheduler._spawn</code> threads it into the subprocess as <code>ACTIVE_WORKSPACE_DIR</code>, so the child's registry overlays <code>workspace/graphs/</code> + <code>workspace/graph_nodes/</code> before the frozen base. This is how architect cycles and sibling Claude sessions A/B a graph edit without touching the canonical files. The overlay is resolved at run-start when the graph is frozen; tearing it down afterward doesn't affect the in-flight run.</p>
+<h3 id="63-progress-events"><span class="num">6.3</span> Progress: WebSocket vs <code>summary.json</code></h3>
+<p><strong>The live-progress channel differs by path, because the WS connection set is per-process.</strong> <code>BatchEvalRunner</code> broadcasts <code>eval_progress</code> / <code>eval_episode_done</code> / <code>eval_complete</code> (all tagged <code>source="eval"</code>) via <code>state.broadcast</code>, which iterates that process's <code>_ws_connections</code> (<code>state.py · broadcast</code>):</p>
+<ul>
+<li><strong>Legacy in-process path:</strong> the runner shares the backend's WS set, so the events reach the UI live.</li>
+<li><strong>Default subprocess path:</strong> the subprocess has <em>no</em> WS clients — its <code>_ws_connections</code> is empty — so those broadcasts go nowhere. Live progress instead reaches the UI through <code>summary.json</code>, atomic-rewritten on each episode boundary (§ 4) and served by the backend's <code>/api/eval/v2/status</code> + <code>/queue</code> REST endpoints (pull).</li>
+</ul>
+<p>Per-node <code>nav_step</code> / <code>exec_log</code> / <code>nav_status</code> events are <strong>suppressed during eval either way</strong>: <code>BatchEvalRunner.execute</code> sets <code>ExecutionPrinciples(suppress_nav_events=True)</code>, and <code>GraphExecutor</code> gates every such broadcast on <code>session.principles.suppress_nav_events</code> (<code>graph_executor.py</code>), so at N workers × base64 images per step the executor never floods the pipe in the first place.</p>
+<h2 id="7-deviations"><span class="num">7.</span> Where the code deviates from the mental model</h2>
+<p>The opening band hands you a clean model: "<code>replicated</code> ⇒ its own subprocess, <code>shared</code> ⇒ borrowed + coalesced, <code>worker_count</code> is free." The shipped code keeps that model only under the conditions below — these are the honest seams.</p>
+<div class="callout warn">
+<p><strong><code>worker_count=1</code> does not subprocess a <code>replicated</code> nodeset.</strong> <code>ensure_nodesets_for_graph</code> fans out only when <code>worker_count &gt; 1 AND parallelism == "replicated"</code> (<code>registry.py · ensure_nodesets_for_graph</code>). At <code>worker_count=1</code> even an env nodeset takes the singleton path → <code>load_nodeset(worker_count=1)</code> → an <em>in-process local</em> load unless the class sets <code>server_python</code>. So "replicated ⇒ subprocess" is the model; the code only guarantees it at N&gt;1.</p>
+</div>
+<div class="callout warn">
+<p><strong><code>_get_parallelism</code> silently defaults to <code>"shared"</code>.</strong> A typo'd or undiscovered nodeset name reads as <code>shared</code> (<code>registry.py · _get_parallelism</code>) and is loaded as a singleton K workers coalesce against — wrong for a stateful env. Only a hardcoded <code>_KNOWN_REPLICATED = {env_habitat, env_mp3d, env_hmeqa}</code> fallback rescues the case where the class failed to import on the current Python env.</p>
+</div>
+<div class="callout warn">
+<p><strong>A missing node handler is a silent no-op, not an error.</strong> This is why § 4's <code>scan_all()</code> is load-bearing — if the subprocess skips it, the graph's node types have no handler and every fire returns <code>{}</code>; the episode "completes" at step 0 with empty metrics:</p>
+<pre class="hl">
+<span class="n">node_cls</span> <span class="o">=</span> <span class="n">NODE_HANDLERS</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">node_cls</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">No handler for node type: </span><span class="si">%s</span><span class="s2"> (id=</span><span class="si">%s</span><span class="s2">)</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">{</span><span class="p">}</span>   <span class="c1"># missing handler → no-op; the episode silently drains at step 0</span>
+</pre>
+<p>The <code>"no verdict"</code> guard in § 5.2 / § 6.1 catches the resulting empty-metric completion so it scores as an error rather than <code>success=0</code>. Setting <code>AGENTCANVAS_STRICT_ERRORS</code> additionally re-raises a node's <code>forward()</code> exception out of the loop instead of collapsing it to <code>{"error": ...}</code> (eval/smoke runs use this to fail fast).</p>
+</div>
+<div class="callout warn">
+<p><strong>The 50 ms coalescing tax is paid even at K=1.</strong> Every shared-nodeset call flows through a <code>_BatchQueue</code> with the restart-on-submit flush timer (<code>batched_inference.py · _BatchQueue.submit</code>), so a single-worker run still waits <code>flush_timeout_ms</code> per shared call. This is the deliberate cost of the bit-identical invariant — one dispatch path across all worker counts — not an oversight. If a workload finds it dominant, the window becomes a per-nodeset config; today it's a hardcoded default.</p>
+</div>
+<div class="callout warn">
+<p><strong>Local-mode concurrency at <code>worker_count &gt; 1</code> is undefined (open gap).</strong> A <code>shared</code> / local nodeset that loads weights in-process (no <code>server_python</code>) under N in-process workers has no init lock — init nodes race. The safe path is server mode for any nodeset that loads weights; the in-process race is a known Principle-4 limitation, not a guaranteed behaviour.</p>
+</div>
+<div class="callout warn">
+<p><strong><code>spec.json</code> on disk still carries <code>_shared_urls</code> / <code>_shared_loaded_by_us</code>.</strong> <code>submit</code> calls <code>write_spec</code> <em>before</em> it pops those two keys (<code>job_scheduler.py · submit</code>), so despite the "pop before persisting" comment the persisted spec retains them. Harmless — the child reads <code>shared_urls.json</code>, never the spec's copy — but the on-disk artefact doesn't match the docstring.</p>
+</div>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: <strong>Full rewrite from the code's perspective.</strong> Re-spined the page around the real two-process path (request → <code>ensure_shared_nodesets_for_graph</code> + <code>submit</code> → <code>JobScheduler</code> admit/spawn → <code>eval_subprocess_main</code> cold-start: <code>scan_all</code> / <code>register_remote_nodeset</code> / <code>ensure_nodesets_for_graph(N)</code> → <code>BatchEvalRunner</code> class stack → <code>BatchedInferenceServer</code>). New opening SVG is the two-process topology (spawn vs borrow vs replicate asymmetry) replacing the in-subprocess-only class stack. Retired the aspirational §5 "Designs to meet all the principles" and §8 "Refactor plan / ideal→today / Phasing"; the genuine invariants (bit-identical, partial-results) are kept as code-backed properties, and the real warts moved into a mandatory §7 deviation section (worker_count=1 doesn't subprocess replicated; <code>_get_parallelism</code> default; missing-handler silent no-op; 50 ms tax at K=1; local-mode N&gt;1 gap; spec.json retains shared keys). Added the WS-vs-summary.json progress split (subprocess has no WS clients). All claims re-grounded against live source.</li>
+<li>2026-06-16 (prior): Opening figure reworked to be class-centric — the headline SVG was the class-wrapping stack with the × N worker fan-out and the replicated-vs-shared subprocess split.</li>
+<li>2026-06-13: HTML-first visual pass (SVG figures, <code>&lt;pre class="hl"&gt;</code> code blocks); inverted-pyramid pass adding the lede + smallest-run POST; code-alignment audit (nav events suppressed via <code>suppress_nav_events</code>; <code>ExecutionGuard</code> acquired by the API handler on the legacy path; <code>summary.json</code> written by the API wrapper; default subprocess / JobScheduler entry + GPU-admission fields).</li>
+<li>2026-06-11: Controller → env panel rename (<code>BaseEnvPanel</code>, <code>BaseNodeSet.env_panel</code>, <code>/api/env-panels/*</code>, <code>env_panel_overrides</code>).</li>
+<li>2026-05-18: §Persistence adds the active-workspace overlay (ADR-components-009).</li>
+<li>2026-05-15: Per-episode log layout — self-contained <code>episodes/ep{idx:04d}/</code> dirs; second-precision <code>run_id</code>. See ADR-eval-004.</li>
+<li>2026-05-06: Cross-task sweeps in one run — <code>EvalConfig.episode_selectors</code> + <code>EpisodeResult.selectors</code>; per-worker queues over contiguous chunks via <code>acquire_specific</code>; <code>aggregate_by_task</code>.</li>
+<li>2026-04-24: Initial design doc. Synthesised from live source at commit <code>ebad28c</code> onward (ADR-eval-002 A/B/C + ADR-server-003 parallelism contract).</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-the-system-does">1. What the system does</a>
+      <a class="toc-h2" href="#2-two-processes">2. Two processes, by default</a>
+      <a class="toc-h2" href="#3-admission-and-spawn">3. Admission &amp; spawn — JobScheduler</a>
+      <a class="toc-h2" href="#4-subprocess-cold-start">4. The eval subprocess cold-starts its own world</a>
+      <a class="toc-h2" href="#5-inside-one-run">5. Inside one run — the class stack</a>
+      <a class="toc-h3" href="#51-envworkerpool">5.1 EnvWorkerPool — slots, chunks, pinned leases</a>
+      <a class="toc-h3" href="#52-one-episode">5.2 One episode — LoopRunner → GraphExecutor</a>
+      <a class="toc-h3" href="#53-shared-inference">5.3 Shared inference — BatchedInferenceServer</a>
+      <a class="toc-h2" href="#6-failure-observability">6. Failure &amp; observability</a>
+      <a class="toc-h3" href="#61-termination-paths">6.1 Termination paths</a>
+      <a class="toc-h3" href="#62-persistence">6.2 Persistence</a>
+      <a class="toc-h3" href="#63-progress-events">6.3 Progress: WebSocket vs summary.json</a>
+      <a class="toc-h2" href="#7-deviations">7. Where the code deviates from the mental model</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

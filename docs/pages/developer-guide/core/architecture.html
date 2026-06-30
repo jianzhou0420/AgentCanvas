@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture — AgentCanvas</title>
+<meta name="description" content="How the platform is wired — frontend / backend boundary, execution engine, component system, state containers, tech stack.">
+<meta property="og:title" content="Architecture — AgentCanvas">
+<meta property="og:description" content="How the platform is wired — frontend / backend boundary, execution engine, component system, state containers, tech stack.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/architecture.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="arch-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:760px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--architecture-bg); stroke: var(--architecture); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--architecture); font-weight:600; }
+  .rxsvg .lane { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#archa); }
+  .rxsvg .state-edge { stroke: var(--architecture); stroke-width:1.4; fill:none; stroke-dasharray:4 4; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/architecture.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body architecture">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Core</a>
+    <span class="sep">/</span>
+    <span class="here">Architecture</span>
+  </div>
+</div>
+  <header class="page-header architecture">
+  <h1>Architecture</h1>
+  <p class="tagline">How the platform is wired — frontend / backend boundary, execution engine, component system, state containers, tech stack.</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="archa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<nav class="toc-strip">
+  <span class="toc-label">on this page</span>
+  <a href="#overview">§1 Overview</a><span class="toc-sep">·</span>
+  <a href="#dataflow">§2 Data Flow</a><span class="toc-sep">·</span>
+  <a href="#workspace">§3 Flat Workspace</a><span class="toc-sep">·</span>
+  <a href="#execution">§4 Execution Engine</a><span class="toc-sep">·</span>
+  <a href="#components">§5 Component System</a><span class="toc-sep">·</span>
+  <a href="#state">§6 State Containers</a><span class="toc-sep">·</span>
+  <a href="#stack">§7 Tech Stack</a>
+</nav>
+
+<h2 id="overview"><span class="num">§1</span>System Overview</h2>
+
+<p>Three-tier system: <strong>frontend</strong> (React canvas) ↔ <strong>backend</strong> (FastAPI + GraphExecutor) ↔ <strong>workspace</strong> (user-authored Python components + simulator).</p>
+
+<svg class="rxsvg" viewBox="0 0 720 360" role="img" aria-label="Three-tier system. Frontend (React 18 + Vite): Canvas Editor, Output Panels, Node Library, all over a Zustand store. It talks to the Backend over REST and WebSocket. Backend (FastAPI, Python 3.10+ agentcanvas env): API routes, Component Registry, and the Loop Runner driving the Graph Executor that fires nodes. The backend loads user code from workspace/ (nodesets, nodes, graphs, graph_nodes) and drives Habitat-Sim on the GPU for 3D environments.">
+  <!-- Frontend tier -->
+  <rect class="ghost" x="14" y="14" width="692" height="96" rx="10"/>
+  <text class="dim" x="28" y="33">Frontend — React 18 + TypeScript + Vite</text>
+  <rect class="box" x="40" y="44" width="150" height="30" rx="6"/><text x="115" y="64" text-anchor="middle" font-size="12">Canvas Editor</text>
+  <rect class="box" x="206" y="44" width="150" height="30" rx="6"/><text x="281" y="64" text-anchor="middle" font-size="12">Output Panels</text>
+  <rect class="box" x="372" y="44" width="150" height="30" rx="6"/><text x="447" y="64" text-anchor="middle" font-size="12">Node Library</text>
+  <rect class="accent" x="40" y="80" width="482" height="22" rx="5"/><text class="at" x="281" y="95" text-anchor="middle" font-size="11">useFlowStore + useStore (Zustand)</text>
+
+  <!-- transport -->
+  <text class="mono" x="360" y="130" text-anchor="middle">REST · WebSocket</text>
+  <path class="edge" d="M360,112 L360,126"/>
+  <path class="edge" d="M360,134 L360,148"/>
+
+  <!-- Backend tier -->
+  <rect class="ghost" x="14" y="152" width="692" height="120" rx="10"/>
+  <text class="dim" x="28" y="171">Backend — FastAPI + Python 3.10+ (agentcanvas env)</text>
+  <rect class="box" x="40" y="182" width="150" height="30" rx="6"/><text x="115" y="202" text-anchor="middle" font-size="12">API Routes (REST + WS)</text>
+  <rect class="box" x="206" y="182" width="150" height="30" rx="6"/><text x="281" y="202" text-anchor="middle" font-size="12">Component Registry</text>
+  <rect class="box" x="372" y="182" width="150" height="30" rx="6"/><text x="447" y="202" text-anchor="middle" font-size="12">Loop Runner</text>
+  <rect class="accent" x="40" y="222" width="482" height="34" rx="6"/><text class="at" x="281" y="240" text-anchor="middle">Graph Executor</text><text class="dim" x="281" y="252" text-anchor="middle">node firing + iteration</text>
+
+  <!-- workspace + sim -->
+  <path class="edge" d="M281,272 L281,288"/>
+  <rect class="ghost" x="14" y="292" width="430" height="54" rx="10"/>
+  <text class="dim" x="28" y="311">workspace/ (user code, auto-discovered)</text>
+  <text class="mono" x="28" y="332">nodesets/ · nodes/ · graphs/ · graph_nodes/</text>
+  <rect class="box" x="470" y="292" width="236" height="54" rx="10"/>
+  <text x="588" y="316" text-anchor="middle" font-size="12">Habitat-Sim (GPU)</text>
+  <text class="dim" x="588" y="334" text-anchor="middle">3D environments</text>
+  <path class="edge" d="M444,319 L466,319"/>
+</svg>
+
+<h2 id="dataflow"><span class="num">§2</span>Data Flow</h2>
+
+<p>A single execution cycle (<a href="decisions/canvas/adr-canvas-002-unified-canvas-paradigm.html">ADR-canvas-002</a>: unified canvas):</p>
+
+<ol class="numbered-list">
+  <li>User clicks <strong>Play</strong> in the ExecutionToolbar</li>
+  <li>Frontend generates <code>execution_id</code> (UUID)</li>
+  <li><code>getGraphForExecution()</code> serializes the root canvas as <code>GraphDefinition</code> (filters out frontend-only nodes: output viewers, env lifecycle)</li>
+  <li><code>POST /api/navigate/run { loop_definition, execution_id }</code></li>
+  <li>Backend creates <code>GraphExecutor</code> from <code>loop_definition</code></li>
+  <li>Nodes fire by dataflow as inputs arrive: EnvObserve → PromptTemplate → LLMCall → Decision → EnvStep</li>
+  <li><code>IterOut</code> collects end-of-step data → <code>IterIn</code> provides it next iteration</li>
+  <li>Each node emits WebSocket events tagged with <code>execution_id</code></li>
+  <li>Frontend discovers output nodes by type, routes WS events to them</li>
+  <li>Loop ends: <code>IterOut</code>'s <code>stop</code> port goes true, the step budget is exhausted, or user Stop — the verdict stage then runs once on the after-loop band</li>
+  <li><code>nav_complete</code> event carries final metrics (SPL, SR, nDTW, SDTW)</li>
+</ol>
+
+<h2 id="workspace"><span class="num">§3</span>Flat Workspace (<a href="decisions/canvas/adr-canvas-001-flat-workspace.html">ADR-canvas-001</a>)</h2>
+
+<p>The canvas is a <strong>ComfyUI-style flat workspace</strong>. All node types coexist on one surface — environment, model, reasoning, control, and output nodes are wired freely without layer boundaries.</p>
+
+<table>
+  <tr><th>Category</th><th>Nodes</th><th>Purpose</th></tr>
+  <tr><td><strong>Environment</strong></td><td>EnvStep, EnvObserve, EnvState, EnvInfo</td><td>Interact with simulator (from activated NodeSets)</td></tr>
+  <tr><td><strong>Model</strong></td><td>PolicyForward, LLMCall, VLMCall</td><td>Run neural policies or language models</td></tr>
+  <tr><td><strong>Reasoning</strong></td><td>PromptTemplate, Decision, NavGPTReason, HistoryTracker</td><td>Build prompts, make decisions</td></tr>
+  <tr><td><strong>Control</strong></td><td>IterIn, IterOut</td><td>Manage iteration cycles; IterOut's <code>stop</code> port and after-loop band handle loop exit + verdict</td></tr>
+  <tr><td><strong>Output</strong></td><td>ImageViewer, TextViewer, TextScroll, ActionLog, Metrics</td><td>Display streaming results</td></tr>
+  <tr><td><strong>Tool</strong></td><td>(dynamic from NodeSets)</td><td>SAM, navigation tools, etc.</td></tr>
+</table>
+
+<p>The workspace graph is a <code>GraphDefinition</code> — save/load the entire canvas as JSON via <code>/api/graphs</code>.</p>
+
+<h3 id="workspace-unified">3.1 Unified Canvas Paradigm (<a href="decisions/canvas/adr-canvas-002-unified-canvas-paradigm.html">ADR-canvas-002</a>)</h3>
+
+<p>One editor, one node registry, one catalog at every graph level:</p>
+
+<ul>
+  <li><code>unifiedNodeTypes.ts</code>: single map of ~25 node types (env, LLM, policy, control, output, composite)</li>
+  <li><code>unifiedCatalog.ts</code>: single sidebar catalog with unified categories</li>
+  <li><code>UnifiedGraphEditor.tsx</code>: dual-mode editor (root: Zustand store, subgraph: local state with save-back)</li>
+  <li><code>ExecutionToolbar.tsx</code>: standalone Play/Pause/Stop controls (root canvas graph sent directly to <code>/run</code>)</li>
+  <li><strong>Graph save/load</strong>: sidebar shows saved graphs from <code>/api/graphs</code>, draggable as composites, loadable as root</li>
+  <li>Composites (<a href="decisions/dataflow/adr-dataflow-001-recursive-composite-nodes.html">ADR-dataflow-001</a>) preserved for optional nesting — same editor inside</li>
+</ul>
+
+<h3 id="workspace-nodeset">3.2 NodeSet Manager</h3>
+
+<p>NodeSets are managed on a <strong>separate page</strong> (not the canvas). When a NodeSet is activated, its tools appear in the canvas sidebar. When deactivated, they disappear.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 180" role="img" aria-label="Activating a NodeSet on the Manager page makes its tools appear in the canvas sidebar; deactivating removes them. Loading SAM and Habitat surfaces their Segment and Step tools; unloading a nodeset removes its tools.">
+  <rect class="ghost" x="14" y="20" width="250" height="140" rx="10"/>
+  <text class="dim" x="26" y="14">NodeSet Manager page</text>
+  <rect class="box" x="40" y="40" width="198" height="28" rx="6"/><text x="139" y="58" text-anchor="middle" font-size="12">[Load] SAM</text>
+  <rect class="box" x="40" y="78" width="198" height="28" rx="6"/><text x="139" y="96" text-anchor="middle" font-size="12">[Load] Habitat</text>
+  <rect class="box" x="40" y="116" width="198" height="28" rx="6"/><text x="139" y="134" text-anchor="middle" font-size="12">[Unload] Others</text>
+
+  <rect class="ghost" x="436" y="20" width="250" height="140" rx="10"/>
+  <text class="dim" x="448" y="14">Canvas sidebar</text>
+  <rect class="accent" x="462" y="40" width="198" height="28" rx="6"/><text class="at" x="561" y="58" text-anchor="middle" font-size="12">SAM: Segment</text>
+  <rect class="accent" x="462" y="78" width="198" height="28" rx="6"/><text class="at" x="561" y="96" text-anchor="middle" font-size="12">Habitat: Step</text>
+  <rect class="box" x="462" y="116" width="198" height="28" rx="6"/><text class="dim" x="561" y="134" text-anchor="middle" font-size="12">(removed)</text>
+
+  <path class="edge" d="M240,54 L460,54"/><text class="dim" x="350" y="46" text-anchor="middle">activate</text>
+  <path class="edge" d="M240,92 L460,92"/><text class="dim" x="350" y="84" text-anchor="middle">activate</text>
+  <path class="edge" d="M240,130 L460,130"/><text class="dim" x="350" y="122" text-anchor="middle">deactivate</text>
+</svg>
+
+<h3 id="workspace-composite">3.3 Recursive Composite Nodes (<a href="decisions/dataflow/adr-dataflow-001-recursive-composite-nodes.html">ADR-dataflow-001</a>)</h3>
+
+<p>Composites remain available for optional grouping — any group of nodes can become a reusable composite with defined I/O, nestable to arbitrary depth.</p>
+
+<p>Key concepts:</p>
+<ul>
+  <li><strong>CompositeNode</strong>: a node that contains a <code>GraphDefinition</code> subgraph</li>
+  <li><strong>PortIn / PortOut</strong>: boundary nodes defining composite inputs/outputs (separate from IterIn/IterOut)</li>
+  <li><strong>Canvas Stack</strong>: navigation breadcrumbs appear when inside a composite</li>
+  <li><strong>Flatten-before-execute</strong>: backend recursively expands composites into a flat graph before execution</li>
+</ul>
+
+<ol class="numbered-list">
+  <li><strong>Author</strong> — select nodes → <em>Group</em> → a composite with auto-generated <code>PortIn</code>/<code>PortOut</code> boundaries.</li>
+  <li><strong>Save</strong> — written to <code>workspace/graphs/*.json</code> → appears in the sidebar catalog, draggable onto any canvas.</li>
+  <li><strong>Execute</strong> — <code>flatten_graph()</code> expands every composite → the <code>GraphExecutor</code> runs one flat graph.</li>
+</ol>
+
+<h2 id="execution"><span class="num">§4</span>Execution Engine</h2>
+
+<p>One engine — the <strong>Graph Executor</strong> — handles every graph regardless of topology. DAG-shaped workflows are just cyclic graphs that fire each node exactly once; iterative agent loops are the same engine with <code>iterIn</code>/<code>iterOut</code> gates added. There is no separate "DAG executor" path (see <a href="../../../pages/developer-guide/core/glossary.html#s6">Glossary §6</a>).</p>
+
+<div class="cards cols-1">
+  <div class="card architecture">
+    <h3>4.1 Graph Executor</h3>
+    <ul style="margin: 0; padding-left: 1.2rem; font-size:.9rem;">
+      <li>Nodes fire when all required inputs arrive — data-driven, not topo-sort-driven</li>
+      <li><strong>Two-sided iteration model</strong> (<a href="decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a>, folding <a href="decisions/dataflow/adr-dataflow-006-three-pivot-boundary-nodes.html">ADR-dataflow-006</a>'s three pivots to two): <code>iterIn</code> is two-sided — its <strong>left</strong> input ports (declared in <code>initPorts</code>) capture run-start seeds once into <code>init_</code> slots, its <strong>right</strong> output ports broadcast step boundaries + expose the loop-carry bundle; <code>iterOut</code> collects end-of-iter state and transfers it back to <code>iterIn</code> via <code>pairedWith</code> for the next iteration. The former <code>Initialize</code> pivot is folded into iterIn's left side; the <code>initialize</code> node type was removed entirely on 2026-06-10 — graphs still carrying one are rejected at validation with a migration hint.</li>
+      <li>Per-node state via <code>_NodeStateProxy</code> (tracks inputs, outputs, fire count)</li>
+      <li>Supports pause/resume/step via LoopRunner</li>
+      <li><strong>Two-sided iterOut</strong> (<a href="decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a>): the former <code>Termination</code> node folded into iterOut's <code>stop</code> input port (checked once per iteration by the Decide phase); on termination iterOut emits a <strong>final side</strong> (<code>final_&lt;name&gt;</code> + <code>final_stop</code>) exactly once, feeding the <strong>after-loop band</strong> (evaluate → graphOut) that holds the terminal iteration's values</li>
+      <li><strong>Multi-scope</strong> (<a href="decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a>): N coexisting <code>(iterIn, iterOut)</code> pairs in one flat graph, each with its own iteration cadence; scope forest computed by <code>analyze_scopes()</code></li>
+      <li><strong>Flatten step</strong>: at the top of <code>run()</code>, <code>flatten_graph()</code> recursively expands any composite nodes before processing</li>
+      <li><strong>Startup seed-discovery rule</strong>: a node is queued at run-start iff its type is not <code>iterIn</code> AND it has no incoming edges AND it has no required input ports. Required-but-unwired ports are rejected at the API boundary by <code>validate_graph_connectivity()</code> in <code>graph_def.py</code> — no silent never-fires.</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="components"><span class="num">§5</span>Component System</h2>
+
+<svg class="rxsvg" viewBox="0 0 700 200" role="img" aria-label="At startup the WorkspaceComponentRegistry scans workspace/ and auto-discovers components. Python files (nodesets, nodes) are scanned by base class, instantiated, bridged to runtime, and registered as handlers; graphs and graph_nodes are pure JSON data. Hot reload re-runs the scan via POST /api/components/reload.">
+  <rect class="ghost" x="14" y="30" width="250" height="150" rx="10"/>
+  <text class="dim" x="26" y="24">workspace/</text>
+  <rect class="box" x="40" y="48" width="198" height="26" rx="6"/><text class="mono" x="139" y="65" text-anchor="middle">nodesets/*.py</text>
+  <rect class="box" x="40" y="80" width="198" height="26" rx="6"/><text class="mono" x="139" y="97" text-anchor="middle">nodes/*.py</text>
+  <rect class="box" x="40" y="112" width="198" height="26" rx="6"/><text class="mono" x="139" y="129" text-anchor="middle">graphs/*.json</text>
+  <rect class="box" x="40" y="144" width="198" height="26" rx="6"/><text class="mono" x="139" y="161" text-anchor="middle">graph_nodes/*.json</text>
+
+  <path class="edge" d="M264,105 L432,105"/>
+  <text class="dim" x="348" y="98" text-anchor="middle">startup scan</text>
+  <text class="dim" x="348" y="120" text-anchor="middle">auto-discover</text>
+
+  <rect class="accent" x="436" y="40" width="250" height="130" rx="10"/>
+  <text class="at" x="448" y="34">WorkspaceComponentRegistry</text>
+  <text x="561" y="74" text-anchor="middle" font-size="12">scan by base class</text>
+  <text x="561" y="98" text-anchor="middle" font-size="12">instantiate</text>
+  <text x="561" y="122" text-anchor="middle" font-size="12">bridge to runtime</text>
+  <text x="561" y="146" text-anchor="middle" font-size="12">register handlers</text>
+</svg>
+<p class="muted" style="font-size:.85rem;">Scan order: <code>nodesets/</code> → <code>nodes/</code>; <code>graphs/</code> + <code>graph_nodes/</code> are pure data. Hot reload re-runs the scan via <code>POST /api/components/reload</code>.</p>
+
+<h3 id="components-autohost">5.1 Auto-Hosted Deployment (<a href="decisions/server/adr-server-001-auto-server-app.html">ADR-server-001</a>)</h3>
+
+<p>Any <code>BaseNodeSet</code> can be loaded in <strong>server mode</strong> without writing a <code>ServerApp</code>. The registry launches <code>auto_host</code> in a subprocess, which uses <code>AutoServerApp</code> to introspect the nodeset's tools and auto-generate server functions from their port definitions. The result is identical to YAML-based servers — proxy nodes are registered via <code>generate_proxy_nodes()</code>.</p>
+
+<ol class="numbered-list">
+  <li><code>POST /api/components/nodesets/sam/load?mode=server</code></li>
+  <li>spawns <code>python -m app.server.auto_host --file …/sam.py --class SamNodeSet --port 9200</code></li>
+  <li>fetches <code>/manifest</code>, generates proxy nodes via <code>generate_proxy_nodes()</code></li>
+  <li>canvas sees identical nodes to YAML-declared servers</li>
+</ol>
+
+<table>
+  <tr><th>Endpoint / path</th><th>Role</th></tr>
+  <tr><td><code>workspace/graphs/</code></td><td>Saved graph templates (<code>kind="graph"</code>)</td></tr>
+  <tr><td><code>workspace/graph_nodes/</code></td><td>Archived composite nodes (<code>kind="node"</code>)</td></tr>
+  <tr><td><code>GET /api/graphs</code></td><td>List all (both dirs)</td></tr>
+  <tr><td><code>POST /api/graphs</code></td><td>Save — routes by <code>kind</code> field</td></tr>
+  <tr><td><code>DELETE /api/graphs/{id}</code></td><td>Delete (searches both dirs)</td></tr>
+</table>
+
+<h3 id="components-ui">5.2 Python-Driven Node UI (<a href="decisions/components/adr-components-004-node-ui-config.html">ADR-components-004</a>)</h3>
+
+<p>Every <code>BaseCanvasNode</code> carries a <code>ui_config</code> ClassVar (<code>NodeUIConfig</code>) that declares how the node renders on the canvas — color, layout, dimensions, and inline config controls. The frontend's <code>GenericBlockRenderer</code> reads <code>ui_config</code> at render time, eliminating the need for per-node <code>.tsx</code> components.</p>
+
+<p>Two layouts: <strong>Block</strong> (default — standard rectangle with ports, label, optional config fields) and <strong>Strip</strong> (narrow vertical gate, used by IterIn, IterOut, PortIn, PortOut).</p>
+
+<p><code>ConfigField</code> declares inline widgets on the node face: <code>label</code>, <code>slider</code>, <code>text</code>, <code>select</code>, <code>toggle</code>, <code>textarea</code>. Example: LLMCall shows a temperature slider; Decision shows an action-space dropdown.</p>
+
+<p>This reduced <code>unifiedNodeTypes.ts</code> from 18 explicit component mappings to 7 — six nodes with truly custom UI plus <code>GenericBlockRenderer</code> as the universal fallback. 13 custom <code>.tsx</code> files were deleted. The remaining custom components handle interactions that exceed port+config rendering:</p>
+
+<table>
+  <tr><th>Custom <code>.tsx</code></th><th>Why</th></tr>
+  <tr><td><code>PromptTemplateNode</code></td><td>Template editor with variable chip insertion</td></tr>
+  <tr><td><code>CompositeCanvasNode</code> / <code>CompositeNodeView</code></td><td>Subgraph preview, port derivation, drill-in</td></tr>
+  <tr><td><code>ImageViewerCanvasNode</code></td><td>Live RGB + depth image viewer (WebSocket)</td></tr>
+  <tr><td><code>TextViewerCanvasNode</code></td><td>Latest TEXT content — single block (WebSocket)</td></tr>
+  <tr><td><code>TextScrollCanvasNode</code></td><td>Accumulating TEXT history — scrollable stack (WebSocket)</td></tr>
+  <tr><td><code>ActionLogCanvasNode</code></td><td>Action history with step numbers (WebSocket)</td></tr>
+  <tr><td><code>MetricsCanvasNode</code></td><td>SPL/SR/nDTW/SDTW metrics display (WebSocket)</td></tr>
+</table>
+
+<p>The <code>/node-schemas</code> API endpoint includes <code>ui_config</code> in its response, so the frontend catalog can enrich sidebar entries with backend-defined styling at drag time.</p>
+
+<p>2 base classes define the extension points:</p>
+
+<table>
+  <tr><th>Base Class</th><th>What It Provides</th></tr>
+  <tr><td><code>BaseCanvasNode</code></td><td>Custom graph node handler (forward method, <code>NodeUIConfig</code> for Python-driven UI, typed port declarations) — see <a href="decisions/components/adr-components-004-node-ui-config.html">ADR-components-004</a></td></tr>
+  <tr><td><code>BaseNodeSet</code></td><td>Atomic group of tools (load/unload together, optional server mode)</td></tr>
+</table>
+
+<h2 id="state"><span class="num">§6</span>State Container System (<a href="decisions/dataflow/adr-dataflow-002-state-container-system.html">ADR-dataflow-002</a>)</h2>
+
+<p>A <strong>dual-wire architecture</strong> adds visible shared state alongside the existing dataflow edges:</p>
+
+<svg class="rxsvg" viewBox="0 0 700 190" role="img" aria-label="Two wire systems coexist. Solid data edges carry typed values per firing: VLMCall sends rgb to Prompt, Prompt sends a prompt to LLM, LLM sends a response to Decision. Dashed state edges (no arrowhead) grant access to a shared Nav State container that both Decision and Prompt read and write.">
+  <text class="dim" x="14" y="30">Data edges — typed values, per firing</text>
+  <rect class="box" x="14" y="42" width="118" height="30" rx="6"/><text x="73" y="62" text-anchor="middle" font-size="12">VLMCall</text>
+  <rect class="box" x="206" y="42" width="118" height="30" rx="6"/><text x="265" y="62" text-anchor="middle" font-size="12">Prompt</text>
+  <rect class="box" x="398" y="42" width="118" height="30" rx="6"/><text x="457" y="62" text-anchor="middle" font-size="12">LLM</text>
+  <rect class="box" x="572" y="42" width="118" height="30" rx="6"/><text x="631" y="62" text-anchor="middle" font-size="12">Decision</text>
+  <path class="edge" d="M132,57 L202,57"/><text class="mono" x="167" y="50" text-anchor="middle">rgb</text>
+  <path class="edge" d="M324,57 L394,57"/><text class="mono" x="359" y="50" text-anchor="middle">prompt</text>
+  <path class="edge" d="M516,57 L568,57"/><text class="mono" x="542" y="50" text-anchor="middle">response</text>
+
+  <text class="dim" x="14" y="120">State edges — access grants, no data, no firing</text>
+  <rect class="accent" x="265" y="132" width="170" height="32" rx="7"/><text class="at" x="350" y="152" text-anchor="middle">Nav State container</text>
+  <path class="state-edge" d="M620,140 C540,176 430,176 422,160"/>
+  <path class="state-edge" d="M278,140 C200,176 300,176 290,160"/>
+  <text class="dim" x="600" y="178" text-anchor="middle">Decision</text>
+  <text class="dim" x="215" y="178" text-anchor="middle">Prompt</text>
+</svg>
+
+<h3 id="state-container">6.1 Container Model</h3>
+
+<p>A <strong>StateContainer</strong> is a dict of named <strong>BaseState</strong> entries. Each state has two axes:</p>
+
+<ul>
+  <li><strong>Reducer type</strong>: Accumulator (list.append), LastWrite (overwrite), Counter (sum) — the <code>ephemeral</code> reducer was removed 2026-04-18</li>
+  <li><strong>Value type</strong>: narrow set for memory (TEXT, BOOL, METRICS, POSE, POINTCLOUD, OCCUPANCY_MAP, EMBEDDING, EPISODE_CONTEXT, ANY — raw wire payloads rejected, <a href="decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">ADR-dataflow-004</a>)</li>
+  <li><strong>Lifetime</strong>: <code>forever</code> / <code>step</code> / <code>episode</code> / <code>run</code> / <code>custom</code> — expands to a <code>reset_on</code> signal list; per-iteration clearing is <code>lifetime="step"</code> (replaces the old Ephemeral reducer)</li>
+</ul>
+
+<h3 id="state-wires">6.2 Two Wire Systems</h3>
+
+<table>
+  <tr><th></th><th>Data Edges</th><th>State Edges</th></tr>
+  <tr><td><strong>Carry</strong></td><td>Typed data per-firing</td><td>Access grants (no data)</td></tr>
+  <tr><td><strong>Visual</strong></td><td>Solid animated lines</td><td>Dashed violet, no arrowhead</td></tr>
+  <tr><td><strong>Created via</strong></td><td>Port handles (left/right)</td><td><code>__state__</code> handle (bottom)</td></tr>
+  <tr><td><strong>Visibility</strong></td><td>Always</td><td>Toggle on/off</td></tr>
+</table>
+
+<h3 id="state-graph">6.3 graph_state</h3>
+
+<p>Optional graph-level container auto-accessible by all nodes — no state edges needed. Displayed in the State tab of the bottom OutputDrawer panel. Each composite can have its own scoped <code>graph_state</code>.</p>
+
+<h3 id="state-exec">6.4 Executor Integration</h3>
+
+<ul>
+  <li>Containers built after <code>flatten_graph()</code>, before seed-node discovery</li>
+  <li>Connected containers injected into <code>ctx._containers</code> before each node fires</li>
+  <li><code>graph_state</code> injected into <code>ctx._graph_state</code> for all nodes</li>
+  <li><code>broadcast_signal("step_end", {"step": N})</code> fires at IterOut — states with <code>lifetime="step"</code> clear via their <code>reset_on</code> subscription</li>
+  <li>Container snapshots broadcast in <code>nav_step</code> WebSocket event</li>
+</ul>
+
+<p>See <a href="../design-docs/graph/state-containers.html">State Containers (design-doc)</a> for the full design.</p>
+
+<h2 id="stack"><span class="num">§7</span>Tech Stack</h2>
+
+<table>
+  <tr><th>Layer</th><th>Choice</th><th>Why</th></tr>
+  <tr><td>Backend runtime</td><td>Python 3.10+ (agentcanvas env), FastAPI</td><td>Modern ML stack + async web framework (<a href="decisions/platform/adr-platform-004-agentcanvas-primary-env.html">ADR-platform-004</a>)</td></tr>
+  <tr><td>ML framework</td><td>PyTorch 2.5 + CUDA 12.1 (agentcanvas)</td><td>Modern torch for SAM, HF, LLM nodesets</td></tr>
+  <tr><td>Simulator</td><td>Habitat-Sim 0.1.7 (vlnce env, Python 3.8)</td><td>Binary locked to 3.8; accessed via server mode (<a href="decisions/server/adr-server-001-auto-server-app.html">ADR-server-001</a>)</td></tr>
+  <tr><td>Frontend framework</td><td>React 18 + TypeScript</td><td>Component model, strict typing</td></tr>
+  <tr><td>Canvas library</td><td><code>@xyflow/react</code> (React Flow)</td><td>Mature node-graph editor with customization</td></tr>
+  <tr><td>State management</td><td>Zustand (dual store)</td><td>Lightweight, no boilerplate, works with React Flow</td></tr>
+  <tr><td>Styling</td><td>Tailwind CSS</td><td>Utility-first, fast iteration</td></tr>
+  <tr><td>Build tool</td><td>Vite</td><td>Fast HMR for frontend dev</td></tr>
+  <tr><td>Config (eval)</td><td>Hydra + OmegaConf</td><td>Composable config groups for eval harness</td></tr>
+  <tr><td>Docs</td><td>Hand-authored HTML + stdlib dev server (<code>docs/run_dev.sh</code>)</td><td>Full HTML expressivity; live reload via SSE on mtime change. MkDocs retired 2026-05-18.</td></tr>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#overview">§1System Overview</a>
+      <a class="toc-h2" href="#dataflow">§2Data Flow</a>
+      <a class="toc-h2" href="#workspace">§3Flat Workspace (ADR-canvas-001)</a>
+      <a class="toc-h3" href="#workspace-unified">3.1 Unified Canvas Paradigm (ADR-canvas-002)</a>
+      <a class="toc-h3" href="#workspace-nodeset">3.2 NodeSet Manager</a>
+      <a class="toc-h3" href="#workspace-composite">3.3 Recursive Composite Nodes (ADR-dataflow-001)</a>
+      <a class="toc-h2" href="#execution">§4Execution Engine</a>
+      <a class="toc-h2" href="#components">§5Component System</a>
+      <a class="toc-h3" href="#components-autohost">5.1 Auto-Hosted Deployment (ADR-server-001)</a>
+      <a class="toc-h3" href="#components-ui">5.2 Python-Driven Node UI (ADR-components-004)</a>
+      <a class="toc-h2" href="#state">§6State Container System (ADR-dataflow-002)</a>
+      <a class="toc-h3" href="#state-container">6.1 Container Model</a>
+      <a class="toc-h3" href="#state-wires">6.2 Two Wire Systems</a>
+      <a class="toc-h3" href="#state-graph">6.3 graph_state</a>
+      <a class="toc-h3" href="#state-exec">6.4 Executor Integration</a>
+      <a class="toc-h2" href="#stack">§7Tech Stack</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

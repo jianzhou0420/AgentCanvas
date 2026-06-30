@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-009 — AgentCanvas</title>
+<meta name="description" content="Active-workspace overlay for experiment isolation">
+<meta property="og:title" content="ADR-components-009 — AgentCanvas">
+<meta property="og:description" content="Active-workspace overlay for experiment isolation">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-009-active-workspace-overlay.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-009-active-workspace-overlay.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-009</span>
+  </div>
+  <div class="last-updated">2026-05-12 16:31</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-009</h1>
+  <p class="tagline">Active-workspace overlay for experiment isolation</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-12 16:31</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+
+
+
+
+<h2 id='context'>Context</h2>
+<p>Architect-pipeline skills (<code>/architect:myloop:revise</code>, <code>/architect:adas-subagent:implementer</code>, the <code>debug</code>/<code>experiment</code> variants for each, etc.) mutated <code>&lt;repo&gt;/workspace/{graphs,nodesets}/</code> <strong>in place</strong> to test agent revisions. After a handful of iters the live workspace was dirty — there was no reliable way to tell which graph or nodeset was the "faithful baseline" vs an architect experiment, and the per-iter <code>workspace_snapshot/</code> dirs were after-the-fact copies rather than the substrate the eval actually loaded. This blocked clean A/B comparison, polluted git working trees, and made cross-iter replay ambiguous (load <em>which</em> version of <code>mapgpt.py</code>?). The MapGPT v1 trace was the proximate motivator: 9 iters of in-place edits left <code>workspace/nodesets/mapgpt.py</code> at iter_8's QD-planner state with no easy way to recover the 4-22 paper-aligned baseline.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Introduce a two-tier workspace with <strong>overlay</strong> semantics. <code>&lt;repo&gt;/workspace/</code> is the <strong>frozen workspace</strong> — faithful baseline, read-only for architect skills (still user-editable via canvas UI). Each iter owns an <strong>active workspace</strong> at <code>outputs/design_runs/{graph}/v{N}/iter_{M}/active_workspace/</code> with the same subdirectory shape as frozen (<code>graphs/</code>, <code>nodesets/</code>, <code>nodesets/server/</code>, <code>nodes/</code>, <code>policies/</code>, <code>hooks.json</code>); each iter's <code>active_workspace/</code> is a <strong>complete mutation set vs frozen</strong> (not a chained diff), produced by <code>cp -r {parent_iter}/active_workspace/. {iter}/active_workspace/</code> then layering this iter's edits on top. <code>WorkspaceComponentRegistry</code> gains an optional <code>active_dir</code> constructor arg; <code>scan_all()</code> runs <strong>two passes</strong> — frozen first, then active — and <code>register_node()</code>'s existing last-write-wins on <code>NODE_HANDLERS</code> and <code>_discovered_nodesets[name]</code> provides Python-resource override for free. For non-Python resources, two new helpers <code>resolve_graph_path(name)</code> and <code>resolve_exp_yaml_path(name)</code> perform active-first then frozen-fallthrough lookup; <code>_load_global_hooks()</code> does full-file override (active <code>hooks.json</code> wins, else frozen). <code>Settings.active_workspace_dir: str | None</code> (env var <code>ACTIVE_WORKSPACE_DIR</code>) wires this in at startup with <code>None</code> = no overlay = bit-identical to pre-change behaviour. <code>/api/eval/v2/start</code> accepts <code>active_workspace_dir</code> per request; <code>JobScheduler._spawn()</code> propagates it to subprocesses via env so ADR-eval-003's subprocess-per-run scheduler picks up the overlay at fresh-Settings init. <code>/experiment:run --workspace=&lt;abs-path&gt;</code> exposes the same override on the CLI side. All architect write-skills are migrated <strong>atomically</strong> — they never write to <code>&lt;repo&gt;/workspace/</code> again. <code>.exp.yaml</code> is excluded from overlay (it's user config, not architect mutation) and is read from frozen with a top-level convenience copy under <code>{ITER}/</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Full workspace copy per iter</strong> — rejected, bulky on disk (entire <code>workspace/</code> is ~100s of MB once policies/checkpoints land there) and most iters touch only 1–2 files; copying everything obscures what each iter actually changed. (b) <strong>Per-skill before/after snapshot with revert</strong> — the pre-change behaviour: each skill wrote a <code>.before</code> file, mirrored edits into <code>workspace_snapshot/</code>, then optionally reverted. Rejected — race-prone (any skill or user touching <code>workspace/</code> between snapshot and revert breaks replay), no way for replay to "point at iter_3's logical state", and the snapshot was a side-effect not the substrate eval read. (c) <strong>No isolation (status quo)</strong> — rejected; the MapGPT v1 trace already demonstrated the dirty-workspace failure mode. (d) <strong>Per-skill chained diff</strong> (each iter stores <code>iter_N.diff</code> against parent) — rejected; replay would require walking the chain to materialise effective state, and merges across forks (e.g. iter_5 forking iter_3 while iter_4 is "stale lineage") become surgery. The "complete mutation set per iter" rule is <code>cp -r parent</code> + this iter's edits, so each iter dir is self-contained. (e) <strong>Move shared singletons (Prismatic VLM etc.) out of workspace/ first</strong> — deferred at the time of this ADR; documented as a known caveat (pre-loaded singletons live in the parent backend's lifespan, immune to per-run overlay without backend restart). <strong>Resolved 2026-05-15 (TODO #60)</strong> by <code>JobScheduler._prepare_ephemerals</code>: when an admit-time content hash of an overlay's <code>parallelism="shared"</code> nodeset source differs from frozen, the scheduler spawns a tagged ephemeral auto_host child loaded from the overlay path and rewrites <code>shared_urls.json</code> to route this eval to it; the frozen singleton stays alive for sibling sessions. Reaping releases the ephemeral via <code>WorkspaceComponentRegistry.unload_nodeset_ephemeral</code>. Caveats remaining: first iter touching a <code>shared</code> nodeset pays the spawn cost; VRAM doubles for the eval's duration.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Leveraging <code>register_node()</code>'s pre-existing last-write-wins gives the Python-side override semantics with <strong>zero additional code</strong> in node registration — only the scan loop changed. The active-first/fallthrough helpers (<code>resolve_graph_path</code>, <code>resolve_exp_yaml_path</code>) consolidate non-Python lookups behind one source-of-truth method on the registry, eliminating the hardwired <code>_WORKSPACE = parents[5] / "workspace"</code> constants previously scattered through <code>eval.py</code>. <code>Settings.active_workspace_dir = None</code> default + env-var binding means existing deployments and the user's <code>:8000</code> canvas backend keep frozen-workspace-only behaviour bit-identical — the overlay is opt-in per-request, never global. Subprocess propagation via env (<code>_spawn()</code>) reuses ADR-eval-003's fresh-Settings-per-subprocess pattern without touching the eval runner. The "complete mutation set vs frozen" property (not a chained diff) makes each iter dir a self-contained replay artifact: <code>/experiment:run --workspace=outputs/design_runs/{graph}/v{N}/iter_{M}/active_workspace</code> faithfully reproduces what that iter ran, regardless of what frozen drifts to (modulo singleton constraints documented in <code>files-contract.md</code>). Atomic migration ("Option A": all write-skills go to active_workspace from day one, never to frozen) avoids a forever-fork between "old skills writing to workspace" and "new skills writing to active_workspace" — frozen becomes permanently read-only for architects, restoring the dirty/clean invariant. Backward compat for pre-migration iters is a read-skill fallback rule (<code>active_workspace/</code> → fall through to <code>workspace_snapshot/</code>) documented in <code>files-contract.md</code> — no migration script needed, since old iters are read-only history.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>core/decisions/components/index.md, core/decisions/index.md, core/codebase-map.md, core/architecture.md, capabilities/customizable-node-system.md, capabilities/isolated-runtime-environments.md, design-docs/batch-eval.md, design-docs/coding-agent-backend-surface.md, .claude/commands/architect/_common/files-contract.md (and all 18 architect skill files migrated in this change), .claude/commands/experiment/run.md, .claude/experiment/bin/submit.py, core/roadmap.md (changelog).</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

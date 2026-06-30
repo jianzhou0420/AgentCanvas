@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Major Versions — AgentCanvas</title>
+<meta name="description" content="A living declaration of what each major version of AgentCanvas is about — the paradigm-level framing.">
+<meta property="og:title" content="Major Versions — AgentCanvas">
+<meta property="og:description" content="A living declaration of what each major version of AgentCanvas is about — the paradigm-level framing.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/major-versions.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/major-versions.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Core</a>
+    <span class="sep">/</span>
+    <span class="here">Major Versions</span>
+  </div>
+</div>
+  <header class="page-header">
+  <h1>Major Versions</h1>
+  <p class="tagline">A living declaration of what each major version of AgentCanvas is about — the paradigm-level framing.</p>
+</header>
+
+<div class="lede">
+  This file captures the <strong>paradigm-level framing</strong> — what a version <em>means</em> and what earns the major-number bump. Tactical open work (TODOs, features, env/method implementations) lives in <a href="roadmap.html">roadmap</a>; detailed subsystem design lives in <code>design-docs/</code>.
+</div>
+
+<nav class="toc-strip">
+  <span class="toc-label">on this page</span>
+  <a href="#v1">v1 Bounded Static-Topology</a><span class="toc-sep">·</span>
+  <a href="#v2">v2 Topology-Growing</a><span class="toc-sep">·</span>
+  <a href="#discipline">Versioning Discipline</a>
+</nav>
+
+<h2 id="v1"><span class="num">§1</span>AgentCanvas v1 — Bounded Static-Topology Canvas <span class="adr-status status-accepted" style="font-size:.7em; vertical-align: middle;">active</span></h2>
+
+<div class="callout success">
+  <strong>Thesis</strong>
+  Agent behaviour is a <strong>bounded static-topology dataflow graph</strong>. <em>One JSON = one agent = one graph.</em> Every node, edge, and tool that could fire is declared <em>before</em> the run starts; the graph executor fires them when their inputs arrive. Within that bound the agent can do plenty at runtime — pick which branch to walk, when to terminate, how many iterations to spend — but it cannot introduce nodes, tools, or node-types the graph did not already know about. The graph remains a topology the researcher can see, diff, and share.
+</div>
+
+<p><strong>Paradigm</strong>: <strong>Bounded, pre-declared topology</strong> — whatever the agent does at runtime, the set of fireable nodes / tools is fully known before the run starts. Runtime decisions are <em>selections</em> over a predeclared set, never <em>extensions</em> of it.</p>
+
+<h3>Agent forms v1 covers</h3>
+
+<p>All of the following can be expressed as bounded static topology and therefore belong in v1 — either as graph-visible patterns or hidden inside a single <code>BaseCanvasNode</code> subclass:</p>
+
+<ul>
+  <li><strong>Static DAG / pipeline workflows</strong> — classical chains, RAG, foundation-model composition</li>
+  <li><strong>Cyclic agent loops</strong> — observe → reason → act → repeat via two-sided <code>IterIn</code> / <code>IterOut</code> gates (IterIn captures run-start seeds on its left side; IterOut carries loop state, halts on its <code>stop</code> port, and emits a final side at termination)</li>
+  <li><strong>ReAct loops</strong> — two implementation paths: (a) hidden inside a custom <code>LLMCallNode</code> subclass with a tool registry passed as config, or (b) explicit graph with router node + N predeclared tool branches gated on the LLM's <code>tool_name</code> output</li>
+  <li><strong>Plan-and-Execute over a bounded tool pool</strong> — planner node emits <code>LIST[step]</code>, iteration walks the list, router dispatches each step to the matching predeclared tool</li>
+  <li><strong>Bounded multi-agent</strong> — fixed N agents with fixed or router-selected communication topology (DiscussNav-style 8-expert fan-out, AutoGen-style fixed roles, debate / consensus with N ≤ K_max predeclared experts)</li>
+  <li><strong>Embodied sense-act outer loop</strong> — VLN, VLA, EQA wrapped around any of the inner forms above</li>
+  <li><strong>Composed foundation-model pipelines</strong> — SAM + LLM + 3D planner, RAM + VLM + DDPPO, etc.</li>
+</ul>
+
+<h3>What ships in v1 (paradigm building blocks)</h3>
+
+<ul>
+  <li>Unified canvas + flat workspace (<a href="decisions/canvas/adr-canvas-001-flat-workspace.html">ADR-canvas-001</a>, <a href="decisions/canvas/adr-canvas-002-unified-canvas-paradigm.html">ADR-canvas-002</a>)</li>
+  <li>Graph vs graph-node storage (<a href="decisions/canvas/adr-canvas-003-graph-node-system.html">ADR-canvas-003</a>)</li>
+  <li><code>BaseCanvasNode</code> + <code>BaseNodeSet</code> component system with auto-discovery (<a href="decisions/components/index.html">ADR-components-001 … 004</a>)</li>
+  <li>GraphExecutor with two-sided iteration + multi-scope (<a href="decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a>, <a href="decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a>, <a href="decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a>, <a href="decisions/executor/adr-executor-003-multi-scope-execution.html">ADR-executor-003</a>)</li>
+  <li>Wire type system incl. <code>LIST[T]</code> consumer-side modifier (<a href="decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">ADR-dataflow-004</a>, <a href="decisions/dataflow/adr-dataflow-005-list-wire-type-modifier.html">ADR-dataflow-005</a>)</li>
+  <li>State containers with Lifetime axis (<code>forever</code> / <code>step</code> / <code>episode</code> / <code>run</code> / <code>custom</code>) (<a href="decisions/dataflow/adr-dataflow-002-state-container-system.html">ADR-dataflow-002</a>, <a href="decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">ADR-dataflow-004</a>)</li>
+  <li>Auto-hosted server-mode nodesets via <code>AutoServerApp</code> (<a href="decisions/server/adr-server-001-auto-server-app.html">ADR-server-001</a>); <code>BaseEnvPanel</code> bridge (<a href="decisions/server/adr-server-002-base-controller.html">ADR-server-002</a>); env-nodeset parallelism contract (<a href="decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>)</li>
+  <li>Hook system with fail-open semantics</li>
+  <li>Python-driven node UI (<code>NodeUIConfig</code>, <code>GenericBlockRenderer</code>, <code>ConfigField</code>, <code>DisplayField</code>) (<a href="decisions/components/adr-components-004-node-ui-config.html">ADR-components-004</a>, <a href="decisions/components/adr-components-006-layout-components-display-field.html">ADR-components-006</a>)</li>
+  <li>Graph-driven batch eval — <code>EnvWorkerPool</code> + <code>BatchedInferenceServer</code> + subprocess-per-run <code>JobScheduler</code> with cross-session admission (<a href="decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a>, <a href="decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a>, <a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>, <a href="decisions/eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a>)</li>
+  <li>Two-layer execution logs (exterior port I/O + interior <code>_self_log</code>) + unified <code>ErrorBus</code> (<a href="decisions/observability/adr-observability-003-execution-logs.html">ADR-observability-003</a>, <a href="decisions/observability/adr-observability-004-error-reporting-bus.html">ADR-observability-004</a>)</li>
+  <li>Polished core nodesets: Habitat · MP3D · CMA · OpenNav · NavGPT · MapGPT · SmartWay · SAM · Basic Agent · HM-EQA · OpenEQA · SIMPLER · LIBERO · VLA Policy · VLN-CE Policy</li>
+</ul>
+
+<p><strong>v1 ships when</strong>: the public API is declared stable and frozen under SemVer — open-source-ready (LICENSE / install docs / CONTRIBUTING), the agent-forms list above each exercised by a canonical graph, and the graph-JSON / nodeset / CLI-HTTP surfaces documented. Until then, tags are <code>v0.x</code> — the API is still moving with research iteration and external-integration friction. Paper submission is deliberately <em>not</em> a v1.0 trigger; see the <a href="../repo/versioning.html">Versioning Policy</a>.</p>
+
+<p><strong>Out of scope for v1</strong>: anything that requires the <em>set</em> of nodes / tools / node-types to grow at runtime — that's v2.</p>
+
+<div class="callout note">
+  <strong>Deployable / packaging concerns</strong>
+  The old "Deployable Product" thesis (packaging as Docker / pip / installer, optional auth, multi-tenant, cloud deployment) lives in <strong>v1.x minor versions</strong> as polish, not as a separate paradigm shift. If multi-tenant cloud deployment ever becomes a serious external ask that genuinely demands a different runtime model, revisit whether it deserves its own major — but the default expectation is "v1.x picks it up incrementally".
+</div>
+
+<h2 id="v2"><span class="num">§2</span>AgentCanvas v2 — Topology-Growing Canvas <span class="adr-status status-draft" style="font-size:.7em; vertical-align: middle;">future</span></h2>
+
+<div class="callout success">
+  <strong>Thesis</strong>
+  The agent can <strong>grow its own topology at runtime</strong> — spawn new node instances from runtime data, register new tool types it did not know about at graph-design time, or rewrite its own graph mid-run. The v1 invariant "graph JSON is a complete spec of what can run" weakens: the graph is the source of truth <em>at each instant</em>, but the graph itself becomes runtime-mutable.
+</div>
+
+<p><strong>Paradigm</strong>: <strong>Topology-mutating execution</strong> — the set of fireable nodes / tools / edges can change during a run. Runtime decisions can be <em>extensions</em> of the predeclared set, not only selections within it.</p>
+
+<h3>What v2 covers (and v1 does not)</h3>
+
+<ul>
+  <li><strong>Unbounded subagent spawning</strong> — a meta-agent decides at runtime how many subagent instances to launch, with arbitrary recursion depth (Claude-Code-style nested <code>Task</code> / <code>Agent</code> calls, Manus-style hierarchical orchestration)</li>
+  <li><strong>Runtime fan-out over runtime lists</strong> — "for each item in a runtime-length <code>LIST</code>, spawn a subgraph instance"; distinct from v1's <code>LIST[T]</code> consumer-side coercion which only aggregates pre-declared producer edges</li>
+  <li><strong>New tool types emerging at runtime</strong> — Voyager-style "agent writes a new skill as a Python file mid-run and registers it"; plan-emitted step types not in the predeclared pool</li>
+  <li><strong>Self-modifying graphs</strong> — a node in the running graph commits an edit to the parent <code>GraphDefinition</code> and the executor honours it from the next step on</li>
+  <li><strong>Dynamic multi-agent</strong> where N is unbounded or communication topology is fully runtime-decided (not just selected from a predeclared mesh)</li>
+</ul>
+
+<h3>Why this earns a major version bump</h3>
+<ul>
+  <li>The "predeclared bounded topology" invariant breaks — graph JSON is no longer a complete spec of what can run</li>
+  <li>The executor needs to handle node / edge / scope insertion safely mid-run, with state-container lifetime semantics across runtime-spawned scopes</li>
+  <li>The canvas needs new affordances for visualising a mutating graph without confusing the user</li>
+  <li>Audit guarantees relied on by structurally-inspectable tooling (e.g., PortBench's faithfulness rules over JSON topology) need re-derivation — they may degrade to "snapshot at instant T" semantics</li>
+</ul>
+
+<h3>Non-goals</h3>
+<ul>
+  <li><strong>Replacing the v1 paradigm</strong> — bounded static topology remains the recommended starting point for most agents; v2 is opt-in</li>
+  <li><strong>Auto-converting v1 graphs into v2 graphs</strong> — v1 graphs run unchanged in v2; the upgrade path is "add v2-only nodes if you need them"</li>
+  <li><strong>Breaking the v1 <code>GraphDefinition</code> JSON contract</strong> — v2 extends it (new node types, optional fields), never breaks existing files</li>
+</ul>
+
+<div class="callout note">
+  <strong>Open questions — deliberately unresolved</strong>
+  <ul style="margin:.3rem 0 0; padding-left: 1.2rem;">
+    <li>Does v2 get a second executor, or does <code>GraphExecutor</code> generalise to handle mid-run mutation?</li>
+    <li>How does the canvas show a mutating graph without confusing the user?</li>
+    <li>What does state-container <code>lifetime</code> mean for a scope spawned at step N and removed at step M?</li>
+    <li>Tool availability scoping: all loaded tools? A runtime-declared subset? Per-scope gating?</li>
+    <li>Does PortBench's structural-inspectability claim degrade gracefully or require a v2-specific audit pass?</li>
+  </ul>
+</div>
+
+<h2 id="discipline"><span class="num">§3</span>Versioning Discipline</h2>
+
+<ul>
+  <li><strong>Two majors are declared</strong>: v1 (active) and v2 (future). Anything beyond is premature.</li>
+  <li><strong>Pre-release tagging</strong>: <code>v0.x</code> while the API is still moving with research iteration and early external integration. <code>v1.0</code> tags when the public API is declared stable (see the <a href="../repo/versioning.html">Versioning Policy</a>) — <strong>not</strong> at paper submission; academic citation is a separate Zenodo / <code>CITATION.cff</code> axis.</li>
+  <li><strong>Minor versions</strong> (<code>v1.1</code>, <code>v1.2</code>, …) accommodate incremental feature work from <a href="roadmap.html">roadmap</a> — new tools, envs, methods, <em>and deployable / packaging polish</em> — that does not require runtime topology mutation.</li>
+  <li><strong>Patch versions</strong> are bug fixes and non-functional cleanups.</li>
+  <li><strong>A feature moves from v1.x to v2</strong> when it can only be expressed with runtime-mutating topology. If it works with predeclared bounded topology — even via router-and-bounded-pool, hidden-in-node, or <code>K_max</code> over-provisioning patterns — it stays in v1.x.</li>
+  <li>This file is the <strong>source of truth for the paradigm</strong> of each major version; <a href="roadmap.html">roadmap</a> is the source of truth for which specific items are in flight.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#v1">§1AgentCanvas v1 — Bounded Static-Topology Canvas active</a>
+      <a class="toc-h2" href="#v2">§2AgentCanvas v2 — Topology-Growing Canvas future</a>
+      <a class="toc-h2" href="#discipline">§3Versioning Discipline</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

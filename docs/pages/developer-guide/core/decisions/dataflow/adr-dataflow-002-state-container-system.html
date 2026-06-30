@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-002 — AgentCanvas</title>
+<meta name="description" content="State container system — dual-wire architecture with typed states">
+<meta property="og:title" content="ADR-dataflow-002 — AgentCanvas">
+<meta property="og:description" content="State container system — dual-wire architecture with typed states">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-002-state-container-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-002-state-container-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-002</span>
+  </div>
+  <div class="last-updated">2026-03-31</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-002</h1>
+  <p class="tagline">State container system — dual-wire architecture with typed states</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-31</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-014</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>AgentCanvas nodes manage persistent state via hidden <code>_NodeStateProxy._state</code> dicts — invisible, per-node, not checkpointable, not shareable. <code>HistoryTracker</code> accumulates action history in <code>ctx.history_entries</code>, <code>LLMCallNode</code> accumulates conversation messages in <code>ctx.messages</code>, <code>PolicyForward</code> holds RNN hidden states in <code>ctx.rnn_states</code> — all invisible on the canvas. If two nodes need the same accumulated data, one must wire through the other. There is no checkpoint, resume, or replay capability. LangGraph's channel system showed that making state a first-class concept (typed, reducered, visible) dramatically improves debuggability and composability.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>StateContainer</strong> — a dict of multiple named states, rendered as a visible canvas element with dashed violet border and database icon. Each container groups related states (e.g. "Navigation State" holds <code>action_history</code>, <code>active_plan</code>, <code>step_count</code>). Multiple containers per graph. (2) <strong>BaseState</strong> hierarchy — 4 reducer types as standalone dataclasses: <code>AccumulatorState</code> (list.append, max_size), <code>LastWriteState</code> (overwrite), <code>CounterState</code> (sum), <code>EphemeralState</code> (clears at IterOut). Barrier deferred until parallel execution (TODO #14). (3) <strong>Two-axis type system</strong> — each state has a reducer type (behaviour) and a <code>value_type</code> (data shape) from an extensible registry that is a superset of wire types: includes TEXT, ACTION, IMAGE + domain types like POINTCLOUD, OCCUPANCY_MAP, EMBEDDING. (4) <strong>State edges</strong> — a separate wire system from data edges. A state edge grants a node read/write access to a container. Not data-carrying — access grants only. Rendered as dashed violet lines, hidden by default, toggled via toolbar button. (5) <strong>GraphDefinition extension</strong> — <code>StateDef</code>, <code>ContainerDef</code>, <code>StateEdgeDef</code> dataclasses added. <code>GraphDefinition</code> gains <code>containers</code> and <code>state_edges</code> fields (empty by default for backward compatibility). (6) <strong>Executor integration</strong> — containers built from <code>graph.containers</code> after <code>flatten_graph()</code>. State edge index maps <code>node_id → {container_ids}</code>. Connected containers injected into <code>ctx._containers</code> before node fires. <code>on_iter_boundary()</code> called at IterOut (Ephemeral clears). Container snapshots included in <code>nav_step</code> WS broadcast. (7) <strong>Flatten support</strong> — composite expansion prefixes container IDs and remaps state edge references, same pattern as nodes/edges. (8) <strong>Node decomposition pattern</strong> — "fancy" nodes like HistoryTracker can be decomposed into composite graphs wrapping simpler nodes + state containers. Same ports from outside; visible state inside.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Copy LangGraph's implicit global state model (all nodes see all channels) — rejected, loses the explicit visual wiring that makes AgentCanvas a canvas. (b) Make containers regular computation nodes with input/output ports — rejected, containers are passive storage, not computation; they shouldn't fire or participate in the ready queue. (c) Single container per graph (like LangGraph's single State TypedDict) — rejected, multiple containers allow grouping by domain (navigation vs spatial memory). (d) Untyped containers (hold <code>Any</code>) — rejected, value_type enables validation and visual cues matching the existing wire type system.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>State moves from being an implementation detail of node handlers to a <strong>first-class canvas element</strong>. This is the key enabler for: (1) visible debugging — researchers see what's accumulating, (2) shared state — multiple nodes access the same history without wiring through each other, (3) checkpointing — save/restore agent state for replay, (4) composability — HistoryTracker becomes a composite with visible internal state instead of a monolith with hidden <code>ctx.*</code>. The dual-wire architecture keeps the simple case simple (graphs without containers work unchanged) while enabling the complex case. The design is dataflow-centric (edges carry data, containers store state) rather than state-centric (LangGraph: channels carry data AND trigger execution), matching the visual canvas paradigm.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>architecture.md, glossary.md, blueprint.md, roadmap.md, design-docs/state-containers.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

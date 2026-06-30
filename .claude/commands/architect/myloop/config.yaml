@@ -1,0 +1,238 @@
+variant_name:  myloop
+variant_label: "myloop — knowledge-distillation orchestrator (THINK → EXPERIMENT → DISTILL triple + REFLECT meta-phase)"
+
+# Schemas for every file referenced here are documented in schemas.md.
+schema_doc: schemas.md
+
+# Paths inside outputs/design_runs/myloop/{graph}/v{N}/ — orchestrator reads/writes here.
+paths:
+  goal:               goal.md
+  knowledge:          knowledge.md
+  search_space:       search_space.md
+  experience:         experience.jsonl
+  hypotheses:         hypotheses.jsonl
+  iteration_dir:      iteration/
+  experiment_design:  experiment_design.yaml
+  tools_dir:          tools/
+  staging_dir:        .staging/
+  loop_state_dir:     .loop_state/
+
+bootstrap:
+  seed_knowledge_from:    .claude/commands/architect/myloop/data/seed_knowledge.md
+  seed_search_space_from: .claude/commands/architect/myloop/data/seed_search_space.md  # copied to search_space.md at bootstrap
+  require_goal_md:        true           # hard: refuse to start without user-authored goal.md
+
+orchestrator:
+  hard_contract:
+    every_think_must_produce_experiment: true     # iter MUST end with EXPERIMENT (probe ≥ 1 ep allowed)
+  termination:
+    poll_each_iter: true                          # evaluate goal.md § Termination at start of every iter
+  caps:
+    max_iters:             50                     # absolute upper bound regardless of termination
+    max_consecutive_skips: 3                      # SKIP from implementer or experiment infra failure
+    max_specs_per_iter:    3                      # CAP on K (ExperimentSpec entries per envelope). proposer.md enforces, loop.md re-validates. K>3 amplifies CRITIC + apply-step cost linearly.
+  reflect:                                        # REFLECT meta-phase trigger cadence (loop.md § 3a′)
+    heartbeat_iters:       3                      # fire REFLECT every N committed iters since the last one
+    axis_concentration_k:  3                      # last K committed iters sharing one intervention_axis → fire REFLECT
+    skip_escalation:       true                   # SKIP_THINK_EMPTY escalates to REFLECT instead of terminating
+  default_admission_profile_hint: "<inferred from graph name>"   # e.g. mapgpt_mp3d → mapgpt-mp3d
+
+# EXPERIMENT phase — apply-step knobs (loop.md § 3c).
+# myloop has no implementer / evaluator skill: the apply + smoke + eval
+# work is inline in loop.md, the loop being a coding agent. Only
+# _common/files-contract.md is still shared. The apply step runs only
+# when ExperimentSpec.patch is non-null; the smoke retry is
+# change-correctness sanity, orthogonal to the iter's actual eval
+# profile. The eval itself is /experiment:run, called directly with
+# ExperimentSpec.eval_profile.name.
+experiment:
+  smoke_profile_key: smoke_<graph>
+  retry_max:         3
+  # The editing sub-agent edits the overlay natively (no patch DSL —
+  # retired 2026-05-20); seeding + the § 7 whitelist go through the
+  # shared helper _common/lib/overlay.py, and llmCall pinning through
+  # _common/lib/pin_llm_profile.py.
+
+# No `understand:` block — myloop/understand.md is a standalone file,
+# not a _common/understand.md stub, so it reads no config here.
+
+# === FILES MANIFEST (per _common/files-contract.md § 4) ===
+# Single source of truth for file IDENTITY (type / purpose / access).
+# File SHAPE lives in schemas.md, linked by each entry's `schema:` field.
+manifest:
+
+  lineage:
+    model: implicit_linear            # myloop iter_M's parent is always iter_{M-1}
+
+  metrics_payload: record.json        # the iter-record file holds this iter's eval result
+
+  files:
+    # --- vN-scoped: input ---
+    goal.md:
+      type: input
+      purpose: "Mission spec — Ultimate / Escalation / Termination."
+      schema: schemas.md#1
+      written_by: []                  # user-authored (or loop bootstrap from --goal)
+      read_by: [loop, proposer, distill]
+    constraints.md:
+      type: input
+      purpose: "Hard MUST / MUST NOT rules; 4-layer bootstrap-merged. Optional."
+      schema: schemas.md#11
+      written_by: [loop]              # bootstrap-merge only; user-editable thereafter
+      read_by: [proposer, distill]
+    # --- vN-scoped: working-memory ---
+    experiment_design.yaml:
+      type: working-memory             # NOT input — proposer appends probes mid-run
+      purpose: "Eval-profile registry (smoke/perf baselines + THINK-composed targeted subsets)."
+      schema: schemas.md#6
+      mutation: append-only
+      written_by: [loop, proposer]      # loop bootstraps from {graph}.yaml; proposer appends probes
+      read_by: [loop, proposer]         # proposer validates eval_profile.name + injects it into THINK
+    knowledge.md:
+      type: working-memory
+      purpose: "Pure facts about system / graph / env / dataset."
+      schema: schemas.md#2
+      mutation: append-only
+      written_by: [proposer, distill]
+      read_by: [proposer, distill]
+    search_space.md:
+      type: working-memory
+      purpose: "Intervention-space taxonomy (§ Axes) + per-REFLECT coverage / frontier (§ Coverage)."
+      schema: schemas.md#12
+      mutation: append-only
+      written_by: [loop, reflect]       # loop bootstraps from seed_search_space.md; reflect appends reflection sections
+      read_by: [reflect, proposer]      # reflect updates coverage; proposer/THINK reads the frontier + axis list
+    experience.jsonl:
+      type: working-memory
+      purpose: "Closed-case lessons — confirmed and refuted hypotheses."
+      schema: schemas.md#3
+      mutation: append-only
+      written_by: [distill]
+      read_by: [proposer, distill]
+    hypotheses.jsonl:
+      type: working-memory
+      purpose: "Open-conjecture queue; append on creation, line-delete on resolve."
+      schema: schemas.md#4
+      mutation: mutable
+      written_by: [proposer, distill]
+      read_by: [proposer, distill]
+    tools/:
+      type: working-memory
+      purpose: "Orchestrator self-authored analysis utilities (*.py)."
+      schema: schemas.md#7
+      mutation: mutable
+      written_by: [proposer]
+      read_by: [proposer, distill]
+
+    # --- vN-scoped: rollup ---
+    SUMMARY.md:
+      type: rollup
+      purpose: "Run summary; written once at termination/pause."
+      written_by: [loop]
+      read_by: []
+    trace.md:
+      type: rollup
+      purpose: "One-row-per-iter axis/metric/outcome history table. Derived — regenerated wholesale from iteration/iter_*/record.json at each commit + at termination; record.json is the source of truth."
+      schema: schemas.md#13
+      written_by: [loop]
+      read_by: [understand]            # human-facing rollup; understand surfaces it for a fresh session
+    lineage.md:
+      type: rollup
+      purpose: "One-section-per-iter narrative (think / change / metrics / distill / reflect). Derived — regenerated wholesale from record.json, same contract as trace.md."
+      schema: schemas.md#14
+      written_by: [loop]
+      read_by: [understand]
+
+    # --- per-iter ---
+    record.json:
+      type: iter-record
+      purpose: "Dense IterRecord — the canonical per-iter record; metrics payload."
+      schema: schemas.md#5
+      written_by: [loop]
+      read_by: [proposer]
+    active_workspace_<spec_id>/:
+      type: mutation
+      purpose: "This iter's per-spec workspace overlay (one per spec with patch != null). Independent overlays — patches do NOT stack across specs."
+      written_by: [loop]               # loop.md § 3c apply-step (inline; no implementer skill)
+      read_by: [loop]
+    eval_metadata_<spec_id>.json:
+      type: phase-artifact            # multi_spec_eval wrapper output (or loop-synthesized for skipped specs)
+      purpose: "Per-spec aggregated eval metadata: run_ids[] (length=passes), metrics_digest (mean_sr/sd_sr/robust_sr), per_ep_success[][] (outer=passes); one per spec in envelope."
+      written_by: [loop, multi_spec_eval_wrapper]
+      read_by: [distill]
+    spec.json:
+      type: phase-artifact
+      purpose: "ExperimentSpec ENVELOPE — {iter, specs:[K specs]}; produced by THINK, consumed by CRITIC + EXPERIMENT."
+      schema: schemas.md#8
+      written_by: [proposer]
+      read_by: [loop, critic, distill]
+    spec_round_1.json:
+      type: phase-artifact
+      purpose: "Round-1 spec envelope preserved when THINK does a rebuttal pass. Present only on iters where any spec needed rewriting after CRITIC REVISE/BLOCK."
+      written_by: [proposer]
+      read_by: []
+    think_trace.md:
+      type: phase-artifact
+      purpose: "THINK sub-agent full forensic trace (one per iter — THINK is per-iter, not per-spec)."
+      written_by: [proposer]
+      read_by: [distill]
+    reflection_trace.md:
+      type: phase-artifact
+      purpose: "REFLECT sub-agent full forensic trace. Present only on iters where REFLECT fired."
+      written_by: [reflect]
+      read_by: []
+    critique_<spec_id>.json:
+      type: phase-artifact
+      purpose: "Per-spec CRITIC output — graduated verdict (OK/WARN/REVISE/BLOCK) + predicted_failure_modes. One per spec with patch != null. Final round; round-1 preserved as critique_<spec_id>_round_1.json if a round 2 ran on that spec."
+      schema: schemas.md#15
+      written_by: [critic]
+      read_by: [loop, proposer, distill]    # proposer reads on per-spec rebuttal pass; distill judges accuracy
+    critique_trace_<spec_id>.md:
+      type: phase-artifact
+      purpose: "Per-spec CRITIC sub-agent forensic trace."
+      written_by: [critic]
+      read_by: []
+    critique_<spec_id>_round_1.json:
+      type: phase-artifact
+      purpose: "Per-spec round-1 critique preserved when CRITIC round 2 fires on that spec."
+      schema: schemas.md#15
+      written_by: [loop]
+      read_by: [distill]
+    milestone.md:
+      type: phase-artifact
+      purpose: "Optional near-term sub-goal narrative from THINK (iter-level)."
+      written_by: [proposer]
+      read_by: []
+    distill_<spec_id>.json:
+      type: phase-artifact
+      purpose: "Per-spec DISTILL output (verdict + lessons); merged into record.specs[*].distill at commit. One per spec in envelope."
+      schema: schemas.md#5
+      written_by: [distill]
+      read_by: [loop]
+    distill_summary.json:
+      type: phase-artifact
+      purpose: "Iter-level DISTILL summary (milestone_after + cross_spec_lesson). Source for record.iter_summary.milestone_after."
+      written_by: [distill]
+      read_by: [loop]
+    distill_trace.md:
+      type: phase-artifact
+      purpose: "DISTILL sub-agent full forensic trace (one file — the single spawn covers all K specs)."
+      written_by: [distill]
+      read_by: []
+    debug_log_<spec_id>.md:
+      type: phase-artifact
+      purpose: "Per-spec EXPERIMENT apply-step smoke-retry history (present only for specs with patch applied)."
+      written_by: [loop]               # loop.md § 3c apply-step
+      read_by: [distill]
+    multi_spec_eval_log.md:
+      type: phase-artifact
+      purpose: "Python wrapper's wave plan + per-submission worker allocation + per-pass timing. Always written by the wrapper when invoked, even on infra crash."
+      written_by: [multi_spec_eval_wrapper]
+      read_by: []
+
+  phase_sentinels:
+    proposer:    { needs: null,                           writes: spec.json }
+    reflect:     { needs: null,                           writes: reflection_trace.md }
+    critic:      { needs: spec.json,                       writes: critique_<spec_id>.json, per_spec: true }  # one fire per spec with patch != null; loop.md § 3b.5
+    distill:     { needs: eval_metadata_<spec_id>.json,    writes: [distill_<spec_id>.json, distill_summary.json] }
+    # No `implementer` sentinel — the apply step is inline in loop.md § 3c, per spec.

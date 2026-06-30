@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driving the Backend from a Coding Agent — AgentCanvas</title>
+<meta name="description" content="You have an AgentCanvas backend, you have a coding agent (Claude Code, Cursor, etc.), and you want the agent to run experiments : kick off batch evals, watch progress, pull metrics, iterate on the…">
+<meta property="og:title" content="Driving the Backend from a Coding Agent — AgentCanvas">
+<meta property="og:description" content="You have an AgentCanvas backend, you have a coding agent (Claude Code, Cursor, etc.), and you want the agent to run experiments : kick off batch evals, watch progress, pull metrics, iterate on the…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/tutorials/coding-agent-backend.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/tutorials/coding-agent-backend.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Tutorials</a>
+    <span class="sep">/</span>
+    <span class="here">Driving the Backend from a Coding Agent</span>
+  </div>
+</div>
+  <header class="page-header guide">
+  <h1>Driving the Backend from a Coding Agent</h1>
+</header>
+
+<p>You have an AgentCanvas backend, you have a coding agent (Claude Code,
+Cursor, etc.), and you want the agent to <em>run experiments</em>: kick
+off batch evals, watch progress, pull metrics, iterate on the graph.
+There are <strong>three</strong> programmatic surfaces today; this tutorial walks
+each one end-to-end so you can pick.</p>
+
+<aside class="callout note">
+  <strong>Just want to click "Start" yourself?</strong> This tutorial is for
+  programmatic / agent-driven use. For UI-driven evals (and the
+  worker-pool / batched-inference knobs that apply to all three modes
+  below), see <a href="batch-eval.html">Running a Parallel Batch Eval</a>.
+  For the <em>design</em> of these surfaces — endpoint contracts, MCP slot
+  pool, PDEATHSIG crash cleanup — see
+  <a href="../design-docs/surfaces/coding-agent-backend-surface.html">Design — Coding-Agent Backend Surface</a>.
+</aside>
+
+<table>
+<thead><tr>
+  <th>Mode</th><th>Surface</th><th>Lifecycle</th><th>Best when</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><strong>A. <code>/experiment:run</code></strong></td>
+  <td>Slash-skill submits one graph to the JobScheduler over HTTP</td>
+  <td>Backend is <strong>yours</strong> on <code>:8000</code> and stays up; skill submits,
+      polls, prints metrics on exit. Companion: <code>/experiment:status</code>,
+      <code>/experiment:teardown</code></td>
+  <td>One-off graph eval, hyperparameter sweep, ad-hoc smoke test
+      against your already-running backend with GPU admission control</td>
+</tr>
+<tr>
+  <td><strong>B. MCP server (<code>agentcanvas-backend</code>)</strong></td>
+  <td>Typed MCP tools — <code>eval_start</code>, <code>eval_status</code>, <code>eval_export</code>,
+      <code>eval_stop</code>, <code>graph_list</code>, <code>eval_runs_list</code></td>
+  <td>One backend per coding-agent conversation, isolated via a flock-
+      based 5-slot pool on <code>8765-8769</code>; PDEATHSIG-armed against
+      crashes; backend self-exits when the conversation ends</td>
+  <td>You want conversational backend driving without owning a
+      <code>:8000</code> backend yourself — debugging, ad-hoc queries, "run X,
+      now compare with Y"</td>
+</tr>
+<tr>
+  <td><strong>C. <code>/architect:&lt;variant&gt;:loop</code></strong> (AAS family)</td>
+  <td>Per-variant loop skill drives proposer → implementer →
+      evaluator; evaluator internally calls <code>/experiment:run</code></td>
+  <td>Variant owns an iter-tree under
+      <code>outputs/design_runs/&lt;variant&gt;/&lt;task&gt;/...</code> with snapshots,
+      bootstrap CI, archive.jsonl. Eval-step lifecycle delegated to A</td>
+  <td>You're inside an architecture-search loop and want every cycle
+      to land in a versioned iter dir with reproducible metrics</td>
+</tr>
+</tbody>
+</table>
+
+<p>All three surfaces drive the same backend code (FastAPI app under
+<code>agentcanvas/backend/app/</code>). They differ in <em>how the agent addresses
+it</em> and <em>how much policy / bookkeeping the skill layers on top</em>.</p>
+
+<hr>
+
+<h2 id="1-pick-a-mode"><span class="num">1.</span> Pick a Mode</h2>
+
+<table>
+<thead><tr><th>You're about to…</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td>Run a graph once to confirm a bug fix worked</td>
+    <td><code>/experiment:run</code> (Mode A)</td></tr>
+<tr><td>Pull a finished run's metrics for analysis</td>
+    <td>MCP <code>eval_export</code> (Mode B) or read
+        <code>outputs/eval_runs/{run_id}/summary.json</code></td></tr>
+<tr><td>Conversationally explore: "run X, what's SR, now try Y"</td>
+    <td>MCP (Mode B)</td></tr>
+<tr><td>Compare two graph variants on a pinned episode subset</td>
+    <td>MCP <code>eval_start</code> with <code>episode_indices=[...]</code>, called twice</td></tr>
+<tr><td>Start a new architecture-search loop (will produce 5+ iters)</td>
+    <td><code>/architect:&lt;variant&gt;:loop</code> (Mode C)</td></tr>
+<tr><td>Detach from a running submission and poll later</td>
+    <td><code>/experiment:status &lt;run_id&gt; --watch</code></td></tr>
+<tr><td>Cancel everything in the scheduler before restarting</td>
+    <td><code>/experiment:teardown</code></td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2 id="2-mode-a-experiment-run"><span class="num">2.</span> Mode A — <code>/experiment:run</code></h2>
+
+<p>Foreground submitter to the backend's <strong>JobScheduler</strong> (M1 design,
+2026-05-07). Multiple jobs queue and run concurrently when their VRAM
+declarations fit; Ctrl-C posts a cancel and exits. <strong>Replaces the
+legacy <code>/architect:experiment-http</code>.</strong></p>
+
+<h3 id="21-prerequisites"><span class="num">2.1</span> Prerequisites</h3>
+<ul>
+<li>Backend up at <code>:8000</code> (yours — start it once with the usual
+  <code>cd agentcanvas/backend &amp;&amp; uvicorn app.main:app --host 127.0.0.1 --port 8000</code>
+  or its <code>auto_host</code> wrapper). The skill never spawns a backend.</li>
+<li>A profile in <code>.claude/experiment/profiles.yaml</code> matching your
+  workload's VRAM + GPU declarations. Unknown names fall back to
+  <code>defaults</code> with a stderr warning.</li>
+<li>A graph at <code>workspace/graphs/{name}.json</code>. Optional companion
+  <code>{name}.exp.yaml</code> for per-graph eval defaults.</li>
+</ul>
+
+<h3 id="22-run"><span class="num">2.2</span> Run</h3>
+<pre><code>/experiment:run mapgpt-mp3d mapgpt_mp3d episode_count=10 worker_count=2
+</code></pre>
+<p>Arguments:</p>
+<ul>
+<li><code>mapgpt-mp3d</code> — profile key in <code>profiles.yaml</code> (GPU admission rule).</li>
+<li><code>mapgpt_mp3d</code> — graph name under <code>workspace/graphs/</code> (no extension).</li>
+<li><code>key=value</code> overrides — common keys: <code>episode_count</code>,
+  <code>worker_count</code>, <code>step_budget</code>, <code>per_step_budget_sec</code>, <code>dataset</code>,
+  <code>split</code>, <code>start_episode_index</code>.</li>
+</ul>
+
+<p>Optional <code>--workspace=&lt;abs-path&gt;</code> overlay — let the backend pick up an
+architect iter's <code>active_workspace/</code> without dirtying frozen
+<code>workspace/</code>:</p>
+<pre><code>/experiment:run mapgpt-mp3d mapgpt_mp3d \
+    --workspace=/path/to/vlnworkspace/outputs/design_runs/myloop/mapgpt_mp3d/v0/iter_3/active_workspace \
+    episode_count=10
+</code></pre>
+
+<h3 id="23-what-happens"><span class="num">2.3</span> What Happens</h3>
+<ol>
+<li>Read <code>profiles.yaml</code> → build payload (eval block + scheduling block
+  with <code>marginal_vram_mb</code>, <code>exclusive_gpu</code>).</li>
+<li><code>POST /api/eval/v2/start</code> with <code>via_subprocess=true</code> →
+  returns <code>{"run_id": "...", "initial_state": "pending"}</code>.</li>
+<li>Poll <code>GET /api/eval/v2/runs/{run_id}</code> until the run reaches a
+  terminal state (<code>done</code>, <code>error</code>, <code>aborted</code>, <code>cancelled</code>).</li>
+<li>On non-success, dump the tail of <code>stderr.log</code> markers from the
+  scheduler subprocess so the failure isn't silent (see memory
+  <em>feedback_experiment_run_silent_failures</em>).</li>
+<li>Print final metrics and exit.</li>
+</ol>
+
+<h3 id="24-detach-and-poll"><span class="num">2.4</span> Detach and Poll Later</h3>
+<p>If you Ctrl-C the foreground submitter <strong>without intent to cancel</strong>,
+the run continues on the backend. Reattach with the printed run_id:</p>
+<pre><code>/experiment:status                       # queue + running snapshot
+/experiment:status &lt;run_id&gt;              # one run, one shot
+/experiment:status &lt;run_id&gt; --watch      # poll until terminal
+/experiment:status &lt;run_id&gt; --cancel     # POST cancel and exit
+</code></pre>
+<p>And to drain the whole queue (without touching the backend process —
+which is yours):</p>
+<pre><code>/experiment:teardown
+</code></pre>
+
+<h3 id="25-output"><span class="num">2.5</span> Output</h3>
+<p>Results land in the backend-owned per-run dir, identified by the
+returned <code>run_id</code>:</p>
+<pre><code>outputs/eval_runs/{run_id}/
+  summary.json                     aggregate metrics (written at completion)
+  episodes/ep{NNNN}/
+    episode.json                   per-episode result (worker_id, status, metrics)
+    log.jsonl                      this episode's firings
+    assets/                        screenshots, intermediate dumps
+  stdout.log / stderr.log          scheduler subprocess output
+</code></pre>
+<p>No iter-tree, no <code>trace.md</code>, no token-cost rollup — those belong to
+Mode C, which wraps Mode A.</p>
+
+<hr>
+
+<h2 id="3-mode-b-mcp-server-raw"><span class="num">3.</span> Mode B — MCP Server (raw)</h2>
+
+<p>The MCP server (<code>agentcanvas/mcp_server/</code>) packages the eval API as
+<a href="https://modelcontextprotocol.io/">Model Context Protocol</a> tools — the
+coding agent talks to the backend through <em>typed tools with
+JSON-Schema-validated inputs</em>, not curl. The server itself encapsulates
+pool-slot acquisition on <code>127.0.0.1:8765-8769</code> plus PDEATHSIG-armed
+crash cleanup — the agent never sees a port number, a PGID, or a signal
+handler.</p>
+
+<p>The full tool set (6 tools, all in
+<code>agentcanvas/mcp_server/server.py</code>):</p>
+
+<table>
+<thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>eval_start</code></td>     <td>Start a batch eval. Accepts <code>graph_name</code>, <code>episode_count</code>, <code>worker_count</code>, <code>step_budget</code>, <code>episode_indices</code>, etc.</td></tr>
+<tr><td><code>eval_status</code></td>    <td>Live progress + currently-running episode per worker</td></tr>
+<tr><td><code>eval_export</code></td>    <td>Read <code>outputs/eval_runs/{run_id}/summary.json</code> after completion — backend-independent</td></tr>
+<tr><td><code>eval_stop</code></td>      <td>Cancel the live run on this conversation's backend</td></tr>
+<tr><td><code>graph_list</code></td>     <td>Enumerate graphs in <code>workspace/graphs/</code> with their <code>workspace/architect/exp_profiles/{graph}.yaml</code> profile fields</td></tr>
+<tr><td><code>eval_runs_list</code></td> <td>Newest-first listing of past runs from disk — works without a live backend</td></tr>
+</tbody>
+</table>
+
+<h3 id="31-prerequisites"><span class="num">3.1</span> Prerequisites</h3>
+<ul>
+<li>Mode A prerequisites <em>minus the running backend</em> — the MCP server
+  spawns its own.</li>
+<li><code>mcp</code> Python package in the <code>agentcanvas</code> conda env (already in
+  <code>agentcanvas/backend/requirements.txt</code>).</li>
+<li>Claude Code CLI on <code>$PATH</code> (<code>claude</code> command) for registration.</li>
+</ul>
+
+<h3 id="32-register"><span class="num">3.2</span> Register</h3>
+<p>Once per machine:</p>
+<pre><code>claude mcp add agentcanvas-backend \
+  --scope local \
+  -e PYTHONPATH=/path/to/vlnworkspace/agentcanvas \
+  -- conda run -n agentcanvas --no-capture-output python -m mcp_server
+</code></pre>
+
+<table>
+<thead><tr><th>Flag</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><code>--scope local</code></td>
+    <td>This user, this project only. Use <code>--scope user</code> to share across all your projects, <code>--scope project</code> to commit a <code>.mcp.json</code> for the team.</td></tr>
+<tr><td><code>-e PYTHONPATH=…</code></td>
+    <td><code>claude mcp add</code> has no <code>--cwd</code>; <code>PYTHONPATH</code> is the cleanest way to let <code>python -m mcp_server</code> find the package.</td></tr>
+<tr><td><code>--no-capture-output</code></td>
+    <td>Critical — without it, conda buffers stdout and breaks MCP JSON-RPC framing.</td></tr>
+<tr><td><code>conda run -n agentcanvas</code></td>
+    <td>Pin the env so the <code>mcp</code> package resolves correctly.</td></tr>
+</tbody>
+</table>
+
+<p>Verify:</p>
+<pre><code>claude mcp list | grep agentcanvas-backend
+# → agentcanvas-backend: conda run -n agentcanvas ...  ✓ Connected
+</code></pre>
+<p><strong>Restart Claude Code</strong> after registration — MCP tool catalogs load
+once at session start, not hot-refreshed.</p>
+
+<h3 id="33-use"><span class="num">3.3</span> Use</h3>
+<p>In any Claude Code session, just ask:</p>
+<pre><code>List the available agent graphs.
+</code></pre>
+<p>Claude calls <code>agentcanvas-backend / graph_list()</code> and reports the
+graphs with their <code>.exp.yaml</code> profiles.</p>
+
+<pre><code>Run navgpt_mp3d for 3 episodes with 1 worker. Show me the success
+rate when it finishes.
+</code></pre>
+<p>Claude orchestrates the whole flow without you scripting it:</p>
+<ol>
+<li><code>eval_start(graph_name="navgpt_mp3d", episode_count=3, worker_count=1)</code>
+  → <code>{"run_id": "abcd1234", "status": "pending"}</code></li>
+<li>Repeated <code>eval_status()</code> until <code>status == "completed"</code></li>
+<li><code>eval_export(run_id="abcd1234")</code> → per-episode results</li>
+<li>Claude summarises <code>aggregate_metrics.success</code> back to you</li>
+</ol>
+
+<h3 id="34-pool-slot-lifecycle"><span class="num">3.4</span> Pool-Slot Lifecycle</h3>
+<p>Brief — full design in
+<a href="../design-docs/surfaces/coding-agent-backend-surface.html">Design — Coding-Agent Backend Surface</a>.</p>
+<ul>
+<li><strong>Start.</strong> On the first tool call, <code>BackendManager</code> walks ports
+  <code>8765-8769</code>, tries <code>flock(LOCK_EX | LOCK_NB)</code> on each
+  <code>~/.cache/agentcanvas-mcp/locks/{port}.lock</code>. First unlocked = our
+  slot. <code>subprocess.Popen</code> uvicorn with <code>os.setsid()</code> +
+  <code>prctl(PR_SET_PDEATHSIG, SIGTERM)</code>. Polls <code>/health</code> for up to 90 s.</li>
+<li><strong>Concurrent conversations.</strong> Each Claude Code conv grabs a
+  different pool slot — they coexist trivially (up to 5 sessions).</li>
+<li><strong>Clean exit</strong> (stdio close → SIGTERM):
+  <code>BackendManager.stop()</code> walks uvicorn descendants for
+  <code>app.server.auto_host</code> children, <code>killpg(SIGTERM)</code>s the backend group
+  + each auto_host group, sleeps 2 s, <code>SIGKILL</code>s survivors.</li>
+<li><strong>Unclean exit</strong> (SIGKILL of MCP, OOM-kill, segfault): kernel
+  fires the re-armed PDEATHSIG inside uvicorn (~106 ms after MCP
+  dies), the cascade cleans up. No orphan processes, no held ports.
+  Linux-only — see § 7.5.</li>
+</ul>
+
+<hr>
+
+<h2 id="4-mode-c-architect-variant-loops"><span class="num">4.</span> Mode C — <code>/architect:&lt;variant&gt;:loop</code> (AAS Family)</h2>
+
+<p>An architecture-search variant owns a per-iter trajectory: each cycle
+proposes a graph patch, implements + smoke-tests it, runs a perf eval
+with bootstrap CI, and atomically commits the result to an iter dir.
+The variant family pivots <strong>methodology</strong> (search strategy, prompt
+shapes, lineage tracking), but all variants share the same eval-step
+contract via <code>_common/evaluator.md</code> — which internally calls
+<code>/experiment:run</code>. Mode C wraps Mode A in iter-tree bookkeeping,
+not the other way around.</p>
+
+<p><strong>Replaces the legacy <code>/architect:experiment-mcp</code> and
+<code>/architect:loop</code>.</strong></p>
+
+<h3 id="41-variants"><span class="num">4.1</span> Variants</h3>
+<table>
+<thead><tr><th>Variant</th><th>One-line</th><th>README</th></tr></thead>
+<tbody>
+<tr><td><code>adas-subagent</code></td>
+    <td>ADAS one-iter-one-conversation; sub-agent per role</td>
+    <td><code>.claude/commands/architect/adas-subagent/README.md</code></td></tr>
+<tr><td><code>aflow</code></td>
+    <td>AFlow-style search</td>
+    <td><code>.claude/commands/architect/aflow/README.md</code></td></tr>
+<tr><td><code>myloop</code></td>
+    <td>Knowledge-distillation orchestrator (THINK → EXPERIMENT → DISTILL)</td>
+    <td><code>.claude/commands/architect/myloop/README.md</code></td></tr>
+</tbody>
+</table>
+
+<h3 id="42-prerequisites"><span class="num">4.2</span> Prerequisites</h3>
+<ul>
+<li>Mode A prerequisites (running backend on <code>:8000</code> with
+  <code>/experiment:run</code> reachable).</li>
+<li>Variant's per-graph perf profile in
+  <code>workspace/architect/exp_profiles/{graph}.yaml</code> (the evaluator auto-bootstraps
+  conservative defaults if missing).</li>
+<li>Read the variant's README before invoking — they have different
+  contracts and iter-dir layouts (see <em>Required reading</em> stanzas at
+  the top of each <code>loop.md</code>).</li>
+</ul>
+
+<h3 id="43-run"><span class="num">4.3</span> Run</h3>
+<pre><code>/architect:adas-subagent:loop mapgpt_mp3d --max-iters 5
+/architect:myloop:loop mapgpt_mp3d --goal "improve SR by 5pp" --max-iters 3
+</code></pre>
+
+<p>The loop owns the per-iter Claude conversation and drives the variant's
+worker skills (typically <code>proposer</code> → <code>implementer</code> → <code>evaluator</code>).
+The <code>msg_list</code> persists across all three. <code>_common/evaluator.md</code> is
+the only step that touches the backend — via <code>/experiment:run</code>.</p>
+
+<h3 id="44-output"><span class="num">4.4</span> Output</h3>
+<pre><code>outputs/design_runs/&lt;variant&gt;/&lt;graph&gt;/vN/
+  iter_0/                          baseline (no patch; perf eval only)
+    metrics.json                   bootstrap mean + 95% CI
+  iter_1/
+    diff/                          patch produced by proposer
+    active_workspace/              workspace with patch applied (Mode A's --workspace overlay target)
+    smoke/                         5-ep smoke eval (gating; from implementer)
+    perf/                          100-ep perf eval (bootstrap CI; from evaluator)
+    metrics.json
+    notes.md                       proposer's hypothesis + outcome
+  iter_2/ …
+  archive.jsonl                    variant-specific lineage (adas-subagent only)
+  trace.md                         one-row-per-iter rollup
+  lineage.md                       parent → child edges across iters
+</code></pre>
+
+<hr>
+
+<h2 id="5-side-by-side"><span class="num">5.</span> Side-by-Side</h2>
+
+<table>
+<thead><tr>
+  <th>Concern</th>
+  <th><code>/experiment:run</code> (A)</th>
+  <th>MCP server (B)</th>
+  <th><code>/architect:&lt;v&gt;:loop</code> (C)</th>
+</tr></thead>
+<tbody>
+<tr><td><strong>Tool surface</strong></td>
+    <td>One slash skill + HTTP POST</td>
+    <td>6 typed MCP tools</td>
+    <td>Variant slash skill (wraps A)</td></tr>
+<tr><td><strong>Who owns the backend</strong></td>
+    <td>You (always-up on <code>:8000</code>)</td>
+    <td>MCP server (pool slot per conversation)</td>
+    <td>You (same as A)</td></tr>
+<tr><td><strong>Lifecycle</strong></td>
+    <td>Foreground submit + poll; Ctrl-C cancels</td>
+    <td>Backend warm across tool calls in one conversation</td>
+    <td>Owns multi-iter trajectory; per-iter eval delegates to A</td></tr>
+<tr><td><strong>GPU admission</strong></td>
+    <td><code>marginal_vram_mb</code> + <code>exclusive_gpu</code> from profile</td>
+    <td>None — single conversation, single backend</td>
+    <td>Inherits A's admission per iter</td></tr>
+<tr><td><strong>Port</strong></td>
+    <td><code>:8000</code> (or <code>AGENTCANVAS_BACKEND_URL</code>)</td>
+    <td>First free flock slot in <code>8765-8769</code></td>
+    <td><code>:8000</code> (via A)</td></tr>
+<tr><td><strong>Iter directory</strong></td>
+    <td>None; results in <code>outputs/eval_runs/{run_id}/</code></td>
+    <td>None; same as A</td>
+    <td><code>outputs/design_runs/&lt;variant&gt;/&lt;graph&gt;/vN/iter_M/</code></td></tr>
+<tr><td><strong>Bootstrap CI / metrics</strong></td>
+    <td>Raw per-episode in <code>summary.json</code></td>
+    <td>Same</td>
+    <td>Variant evaluator computes bootstrap CI (verbatim ADAS algorithm)</td></tr>
+<tr><td><strong>Crash recovery</strong></td>
+    <td>Scheduler subprocess auto-reaped; <code>stderr.log</code> tail dumped on
+        non-success</td>
+    <td>PDEATHSIG cascade in &lt;200 ms</td>
+    <td>Inherits A's; variant decides whether to retry per iter</td></tr>
+<tr><td><strong>Cross-conversation isolation</strong></td>
+    <td>Single shared backend — single-slot <code>ExecutionGuard</code></td>
+    <td>5-slot pool, fully independent</td>
+    <td>Inherits A's single-slot guard per iter</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2 id="6-combining-modes"><span class="num">6.</span> Combining Modes</h2>
+<ol>
+<li><strong>Exploratory phase.</strong> Use MCP. Try graph variants, run small
+  episode counts, get a feel for what's interesting. No iter-tree
+  pollution from throwaway runs.</li>
+<li><strong>Smoke / sweep.</strong> Once a hypothesis stabilises,
+  <code>/experiment:run</code> with the right profile to get GPU admission
+  control + per-graph episode budgets without iter-tree overhead.</li>
+<li><strong>Promotion.</strong> When you want every revision tracked across runs,
+  <code>/architect:&lt;variant&gt;:loop</code> for the iter trajectory.</li>
+<li><strong>Spot checks during the loop.</strong> Between iters, MCP for ad-hoc
+  queries ("what was the SR of iter_3 again?" → Claude calls
+  <code>eval_export</code> on the iter's <code>run_id</code> from <code>metrics.json</code>).</li>
+</ol>
+
+<p>All three share the filesystem (<code>outputs/eval_runs/{run_id}/</code> is visible
+to all surfaces). They differ in <em>which</em> backend they hit:
+<code>/experiment:run</code> and architect variants share your <code>:8000</code> backend
+(serialised by <code>ExecutionGuard</code> within that backend); MCP uses its own
+pool slot. Cross-mode A↔C work fine — they're the same backend; B is
+parallel infrastructure.</p>
+
+<hr>
+
+<h2 id="7-troubleshooting"><span class="num">7.</span> Troubleshooting</h2>
+
+<h3 id="71-experiment-run-says-no-backend"><span class="num">7.1</span> <code>/experiment:run</code> fails with "no backend at :8000"</h3>
+<p>You haven't started a backend yet. The skill doesn't spawn one (that's
+the M1 contract — backends are user-owned). Start it:</p>
+<pre><code>cd agentcanvas/backend
+conda run -n agentcanvas --no-capture-output uvicorn app.main:app --host 127.0.0.1 --port 8000
+</code></pre>
+<p>Or use <code>tools/auto_host.py</code> if you want the multi-env supervisor.
+Override the URL with <code>AGENTCANVAS_BACKEND_URL=http://...</code> if you're on
+a non-default port.</p>
+
+<h3 id="72-experiment-run-unknown-profile"><span class="num">7.2</span> <code>/experiment:run</code> warns "profile not found, falling back to defaults"</h3>
+<p>The profile name didn't match anything in
+<code>.claude/experiment/profiles.yaml</code>. The skill uses the <code>defaults</code>
+block + full GPU + <code>exclusive_gpu=true</code> — safe but serialises every
+other run. Add a real profile entry before the next run; see
+<code>.claude/experiment/README.md</code>.</p>
+
+<h3 id="73-mcp-tools-dont-appear"><span class="num">7.3</span> MCP tools don't appear in Claude Code</h3>
+<ol>
+<li><code>claude mcp list</code> should show <code>agentcanvas-backend ✓ Connected</code>.
+  If <code>× Failed</code>, check <code>~/.cache/agentcanvas-mcp/backend-{ISO}.log</code>
+  for conda / uvicorn output.</li>
+<li>You <strong>restarted</strong> Claude Code after registration. Tool catalogs
+  load at session start.</li>
+<li>If <code>claude mcp list</code> doesn't show it at all, registration didn't
+  persist. Re-run <code>claude mcp add</code> from § 3.2 and check
+  <code>~/.claude.json</code> has an entry under
+  <code>projects.{your-repo-path}.mcpServers</code>.</li>
+</ol>
+
+<h3 id="74-mcp-eval-start-busy"><span class="num">7.4</span> MCP <code>eval_start</code> returns <code>{"error": "another run is already active"}</code></h3>
+<p>This conversation's backend enforces single-slot execution (one batch
+eval at a time per backend). Either wait for the current run to finish
+(poll <code>eval_status</code>) or call <code>eval_stop</code>. Other Claude Code
+conversations are unaffected — they're on different pool slots and
+don't share the single-slot guard.</p>
+
+<h3 id="75-mcp-all-pool-slots-busy"><span class="num">7.5</span> MCP "all 5 pool slots are in use"</h3>
+<p>You already have 5 Claude Code conversations holding backends, or a
+previous backend failed to release its <code>flock</code>. Close one of the
+conversations; the kernel releases the slot's lock at process exit
+regardless of how it died. If no conversation is alive, find the
+orphaned uvicorn:</p>
+<pre><code>ss -tlnp 2>/dev/null | grep -E '127\.0\.0\.1:876[5-9]'
+# pick the PID, get its PGID:
+PGID=$(ps -o pgid= -p &lt;PID&gt; | tr -d ' ')
+kill -TERM -- -"$PGID"
+</code></pre>
+<p>As of 2026-05-01 (kernel-level orphan cleanup), this should be rare —
+PDEATHSIG fires when the parent MCP dies.</p>
+
+<h3 id="76-sigkill-mcp-orphans-on-macos"><span class="num">7.6</span> SIGKILL of MCP orphans the backend on macOS / BSD</h3>
+<p>PDEATHSIG is Linux-only. AgentCanvas's primary platform is Linux
+(habitat-sim is Linux-first), so this is a known constraint, not a
+bug. On Linux the MCP → backend cascade dies in ~106 ms.</p>
+
+<h3 id="77-architect-variant-loop-fails-on-iter-0"><span class="num">7.7</span> <code>/architect:&lt;variant&gt;:loop</code> fails on iter_0 baseline</h3>
+<p>The baseline call goes through <code>_common/evaluator.md --mode baseline</code>,
+which runs perf eval against the current workspace. If this fails,
+the variant skill aborts before any proposer runs. Three usual causes:</p>
+<ul>
+<li>Backend not up — same as § 7.1.</li>
+<li>Perf profile missing required fields — check the variant's
+  <code>config.yaml § evaluator.profile_key</code> and confirm the matching
+  key exists in <code>workspace/architect/exp_profiles/{graph}.yaml</code>.</li>
+<li>Workspace overlay mismatch — for variants that build an
+  <code>active_workspace/</code>, ensure the variant's iter init step ran (see
+  the variant's <code>loop.md</code> § "Bootstrap").</li>
+</ul>
+
+<hr>
+
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-05-18: Rewritten for M1 + variant-family reality. Mode A is now
+  <code>/experiment:run</code> (replaces legacy <code>/architect:experiment-http</code>);
+  Mode C is the per-variant <code>/architect:&lt;variant&gt;:loop</code> family
+  (replaces legacy <code>/architect:experiment-mcp</code> + <code>/architect:loop</code>).
+  MCP tool list updated to current 6 (added <code>eval_runs_list</code>, removed
+  the "five tools" claim). Troubleshooting renumbered.</li>
+<li>2026-05-06: MCP server uses flock-based 5-slot pool on <code>8765-8769</code>
+  instead of single-port spawn-or-borrow — each Claude Code
+  conversation gets its own backend, kernel auto-releases the slot on
+  any process death. <code>eval_start</code> swaps <code>max_steps</code> for
+  <code>step_budget=null</code> (defers to framework resolver). New <code>runs_list</code>
+  tool surfaces past runs from disk.</li>
+<li>2026-05-01 16:10: Added Mode C hybrid (was <code>/architect:experiment-mcp</code>;
+  retired 2026-05-07 in favour of variant family).</li>
+<li>2026-05-01 15:24: Initial — covered <code>/architect:experiment</code> +
+  MCP server.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-pick-a-mode">1. Pick a Mode</a>
+      <a class="toc-h2" href="#2-mode-a-experiment-run">2. Mode A — /experiment:run</a>
+      <a class="toc-h3" href="#21-prerequisites">2.1 Prerequisites</a>
+      <a class="toc-h3" href="#22-run">2.2 Run</a>
+      <a class="toc-h3" href="#23-what-happens">2.3 What Happens</a>
+      <a class="toc-h3" href="#24-detach-and-poll">2.4 Detach and Poll Later</a>
+      <a class="toc-h3" href="#25-output">2.5 Output</a>
+      <a class="toc-h2" href="#3-mode-b-mcp-server-raw">3. Mode B — MCP Server (raw)</a>
+      <a class="toc-h3" href="#31-prerequisites">3.1 Prerequisites</a>
+      <a class="toc-h3" href="#32-register">3.2 Register</a>
+      <a class="toc-h3" href="#33-use">3.3 Use</a>
+      <a class="toc-h3" href="#34-pool-slot-lifecycle">3.4 Pool-Slot Lifecycle</a>
+      <a class="toc-h2" href="#4-mode-c-architect-variant-loops">4. Mode C — /architect:&lt;variant&gt;:loop (AAS Family)</a>
+      <a class="toc-h3" href="#41-variants">4.1 Variants</a>
+      <a class="toc-h3" href="#42-prerequisites">4.2 Prerequisites</a>
+      <a class="toc-h3" href="#43-run">4.3 Run</a>
+      <a class="toc-h3" href="#44-output">4.4 Output</a>
+      <a class="toc-h2" href="#5-side-by-side">5. Side-by-Side</a>
+      <a class="toc-h2" href="#6-combining-modes">6. Combining Modes</a>
+      <a class="toc-h2" href="#7-troubleshooting">7. Troubleshooting</a>
+      <a class="toc-h3" href="#71-experiment-run-says-no-backend">7.1 /experiment:run fails with "no backend at :8000"</a>
+      <a class="toc-h3" href="#72-experiment-run-unknown-profile">7.2 /experiment:run warns "profile not found, falling back to defaults"</a>
+      <a class="toc-h3" href="#73-mcp-tools-dont-appear">7.3 MCP tools don't appear in Claude Code</a>
+      <a class="toc-h3" href="#74-mcp-eval-start-busy">7.4 MCP eval_start returns {"error": "another run is already active"}</a>
+      <a class="toc-h3" href="#75-mcp-all-pool-slots-busy">7.5 MCP "all 5 pool slots are in use"</a>
+      <a class="toc-h3" href="#76-sigkill-mcp-orphans-on-macos">7.6 SIGKILL of MCP orphans the backend on macOS / BSD</a>
+      <a class="toc-h3" href="#77-architect-variant-loop-fails-on-iter-0">7.7 /architect:&lt;variant&gt;:loop fails on iter_0 baseline</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

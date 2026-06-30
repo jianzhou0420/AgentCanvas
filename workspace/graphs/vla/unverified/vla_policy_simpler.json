@@ -1,0 +1,407 @@
+{
+  "name": "VLA Policy Runner (SIMPLER)",
+  "description": "Run any vendored VLA policy on SIMPLER via the 5-node adapter pipeline. Topology matches `vla_policy_libero.json` 1:1 with two differences: (1) env_libero__* → env_simpler__*; (2) SIMPLER has no wrist camera, so a `nullSource` node feeds None into Initialize as a typed-IMAGE run-invariant. **Default config** below points at RT-1-X (model=`rt1_model`, policy=`rt1_policy`, robot=`simpler_robot`) — the only natively-validated VLA on SIMPLER right now. Drop in a Pi0 SIMPLER finetune by switching the model/policy dropdowns and pointing checkpoint_path at the new ckpt; the LIBERO Pi0 ckpt won't transfer. Set checkpoint_path to data/vla_policy/checkpoints/rt_1_x/rt_1_x_tf_trained_for_002272480_step (download via scripts/data/fetch_ckpt_rt1.sh).",
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_simpler__reset",
+      "label": "SIMPLER: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "wrist_null",
+      "type": "nullSource",
+      "label": "Wrist = None",
+      "position": {
+        "x": 0,
+        "y": 200
+      },
+      "config": {
+        "wire_type": "IMAGE"
+      }
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "wrist_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "adapt_env_to_canonical",
+      "type": "policy_vla__adapt_env_to_canonical",
+      "label": "VLA: Env → Canonical",
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "config": {
+        "robot": "simpler_robot"
+      }
+    },
+    {
+      "id": "adapt_canonical_to_model",
+      "type": "policy_vla__adapt_canonical_to_model",
+      "label": "VLA: Canonical → Model",
+      "position": {
+        "x": 1120,
+        "y": 0
+      },
+      "config": {
+        "model": "rt1_model"
+      }
+    },
+    {
+      "id": "predict",
+      "type": "policy_vla__predict",
+      "label": "VLA: Predict",
+      "position": {
+        "x": 1400,
+        "y": 0
+      },
+      "config": {
+        "policy": "rt1_policy",
+        "checkpoint_path": "data/vla_policy/checkpoints/rt_1_x/rt_1_x_tf_trained_for_002272480_step",
+        "num_inference_steps": 1
+      }
+    },
+    {
+      "id": "adapt_model_to_canonical",
+      "type": "policy_vla__adapt_model_to_canonical",
+      "label": "VLA: Model → Canonical",
+      "position": {
+        "x": 1680,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "adapt_canonical_to_env",
+      "type": "policy_vla__adapt_canonical_to_env",
+      "label": "VLA: Canonical → Env Action",
+      "position": {
+        "x": 1960,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "env_step",
+      "type": "env_simpler__step_continuous",
+      "label": "SIMPLER: Step",
+      "position": {
+        "x": 2240,
+        "y": 0
+      },
+      "config": {
+        "max_chunk_steps": 8
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2520,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "agentview_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "state",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "policy_state",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_simpler__evaluate",
+      "label": "SIMPLER: Evaluate",
+      "position": {
+        "x": 2520,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "note_env_lock",
+      "type": "note",
+      "label": "Env-side lock",
+      "position": {
+        "x": 840,
+        "y": -300
+      },
+      "config": {
+        "markdown": "**Env-side adapters — bound to SIMPLER**\n\n`adapt_env_to_canonical` (stage 1) and `adapt_canonical_to_env` (stage 4) are coupled to whichever env this graph uses.\n\nTo swap env you must replace **all four** together: the two `env_simpler__*` nodes **and** both env-side adapters.\n\n⚠ SIMPLER has no wrist camera — the `nullSource` node below feeds `wrist_image=None` into Initialize; the adapter drops it from the obs dict each step."
+      }
+    },
+    {
+      "id": "note_policy_triple",
+      "type": "note",
+      "label": "Policy triple (TODO)",
+      "position": {
+        "x": 1400,
+        "y": -300
+      },
+      "config": {
+        "markdown": "**Policy — pick as a triple**\n\nThe `model` dropdown on `adapt_canonical_to_model` drives all three: this node, the policy class in `predict`, and the stage 3 unpacking in `adapt_model_to_canonical`. Set them to match.\n\n⚠ **TODO**: SIMPLER VLA checkpoint not yet decided. `norm_stats_path`, `checkpoint_path`, and `robot_config_json` are placeholders — the LIBERO Pi0 ckpt will not transfer."
+      }
+    },
+    {
+      "id": "output_port__success",
+      "type": "graphOut",
+      "label": "success",
+      "position": {
+        "x": 2520,
+        "y": 480
+      },
+      "config": {
+        "portName": "success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 2520,
+        "y": 570
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_simpler__observe_egocentric",
+      "label": "SIMPLER: Observe (egocentric)",
+      "position": {
+        "x": -180,
+        "y": 140
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_simpler__observe_egocentric",
+      "label": "SIMPLER: Observe (egocentric)",
+      "position": {
+        "x": 2420,
+        "y": 140
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_instruction_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_wrist_null_to_init",
+      "source": "wrist_null",
+      "target": "iter_in",
+      "sourceHandle": "value",
+      "targetHandle": "init_wrist_image"
+    },
+    {
+      "id": "e_reset_agentview_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "iterout_agentview_image"
+    },
+    {
+      "id": "e_reset_state_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "state",
+      "targetHandle": "iterout_state"
+    },
+    {
+      "id": "e_iterin_instruction_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e_iterin_agentview_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "iterout_agentview_image",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_iterin_wrist_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "init_wrist_image",
+      "targetHandle": "wrist_image"
+    },
+    {
+      "id": "e_iterin_state_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "iterout_state",
+      "targetHandle": "state"
+    },
+    {
+      "id": "e_iterin_state_to_c2e",
+      "source": "iter_in",
+      "target": "adapt_canonical_to_env",
+      "sourceHandle": "iterout_state",
+      "targetHandle": "current_state"
+    },
+    {
+      "id": "e_adapt_env_to_c2m",
+      "source": "adapt_env_to_canonical",
+      "target": "adapt_canonical_to_model",
+      "sourceHandle": "canonical",
+      "targetHandle": "canonical"
+    },
+    {
+      "id": "e_c2m_to_predict",
+      "source": "adapt_canonical_to_model",
+      "target": "predict",
+      "sourceHandle": "model_batch",
+      "targetHandle": "model_batch"
+    },
+    {
+      "id": "e_predict_to_m2c",
+      "source": "predict",
+      "target": "adapt_model_to_canonical",
+      "sourceHandle": "model_output",
+      "targetHandle": "model_output"
+    },
+    {
+      "id": "e_m2c_to_c2e",
+      "source": "adapt_model_to_canonical",
+      "target": "adapt_canonical_to_env",
+      "sourceHandle": "canonical_action",
+      "targetHandle": "canonical_action"
+    },
+    {
+      "id": "e_c2e_to_step",
+      "source": "adapt_canonical_to_env",
+      "target": "env_step",
+      "sourceHandle": "action_chunk",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_agentview_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "agentview_image"
+    },
+    {
+      "id": "e_step_state_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "state",
+      "targetHandle": "state"
+    },
+    {
+      "id": "e_step_done_to_termination__stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_iterin_policy_state_to_predict",
+      "source": "iter_in",
+      "target": "predict",
+      "sourceHandle": "iterout_policy_state",
+      "targetHandle": "policy_state_in"
+    },
+    {
+      "id": "e_predict_policy_state_to_iterout",
+      "source": "predict",
+      "target": "iter_out",
+      "sourceHandle": "policy_state_out",
+      "targetHandle": "policy_state"
+    },
+    {
+      "id": "e_output_20__po",
+      "source": "evaluate",
+      "sourceHandle": "success",
+      "target": "output_port__success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_output_21__po",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_simmig_1",
+      "source": "env_reset",
+      "sourceHandle": "episode_id",
+      "target": "seed_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_simmig_2",
+      "source": "env_step",
+      "sourceHandle": "info",
+      "target": "loop_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ],
+  "step_budget": 50
+}

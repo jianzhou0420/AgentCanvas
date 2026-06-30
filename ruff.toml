@@ -1,0 +1,90 @@
+# Ruff config for AgentCanvas.
+#
+# This is `ruff.toml`, not `[tool.ruff]` in `pyproject.toml`, because
+# AgentCanvas is a polyglot application (FastAPI backend + React/TS frontend
+# + MkDocs doc-site), not a Python package distributed on PyPI.
+# See CONTRIBUTING.md for the contribution model.
+#
+# Scope: lints the backend (Python 3.10+) and top-level `workspace/` plugins.
+# The legacy Python 3.8 `vlnworkspace/` harness and all vendored code in
+# `third_party/` are excluded.
+
+target-version = "py310"
+line-length = 100
+
+# NOTE: patterns without a slash match ANY ancestor directory by basename
+# (gitignore-style). Because this repo's root directory is itself named
+# `vlnworkspace`, a bare `"vlnworkspace"` entry matched the repo root and
+# silently excluded the entire codebase from linting. Use anchored forms
+# (`./name`) so patterns only match children of the config directory.
+extend-exclude = [
+    "./third_party",
+    "./vlnworkspace",
+    "./agentcanvas/frontend",
+    "./.omc",
+    "./data",
+    "./outputs",
+    # Server-mode nodesets run under a pinned subprocess Python (3.8/3.9) via
+    # ADR-009 `server_python`, so they must avoid Py3.10+ syntax that ruff
+    # would otherwise rewrite into (e.g. `zip(strict=)`, `itertools.pairwise`).
+    # Post ADR-platform-008 the tree is role-organized: env/, policy/, model/
+    # are entirely server-mode, plus the server-mode method satellites
+    # individually (the rest of method/ is local-mode and stays linted).
+    "./workspace/nodesets/env",
+    "./workspace/nodesets/policy",
+    "./workspace/nodesets/model",
+    "./workspace/nodesets/method/explore_eqa.py",
+    "./workspace/nodesets/method/_explore_eqa_tsdf.py",
+    "./workspace/nodesets/method/tooleqa_explore.py",
+    "./workspace/nodesets/method/opennav_perception.py",
+    "./workspace/nodesets/method/opennav_waypoint",
+    "./workspace/nodesets/method/smartway_perception",
+    "./workspace/nodesets/method/smartway_waypoint",
+    # Vendored upstream VoxPoser implementation — keep as-is to preserve
+    # provenance and stay diff-friendly against the upstream repo.
+    "./workspace/nodesets/method/voxposer",
+    # Architect-loop run artifacts. workspace_snapshot/ contains frozen copies
+    # of source files at each iter — historical record, not live code; linting
+    # or auto-formatting them would mutate the archive.
+    "./workspace/design_runs",
+]
+
+[lint]
+# Rule selection mirrors `.claude/standard/code-style.md`:
+#   - PEP 604 unions (UP007)
+#   - `from __future__ import annotations` (I002)
+#   - import order __future__ → stdlib → third-party → local (I001)
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade (enforces PEP 604 unions)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line-length handled by formatter, not linter
+    "B008",   # FastAPI's `Depends()` default-arg pattern is intentional
+    "RUF012", # BaseCanvasNode subclasses declare `input_ports`, `output_ports`,
+              # `config_fields`, etc. as class-level schema metadata. These are
+              # read by ComponentRegistry via class introspection and are never
+              # mutated at runtime. Adding `ClassVar[...]` to ~120 subclasses
+              # would add zero runtime value and substantial visual noise.
+]
+
+[lint.per-file-ignores]
+"**/__init__.py" = ["F401"]            # re-exports
+"agentcanvas/backend/app/server/*.py" = ["UP"]  # subprocess path runs under server_python (Py3.8); avoid PEP 604 `X | None` in FastAPI endpoint signatures which are runtime-evaluated
+"agentcanvas/backend/app/server/examples/*.py" = ["UP", "E402"]  # server-mode shims pinned to Py 3.8 subset
+"workspace/nodesets/**/*.py" = ["E402"]   # intentional env/path setup before habitat_sim / VLN-CE imports
+
+[lint.isort]
+required-imports = ["from __future__ import annotations"]
+known-first-party = ["app", "workspace"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"       # matches .editorconfig

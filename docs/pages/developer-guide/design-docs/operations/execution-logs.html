@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Execution Logs — AgentCanvas</title>
+<meta name="description" content="Two-layer logging — executor exterior + node interior, JSONL, REST API">
+<meta property="og:title" content="Execution Logs — AgentCanvas">
+<meta property="og:description" content="Two-layer logging — executor exterior + node interior, JSONL, REST API">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/execution-logs.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="el-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#ela); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/execution-logs.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">Execution Logs</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Execution Logs</h1>
+  <p class="tagline">Two-layer logging — executor exterior + node interior, JSONL, REST API</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="ela" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+
+
+<p class="lede">The execution log system (ADR-observability-003) captures per-node I/O for every firing during graph execution. It is <strong>two layers</strong>: the executor automatically records port data and timing (the <em>exterior</em> layer — zero node-author effort), while a node may voluntarily emit domain-specific details like LLM prompts and token counts (the <em>interior</em> layer, opt-in). Logs persist as one JSONL line per firing with images saved as sidecar assets — queryable over REST and replayable in the frontend Log Viewer. This page owns the record shape, serialization, and storage layout; the live viewer is covered under <a href="../../capabilities/real-time-observability.html">Real-time Observability</a>.</p>
+<p>"Two layers" is the <em>mental model</em>. The first figure draws it; the second shows how the code actually realizes it (they differ — see the note).</p>
+
+<p class="diagram-label"><strong>Mental model — two layers, one entry.</strong></p>
+<svg class="rxsvg" viewBox="0 0 720 150" role="img" aria-label="Mental model. A node firing feeds two layers: an automatic exterior layer (ports, timing, errors) and an opt-in interior layer (the node's own _self_log domain detail). The two combine into one NodeLogEntry, persisted as JSONL and shown in the Log Viewer.">
+  <rect class="box" x="14" y="50" width="122" height="48" rx="6"/>
+  <text x="75" y="71" text-anchor="middle">node firing</text>
+  <text class="dim" x="75" y="88" text-anchor="middle">one per fire</text>
+  <rect class="box" x="198" y="26" width="266" height="36" rx="6"/>
+  <text class="dim" x="331" y="48" text-anchor="middle">Exterior — ports · timing · errors (automatic)</text>
+  <rect class="box" x="198" y="86" width="266" height="36" rx="6"/>
+  <text class="dim" x="331" y="108" text-anchor="middle">Interior — _self_log domain detail (opt-in)</text>
+  <path class="edge" d="M136,66 C 168,44 178,44 198,44"/>
+  <path class="edge" d="M136,82 C 168,104 178,104 198,104"/>
+  <path class="edge" d="M464,44 C 487,60 492,66 508,72"/>
+  <path class="edge" d="M464,104 C 487,88 492,82 508,78"/>
+  <rect class="accent" x="508" y="56" width="104" height="38" rx="6"/>
+  <text class="at" x="560" y="79" text-anchor="middle">NodeLogEntry</text>
+  <path class="edge" d="M612,75 L 638,75"/>
+  <rect class="box" x="638" y="56" width="78" height="38" rx="6"/>
+  <text class="dim" x="677" y="72" text-anchor="middle">JSONL +</text>
+  <text class="dim" x="677" y="86" text-anchor="middle">Viewer</text>
+</svg>
+
+<p class="diagram-label"><strong>How the code does it — one <code>log_node</code> call, two data sources in, several sinks out.</strong></p>
+<svg class="rxsvg" viewBox="0 0 720 260" role="img" aria-label="How the code does it. graph_executor.py _fire_node is the single capture site: it sets the per-node usage ContextVar, calls instance.forward() and measures timing and ports. It then makes one call to ExecutionLogger.log_node, passing exterior data (pending_inputs, result, duration) and interior data (instance.log(), i.e. _self_log entries plus the merged usage bucket). From that one call the data fans to several sinks: save_asset writes image and depth ports under assets/, an in-memory ring buffer of 2000 serves REST queries, and a write queue is flushed to log.jsonl for durable replay in the Log Viewer. Separately, _fire_node broadcasts a per-firing exec_log WebSocket event to the live LogPanel, suppressed in eval mode.">
+  <rect class="box" x="10" y="70" width="158" height="104" rx="6"/>
+  <text x="89" y="92" text-anchor="middle">_fire_node</text>
+  <text class="mono" x="89" y="108" text-anchor="middle">graph_executor.py</text>
+  <text class="dim" x="89" y="126" text-anchor="middle">· sets _current_node_usage</text>
+  <text class="dim" x="89" y="143" text-anchor="middle">· forward(); times + ports</text>
+  <text class="dim" x="89" y="162" text-anchor="middle">the one capture site</text>
+  <text class="dim" x="300" y="104" text-anchor="middle">exterior: pending_inputs · result · duration</text>
+  <text class="dim" x="300" y="134" text-anchor="middle">interior: instance.log()</text>
+  <text class="mono" x="300" y="148" text-anchor="middle">(_self_log + merged usage bucket)</text>
+  <path class="edge" d="M168,112 L 384,120"/>
+  <path class="edge" d="M168,152 L 384,140"/>
+  <rect class="accent" x="384" y="100" width="150" height="56" rx="6"/>
+  <text class="at" x="459" y="124" text-anchor="middle">log_node</text>
+  <text class="dim" x="459" y="142" text-anchor="middle">the ONE recording call</text>
+  <rect class="ghost" x="574" y="34" width="142" height="32" rx="6"/>
+  <text class="dim" x="645" y="54" text-anchor="middle">save_asset → assets/</text>
+  <rect class="ghost" x="574" y="86" width="142" height="32" rx="6"/>
+  <text class="dim" x="645" y="106" text-anchor="middle">_buffer ring(2000) → REST</text>
+  <rect class="ghost" x="574" y="136" width="142" height="42" rx="6"/>
+  <text class="dim" x="645" y="153" text-anchor="middle">_write_queue → flush()</text>
+  <text class="dim" x="645" y="169" text-anchor="middle">→ log.jsonl (durable)</text>
+  <text class="dim" x="645" y="196" text-anchor="middle">→ Log Viewer (replay)</text>
+  <path class="edge" d="M534,116 C 556,70 560,50 574,50"/>
+  <path class="edge" d="M534,126 C 556,104 560,102 574,102"/>
+  <path class="edge" d="M534,140 C 556,150 562,156 574,156"/>
+  <path class="edge" d="M89,174 C 89,224 300,232 452,232"/>
+  <text class="dim" x="300" y="216" text-anchor="middle">broadcast("exec_log") → WS (live, suppressed in eval)</text>
+  <rect class="box" x="452" y="216" width="152" height="32" rx="6"/>
+  <text class="dim" x="528" y="236" text-anchor="middle">WS → LogPanel (live)</text>
+</svg>
+
+<div class="callout note">
+<strong>Mental model vs code.</strong> "Two layers" is two <em>data sources</em>, not two logging paths. In code there is a single recording method — <code>logger.py · ExecutionLogger.log_node</code>, called once per firing from <code>graph_executor.py · _fire_node</code> — that receives the exterior data (ports, timing, result) and the interior data (<code>instance.log()</code>: <code>_self_log</code> entries plus the merged per-node usage bucket) together. There is no separate executor-level log call. From that one entry the data fans to several sinks: an in-memory ring buffer (REST queries), a write queue flushed to <code>log.jsonl</code> (durable), image/depth ports saved under <code>assets/</code>, and a separate per-firing <code>exec_log</code> WebSocket broadcast (live; suppressed in eval mode).
+</div>
+<hr>
+<h2 id="1-two-layer-architecture"><span class="num">1.</span> What the log captures — two layers</h2>
+<p>Every node firing produces a <code>NodeLogEntry</code> with data from both layers:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Who writes</th>
+<th>What's captured</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Automatic (exterior)</strong></td>
+<td>GraphExecutor after <code>_fire_node()</code></td>
+<td>Port inputs/outputs, timing, wire types, errors</td>
+<td><code>{inputs: {rgb: &lt;asset&gt;}, outputs: {action: 1}, duration_ms: 25}</code></td>
+</tr>
+<tr>
+<td><strong>Voluntary (interior)</strong></td>
+<td>Node calls <code>self._self_log(key, value)</code> inside <code>forward()</code></td>
+<td>Domain-specific details invisible to the executor</td>
+<td>LLM prompt text, API response, token count, format hints</td>
+</tr>
+</tbody>
+</table>
+<p>The exterior layer requires zero effort from node authors — the executor instruments every firing automatically. The interior layer is opt-in: nodes that want to expose internal reasoning call <code>_self_log()</code> during execution.</p>
+
+
+<h3 id="11-voluntary-logging-api"><span class="num">1.1</span> The smallest thing a node logs</h3>
+<p><code>BaseCanvasNode</code> provides two methods in <code>app/components/bases.py</code>:</p>
+<pre class="hl"><span class="k">def</span><span class="w"> </span><span class="nf">_self_log</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Record an internal detail during forward().</span>
+<span class="sd">    Call inside forward() to log domain-specific data that the executor</span>
+<span class="sd">    cannot see from the outside (e.g. assembled LLM prompts, API responses).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_log_buffer</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="n">key</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="n">value</span><span class="p">})</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">log</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return voluntary log entries from the last forward() call.</span>
+<span class="sd">    Called by the executor after forward() completes. Override to</span>
+<span class="sd">    filter, transform, or add computed summaries.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_log_buffer</span>
+</pre>
+<p>Example usage in a node's <code>forward()</code>:</p>
+<pre class="hl"><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="n">prompt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_build_prompt</span><span class="p">(</span><span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;instruction&quot;</span><span class="p">],</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;history&quot;</span><span class="p">])</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;prompt&quot;</span><span class="p">,</span> <span class="n">prompt</span><span class="p">)</span>            <span class="c1"># voluntary: log assembled prompt</span>
+
+    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_llm</span><span class="p">(</span><span class="n">prompt</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;response&quot;</span><span class="p">,</span> <span class="n">response</span><span class="o">.</span><span class="n">text</span><span class="p">)</span>   <span class="c1"># voluntary: log raw response</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;tokens&quot;</span><span class="p">,</span> <span class="n">response</span><span class="o">.</span><span class="n">usage</span><span class="p">)</span>     <span class="c1"># voluntary: log token counts</span>
+
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;action&quot;</span><span class="p">:</span> <span class="n">parse_action</span><span class="p">(</span><span class="n">response</span><span class="p">)}</span>
+    <span class="c1"># executor automatically logs inputs, outputs, and timing</span>
+</pre>
+<hr>
+<h2 id="2-backend-executionlogger"><span class="num">2.</span> Backend: ExecutionLogger</h2>
+<p><code>ExecutionLogger</code> (<code>app/logging/logger.py</code>) manages in-memory buffering and JSONL persistence.</p>
+<h3 id="21-data-model"><span class="num">2.1</span> Data Model</h3>
+<p>Two Pydantic models in <code>app/logging/models.py</code>:</p>
+<p><strong><code>NodeLogEntry</code></strong> — one node firing:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>timestamp</code></td>
+<td><code>datetime</code></td>
+<td>UTC time of firing</td>
+</tr>
+<tr>
+<td><code>execution_id</code></td>
+<td><code>str</code></td>
+<td>Execution run identifier</td>
+</tr>
+<tr>
+<td><code>source</code></td>
+<td><code>str</code></td>
+<td><code>"canvas"</code> or <code>"eval"</code></td>
+</tr>
+<tr>
+<td><code>step</code></td>
+<td><code>int</code></td>
+<td>GraphExecutor step counter</td>
+</tr>
+<tr>
+<td><code>node_id</code></td>
+<td><code>str</code></td>
+<td>Node instance ID from graph</td>
+</tr>
+<tr>
+<td><code>node_type</code></td>
+<td><code>str</code></td>
+<td>Node type (e.g. <code>env_habitat__observe</code>)</td>
+</tr>
+<tr>
+<td><code>node_label</code></td>
+<td><code>str</code></td>
+<td>Human-readable label</td>
+</tr>
+<tr>
+<td><code>duration_ms</code></td>
+<td><code>float</code></td>
+<td>Execution time in milliseconds</td>
+</tr>
+<tr>
+<td><code>inputs</code></td>
+<td><code>dict</code></td>
+<td>Serialized port inputs (pre-execution)</td>
+</tr>
+<tr>
+<td><code>outputs</code></td>
+<td><code>dict</code></td>
+<td>Serialized port outputs (post-execution)</td>
+</tr>
+<tr>
+<td><code>inner_log</code></td>
+<td><code>list[dict]</code></td>
+<td>Voluntary <code>_self_log()</code> entries</td>
+</tr>
+<tr>
+<td><code>port_wire_types</code></td>
+<td><code>dict[str, str]</code></td>
+<td>Port name → wire type mapping</td>
+</tr>
+<tr>
+<td><code>parent_node_id</code></td>
+<td><code>str | None</code></td>
+<td>Dynamic Fire-List provenance — the spawner node id for an ephemeral <code>DynamicFireListNode</code> child (<code>logging/models.py · NodeLogEntry</code>, populated at <code>graph_executor.py · _fire_node</code>)</td>
+</tr>
+<tr>
+<td><code>dynamic_index</code></td>
+<td><code>int | None</code></td>
+<td>Child index within the spawned fire-list (<code>logging/models.py · NodeLogEntry</code>)</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td><code>str | None</code></td>
+<td>Error message if node failed</td>
+</tr>
+</tbody>
+</table>
+<p>Both provenance fields are present on every JSONL line (null for ordinary, non-spawned firings).</p>
+<p><strong><code>ExecutionSummary</code></strong> — aggregate stats:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>execution_id</code></td>
+<td><code>str</code></td>
+<td>Run identifier</td>
+</tr>
+<tr>
+<td><code>source</code></td>
+<td><code>str</code></td>
+<td><code>"canvas"</code> or <code>"eval"</code></td>
+</tr>
+<tr>
+<td><code>started_at</code> / <code>ended_at</code></td>
+<td><code>datetime</code></td>
+<td>Time bounds</td>
+</tr>
+<tr>
+<td><code>total_steps</code></td>
+<td><code>int</code></td>
+<td>Max step counter reached</td>
+</tr>
+<tr>
+<td><code>total_firings</code></td>
+<td><code>int</code></td>
+<td>Total node firings</td>
+</tr>
+<tr>
+<td><code>error_count</code></td>
+<td><code>int</code></td>
+<td>Firings that raised exceptions</td>
+</tr>
+<tr>
+<td><code>node_types_fired</code></td>
+<td><code>list[str]</code></td>
+<td>Distinct node types that fired</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-ring-buffer-write-queue"><span class="num">2.2</span> Ring Buffer + Write Queue</h3>
+<svg class="rxsvg" viewBox="0 0 700 165" role="img" aria-label="Logging pipeline. After each _fire_node, log_node writes the entry into two places: a fixed-size ring buffer (deque, maxlen 2000) that serves live REST queries, and a write queue (a list). At an iterOut boundary or graph end, flush() appends the queued batch to log.jsonl on disk.">
+  <text class="dim" x="14" y="24">each _fire_node()</text>
+  <rect class="box" x="14" y="62" width="112" height="40" rx="7"/>
+  <text x="70" y="86" text-anchor="middle">log_node()</text>
+
+  <path class="edge" d="M126,74 C162,74 166,52 196,52"/>
+  <rect class="box" x="196" y="34" width="232" height="36" rx="7"/>
+  <text x="312" y="56" text-anchor="middle">ring buffer · deque(maxlen 2000)</text>
+  <text class="dim" x="446" y="55">live REST queries</text>
+
+  <path class="edge" d="M126,90 C162,90 166,118 196,118"/>
+  <rect class="box" x="196" y="100" width="150" height="36" rx="7"/>
+  <text x="271" y="122" text-anchor="middle">write queue (list)</text>
+
+  <path class="edge" d="M346,118 L398,118"/>
+  <text class="dim" x="372" y="148" text-anchor="middle">iterOut / end</text>
+  <rect class="accent" x="398" y="100" width="86" height="36" rx="7"/>
+  <text class="at" x="441" y="122" text-anchor="middle">flush()</text>
+
+  <path class="edge" d="M484,118 L536,118"/>
+  <rect class="box" x="536" y="100" width="150" height="36" rx="7"/>
+  <text class="mono" x="611" y="121" text-anchor="middle">log.jsonl</text>
+</svg>
+<ul>
+<li><strong>Ring buffer</strong>: <code>collections.deque(maxlen=2000)</code> — thread-safe, fixed-size window for real-time queries via REST</li>
+<li><strong>Write queue</strong>: accumulates entries during an iteration; <code>flush()</code> batch-writes them to JSONL at <code>iterOut</code> boundaries (not per-node)</li>
+<li><strong>Final flush</strong>: on <code>GraphComplete</code> or <code>GraphError</code>, the executor calls <code>flush()</code> one last time</li>
+</ul>
+<h3 id="23-key-methods"><span class="num">2.3</span> Key Methods</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>log_node(step, node_id, ..., inner_log, port_wire_types, error, parent_node_id, dynamic_index)</code></td>
+<td>Record one firing → ring buffer + write queue</td>
+</tr>
+<tr>
+<td><code>flush()</code></td>
+<td>Batch-append write queue to JSONL, clear queue</td>
+</tr>
+<tr>
+<td><code>get_entries(node_id?, node_type?, step?, limit, offset)</code></td>
+<td>Query ring buffer with optional filters</td>
+</tr>
+<tr>
+<td><code>get_summary()</code></td>
+<td>Return <code>ExecutionSummary</code> with aggregate stats</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="3-serialization-asset-storage"><span class="num">3.</span> Serialization &amp; Asset Storage</h2>
+<p>Large values (images, tensors, long strings) cannot go into JSONL as-is. Two serialization functions handle this.</p>
+<h3 id="31-log_serialize"><span class="num">3.1</span> <code>log_serialize()</code></h3>
+<p>Recursive serializer that normalizes non-JSON values into JSON-safe forms. <strong>Strings are persisted in full</strong> — there is no length cap or truncation (<code>logger.py · log_serialize</code>; module docstring: "Strings are persisted in full"):</p>
+<table>
+<thead>
+<tr>
+<th>Input type</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>str</code> (any length)</td>
+<td>the string verbatim — full LLM prompts/responses survive untruncated</td>
+</tr>
+<tr>
+<td><code>bytes</code></td>
+<td><code>{"__type": "bytes", "length": N}</code></td>
+</tr>
+<tr>
+<td>numpy array / torch tensor</td>
+<td><code>{"__type": "ndarray", "shape": [H,W,C], "dtype": "uint8"}</code></td>
+</tr>
+<tr>
+<td>Recursion &gt; depth 5</td>
+<td><code>"&lt;max_depth&gt;"</code></td>
+</tr>
+<tr>
+<td>Unknown type</td>
+<td><code>"&lt;ClassName&gt;"</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>max_str_len</code> parameter still exists in the signature (and <code>inner_log</code> passes <code>50000</code>) but is <strong>inert</strong> — no value of it triggers truncation. Image/array bytes are the only payloads diverted out of the JSONL, via <code>save_asset()</code> (§3.2).</p>
+<h3 id="32-log_serialize_with_assets"><span class="num">3.2</span> <code>log_serialize_with_assets()</code></h3>
+<p>Wire-type-aware serializer that saves images as sidecar files instead of embedding them:</p>
+<table>
+<thead>
+<tr>
+<th>Wire type</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LIST[T]</code></td>
+<td>Emit a compact count marker <code>{"__type": "list", "wire_type": "LIST[T]", "count": N}</code> — no per-tile assets to avoid N-image bloat</td>
+</tr>
+<tr>
+<td><code>IMAGE</code></td>
+<td>Save RGB numpy array as JPEG (quality 85) → <code>assets/s{step}_f{idx}_{label}__{port}.jpg</code></td>
+</tr>
+<tr>
+<td><code>DEPTH</code></td>
+<td>Normalize depth to uint8, save as PNG → <code>assets/s{step}_f{idx}_{label}__{port}.png</code></td>
+</tr>
+<tr>
+<td><code>OBSERVATION</code></td>
+<td>Recurse into <code>rgb</code> and <code>depth</code> sub-keys, save each as above</td>
+</tr>
+<tr>
+<td><code>STEP_RESULT</code></td>
+<td>Recurse into <code>observation</code> sub-key, then handle as <code>OBSERVATION</code></td>
+</tr>
+<tr>
+<td>Everything else</td>
+<td>Fall through to <code>log_serialize()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Saved assets are referenced in the JSONL as:</p>
+<pre class="hl"><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;__type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;asset&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assets/s0_f0_Habitat__Observe__rgb.jpg&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;IMAGE&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;uint8&quot;</span>
+<span class="p">}</span>
+</pre>
+<p>Composite observations produce grouped references:</p>
+<pre class="hl"><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;__type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;asset_group&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;OBSERVATION&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;rgb&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;__type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;asset&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assets/s0_f0_Habitat__Observe__obs_rgb.jpg&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">...</span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;depth&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;__type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;asset&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assets/s0_f0_Habitat__Observe__obs_depth.png&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">...</span><span class="p">}</span>
+<span class="p">}</span>
+</pre>
+<hr>
+<h2 id="4-executor-integration"><span class="num">4.</span> Executor Integration</h2>
+<h3 id="41-logger-creation"><span class="num">4.1</span> Logger Creation</h3>
+<p><code>LoopRunner</code> (<code>app/agent_loop/loop_runner.py</code>) creates the logger at run start — but <strong>only when one was not injected</strong>. Eval passes in its own per-episode logger (next paragraph); the canvas branch below runs only when <code>logger is None and self._execution_id</code> (<code>loop_runner.py · run</code>):</p>
+<pre class="hl"><span class="n">persist_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">repo_root</span><span class="p">,</span> <span class="s2">&quot;outputs&quot;</span><span class="p">,</span> <span class="s2">&quot;runs&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execution_id</span><span class="p">)</span>
+<span class="n">logger</span> <span class="o">=</span> <span class="n">ExecutionLogger</span><span class="p">(</span>
+    <span class="n">execution_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_execution_id</span><span class="p">,</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;canvas&quot;</span><span class="p">,</span>
+    <span class="n">persist_dir</span><span class="o">=</span><span class="n">persist_dir</span><span class="p">,</span>
+<span class="p">)</span>
+</pre>
+<p>For eval runs, the source is <code>"eval"</code> and the logger is created <strong>per episode</strong> inside <code>BatchEvalRunner._run_one_episode</code> (<code>agent_loop/eval_batch.py</code>) with <code>persist_dir = outputs/eval_runs/{run_id}/episodes/ep{idx:04d}/</code> and <code>execution_id = "{run_id}_ep{idx:04d}"</code>. Each episode owns its own <code>log.jsonl</code> + <code>assets/</code> — no interleaving across workers (see <a href="../../core/decisions/eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a>).</p>
+<h3 id="42-node-firing-instrumentation"><span class="num">4.2</span> Node Firing Instrumentation</h3>
+<p><code>GraphExecutor._fire_node()</code> instruments every node firing:</p>
+<ol>
+<li>Instantiate the handler (<code>BaseCanvasNode</code> subclass) and inject <code>pending_inputs</code> + persistent state.</li>
+<li>Run the <code>PreNodeExecute</code> hook, then stamp <code>t0 = time.monotonic()</code>.</li>
+<li>Execute the node: <code>result = await instance.forward(inputs, ctx)</code>.</li>
+<li>Compute <code>elapsed_ms</code>, then run the <code>PostNodeExecute</code> hook.</li>
+<li>Collect the voluntary log: <code>inner_log = instance.log()</code>.</li>
+<li><code>logger.log_node(step, node_id, …, inner_log, port_wire_types, error)</code> — records exterior + interior layers in one entry.</li>
+<li>Broadcast the <code>exec_log</code> WS event (unless suppressed — eval suppresses it).</li>
+</ol>
+<h3 id="44-per-node-llm-usage-hook"><span class="num">4.4</span> Per-node LLM usage hook (ADR-observability-005)</h3>
+<p>Token usage and dollar cost are tracked <strong>per node firing</strong> without nodesets having to plumb them. The executor wraps every <code>node.forward()</code> with a ContextVar-scoped accumulator (<code>graph_executor.py · _fire_node</code>):</p>
+<pre class="hl"><span class="n">usage_bucket</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="n">usage_token</span> <span class="o">=</span> <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">usage_bucket</span><span class="p">)</span>   <span class="c1"># call.py · _current_node_usage</span>
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">node</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span>
+<span class="k">finally</span><span class="p">:</span>
+    <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">usage_token</span><span class="p">)</span>
+</pre>
+<p>Inside the <code>forward()</code>, every <code>llm_complete</code> / <code>llm_complete_n</code> / <code>vlm_complete</code> call writes its <code>response.usage</code> + <code>litellm.completion_cost()</code> into the bucket via <code>_accumulate_usage()</code> (<code>call.py · _accumulate_usage</code>). The executor then emits one log entry per node with the aggregate attached:</p>
+<table>
+<thead><tr><th>Field</th><th>Source</th></tr></thead>
+<tbody>
+<tr><td><code>calls</code></td><td>increments per <code>llm_complete</code>/<code>vlm_complete</code> invocation</td></tr>
+<tr><td><code>prompt_tokens</code> / <code>completion_tokens</code> / <code>total_tokens</code></td><td><code>response.usage</code> on each provider response</td></tr>
+<tr><td><code>cached_tokens</code></td><td><code>response.usage.prompt_tokens_details.cached_tokens</code> when present</td></tr>
+<tr><td><code>usd_cost</code></td><td><code>litellm.completion_cost(response)</code>; 0.0 for models litellm doesn't recognise (local Ollama, custom vLLM)</td></tr>
+<tr><td><code>model</code></td><td>first non-empty <code>response.model</code></td></tr>
+</tbody>
+</table>
+<p>Properties: <strong>voluntary</strong> (nodes that don't call the LLM helpers get an empty bucket), <strong>per firing</strong> (multi-scope graphs and iterated nodes get one entry per call site), and <strong>ContextVar-propagating</strong> (survives the internal <code>await</code> chain). Server-mode nodesets capture usage in the subprocess and surface it on the response so the framework can still attribute it to the proxy node. See <a href="llm-config-system.html#12-per-node-usage-hook">LLM Config §12</a> for the full contract.</p>
+
+<h3 id="43-flush-points"><span class="num">4.3</span> Flush Points</h3>
+<p>The logger's write queue is flushed at three points:</p>
+<table>
+<thead>
+<tr>
+<th>When</th>
+<th>Where</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>iterOut</code> firing</td>
+<td><code>graph_executor.py · run</code></td>
+<td>Batch-write at iteration boundary</td>
+</tr>
+<tr>
+<td><code>GraphComplete</code></td>
+<td><code>graph_executor.py · run</code></td>
+<td>Final flush on success</td>
+</tr>
+<tr>
+<td><code>GraphError</code></td>
+<td><code>graph_executor.py · run</code></td>
+<td>Flush even on failure (inside the <code>except</code> block, after the <code>GraphError</code> hook)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-rest-api"><span class="num">5.</span> REST API</h2>
+<p>Five query endpoints + one asset-serving endpoint in <code>app/api/execution/logs.py</code>, mounted at <code>/api/logs</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Method</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/api/logs</code></td>
+<td>GET</td>
+<td>List recent executions (canvas + eval, sorted by mtime, limit 100)</td>
+</tr>
+<tr>
+<td><code>/api/logs/{execution_id}</code></td>
+<td>GET</td>
+<td>Log entries with filters (<code>node_id</code>, <code>node_type</code>, <code>step</code>, <code>limit</code>, <code>offset</code>)</td>
+</tr>
+<tr>
+<td><code>/api/logs/{execution_id}/node/{node_id}</code></td>
+<td>GET</td>
+<td>One node's output history across all steps</td>
+</tr>
+<tr>
+<td><code>/api/logs/{execution_id}/summary</code></td>
+<td>GET</td>
+<td>Execution summary (total firings, errors, node types)</td>
+</tr>
+<tr>
+<td><code>/api/logs/{execution_id}/graph</code></td>
+<td>GET</td>
+<td>Graph definition snapshot (<code>graph.json</code>) saved at run start for canvas replay</td>
+</tr>
+<tr>
+<td><code>/api/logs/{execution_id}/assets/{filename}</code></td>
+<td>GET</td>
+<td>Serve sidecar asset files (JPEG/PNG) with correct media types</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Query priority</strong>: active in-memory logger is checked first; historical JSONL files are the fallback.</p>
+<p><strong>Security</strong>: <code>_sanitize_id()</code> prevents path traversal attacks on execution_id and filename parameters.</p>
+<hr>
+<h2 id="6-websocket-events"><span class="num">6.</span> WebSocket Events</h2>
+<p>After each node firing, the executor broadcasts a lightweight <code>exec_log</code> event via WebSocket:</p>
+<pre class="hl"><span class="kd">interface</span><span class="w"> </span><span class="nx">ExecLogEvent</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">step</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">node_id</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">node_type</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">node_label</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">duration_ms</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">error</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">has_inner_log</span><span class="o">:</span><span class="w"> </span><span class="kt">boolean</span><span class="p">;</span>
+<span class="p">}</span>
+</pre>
+<ul>
+<li><strong>No inputs/outputs</strong> in the WS payload — only metadata. Full data is fetched via REST on demand.</li>
+<li><strong>Suppressed in eval mode</strong> when <code>principles.suppress_nav_events = True</code> (avoids flooding during batch evaluation).</li>
+</ul>
+<hr>
+<h2 id="7-frontend-log-viewer"><span class="num">7.</span> Frontend: Log Viewer</h2>
+<h3 id="71-three-view-modes"><span class="num">7.1</span> Three View Modes</h3>
+<p>The Log Viewer supports three view modes, toggled via a segmented control in the filter bar:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Overall</strong> (default)</td>
+<td>Compact virtualized rows with 24x24 inline thumbnails. Click a row to open a side detail pane (master-detail layout).</td>
+</tr>
+<tr>
+<td><strong>Detail</strong></td>
+<td>Every row auto-expands inline showing full outputs, inputs, inner_log, and large images (up to 320px). Each entry renders as a card with visible borders. No side pane.</td>
+</tr>
+<tr>
+<td><strong>Canvas</strong></td>
+<td>Read-only React Flow canvas rendering the executed graph with step-by-step replay. Node status highlighting (firing/completed/error). Resizable detail panel below.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="72-page-structure"><span class="num">7.2</span> Page Structure</h3>
+<p>The Log Viewer is a full-page inspector (<code>LogViewerPage.tsx</code>) with three areas:</p>
+<svg class="rxsvg" viewBox="0 0 560 210" role="img" aria-label="Log Viewer page layout. A LogSummaryBar spans the top (firings, errors, node types). Below, a left Execution List sidebar; the right pane has LogFilters (search, type, errors), three view tabs — Overall, Detail, Canvas — and the main area showing either LogEntryList (overall or detail mode) or LogCanvasView (canvas mode).">
+  <rect class="box" x="20" y="12" width="520" height="32" rx="6"/>
+  <text class="at" x="34" y="33">LogSummaryBar</text>
+  <text class="dim" x="150" y="33">firings · errors · node types</text>
+
+  <rect class="ghost" x="20" y="48" width="130" height="150" rx="6"/>
+  <text class="at" x="85" y="120" text-anchor="middle">Execution List</text>
+  <text class="dim" x="85" y="137" text-anchor="middle">(sidebar)</text>
+
+  <rect class="ghost" x="158" y="48" width="382" height="30" rx="6"/>
+  <text class="at" x="172" y="67">LogFilters</text>
+  <text class="dim" x="250" y="67">search · type · errors</text>
+
+  <rect class="accent" x="172" y="86" width="78" height="22" rx="5"/>
+  <text class="at" x="211" y="101" text-anchor="middle">Overall</text>
+  <rect class="box" x="258" y="86" width="68" height="22" rx="5"/>
+  <text x="292" y="101" text-anchor="middle">Detail</text>
+  <rect class="box" x="334" y="86" width="72" height="22" rx="5"/>
+  <text x="370" y="101" text-anchor="middle">Canvas</text>
+
+  <rect class="ghost" x="158" y="118" width="382" height="80" rx="6"/>
+  <text x="349" y="152" text-anchor="middle">LogEntryList (overall / detail)</text>
+  <text class="dim" x="349" y="172" text-anchor="middle">— or — LogCanvasView (canvas mode)</text>
+</svg>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LogViewerPage</code></td>
+<td><code>LogViewerPage.tsx</code></td>
+<td>Layout: sidebar + main content, viewMode state</td>
+</tr>
+<tr>
+<td><code>ExecutionList</code></td>
+<td><code>ExecutionList.tsx</code></td>
+<td>Sidebar: lists recent runs with size/mtime, highlights active execution</td>
+</tr>
+<tr>
+<td><code>LogSummaryBar</code></td>
+<td><code>LogSummaryBar.tsx</code></td>
+<td>Toolbar: total firings, errors, node types, live/historical badge</td>
+</tr>
+<tr>
+<td><code>LogFilters</code></td>
+<td><code>LogFilters.tsx</code></td>
+<td>Search box, node type dropdown, errors-only toggle, 3-way mode toggle</td>
+</tr>
+<tr>
+<td><code>LogEntryList</code></td>
+<td><code>LogEntryList.tsx</code></td>
+<td>Virtualized list for overall/detail modes with <code>@tanstack/react-virtual</code></td>
+</tr>
+<tr>
+<td><code>LogCanvasView</code></td>
+<td><code>LogCanvasView.tsx</code></td>
+<td>Canvas replay: read-only React Flow + step navigation + resizable detail panel</td>
+</tr>
+<tr>
+<td><code>LogContext</code></td>
+<td><code>LogContext.tsx</code></td>
+<td>React context providing <code>executionId</code> and <code>viewMode</code> to renderers</td>
+</tr>
+</tbody>
+</table>
+<h3 id="73-canvas-replay-mode"><span class="num">7.3</span> Canvas Replay Mode</h3>
+<p><code>LogCanvasView</code> renders the executed graph as a read-only React Flow canvas. It requires <code>graph.json</code> (saved by the backend at execution start).</p>
+<p><strong>Data loading</strong>: fetches <code>graph.json</code>, log entries, and node schemas in parallel at mount.</p>
+<p><strong>Node rendering</strong>: uses the same <code>proxiedNodeTypes</code>, <code>toFlowNodes()</code>, and <code>toFlowEdges()</code> as the real canvas editor — visual parity with the edit canvas.</p>
+<p><strong>Node status highlighting</strong> via style overrides:</p>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Visual</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>idle</code></td>
+<td>Default node appearance</td>
+</tr>
+<tr>
+<td><code>firing</code></td>
+<td>Blue outline + glow (<code>box-shadow</code>)</td>
+</tr>
+<tr>
+<td><code>completed</code></td>
+<td>Subtle green outline</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>Red outline</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Step controls</strong>: First / Prev / Play-Pause / Next / Last. Auto-play at 800ms interval. Step indicator shows firing index, step number, node label, type, and duration.</p>
+<p><strong>Resizable detail panel</strong>: drag handle between canvas and panel, 80px–600px range.</p>
+<h3 id="74-value-renderer-registry"><span class="num">7.4</span> Value Renderer Registry</h3>
+<p>The renderer registry (<code>renderers/registry.ts</code>) dispatches values to specialized React components based on a 4-step resolution:</p>
+<ol>
+<li><strong>Explicit wire type</strong> from <code>port_wire_types[key]</code> → use that wire type's renderer</li>
+<li><strong><code>__type</code> marker</strong> from <code>log_serialize()</code> (e.g. <code>"asset"</code>, <code>"ndarray"</code>, <code>"bytes"</code>) → use <code>__type</code>'s renderer</li>
+<li><strong><code>typeof</code> primitive</strong> (<code>string</code>, <code>number</code>, <code>boolean</code>) → use primitive renderer</li>
+<li><strong>Fallback</strong> → <code>JsonTreeRenderer</code></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Renderer</th>
+<th>Handles</th>
+<th>Wire Types / Markers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ImageRenderer</code></td>
+<td>Asset images, composite observation groups</td>
+<td><code>IMAGE</code>, <code>DEPTH</code>, <code>OBSERVATION</code>, <code>asset</code>, <code>asset_group</code></td>
+</tr>
+<tr>
+<td><code>TextRenderer</code></td>
+<td>Text output (strings are stored in full)</td>
+<td><code>TEXT</code></td>
+</tr>
+<tr>
+<td><code>ActionRenderer</code></td>
+<td>Formatted navigation actions</td>
+<td><code>ACTION</code></td>
+</tr>
+<tr>
+<td><code>MetricsRenderer</code></td>
+<td>Key-value metric tables</td>
+<td><code>METRICS</code></td>
+</tr>
+<tr>
+<td><code>StepResultRenderer</code></td>
+<td>Nested step results with observation sub-groups</td>
+<td><code>STEP_RESULT</code></td>
+</tr>
+<tr>
+<td><code>TensorRenderer</code></td>
+<td>Shape/dtype summaries for arrays and tensors</td>
+<td><code>ndarray</code>, <code>Tensor</code>, <code>bytes</code></td>
+</tr>
+<tr>
+<td><code>ErrorRenderer</code></td>
+<td>Highlighted error messages</td>
+<td>(used inline for error field)</td>
+</tr>
+<tr>
+<td><code>PrimitiveRenderer</code></td>
+<td>Scalars, booleans, null</td>
+<td><code>BOOL</code>, <code>string</code>, <code>number</code>, <code>boolean</code></td>
+</tr>
+<tr>
+<td><code>JsonTreeRenderer</code></td>
+<td>Collapsible tree for complex objects</td>
+<td><code>STATE</code>, <code>ANY</code>, fallback</td>
+</tr>
+</tbody>
+</table>
+<p>All renderers are <strong>lazy-loaded</strong> (<code>React.lazy</code>) for bundle splitting.</p>
+<h3 id="75-canvas-integration"><span class="num">7.5</span> Canvas Integration</h3>
+<ul>
+<li><strong>LogPanel</strong> (<code>canvas/panels/LogPanel.tsx</code>): inline log viewer inside the OutputDrawer's Logs tab, subscribes to <code>exec_log</code> WS events for live updates</li>
+<li><strong>StepLogPanel</strong> (<code>canvas/panels/StepLogPanel.tsx</code>): action/thinking log side panel with ActionLog + LLMLog views</li>
+</ul>
+<h3 id="76-api-client"><span class="num">7.6</span> API Client</h3>
+<p><code>logApi.ts</code> provides typed fetch wrappers:</p>
+<pre class="hl"><span class="nx">listExecutions</span><span class="p">()</span><span class="o">:</span><span class="w"> </span><span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">ExecutionListItem</span><span class="p">[]</span><span class="o">&gt;</span>
+<span class="nx">getEntries</span><span class="p">(</span><span class="nx">id</span><span class="p">,</span><span class="w"> </span><span class="nx">filters</span><span class="o">?</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">LogEntry</span><span class="p">[]</span><span class="o">&gt;</span>
+<span class="nx">getNodeHistory</span><span class="p">(</span><span class="nx">id</span><span class="p">,</span><span class="w"> </span><span class="nx">nodeId</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">LogEntry</span><span class="p">[]</span><span class="o">&gt;</span>
+<span class="nx">getSummary</span><span class="p">(</span><span class="nx">id</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">ExecutionSummary</span><span class="o">&gt;</span>
+<span class="nx">assetUrl</span><span class="p">(</span><span class="nx">id</span><span class="p">,</span><span class="w"> </span><span class="nx">path</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w">   </span><span class="c1">// builds URL for &lt;img src&gt;</span>
+</pre>
+<h3 id="77-node-color-coding"><span class="num">7.7</span> Node Color Coding</h3>
+<p><code>nodeColors.ts</code> maps node type prefixes to Tailwind color classes for visual categorization in the log list (e.g. <code>env_habitat__*</code> → blue, <code>llm__*</code> → purple).</p>
+<hr>
+<h2 id="8-storage-layout"><span class="num">8.</span> Storage Layout</h2>
+<ul class="filetree">
+<li><code>outputs/</code>
+  <ul>
+  <li><code>runs/</code> — <em>canvas executions</em>
+    <ul>
+    <li><code>exec_&lt;id&gt;/</code>
+      <ul>
+      <li><code>graph.json</code> — GraphDefinition snapshot for canvas replay</li>
+      <li><code>log.jsonl</code> — one <code>NodeLogEntry</code> per line</li>
+      <li><code>assets/</code> — sidecar image files, e.g. <code>s0_f0_Habitat__Observe__rgb.jpg</code> / <code>…__depth.png</code></li>
+      </ul>
+    </li>
+    </ul>
+  </li>
+  <li><code>eval_runs/</code> — <em>eval executions (ADR-eval-004)</em>
+    <ul>
+    <li><code>{run_id}/</code> — timestamp + collision suffix, e.g. <code>20260515_143052</code>
+      <ul>
+      <li><code>spec.json</code>, <code>shared_urls.json</code> — input contract</li>
+      <li><code>summary.json</code>, <code>graph.json</code> — run-level snapshot</li>
+      <li><code>stdout.log</code>, <code>stderr.log</code>, <code>_DONE</code></li>
+      <li><code>episodes/ep{idx:04d}/</code> — one self-contained dir per episode
+        <ul>
+        <li><code>log.jsonl</code> — stamped <code>execution_id = {run_id}_ep{idx:04d}</code></li>
+        <li><code>assets/</code> — this episode's image artefacts</li>
+        <li><code>episode.json</code> — self-describing row from <code>summary.json</code></li>
+        </ul>
+      </li>
+      </ul>
+    </li>
+    </ul>
+  </li>
+  </ul>
+</li>
+</ul>
+<p><strong>JSONL format</strong> — each line is one <code>NodeLogEntry</code>:</p>
+<pre class="hl"><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T14:12:41.757840&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exec_1775571161675_2z1w47c&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;canvas&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;step&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;episode_info&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;env_habitat__episode_info&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Habitat: Episode Info&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;duration_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">25.43</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;inputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<span class="w">  </span><span class="nt">&quot;outputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;instruction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Walk through the door...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;episode_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;inner_log&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;format_length&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">640</span><span class="p">}],</span>
+<span class="w">  </span><span class="nt">&quot;port_wire_types&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;instruction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;episode_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;parent_node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;dynamic_index&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="p">}</span>
+</pre>
+<p>When a node makes one or more LLM/VLM calls, the per-node usage bucket (§4.4) is appended to that node's <code>inner_log</code> as a <code>{"key": "usage", "value": {calls, prompt_tokens, completion_tokens, total_tokens, cached_tokens, usd_cost, model}}</code> entry — only when <code>calls &gt; 0</code> (<code>graph_executor.py · _fire_node</code>). It rides <em>inside</em> <code>inner_log</code>, not as a top-level field.</p>
+<hr>
+<h2 id="9-file-manifest"><span class="num">9.</span> File Manifest</h2>
+<h3 id="91-backend"><span class="num">9.1</span> Backend</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Lines</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>app/logging/logger.py</code></td>
+<td>377</td>
+<td>ExecutionLogger, <code>log_serialize()</code>, <code>log_serialize_with_assets()</code>, <code>save_asset()</code></td>
+</tr>
+<tr>
+<td><code>app/logging/models.py</code></td>
+<td>50</td>
+<td><code>NodeLogEntry</code>, <code>ExecutionSummary</code> Pydantic models</td>
+</tr>
+<tr>
+<td><code>app/logging/__init__.py</code></td>
+<td>8</td>
+<td>Public exports</td>
+</tr>
+<tr>
+<td><code>app/api/execution/logs.py</code></td>
+<td>333</td>
+<td>6 REST endpoints for log queries, graph retrieval, and asset serving</td>
+</tr>
+<tr>
+<td><code>app/components/bases.py</code></td>
+<td>554</td>
+<td><code>BaseCanvasNode._self_log()</code> and <code>.log()</code> voluntary logging API</td>
+</tr>
+<tr>
+<td><code>app/agent_loop/graph_executor.py</code></td>
+<td>~1860</td>
+<td>Logger integration: <code>log_node()</code> after each firing, <code>flush()</code> at boundaries</td>
+</tr>
+<tr>
+<td><code>app/agent_loop/loop_runner.py</code></td>
+<td>216</td>
+<td>Logger instantiation with persist_dir (only when none is injected)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92-frontend"><span class="num">9.2</span> Frontend</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Lines</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/logs/types.ts</code></td>
+<td>63</td>
+<td>TypeScript interfaces (<code>LogEntry</code>, <code>ExecLogEvent</code>, <code>AssetRef</code>, etc.)</td>
+</tr>
+<tr>
+<td><code>src/logs/logApi.ts</code></td>
+<td>54</td>
+<td>REST client (4 query functions + asset URL builder)</td>
+</tr>
+<tr>
+<td><code>src/logs/LogContext.tsx</code></td>
+<td>4</td>
+<td>React context for <code>executionId</code></td>
+</tr>
+<tr>
+<td><code>src/logs/LogViewerPage.tsx</code></td>
+<td>95</td>
+<td>Full-page log inspector layout with viewMode state</td>
+</tr>
+<tr>
+<td><code>src/logs/LogCanvasView.tsx</code></td>
+<td>290</td>
+<td>Canvas replay: read-only React Flow + step nav + resizable detail panel</td>
+</tr>
+<tr>
+<td><code>src/logs/ExecutionList.tsx</code></td>
+<td>86</td>
+<td>Sidebar: recent execution list</td>
+</tr>
+<tr>
+<td><code>src/logs/LogSummaryBar.tsx</code></td>
+<td>83</td>
+<td>Toolbar: aggregate stats</td>
+</tr>
+<tr>
+<td><code>src/logs/LogFilters.tsx</code></td>
+<td>75</td>
+<td>Search / filter controls</td>
+</tr>
+<tr>
+<td><code>src/logs/LogEntryList.tsx</code></td>
+<td>449</td>
+<td>Virtualized master-detail entry list</td>
+</tr>
+<tr>
+<td><code>src/logs/nodeColors.ts</code></td>
+<td>54</td>
+<td>Node type → color mapping</td>
+</tr>
+<tr>
+<td><code>src/logs/renderers/registry.ts</code></td>
+<td>84</td>
+<td>Wire-type-aware renderer dispatch</td>
+</tr>
+<tr>
+<td><code>src/logs/renderers/*.tsx</code></td>
+<td>~9 files</td>
+<td>Specialized value renderers (Image, Text, Action, Metrics, etc.)</td>
+</tr>
+<tr>
+<td><code>src/canvas/panels/LogPanel.tsx</code></td>
+<td>—</td>
+<td>Canvas OutputDrawer inline log (WS subscription)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass. All hard claims re-verified against the working tree (two-layer <code>_self_log</code>/<code>log</code>, the 16-field <code>NodeLogEntry</code>, <code>deque(maxlen=2000)</code>, full-string serialization with inert <code>max_str_len</code>, <code>log_serialize_with_assets</code> rules, the canvas/eval logger-injection split, the <code>_current_node_usage</code> ContextVar + <code>calls &gt; 0</code> usage append, the 6 REST endpoints, the metadata-only <code>exec_log</code> WS event, and the three flush points) — all CONFIRMED. Only drift: §9.1 file-manifest line count for <code>bases.py</code> 538 → 554.</li>
+<li>2026-06-13 16:20: HTML-first visual pass — the §2.2 logging pipeline and the §7 Log-Viewer layout are now <code>&lt;svg class="rxsvg"&gt;</code> figures; all <code>&lt;div class="highlight"&gt;</code> blocks became <code>&lt;pre class="hl"&gt;</code>; the §4.2 instrumentation steps are an <code>&lt;ol&gt;</code> and the §8 storage tree a nested <code>&lt;ul&gt;</code>.</li>
+<li>2026-06-13 16:02: inverted-pyramid pass to match the <code>components/</code> pages — added a <code>lede</code> (what it is + who-owns-what, links to Real-time Observability); retitled §1 "Two-Layer Architecture" → "What the log captures — two layers" and §1.1 "Voluntary Logging API" → "The smallest thing a node logs". No renumber (the page was already concept-first). Also repaired the cross-page link to LLM Config's usage hook (now §12 after that page's restructure).</li>
+<li>2026-06-13 15:23: code-alignment audit — removed the fictional §3.1 <code>large_string</code> truncation row (strings are now persisted in full, <code>logger.py:51-52</code>; <code>max_str_len</code> is inert) and the matching <code>large_string</code> renderer-marker references in §7.4; added the <code>parent_node_id</code> / <code>dynamic_index</code> Dynamic Fire-List provenance fields to the §2.1 field table, §2.3 <code>log_node</code> signature, and the §8 JSONL example; noted the per-node <code>usage</code> bucket rides inside <code>inner_log</code> (not a top-level field); corrected the §4.3 flush line numbers (<code>iterOut</code> 660, success 947, error 987); flagged the §4.1 logger-injection path; refreshed §9.1 line counts.</li>
+<li>2026-05-18: added §4.4 Per-node LLM usage hook (ADR-observability-005) — covers <code>_current_node_usage</code> ContextVar in <code>app/llm/call.py:44</code> + executor set/reset around <code>forward()</code> (<code>graph_executor.py:1053-1074</code>) + accumulator semantics ({calls, prompt_tokens, completion_tokens, total_tokens, cached_tokens, usd_cost, model}) + voluntary / per-firing / ContextVar-propagating properties + server-mode-subprocess attribution.</li>
+<li>2026-05-15 12:30: Per-episode log layout for batch eval — <code>outputs/eval_runs/{run_id}/episodes/ep{idx:04d}/{log.jsonl,assets/,episode.json}</code>; logger now created per episode in <code>_run_one_episode</code>, <code>execution_id = "{run_id}_ep{idx:04d}"</code>; replay parser ABC simplified to <code>parse(episode_log_path)</code>; <code>run_id</code> is a second-precision timestamp (see ADR-eval-004)</li>
+<li>2026-04-20 00:00: Audit against codebase — corrected REST API file path (<code>app/api/logs_api.py</code> → <code>app/api/execution/logs.py</code>), added missing <code>/api/logs/{id}/graph</code> endpoint to REST table, added <code>LIST[T]</code> compact-count row to <code>log_serialize_with_assets()</code> table, noted <code>inner_log</code> uses <code>max_str_len=50000</code></li>
+<li>2026-04-09 12:39: Added three-mode viewer (Overall/Detail/Canvas), canvas replay (LogCanvasView, graph.json persistence, step navigation), resizable detail panel, improved text/image rendering</li>
+<li>2026-04-09 11:17: Initial documentation from ADR-observability-003 implementation</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-two-layer-architecture">1. What the log captures — two layers</a>
+      <a class="toc-h3" href="#11-voluntary-logging-api">1.1 The smallest thing a node logs</a>
+      <a class="toc-h2" href="#2-backend-executionlogger">2. Backend: ExecutionLogger</a>
+      <a class="toc-h3" href="#21-data-model">2.1 Data Model</a>
+      <a class="toc-h3" href="#22-ring-buffer-write-queue">2.2 Ring Buffer + Write Queue</a>
+      <a class="toc-h3" href="#23-key-methods">2.3 Key Methods</a>
+      <a class="toc-h2" href="#3-serialization-asset-storage">3. Serialization &amp; Asset Storage</a>
+      <a class="toc-h3" href="#31-log_serialize">3.1 log_serialize()</a>
+      <a class="toc-h3" href="#32-log_serialize_with_assets">3.2 log_serialize_with_assets()</a>
+      <a class="toc-h2" href="#4-executor-integration">4. Executor Integration</a>
+      <a class="toc-h3" href="#41-logger-creation">4.1 Logger Creation</a>
+      <a class="toc-h3" href="#42-node-firing-instrumentation">4.2 Node Firing Instrumentation</a>
+      <a class="toc-h3" href="#44-per-node-llm-usage-hook">4.4 Per-node LLM usage hook (ADR-observability-005)</a>
+      <a class="toc-h3" href="#43-flush-points">4.3 Flush Points</a>
+      <a class="toc-h2" href="#5-rest-api">5. REST API</a>
+      <a class="toc-h2" href="#6-websocket-events">6. WebSocket Events</a>
+      <a class="toc-h2" href="#7-frontend-log-viewer">7. Frontend: Log Viewer</a>
+      <a class="toc-h3" href="#71-three-view-modes">7.1 Three View Modes</a>
+      <a class="toc-h3" href="#72-page-structure">7.2 Page Structure</a>
+      <a class="toc-h3" href="#73-canvas-replay-mode">7.3 Canvas Replay Mode</a>
+      <a class="toc-h3" href="#74-value-renderer-registry">7.4 Value Renderer Registry</a>
+      <a class="toc-h3" href="#75-canvas-integration">7.5 Canvas Integration</a>
+      <a class="toc-h3" href="#76-api-client">7.6 API Client</a>
+      <a class="toc-h3" href="#77-node-color-coding">7.7 Node Color Coding</a>
+      <a class="toc-h2" href="#8-storage-layout">8. Storage Layout</a>
+      <a class="toc-h2" href="#9-file-manifest">9. File Manifest</a>
+      <a class="toc-h3" href="#91-backend">9.1 Backend</a>
+      <a class="toc-h3" href="#92-frontend">9.2 Frontend</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

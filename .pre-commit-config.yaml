@@ -1,0 +1,84 @@
+# Pre-commit hooks for AgentCanvas.
+#
+# Install once after clone:
+#   pip install pre-commit
+#   pre-commit install
+#   pre-commit install --hook-type commit-msg   # for conventional-pre-commit
+#
+# Run against the whole repo:
+#   pre-commit run --all-files
+#
+# Hook order: hygiene → formatters → linters → security → commit-msg.
+# Formatters run before linters so lint errors reflect real issues, not whitespace.
+
+default_language_version:
+  python: python3.10
+
+repos:
+  # ─── Hygiene ───────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(third_party/|workspace/nodesets/policy/policy_vla/(adapters|models|policies)/|workspace/nodesets/env/env_detany3d/_vendor/)
+      - id: end-of-file-fixer
+        exclude: ^(third_party/|workspace/nodesets/policy/policy_vla/(adapters|models|policies)/|workspace/nodesets/env/env_detany3d/_vendor/)
+      - id: check-yaml
+        exclude: ^third_party/
+      - id: check-json
+        # .vscode/*.json files are JSONC (JSON with // comments) — strict JSON
+        # validation would reject them. VS Code reads them as JSONC by design.
+        exclude: ^(third_party/|agentcanvas/frontend/package-lock\.json|\.vscode/)
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+        # Curated archives may legitimately exceed 500 KB:
+        # - outputs/archive/    : compressed run traces (log.jsonl.gz)
+        # - architect-site/reference/_archive/ : frozen historical reference
+        #   content (e.g. adas-v1 paper PDF + project-page figures).
+        # - assets/readme/      : README hero GIFs (editor + AAS screencasts).
+        exclude: ^(outputs/archive/|architect-site/reference/_archive/|assets/readme/)
+      - id: check-merge-conflict
+      - id: check-case-conflict                       # Foo.py vs foo.py collisions
+      - id: debug-statements                          # blocks breakpoint(), pdb.set_trace()
+        exclude: ^(third_party/|workspace/nodesets/policy/policy_vla/(adapters|models|policies)/|workspace/nodesets/env/env_detany3d/_vendor/)
+      - id: mixed-line-ending
+        args: ['--fix=lf']                            # matches .editorconfig end_of_line=lf
+        exclude: ^(third_party/|workspace/nodesets/policy/policy_vla/(adapters|models|policies)/|workspace/nodesets/env/env_detany3d/_vendor/)
+      - id: detect-private-key                        # catches accidental SSH/RSA keys
+
+  # ─── Python: ruff (lint + format) ──────────────────────────────────
+  # Reads config from ruff.toml at the repo root.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ─── Frontend: prettier (format only; no eslint pre-launch) ────────
+  # Prettier respects .editorconfig for indent/line-ending by default.
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: ^agentcanvas/frontend/src/.*\.(ts|tsx|css|json)$
+        exclude: ^agentcanvas/frontend/(node_modules|dist)/
+
+  # ─── Security: secret scanning ─────────────────────────────────────
+  # Critical before going public. Run once against full history before Apr 20:
+  #   gitleaks detect --source . --log-opts="--all"
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        exclude: ^(third_party/|\.claude/rules/security\.md)
+
+  # ─── Commit message format ─────────────────────────────────────────
+  # Enforces Conventional Commits per .claude/rules/git-workflow.md and
+  # CONTRIBUTING.md. Requires: pre-commit install --hook-type commit-msg
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [feat, fix, refactor, docs, test, chore, perf, ci]

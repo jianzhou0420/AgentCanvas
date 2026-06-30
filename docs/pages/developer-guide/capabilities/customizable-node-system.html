@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2Customizable Node System — AgentCanvas</title>
+<meta name="description" content="Subclass BaseCanvasNode, register in WorkspaceComponentRegistry — new node types appear in the workspace automatically.">
+<meta property="og:title" content="2Customizable Node System — AgentCanvas">
+<meta property="og:description" content="Subclass BaseCanvasNode, register in WorkspaceComponentRegistry — new node types appear in the workspace automatically.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/customizable-node-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/customizable-node-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">2Customizable Node System</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">2</span>Customizable Node System</h1>
+  <p class="tagline">Subclass BaseCanvasNode, register in WorkspaceComponentRegistry — new node types appear in the workspace automatically.</p>
+</header>
+
+
+
+<p>New canvas nodes are Python classes. Drop a file into <code>workspace/</code>, the platform auto-discovers it at runtime. This page covers the class hierarchy, auto-discovery mechanism, and frontend rendering.</p>
+<hr>
+<h2 id="1-basecanvasnode"><span class="num">1.</span> BaseCanvasNode</h2>
+<p><em>Design docs: <a href="../design-docs/components/canvas-system.html">Canvas System</a> · <a href="../design-docs/graph/loop-control-system.html">Loop Control</a> (for <code>kind="control"</code> nodes)</em></p>
+<p>Every canvas element — blocks, composites, controls — inherits from <code>BaseCanvasNode</code>. The class uses <strong>ClassVars</strong> for declarative metadata and an <strong>async forward()</strong> method for runtime logic.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app.components.bases</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseCanvasNode</span><span class="p">,</span> <span class="n">PortDef</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="c1"># Identity</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;myCustomNode&quot;</span>
+    <span class="n">display_name</span> <span class="o">=</span> <span class="s2">&quot;My Node&quot;</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;Does custom processing&quot;</span>
+    <span class="n">category</span> <span class="o">=</span> <span class="s2">&quot;custom&quot;</span>        <span class="c1"># sidebar group</span>
+    <span class="n">icon</span> <span class="o">=</span> <span class="s2">&quot;Sparkles&quot;</span>          <span class="c1"># Lucide icon name</span>
+
+    <span class="c1"># Kind: &quot;block&quot; | &quot;composite&quot; | &quot;control&quot;</span>
+    <span class="n">kind</span> <span class="o">=</span> <span class="s2">&quot;block&quot;</span>
+
+    <span class="c1"># Ports</span>
+    <span class="n">input_ports</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Input text&quot;</span><span class="p">),</span>
+    <span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;result&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Processed output&quot;</span><span class="p">),</span>
+    <span class="p">]</span>
+
+    <span class="c1"># Config (JSON Schema for the properties panel)</span>
+    <span class="n">config_schema</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;temperature&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;number&quot;</span><span class="p">,</span> <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="mf">0.7</span><span class="p">}}</span>
+    <span class="n">default_config</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;temperature&quot;</span><span class="p">:</span> <span class="mf">0.7</span><span class="p">}</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">text</span> <span class="o">=</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">]</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">process</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;temperature&quot;</span><span class="p">,</span> <span class="mf">0.7</span><span class="p">))</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="n">result</span><span class="p">}</span>
+</code></pre></div>
+<h3 id="11-lifecycle-hooks"><span class="num">1.1</span> Lifecycle Hooks</h3>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">initialize</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Called once before first execution. Load models, allocate GPU memory.&quot;&quot;&quot;</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Called on teardown. Release resources.&quot;&quot;&quot;</span>
+</code></pre></div>
+<h3 id="12-instance-attributes"><span class="num">1.2</span> Instance Attributes</h3>
+<p>Set by the executor at graph-build time:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>self.config</code></td>
+<td><code>dict</code></td>
+<td>Per-node config from graph JSON</td>
+</tr>
+<tr>
+<td><code>self.node_id</code></td>
+<td><code>str</code></td>
+<td>Node ID from graph JSON</td>
+</tr>
+<tr>
+<td><code>self._log_buffer</code></td>
+<td><code>list[dict]</code></td>
+<td>Voluntary inner log entries (per-firing). Written by <code>_self_log()</code>, read by <code>log()</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="13-voluntary-logging-_self_log-log"><span class="num">1.3</span> Voluntary Logging — <code>_self_log()</code> / <code>log()</code></h3>
+<p>The executor automatically captures port I/O and timing (the <strong>exterior</strong> log layer). Nodes add <strong>interior</strong> detail — assembled LLM prompts, API responses, token counts, intermediate scores — by calling <code>_self_log()</code> inside <code>forward()</code>. The buffer is drained via <code>log()</code> after <code>forward()</code> returns (ADR-observability-003).</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="n">prompt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_build_prompt</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;prompt&quot;</span><span class="p">,</span> <span class="n">prompt</span><span class="p">)</span>                       <span class="c1"># record what we asked</span>
+    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">llm_complete</span><span class="p">(</span><span class="n">prompt</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_self_log</span><span class="p">(</span><span class="s2">&quot;tokens_used&quot;</span><span class="p">,</span> <span class="n">response</span><span class="o">.</span><span class="n">usage</span><span class="o">.</span><span class="n">total_tokens</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">text</span><span class="p">}</span>
+</code></pre></div>
+<p>Override <code>log()</code> to filter or add computed summaries; the default returns the raw <code>_self_log()</code> buffer.</p>
+<h3 id="14-_resolve_portsconfig-dynamic-ports"><span class="num">1.4</span> <code>_resolve_ports(config)</code> — Dynamic Ports</h3>
+<p>Some nodes derive their ports from per-instance <code>config</code> rather than class-level declarations — <code>IterIn</code> / <code>IterOut</code> (ADR-dataflow-003) and <code>ImageViewerSink</code> (ADR-components-007) are the canonical examples. Override the <code>_resolve_ports</code> classmethod to return <code>(input_ports, output_ports)</code> computed from <code>config</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@classmethod</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_resolve_ports</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">list</span><span class="p">,</span> <span class="nb">list</span><span class="p">]:</span>
+    <span class="n">ports_cfg</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;ports&quot;</span><span class="p">,</span> <span class="p">[])</span>
+    <span class="n">resolved</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">],</span> <span class="n">p</span><span class="p">[</span><span class="s2">&quot;wire_type&quot;</span><span class="p">],</span> <span class="n">optional</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">ports_cfg</span><span class="p">]</span>
+    <span class="c1"># Sink nodes: inputs only</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">resolved</span><span class="p">,</span> <span class="p">[])</span>
+</code></pre></div>
+<p>Default behaviour (on <code>BaseCanvasNode</code>) returns class-level ports unchanged. The graph executor, load-time validator (<code>validate_graph_connectivity</code>), and the frontend's <code>portResolution.ts</code> all consult this method — single source of truth. Expose the config to users via a <code>ConfigField(name="ports", field_type="port_list", …)</code> in <code>ui_config</code>.</p>
+<h3 id="15-batched-inference-batched-batch_dim"><span class="num">1.5</span> Batched Inference — <code>batched</code> / <code>batch_dim</code></h3>
+<p>Opt-in ClassVars (ADR-eval-002 PC-1) that route a node's <code>forward()</code> through the per-<code>AutoServerApp</code> <code>BatchedInferenceServer</code> rendezvous. K parallel worker callers submit per-sample inputs; the underlying <code>forward()</code> is invoked <strong>once</strong> with inputs stacked along <code>batch_dim</code>; K result slices scatter back to K awaiting futures.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">ClassVar</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">PolicyForwardNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;policy_cma__forward&quot;</span>
+    <span class="n">batched</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">batch_dim</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;rgb&quot;</span>   <span class="c1"># input port carrying the per-sample slot</span>
+
+    <span class="n">input_ports</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;rgb&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;IMAGE&quot;</span><span class="p">),</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;hidden_in&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;ANY&quot;</span><span class="p">),</span>
+    <span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;action&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;ACTION&quot;</span><span class="p">),</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;hidden_out&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;ANY&quot;</span><span class="p">),</span>
+    <span class="p">]</span>
+</code></pre></div>
+<p>Contract: the server is <strong>pure-functional</strong> — any per-call state (RNN hidden state, etc.) must travel on the wire as explicit input/output ports. <code>register_node()</code> validates at scan time that <code>batch_dim</code> names an actual input port.</p>
+<h2 id="2-portdef-and-wiring"><span class="num">2.</span> PortDef and Wiring</h2>
+<p><em>Design doc: <a href="../design-docs/graph/wire-types.html">Wire Types</a></em></p>
+<p><code>PortDef</code> declares an input or output port. The <code>name</code> becomes the React Flow Handle ID on the frontend and the key in <code>inputs</code> / return dict on the backend.</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">PortDef</span><span class="p">:</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>             <span class="c1"># port name (= Handle id)</span>
+    <span class="n">wire_type</span><span class="p">:</span> <span class="nb">str</span>        <span class="c1"># &quot;IMAGE&quot;, &quot;ACTION&quot;, &quot;TEXT&quot;, &quot;DEPTH&quot;, etc.</span>
+    <span class="n">description</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+    <span class="n">optional</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>  <span class="c1"># if False, node won&#39;t fire until this port has data</span>
+</code></pre></div>
+<p>Wire types are checked at connection time — only matching types can be wired together. <code>WIRE_TYPES</code> contains 12 inner types: <code>IMAGE</code>, <code>DEPTH</code>, <code>ACTION</code>, <code>DISCRETE_ACTION</code>, <code>CONTROL</code>, <code>POSE</code>, <code>TEXT</code>, <code>BOOL</code>, <code>METRICS</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>, <code>ANY</code> (<code>POSE</code> was renamed from <code>STATE</code> in ADR-dataflow-004; <code>ANY</code> is a first-class catch-all, not a boundary-only escape hatch).</p>
+<p>Any inner type <code>T</code> may be wrapped as <code>LIST[T]</code> — a <strong>consumer-side modifier</strong> (ADR-dataflow-005). Producer ports stay scalar <code>T</code>; a consumer port declared <code>LIST[T]</code> always sees a <code>list[T]</code>, because the executor wraps scalar inputs to length-1 lists and concatenates fan-in in edge declaration order at the port-binding seam. Used for multi-image LLM prompts, multi-LLM debate, and search-population fan-in. Nested <code>LIST[LIST[T]]</code> is not supported in v1.</p>
+<h2 id="3-node-ui-config"><span class="num">3.</span> Node UI Config</h2>
+<p><em>Design doc: <a href="../design-docs/components/canvas-system.html">Canvas System</a></em></p>
+<p><code>NodeUIConfig</code> controls how <code>GenericBlockRenderer</code> draws the node — no custom <code>.tsx</code> needed.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">app.components.bases</span><span class="w"> </span><span class="kn">import</span> <span class="n">NodeUIConfig</span><span class="p">,</span> <span class="n">ConfigField</span><span class="p">,</span> <span class="n">DisplayField</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">ui_config</span> <span class="o">=</span> <span class="n">NodeUIConfig</span><span class="p">(</span>
+        <span class="n">color</span><span class="o">=</span><span class="s2">&quot;amber&quot;</span><span class="p">,</span>           <span class="c1"># Tailwind color key (&quot;&quot; = auto from category)</span>
+        <span class="n">layout</span><span class="o">=</span><span class="s2">&quot;block&quot;</span><span class="p">,</span>          <span class="c1"># &quot;block&quot; | &quot;strip&quot; | &quot;viewer&quot; | &quot;imageGrid&quot; | &quot;note&quot;</span>
+        <span class="n">width</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span>                <span class="c1"># explicit width (e.g. &quot;44px&quot; for strip gates)</span>
+        <span class="n">min_width</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+        <span class="n">max_width</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+        <span class="n">min_height</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+        <span class="n">rounding</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span>             <span class="c1"># CSS rounding class (e.g. &quot;rounded-r-lg&quot;)</span>
+        <span class="n">config_fields</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">ConfigField</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="s2">&quot;temperature&quot;</span><span class="p">,</span>
+                <span class="n">field_type</span><span class="o">=</span><span class="s2">&quot;slider&quot;</span><span class="p">,</span>
+                <span class="n">label</span><span class="o">=</span><span class="s2">&quot;Temperature&quot;</span><span class="p">,</span>
+                <span class="n">default</span><span class="o">=</span><span class="mf">0.7</span><span class="p">,</span>
+                <span class="nb">min</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="nb">max</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">ConfigField</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="s2">&quot;model&quot;</span><span class="p">,</span>
+                <span class="n">field_type</span><span class="o">=</span><span class="s2">&quot;select&quot;</span><span class="p">,</span>
+                <span class="n">label</span><span class="o">=</span><span class="s2">&quot;Model&quot;</span><span class="p">,</span>
+                <span class="n">options</span><span class="o">=</span><span class="p">[</span>
+                    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4o&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">:</span> <span class="s2">&quot;GPT-4o&quot;</span><span class="p">},</span>
+                    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="s2">&quot;claude-sonnet&quot;</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">:</span> <span class="s2">&quot;Claude Sonnet&quot;</span><span class="p">},</span>
+                <span class="p">],</span>
+            <span class="p">),</span>
+        <span class="p">],</span>
+        <span class="n">display_fields</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">DisplayField</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="s2">&quot;response&quot;</span><span class="p">,</span>
+                <span class="n">display_type</span><span class="o">=</span><span class="s2">&quot;log_list&quot;</span><span class="p">,</span>
+                <span class="n">data_key</span><span class="o">=</span><span class="s2">&quot;text&quot;</span><span class="p">,</span>
+                <span class="n">max_visible</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+                <span class="n">accumulate</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="p">),</span>
+        <span class="p">],</span>
+    <span class="p">)</span>
+</code></pre></div>
+<h3 id="31-configfield-types"><span class="num">3.1</span> ConfigField Types</h3>
+<p><code>ConfigField</code> declares <strong>user-editable</strong> inline widgets.</p>
+<table>
+<thead>
+<tr>
+<th><code>field_type</code></th>
+<th>Widget</th>
+<th>Extra fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"label"</code></td>
+<td>Read-only text</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>"slider"</code></td>
+<td>Range input</td>
+<td><code>min</code>, <code>max</code>, <code>step</code></td>
+</tr>
+<tr>
+<td><code>"text"</code></td>
+<td>Single-line input</td>
+<td><code>placeholder</code></td>
+</tr>
+<tr>
+<td><code>"select"</code></td>
+<td>Dropdown</td>
+<td><code>options: [{value, label}]</code></td>
+</tr>
+<tr>
+<td><code>"toggle"</code></td>
+<td>Checkbox / switch</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>"textarea"</code></td>
+<td>Multi-line input</td>
+<td><code>placeholder</code></td>
+</tr>
+<tr>
+<td><code>"port_list"</code></td>
+<td>Editable port list</td>
+<td>Used by IterIn, IterOut, LLMCallNode, ImageViewerSink for configurable ports (ADR-dataflow-003, ADR-components-007)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-displayfield-types"><span class="num">3.2</span> DisplayField Types</h3>
+<p><code>DisplayField</code> declares <strong>read-only</strong> runtime data widgets that render WebSocket <code>viewer_data</code> payloads keyed by <code>data_key</code> (ADR-components-006, ADR-observability-003). Set <code>accumulate=True</code> to append entries over time (bounded by <code>max_visible</code>); <code>False</code> to replace.</p>
+<table>
+<thead>
+<tr>
+<th><code>display_type</code></th>
+<th>Widget</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"image_viewer"</code></td>
+<td>Base64-encoded image rendered as <code>&lt;img&gt;</code></td>
+</tr>
+<tr>
+<td><code>"log_list"</code></td>
+<td>Scrollable list of entries with step numbers (supports <code>accumulate</code>)</td>
+</tr>
+<tr>
+<td><code>"metric_table"</code></td>
+<td>Key–value metrics table (SPL, SR, nDTW, …)</td>
+</tr>
+<tr>
+<td><code>"text_viewer"</code></td>
+<td>Plain string display — scalar shows one block, array shows a scrollable stack with hairline dividers (ADR-components-008)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-layout-modes"><span class="num">3.3</span> Layout Modes</h3>
+<table>
+<thead>
+<tr>
+<th><code>layout</code></th>
+<th>When to use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"block"</code></td>
+<td>Default — standard rectangle with title, ports, and config/display fields</td>
+</tr>
+<tr>
+<td><code>"strip"</code></td>
+<td>Narrow vertical gate (IterIn, IterOut, GraphIn, GraphOut) — ports only, no body</td>
+</tr>
+<tr>
+<td><code>"viewer"</code></td>
+<td>Display-sink nodes (TextViewer, TextScroll, ActionLog, Metrics) — hides <code>config_fields</code>, renders <code>display_fields</code> full-width</td>
+</tr>
+<tr>
+<td><code>"imageGrid"</code></td>
+<td>ImageViewerSink — grid of image panels derived from <code>config.rows</code> / <code>config.cols</code> / <code>config.ports</code> (ADR-components-007)</td>
+</tr>
+<tr>
+<td><code>"note"</code></td>
+<td>Free-text annotation node (<code>NoteLayout</code>) — a canvas sticky-note with no ports or runtime behaviour</td>
+</tr>
+</tbody>
+</table>
+<h2 id="4-basenodeset"><span class="num">4.</span> BaseNodeSet</h2>
+<p><em>Design docs: <a href="../design-docs/operations/server-mode.html">Server Mode</a> · <a href="../design-docs/components/env-panels.html">Env Panels</a></em></p>
+<p>A nodeset bundles multiple <code>BaseCanvasNode</code> tools under shared initialization and lifecycle. Tools in a nodeset load/unload atomically.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">ClassVar</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app.components.bases</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseNodeSet</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">SamNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;sam&quot;</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;Segment Anything Model tools&quot;</span>
+
+    <span class="c1"># Optional: run this nodeset in its own interpreter via AutoServerApp (ADR-server-001).</span>
+    <span class="c1"># None = use sys.executable.</span>
+    <span class="n">server_python</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;/path/to/sam/python&quot;</span>
+
+    <span class="c1"># Optional: control-plane panel (ADR-server-002) — BaseEnvPanel subclass.</span>
+    <span class="c1"># WorkspaceComponentRegistry instantiates and registers it on load. Used for</span>
+    <span class="c1"># episode control, checkpoint selection, etc.</span>
+    <span class="n">env_panel</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">type</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="c1"># Optional: per-episode timeout for batch eval (ADR-eval-002). The batch</span>
+    <span class="c1"># runner clamps each episode at max_steps * default_per_step_budget_sec.</span>
+    <span class="c1"># Habitat ~2.0, LLM-heavy MapGPT ~30.0, framework default 30.0.</span>
+    <span class="n">default_per_step_budget_sec</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="mf">30.0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">SegmentTool</span><span class="p">(),</span> <span class="n">EmbedTool</span><span class="p">()]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">initialize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># Load SAM model, allocate GPU memory</span>
+        <span class="o">...</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># Release GPU memory</span>
+        <span class="o">...</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_eval_metadata</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="c1"># Env nodesets override this to expose env_name, splits,</span>
+        <span class="c1"># episode_counts, metrics, supports_set_episode, step_budget.</span>
+        <span class="c1"># Non-env nodesets return {} (default).</span>
+        <span class="k">return</span> <span class="p">{}</span>
+</code></pre></div>
+<p>Each tool returned by <code>get_tools()</code> is itself a <code>BaseCanvasNode</code> subclass instance with <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, and <code>forward()</code>.</p>
+<h2 id="5-auto-discovery"><span class="num">5.</span> Auto-Discovery</h2>
+<p>The <code>WorkspaceComponentRegistry</code> scans <code>workspace/</code> subdirectories at startup and on hot-reload.</p>
+<div class="highlight"><pre><span></span><code>workspace/
+  nodesets/{env,method,policy,model,common,other}/ *.py
+                         → BaseNodeSet subclasses, grouped by role (ADR-platform-008;
+                           server-mode is per-nodeset via server_python, not a directory)
+  policies/        *.py  → BaseCanvasNode subclasses with policy metadata
+  nodes/           *.py  → BaseCanvasNode subclasses (registered immediately)
+</code></pre></div>
+<h3 id="51-scan-flow"><span class="num">5.1</span> Scan Flow</h3>
+<div class="highlight"><pre><span></span><code>1. WorkspaceComponentRegistry.scan_all()
+2. Pass 1 — frozen workspace (Settings.workspace_dir):
+   For each subdirectory (nodesets/ with its role buckets, policies/, nodes/):
+     a. Import every .py file (or package with __init__.py)
+     b. Find concrete subclasses of the target base class
+     c. Instantiate and register
+3. Pass 2 — active workspace overlay (Settings.active_workspace_dir, optional):
+   Same scan against the active dir. register_node()&#39;s last-write-wins on
+   NODE_HANDLERS gives Python-resource override; same for _discovered_nodesets.
+   None / unset = no Pass 2 = bit-identical behaviour. (ADR-components-009)
+4. NodeSets: discovered but NOT eagerly loaded at scan time. They load via
+   (a) explicit load_nodeset(name) from the NodeSet Manager page, or
+   (b) ensure_nodesets_for_graph(graph_def) — auto-loads every nodeset
+       referenced by a graph when the graph is opened or a run is
+       dispatched (ADR-components-003).
+5. Nodes: registered immediately in NODE_HANDLERS
+6. Policies: registered in NODE_HANDLERS + policy registry
+</code></pre></div>
+<p>Non-Python resources (graph JSON, <code>.exp.yaml</code>, <code>hooks.json</code>) are not scanned
+into a dict; they're looked up per-call via <code>resolve_graph_path(name)</code> /
+<code>resolve_exp_yaml_path(name)</code> on the registry (active-first then frozen
+fallthrough). <code>hooks.json</code> uses full-file override (no merge).</p>
+<h3 id="52-hot-reload"><span class="num">5.2</span> Hot Reload</h3>
+<div class="highlight"><pre><span></span><code>POST /api/components/reload
+  → WorkspaceComponentRegistry.unregister_all()
+  → WorkspaceComponentRegistry.scan_all()
+  → invalidate_cache()  # frontend re-fetches node schemas
+</code></pre></div>
+<h2 id="6-frontend-rendering"><span class="num">6.</span> Frontend Rendering</h2>
+<p><em>Design doc: <a href="../design-docs/components/canvas-system.html">Canvas System</a></em></p>
+<p>The frontend's <code>GenericBlockRenderer</code> renders any registered node automatically from its metadata. When <code>scan_all()</code> completes (or on reload), the backend serves node schemas via <code>GET /api/components/node-schemas</code>. The frontend uses this to:</p>
+<ol>
+<li><strong>Build sidebar catalog</strong> — nodes grouped by <code>category</code></li>
+<li><strong>Render node blocks</strong> — ports, colors, inline config controls, live display widgets from <code>ui_config</code></li>
+<li><strong>Validate wiring</strong> — type-check connections using <code>wire_type</code> (including <code>LIST[T]</code> compatibility)</li>
+</ol>
+<p>No custom <code>.tsx</code> component is needed unless the node requires specialized visualization beyond what <code>GenericBlockRenderer</code> provides.</p>
+<h2 id="7-key-files"><span class="num">7.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/components/bases.py</code></td>
+<td><code>BaseCanvasNode</code>, <code>BaseNodeSet</code>, <code>PortDef</code>, <code>ConfigField</code>, <code>DisplayField</code>, <code>NodeUIConfig</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/registry.py</code></td>
+<td><code>WorkspaceComponentRegistry</code> — scanning, registration, <code>ensure_nodesets_for_graph</code>, load/unload</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
+<td><code>NODE_HANDLERS</code> dict, <code>register_node()</code> (scan-time <code>batched</code>/<code>batch_dim</code> validation) — moved out of the retired <code>graph_executor.py</code> module</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/standard/wire_types.py</code></td>
+<td>Wire type constants, <code>LIST[T]</code> helpers, serialization</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/batched_inference.py</code></td>
+<td><code>BatchedInferenceServer</code> — batched-inference rendezvous (ADR-eval-002)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/nodes/agentloop/inner/GenericBlockRenderer.tsx</code></td>
+<td>Universal node renderer</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/portResolution.ts</code></td>
+<td>Frontend mirror of <code>_resolve_ports</code> — applies <code>config.ports</code> overrides</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BaseCanvasNode (all 14 ClassVars)</td>
+<td>Done</td>
+<td>node_type, display_name, description, category, icon, kind, input_ports, output_ports, children, config_schema, default_config, ui_config, batched, batch_dim</td>
+</tr>
+<tr>
+<td>PortDef</td>
+<td>Done</td>
+<td>name, wire_type, description, optional</td>
+</tr>
+<tr>
+<td><code>_resolve_ports(config)</code> classmethod</td>
+<td>Done</td>
+<td>Instance-level port override (ADR-dataflow-003, ADR-components-007)</td>
+</tr>
+<tr>
+<td><code>_self_log()</code> / <code>log()</code></td>
+<td>Done</td>
+<td>Voluntary interior log layer (ADR-observability-003)</td>
+</tr>
+<tr>
+<td>Batched inference (<code>batched</code> + <code>batch_dim</code>)</td>
+<td>Done</td>
+<td>Scan-time validated; routed via <code>BatchedInferenceServer</code> (ADR-eval-002)</td>
+</tr>
+<tr>
+<td>NodeUIConfig attrs</td>
+<td>Done</td>
+<td>color, layout, width, min_width, max_width, min_height, rounding, config_fields, display_fields</td>
+</tr>
+<tr>
+<td>ConfigField (7 widget types)</td>
+<td>Done</td>
+<td>label, slider, text, select, toggle, textarea, port_list</td>
+</tr>
+<tr>
+<td>DisplayField (4 display types)</td>
+<td>Done</td>
+<td>image_viewer, log_list, metric_table, text_viewer</td>
+</tr>
+<tr>
+<td>Layout modes (5)</td>
+<td>Done</td>
+<td>block, strip, viewer, imageGrid, note</td>
+</tr>
+<tr>
+<td>Wire types (12 inner + LIST[T])</td>
+<td>Done</td>
+<td>POSE replaced STATE (ADR-dataflow-004); adds DISCRETE_ACTION + CONTROL; LIST[T] consumer-side modifier (ADR-dataflow-005)</td>
+</tr>
+<tr>
+<td>BaseNodeSet (name, server_python, env_panel, default_per_step_budget_sec)</td>
+<td>Done</td>
+<td>plus <code>get_tools</code>, <code>initialize</code>, <code>shutdown</code>, <code>get_eval_metadata</code></td>
+</tr>
+<tr>
+<td>WorkspaceComponentRegistry auto-discovery</td>
+<td>Done</td>
+<td>Scans nodesets/ (role buckets: env/ method/ policy/ model/ common/ other/), policies/, nodes/; <code>ensure_nodesets_for_graph</code> auto-loads on graph open</td>
+</tr>
+<tr>
+<td>Hot reload (<code>POST /api/components/reload</code>)</td>
+<td>Done</td>
+<td>Shuts down, re-scans, re-initializes</td>
+</tr>
+<tr>
+<td>GenericBlockRenderer</td>
+<td>Done</td>
+<td>Renders any node from metadata; block + strip + viewer + imageGrid + note layouts</td>
+</tr>
+<tr>
+<td>Node schema endpoint</td>
+<td>Done</td>
+<td><code>GET /api/components/node-schemas</code></td>
+</tr>
+<tr>
+<td>Legacy base classes removed</td>
+<td>Done</td>
+<td>BaseTool, BaseSkill, BaseAgent, BasePolicy removed from bases.py</td>
+</tr>
+</tbody>
+</table>
+<p>All items fully implemented.</p>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass (B2). Fixes against the working tree: §4 + Status <code>env panel</code> → <code>env_panel</code> (rename typo introduced a space — invalid Python); §3.3 + §3 + Status <strong>layout modes 4 → 5</strong> (added <code>note</code>/<code>NoteLayout</code>); §3.3 strip-node list <code>(IterIn, IterOut, PortIn, PortOut, Initialize)</code> → <code>(IterIn, IterOut, GraphIn, GraphOut)</code> (no <code>Initialize</code>/<code>PortIn</code>/<code>PortOut</code> types exist); §2 + Status <strong>wire types 10 → 12</strong> (added <code>DISCRETE_ACTION</code> + <code>CONTROL</code>); §4 <code>default_per_step_budget_sec</code> default <strong>5.0 → 30.0</strong>; §7 <code>batched_inference.py</code> drops <code>BatchedClient</code> (only <code>BatchedInferenceServer</code> lives there). 14 ClassVars / 7 ConfigField / 4 DisplayField / 6 role buckets / legacy-class removal all re-verified CONFIRMED.</li>
+<li>2026-06-11 15:37: workspace/nodesets paths updated to the role-directory layout (ADR-platform-008): env/ method/ policy/ model/ common/ other/, server/ eliminated; renames sam→model_sam, ram_perception→model_ram, others split into geometry + mock_frontier.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-05-18: §7 Key Files — <code>NODE_HANDLERS</code> dict + <code>register_node()</code> moved from the retired <code>agent_loop/graph_executor.py</code> module into <code>agent_loop/builtin_nodes.py</code> (path fix).</li>
+<li>2026-05-12 16:31: §5.1 Scan Flow rewritten as two-pass (frozen → active) with the <code>Settings.active_workspace_dir</code> overlay; new paragraph on non-Python resource lookup via <code>resolve_graph_path()</code> / <code>resolve_exp_yaml_path()</code> (see ADR-components-009).</li>
+<li>2026-04-19: Refresh + design-doc links. §1 gained <code>_self_log</code> / <code>log</code> (§1.3), <code>_resolve_ports</code> (§1.4), batched inference (§1.5). §2 wire types updated — 10 inner types including <code>POSE</code> (renamed from <code>STATE</code>, ADR-dataflow-004) and <code>ANY</code>, plus <code>LIST[T]</code> modifier (ADR-dataflow-005). §3 expanded — <code>DisplayField</code> subsection (§3.2), Layout Modes table (§3.3) adding <code>viewer</code> and <code>imageGrid</code>, full <code>NodeUIConfig</code> attr set. §4 <code>BaseNodeSet</code> gained <code>env_panel</code> (ADR-server-002), <code>default_per_step_budget_sec</code> (ADR-eval-002), and <code>get_eval_metadata()</code>. §5 auto-discovery clarified <code>ensure_nodesets_for_graph</code> (ADR-components-003). Design-doc links added under §§1–4, 6. Status table ClassVar count 12→14.</li>
+<li>2026-04-10 20:41: Fixed ClassVar count 11→12 (children was missing); added _log_buffer instance attribute; added port_list ConfigField type (7 total); fixed wire types count 8→9 (STEP_RESULT was missing); noted ANY used by PortIn/PortOut but not in WIRE_TYPES set; added "viewer" as 3rd layout value in NodeUIConfig code example</li>
+<li>2026-04-02 14:21: Added Status section, fixed endpoint path (inner-nodes → node-schemas)</li>
+<li>2026-04-02 13:58: Initial content — BaseCanvasNode, PortDef, NodeUIConfig, BaseNodeSet, auto-discovery, rendering</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="graph-expressible-agents.html">← 1. Graph-Expressible Agents</a> · <a href="index.html">↑ Capabilities index</a> · <a href="isolated-runtime-environments.html">3. Isolated Runtime Environments →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-basecanvasnode">1. BaseCanvasNode</a>
+      <a class="toc-h3" href="#11-lifecycle-hooks">1.1 Lifecycle Hooks</a>
+      <a class="toc-h3" href="#12-instance-attributes">1.2 Instance Attributes</a>
+      <a class="toc-h3" href="#13-voluntary-logging-_self_log-log">1.3 Voluntary Logging — _self_log() / log()</a>
+      <a class="toc-h3" href="#14-_resolve_portsconfig-dynamic-ports">1.4 _resolve_ports(config) — Dynamic Ports</a>
+      <a class="toc-h3" href="#15-batched-inference-batched-batch_dim">1.5 Batched Inference — batched / batch_dim</a>
+      <a class="toc-h2" href="#2-portdef-and-wiring">2. PortDef and Wiring</a>
+      <a class="toc-h2" href="#3-node-ui-config">3. Node UI Config</a>
+      <a class="toc-h3" href="#31-configfield-types">3.1 ConfigField Types</a>
+      <a class="toc-h3" href="#32-displayfield-types">3.2 DisplayField Types</a>
+      <a class="toc-h3" href="#33-layout-modes">3.3 Layout Modes</a>
+      <a class="toc-h2" href="#4-basenodeset">4. BaseNodeSet</a>
+      <a class="toc-h2" href="#5-auto-discovery">5. Auto-Discovery</a>
+      <a class="toc-h3" href="#51-scan-flow">5.1 Scan Flow</a>
+      <a class="toc-h3" href="#52-hot-reload">5.2 Hot Reload</a>
+      <a class="toc-h2" href="#6-frontend-rendering">6. Frontend Rendering</a>
+      <a class="toc-h2" href="#7-key-files">7. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

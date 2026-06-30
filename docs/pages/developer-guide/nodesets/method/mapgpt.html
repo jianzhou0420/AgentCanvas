@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MapGPT on AgentCanvas — paper analysis + mapgpt port — AgentCanvas</title>
+<meta name="description" content="MapGPT (24.01; Chen et al., ACL 2024) is a zero-shot VLN agent: it embeds a linguistic-form topological map of explored/observed places directly in the LLM prompt and carries adaptive multi-step…">
+<meta property="og:title" content="MapGPT on AgentCanvas — paper analysis + mapgpt port — AgentCanvas">
+<meta property="og:description" content="MapGPT (24.01; Chen et al., ACL 2024) is a zero-shot VLN agent: it embeds a linguistic-form topological map of explored/observed places directly in the LLM prompt and carries adaptive multi-step…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/mapgpt.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="MapGPT">
+<style id="mapgpt-diagrams">
+  .mgsvg { width:100%; height:auto; max-width:880px; margin:1.2rem auto; display:block; }
+  .mgsvg text { fill: var(--fg); font-size:13px; font-family:inherit; }
+  .mgsvg .t { font-weight:600; font-size:12.5px; }
+  .mgsvg .dim { fill: var(--muted); font-size:10.5px; }
+  .mgsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:10.5px; fill: var(--fg-dim); }
+  .mgsvg .env { fill: var(--bg-alt); stroke:#0e7490; stroke-width:1.5; }
+  .mgsvg .m   { fill: var(--bg-alt); stroke:#7c3aed; stroke-width:1.5; }
+  .mgsvg .llm { fill: var(--bg-alt); stroke:#d97706; stroke-width:1.8; }
+  .mgsvg .g   { fill: var(--bg-alt); stroke:#be123c; stroke-width:1.5; }
+  .mgsvg .st  { fill: var(--bg-alt); stroke:#8b5cf6; stroke-width:1.5; stroke-dasharray:6 4; }
+  .mgsvg .stt { fill:#8b5cf6; font-weight:600; }
+  [data-theme="dark"] .mgsvg .env { stroke:#67e8f9; }
+  [data-theme="dark"] .mgsvg .m   { stroke:#c4b5fd; }
+  [data-theme="dark"] .mgsvg .llm { stroke:#fbbf24; }
+  [data-theme="dark"] .mgsvg .g   { stroke:#fda4af; }
+  [data-theme="dark"] .mgsvg .st  { stroke:#c4b5fd; }
+  [data-theme="dark"] .mgsvg .stt { fill:#c4b5fd; }
+  .mgsvg .edge  { stroke: var(--muted); stroke-width:1.5; fill:none; marker-end:url(#mga); }
+  .mgsvg .sedge { stroke:#8b5cf6; stroke-width:1.4; fill:none; stroke-dasharray:5 4; opacity:.8; }
+  [data-theme="dark"] .mgsvg .sedge { stroke:#c4b5fd; }
+  .mgsvg .ledge { stroke:#be123c; stroke-width:1.8; fill:none; marker-end:url(#mgl); }
+  .mgsvg .ledget { fill:#be123c; font-size:10.5px; font-weight:600; }
+  #mgl path { fill:#be123c; }
+  [data-theme="dark"] .mgsvg .ledge { stroke:#fda4af; }
+  [data-theme="dark"] .mgsvg .ledget { fill:#fda4af; }
+  [data-theme="dark"] #mgl path { fill:#fda4af; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/method/mapgpt.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Method</a>
+    <span class="sep">/</span>
+    <span class="here">MapGPT</span>
+  </div>
+  <div class="last-updated">2026-06-13</div>
+</div>
+  <header class="page-header guide">
+    <h1>MapGPT on AgentCanvas — paper analysis + mapgpt port</h1>
+  </header>
+
+<p class="lede"><a href="https://arxiv.org/abs/2401.07314">MapGPT</a> (24.01; Chen et al., ACL 2024) is a zero-shot VLN agent: it embeds a <strong>linguistic-form topological map</strong> of explored/observed places directly in the LLM prompt and carries <strong>adaptive multi-step planning</strong> text across steps. Section 1 dissects how the upstream <code>OneStagePromptManager</code> pipeline actually works; Section 2 documents the AgentCanvas port — the 8-node <code>mapgpt</code> nodeset driving <code>env_mp3d</code> discrete panoramic navigation; Section 3 files every difference into the four delta buckets.</p>
+
+<table>
+<thead><tr><th colspan="2">At a glance</th></tr></thead>
+<tbody>
+<tr><td>Upstream</td><td><a href="https://arxiv.org/abs/2401.07314">MapGPT</a> (24.01), ACL 2024 — repo <code>chen-judge/MapGPT</code> pinned @ <code>7c642f4</code> (no upstream LICENSE; see fetch script)</td></tr>
+<tr><td>Env consumed</td><td><code>env_mp3d</code> — action space <code>waypoint</code> (<code>step_waypoint</code>), obs spaces <code>navigable</code> + <code>panorama</code> (<a href="../env/template.html">gym-like contract</a>)</td></tr>
+<tr><td>FM consumed</td><td>built-in <code>llmCall</code> (multimodal, profile-driven; reference graph pins <code>gpt-5-mini</code> · temp 1.0 · max_tokens 6000 — upstream pinned gpt-4o JSON mode)</td></tr>
+<tr><td>Nodes / state</td><td>8 canvas nodes · <code>graph_state</code> entries <code>topo_map</code> / <code>history</code> / <code>planning</code></td></tr>
+<tr><td>Graph</td><td><code>workspace/graphs/vln/verified/mapgpt_mp3d.json</code> (22 nodes, 49 edges)</td></tr>
+<tr><td>Fidelity</td><td><strong>faithful with justified deviations + 3 unexplained minor divergences</strong> (inventory-first audit 2026-06-11 against <code>7c642f4</code>): system prompt byte-identical; map-fold / options / parse / budget semantics source-checked; bucket E earned — headline finding: upstream pins image <code>detail:"low"</code>, our llmCall sends no detail param (§3E).</td></tr>
+<tr><td>Status</td><td><strong>Verified.</strong> Port closure 2026-05-08 (run <code>675821f9</code>, gpt-4o, 100 ep: SR 0.55 vs paper 0.46). Post-migration re-eval 2026-06-13 (run <code>20260613_120854</code>, gpt-5-mini, MapGPT72 20 ep): <strong>SR 0.55</strong> · SPL 0.394 · nDTW 0.436 — reproduces the closure number on the rewired two-pivot topology; graph promoted to <code>graphs/vln/verified/</code> (§4).</td></tr>
+</tbody>
+</table>
+
+<h2 id="1-upstream"><span class="num">1.</span> Upstream method analysis (Chen et al. 2024)</h2>
+
+<p>Upstream MapGPT is a rollout script (<code>vln/gpt_agent.py</code>) around one stateful prompt manager (<code>GPT/one_stage_prompt_manager.py</code>). Per step:</p>
+
+<ol>
+  <li><strong>Observe.</strong> The simulator returns the current viewpoint, heading, and the navigable candidate viewpoints, each with a per-view panorama image keyed by <code>pointId</code>.</li>
+  <li><strong>Grow the map.</strong> The manager folds the current viewpoint and candidates into four parallel structures — <code>nodes_list</code> (every place ever seen; index = <strong>Place ID</strong>), <code>graph</code> (adjacency, recorded on <em>first visit only</em>), <code>trajectory</code> (visited sequence), <code>node_imgs</code> (one cached image per place).</li>
+  <li><strong>Serialize the map into language</strong> (<code>make_map_prompt</code>, lines 124–165): a <code>Trajectory</code> line of Place IDs, a <code>Map</code> block of “Place i is connected with Places j, k” lines, and <code>Supplementary Info</code> — places seen but never visited (the backtracking menu). Returns <code>"Nothing yet."</code> when empty (line 163).</li>
+  <li><strong>Build action options</strong> (<code>make_action_prompt</code> / <code>make_action_options</code>): each candidate becomes a phrase <code>"&lt;direction&gt; to Place i which is corresponding to Image i"</code>, where the direction word (“turn left”, “go forward”, “turn around”, “go up”…) is computed from the heading delta by <code>get_action_concept</code> (lines 16–39). Options are letter-prefixed <code>A./B./C.…</code> (<code>make_action_options</code>, lines 95–112); from <code>t ≥ stop_after</code> a bare <code>stop</code> option is <em>prepended</em> (lines 103–105). The canonical action list always carries <code>stop</code> at index 0 (<code>make_history</code>, line 117), so while stop is not yet offered <code>parse_json_action</code> compensates by adding +1 to the parsed index (lines 349–351) — the “index-shift trick”.</li>
+  <li><strong>Assemble the 7-field user prompt</strong> (<code>make_r2r_json_prompts</code>, lines 218–236): <code>Instruction / History / Trajectory / Map / Supplementary Info / Previous Planning / Action options</code>, plus every cached place image packed as <code>"Image i:"</code>-labelled inputs aligned to Place IDs (<code>GPT/api.py:22–44</code>).</li>
+  <li><strong>Call GPT in JSON mode.</strong> The system prompt demands a 3-field JSON response: <code>{"Thought", "New Planning", "Action": "&lt;letter&gt;"}</code>. <code>parse_json_action</code> (lines 336–352) reads the letter; <code>New Planning</code> is stored and echoed next step as <code>Previous Planning</code> — this is the “adaptive planning” carry.</li>
+  <li><strong>Act.</strong> Letter → candidate viewpoint; the executed action phrase is appended to <code>History</code> as <code>"step t: &lt;phrase&gt;"</code> (<code>make_history</code>, lines 114–122). A hard budget aborts the episode with STOP when the packed image list exceeds 20 (<code>vln/gpt_agent.py:133–136</code>).</li>
+</ol>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="mga" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="mgl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+</defs></svg>
+<svg class="mgsvg" viewBox="0 0 880 540" role="img" aria-label="Upstream MapGPT per-step flow: MatterSim observations feed make_action_prompt (map fold and direction words), make_map_prompt serializes the map, make_action_options letter-prefixes candidates with stop gating, make_r2r_json_prompts assembles the 7-field prompt with packed Place images, GPT-4o returns the JSON reply, parse_json_action picks the candidate and makeAction executes it; make_history appends the chosen phrase; the image budget force-stops past 20 images; manager object attributes hold the map, history and planning state.">
+  <!-- row 1: sim obs → map fold → map text → options -->
+  <text x="95" y="34" text-anchor="middle" class="dim">MatterSim — R2R rollout</text>
+  <rect class="env" x="10" y="44" width="170" height="22" rx="5"/><text x="95" y="59" text-anchor="middle" class="mono">viewpoint · heading</text>
+  <rect class="env" x="10" y="70" width="170" height="22" rx="5"/><text x="95" y="85" text-anchor="middle" class="mono">candidates + pointId views</text>
+  <path class="edge" d="M180,55 H220"/><path class="edge" d="M180,81 H220"/>
+  <rect class="m" x="220" y="44" width="150" height="48" rx="8"/><text x="295" y="64" text-anchor="middle" class="t">fold map</text><text x="295" y="80" text-anchor="middle" class="mono">make_action_prompt</text>
+  <text x="295" y="106" text-anchor="middle" class="dim">map fold :54–87 · directions :16–39</text>
+  <path class="edge" d="M370,68 H400"/>
+  <rect class="m" x="400" y="44" width="150" height="48" rx="8"/><text x="475" y="64" text-anchor="middle" class="t">map → text</text><text x="475" y="80" text-anchor="middle" class="mono">make_map_prompt</text>
+  <text x="475" y="106" text-anchor="middle" class="dim">:124–165</text>
+  <path class="edge" d="M550,68 H580"/>
+  <rect class="m" x="580" y="44" width="150" height="48" rx="8"/><text x="655" y="64" text-anchor="middle" class="t">action options</text><text x="655" y="80" text-anchor="middle" class="mono">letters + stop gate</text>
+  <path class="edge" d="M655,92 C655,128 295,122 295,156"/>
+  <text x="478" y="140" text-anchor="middle" class="dim">A. stop, B. turn left to Place 3 …</text>
+
+  <!-- row 2: prompt assembly → GPT · object-attr state -->
+  <rect class="m" x="10" y="160" width="150" height="40" rx="8"/><text x="85" y="177" text-anchor="middle" class="t">image pack</text><text x="85" y="193" text-anchor="middle" class="mono">api.py:22–44</text>
+  <rect class="m" x="220" y="156" width="150" height="48" rx="8"/><text x="295" y="176" text-anchor="middle" class="t">7-field prompt</text><text x="295" y="192" text-anchor="middle" class="mono">make_r2r_json_prompts</text>
+  <path class="edge" d="M370,180 H400"/><text x="385" y="148" text-anchor="middle" class="dim">prompt + "Image i:"</text>
+  <path class="edge" d="M160,188 C280,234 350,216 400,196"/>
+  <rect class="llm" x="400" y="156" width="130" height="48" rx="8"/><text x="465" y="176" text-anchor="middle" class="t">GPT-4o call</text><text x="465" y="192" text-anchor="middle" class="mono">JSON 3-field reply</text>
+  <rect class="st" x="660" y="120" width="205" height="150" rx="10"/>
+  <text x="762" y="142" text-anchor="middle" class="stt">manager attrs</text>
+  <text x="762" y="168" text-anchor="middle" class="mono">nodes_list · graph · trajectory</text>
+  <text x="762" y="190" text-anchor="middle" class="mono">node_imgs (Place i ↔ Image i)</text>
+  <text x="762" y="212" text-anchor="middle" class="mono">history · planning</text>
+  <text x="762" y="240" text-anchor="middle" class="dim">Python object state, in-process</text>
+  <!-- attr access (dashed) -->
+  <path class="sedge" d="M370,56 C500,8 620,40 662,122"/>
+  <path class="sedge" d="M370,162 C440,118 600,126 660,166"/>
+  <path class="sedge" d="M530,284 C575,268 615,252 660,238"/>
+  <path class="sedge" d="M350,312 C480,352 610,332 672,270"/>
+
+  <!-- row 3: parse → act + history -->
+  <path class="edge" d="M465,204 V272"/>
+  <rect class="m" x="220" y="272" width="130" height="48" rx="8"/><text x="285" y="292" text-anchor="middle" class="t">make_history</text><text x="285" y="308" text-anchor="middle" class="mono">history += step t</text>
+  <rect class="m" x="400" y="272" width="130" height="48" rx="8"/><text x="465" y="292" text-anchor="middle" class="t">parse_json_action</text><text x="465" y="308" text-anchor="middle" class="mono">letter → candidate</text>
+  <rect class="env" x="580" y="272" width="170" height="48" rx="8"/><text x="665" y="292" text-anchor="middle" class="t">makeAction</text><text x="665" y="308" text-anchor="middle" class="mono">MatterSim teleport</text>
+  <path class="edge" d="M400,296 H350"/><text x="375" y="264" text-anchor="middle" class="dim">chosen phrase</text>
+  <path class="edge" d="M530,296 H580"/><text x="555" y="264" text-anchor="middle" class="dim">candidate vp</text>
+
+  <!-- row 4: budget guard · episode end · eval -->
+  <path class="edge" d="M295,204 C295,330 85,320 85,396"/><text x="170" y="330" text-anchor="middle" class="dim">len(image_list)</text>
+  <rect class="g" x="10" y="396" width="150" height="48" rx="8"/><text x="85" y="416" text-anchor="middle" class="t">image budget</text><text x="85" y="432" text-anchor="middle" class="mono">gpt_agent.py:133–136</text>
+  <path class="edge" d="M465,320 V396"/><text x="492" y="360" text-anchor="middle" class="dim">stop</text>
+  <rect class="g" x="400" y="396" width="130" height="48" rx="8"/><text x="465" y="416" text-anchor="middle" class="t">episode end</text><text x="465" y="432" text-anchor="middle" class="mono">STOP or budget</text>
+  <path class="edge" d="M160,420 H400"/><text x="280" y="412" text-anchor="middle" class="dim">a_t = STOP</text>
+  <path class="edge" d="M665,320 V396"/><text x="690" y="360" text-anchor="middle" class="dim">trajectory</text>
+  <rect class="env" x="580" y="396" width="170" height="48" rx="8"/><text x="665" y="416" text-anchor="middle" class="t">R2R eval</text><text x="665" y="432" text-anchor="middle" class="mono">SR · SPL · nDTW</text>
+
+  <!-- rollout loop-back: next step re-observes -->
+  <path class="ledge" d="M750,296 H872 V18 H20 V42"/>
+  <text x="446" y="13" text-anchor="middle" class="ledget">for t in range(max_steps) — next step re-observes</text>
+
+  <!-- legend -->
+  <rect class="env" x="10" y="478" width="16" height="16" rx="3"/><text x="32" y="491" class="dim">simulator side</text>
+  <rect class="m" x="140" y="478" width="16" height="16" rx="3"/><text x="162" y="491" class="dim">prompt-manager fn</text>
+  <rect class="llm" x="300" y="478" width="16" height="16" rx="3"/><text x="322" y="491" class="dim">GPT call</text>
+  <rect class="g" x="400" y="478" width="16" height="16" rx="3"/><text x="422" y="491" class="dim">rollout guard</text>
+  <rect class="st" x="520" y="478" width="16" height="16" rx="3"/><text x="542" y="491" class="dim">object-attr state</text>
+  <path class="edge" d="M10,514 H50"/><text x="58" y="518" class="dim">data flow</text>
+  <path class="sedge" d="M140,514 H180"/><text x="188" y="518" class="dim">attr read/write</text>
+  <path class="ledge" d="M320,514 H360"/><text x="368" y="518" class="dim">rollout loop (next t)</text>
+</svg>
+<p>The row layout deliberately mirrors the port diagram in <a href="#21-flow">§2.1</a> — each upstream function sits where its corresponding canvas node sits, so the two figures can be compared box-by-box.</p>
+
+<h3 id="11-invariants"><span class="num">1.1</span> Upstream invariants worth marking</h3>
+<ul>
+  <li><strong>Place i ↔ Image i alignment is load-bearing.</strong> The map text, the options text, and the image labels all reference the same index into <code>nodes_list</code>. Any port that re-orders or re-keys places silently breaks the LLM's grounding.</li>
+  <li><strong>Stop is a gated option, not a free action.</strong> Before the threshold the LLM cannot stop; after it, <code>stop</code> is option A and everything shifts. The parse fallback (defaulting to index 0) therefore means “stop” late in the episode and “first candidate” early — intended behaviour, not a bug.</li>
+  <li><strong>Adjacency is first-visit-frozen.</strong> <code>graph[vp]</code> is written once, on the first visit to <code>vp</code> — revisits do not update it.</li>
+  <li><strong>History records action phrases, not viewpoints.</strong> What enters <code>History</code> is the chosen option's phrase (“turn left to Place 3 …”), the same string the LLM saw — keeping its self-model consistent.</li>
+  <li><strong>The image budget is a hard abort.</strong> &gt;20 cached images ⇒ forced STOP. Upstream's stated reason is an API limit — “GPT-4o currently does not support queries with more than 20 images” — though it also bounds prompt cost and episode length.</li>
+</ul>
+
+<h2 id="2-port"><span class="num">2.</span> The AgentCanvas port</h2>
+
+<p><code>workspace/nodesets/method/mapgpt.py</code> splits the monolithic prompt manager into a per-step pipeline of single-responsibility nodes. The split point that matters: direction phrases need <em>both</em> the current heading and each candidate's heading, which only coexist at the env boundary — so <code>observe</code> computes them immediately and freezes them into <code>candidates_json</code>; downstream nodes never need heading access. (An earlier split that deferred direction computation to a later stage lost the current heading and was abandoned — see the module docstring.)</p>
+
+<h3 id="21-flow"><span class="num">2.1</span> Per-step flow</h3>
+
+<svg class="mgsvg" viewBox="0 0 880 540" role="img" aria-label="MapGPT per-step flow: env observations feed the four-node mapgpt prompt pipeline, llmCall returns a JSON reply, parse_action drives env step_waypoint and the state writers; image_budget done and step terminated both feed iter_out stop; iter_out final_stop triggers the after-loop evaluate; graph_state holds topo_map, history and planning.">
+  <!-- row 1: env obs → prompt pipeline -->
+  <text x="95" y="34" text-anchor="middle" class="dim">env_mp3d — obs spaces</text>
+  <rect class="env" x="10" y="44" width="170" height="22" rx="5"/><text x="95" y="59" text-anchor="middle" class="mono">observe_navigable</text>
+  <rect class="env" x="10" y="70" width="170" height="22" rx="5"/><text x="95" y="85" text-anchor="middle" class="mono">observe_panorama</text>
+  <path class="edge" d="M180,55 H220"/><path class="edge" d="M180,81 H220"/>
+  <rect class="m" x="220" y="44" width="130" height="48" rx="8"/><text x="285" y="64" text-anchor="middle" class="t">observe</text><text x="285" y="80" text-anchor="middle" class="mono">env → features</text>
+  <path class="edge" d="M350,68 H400"/>
+  <rect class="m" x="400" y="44" width="130" height="48" rx="8"/><text x="465" y="64" text-anchor="middle" class="t">update_map</text><text x="465" y="80" text-anchor="middle" class="mono">owns topo_map</text>
+  <path class="edge" d="M530,68 H580"/>
+  <rect class="m" x="580" y="44" width="140" height="48" rx="8"/><text x="650" y="64" text-anchor="middle" class="t">build_options</text><text x="650" y="80" text-anchor="middle" class="mono">letters + manifest</text>
+  <path class="edge" d="M650,92 C650,128 285,122 285,156"/>
+  <text x="470" y="118" text-anchor="middle" class="dim">options_text · options_json</text>
+
+  <!-- row 2: prompt → LLM · graph_state container -->
+  <rect class="llm" x="10" y="160" width="150" height="40" rx="8"/><text x="85" y="177" text-anchor="middle" class="t">system prompt</text><text x="85" y="193" text-anchor="middle" class="mono">llmCall config (verbatim)</text>
+  <rect class="m" x="220" y="156" width="130" height="48" rx="8"/><text x="285" y="176" text-anchor="middle" class="t">render_prompt</text><text x="285" y="192" text-anchor="middle" class="mono">7-field + images</text>
+  <path class="edge" d="M350,180 H400"/><text x="375" y="150" text-anchor="middle" class="dim">prompt · images</text>
+  <path class="edge" d="M160,188 C280,234 350,216 400,196"/>
+  <rect class="llm" x="400" y="156" width="130" height="48" rx="8"/><text x="465" y="176" text-anchor="middle" class="t">llmCall</text><text x="465" y="192" text-anchor="middle" class="mono">JSON 3-field reply</text>
+  <rect class="st" x="660" y="120" width="205" height="150" rx="10"/>
+  <text x="762" y="142" text-anchor="middle" class="stt">graph_state</text>
+  <text x="762" y="168" text-anchor="middle" class="mono">topo_map · lastWrite · run</text>
+  <text x="762" y="190" text-anchor="middle" class="mono">history · lastWrite · run</text>
+  <text x="762" y="212" text-anchor="middle" class="mono">planning · lastWrite · run</text>
+  <text x="762" y="240" text-anchor="middle" class="dim">declared in graph JSON</text>
+  <!-- state access (dashed) -->
+  <path class="sedge" d="M530,60 C600,50 632,82 660,126"/>
+  <path class="sedge" d="M350,162 C430,118 600,126 660,166"/>
+  <path class="sedge" d="M530,284 C575,268 615,252 660,238"/>
+  <path class="sedge" d="M350,312 C480,352 610,332 672,270"/>
+
+  <!-- row 3: parse → act + history -->
+  <path class="edge" d="M465,204 V272"/>
+  <rect class="m" x="220" y="272" width="130" height="48" rx="8"/><text x="285" y="292" text-anchor="middle" class="t">update_history</text><text x="285" y="308" text-anchor="middle" class="mono">history += step t</text>
+  <rect class="m" x="400" y="272" width="130" height="48" rx="8"/><text x="465" y="292" text-anchor="middle" class="t">parse_action</text><text x="465" y="308" text-anchor="middle" class="mono">letter → manifest</text>
+  <rect class="env" x="580" y="272" width="170" height="48" rx="8"/><text x="665" y="292" text-anchor="middle" class="t">step_waypoint</text><text x="665" y="308" text-anchor="middle" class="mono">env_mp3d</text>
+  <path class="edge" d="M400,296 H350"/><text x="375" y="264" text-anchor="middle" class="dim">action_phrase</text>
+  <path class="edge" d="M530,296 H580"/><text x="555" y="264" text-anchor="middle" class="dim">viewpoint_id</text>
+
+  <!-- row 4: guards · iter_out stop side · evaluate -->
+  <path class="edge" d="M285,204 C285,330 85,320 85,396"/><text x="170" y="330" text-anchor="middle" class="dim">image_count</text>
+  <rect class="g" x="10" y="396" width="150" height="48" rx="8"/><text x="85" y="416" text-anchor="middle" class="t">image_budget</text><text x="85" y="432" text-anchor="middle" class="mono">done when &gt; max</text>
+  <path class="edge" d="M600,320 C600,358 505,362 488,396"/><text x="568" y="356" text-anchor="middle" class="dim">terminated</text>
+  <rect class="g" x="400" y="396" width="130" height="48" rx="8"/><text x="465" y="416" text-anchor="middle" class="t">iter_out — stop</text><text x="465" y="432" text-anchor="middle" class="mono">stop · final_stop</text>
+  <path class="edge" d="M160,420 H400"/><text x="280" y="412" text-anchor="middle" class="dim">done</text>
+  <path class="edge" d="M530,420 H580"/><text x="555" y="390" text-anchor="middle" class="dim">final_stop</text>
+  <rect class="env" x="580" y="396" width="170" height="48" rx="8"/><text x="665" y="416" text-anchor="middle" class="t">evaluate</text><text x="665" y="432" text-anchor="middle" class="mono">env_mp3d</text>
+  <text x="758" y="424" class="dim">→ metrics graphOut</text>
+
+  <!-- iteration loop-back: iterOut transfers to iterIn, loop_nav/loop_pano re-observe -->
+  <path class="ledge" d="M750,296 H872 V18 H20 V42"/>
+  <text x="446" y="13" text-anchor="middle" class="ledget">iterOut → iterIn — next iteration (loop_nav / loop_pano re-observe)</text>
+
+  <!-- legend -->
+  <rect class="env" x="10" y="478" width="16" height="16" rx="3"/><text x="32" y="491" class="dim">env_mp3d node</text>
+  <rect class="m" x="140" y="478" width="16" height="16" rx="3"/><text x="162" y="491" class="dim">mapgpt node</text>
+  <rect class="llm" x="270" y="478" width="16" height="16" rx="3"/><text x="292" y="491" class="dim">LLM call</text>
+  <rect class="g" x="370" y="478" width="16" height="16" rx="3"/><text x="392" y="491" class="dim">loop control / guard</text>
+  <rect class="st" x="520" y="478" width="16" height="16" rx="3"/><text x="542" y="491" class="dim">graph_state container</text>
+  <path class="edge" d="M10,514 H50"/><text x="58" y="518" class="dim">data wire</text>
+  <path class="sedge" d="M140,514 H180"/><text x="188" y="518" class="dim">state access (read/write graph_state)</text>
+  <path class="ledge" d="M430,514 H470"/><text x="478" y="518" class="dim">loop-back (iterOut → iterIn)</text>
+</svg>
+
+<p>The loop is a standard iterIn/iterOut scope, drawn simplified: observations enter <code>observe</code> through iterIn's dual slots (<code>init_*</code> from <code>seed_nav</code>/<code>seed_pano</code> at step 0, <code>iterout_*</code> thereafter), and <code>step.info</code> triggers the <code>loop_nav</code>/<code>loop_pano</code> re-observations that iterOut collects for the next iteration. Stop: <code>parse_action</code> emits <code>viewpoint_id="STOP"</code>, which <code>step_waypoint</code> answers with <code>terminated=true</code>, wired into <code>iter_out.stop</code> (since 2026-06-11; <code>env_mp3d</code> treats STOP as episode-done without moving). <code>image_budget.done</code> is the second writer to <code>iter_out.stop</code> — either signal ends the loop. <code>evaluate</code> now sits in the after-loop band, triggered once by <code>iter_out.final_stop</code> at termination.</p>
+
+<h3 id="22-nodes"><span class="num">2.2</span> Node inventory</h3>
+
+<table>
+<thead><tr><th>Node</th><th>In</th><th>Out</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>mapgpt__system_prompt</code></td><td>—</td><td><code>text:TEXT</code></td><td>Static emitter — verbatim JSON-mode system prompt. <em>Not instantiated by the reference graph</em>, which carries the byte-identical text in <code>planner_llm.config.system_prompt</code> instead.</td></tr>
+<tr><td><code>mapgpt__observe</code></td><td><code>viewpoint_id:TEXT</code>, <code>heading:TEXT</code>, <code>navigable_json:TEXT</code>, <code>views:LIST[IMAGE]</code>, <code>view_meta:TEXT</code></td><td><code>current_vp:TEXT</code>, <code>candidates_json:TEXT</code>, <code>candidate_tiles:LIST[IMAGE]</code></td><td>Pure env→features transform: per-candidate direction phrase (heading delta) + candidate image picked as <code>views[view_index]</code> (nearest heading+elevation when the env didn't attach an index).</td></tr>
+<tr><td><code>mapgpt__update_map</code></td><td><code>current_vp</code>, <code>candidates_json</code>, <code>candidate_tiles</code></td><td><code>topo_snapshot:ANY</code></td><td><strong>Sole writer of <code>topo_map</code></strong> — appends trajectory, folds candidates into <code>nodes_list</code>/<code>node_imgs</code> (tile refresh on re-sight), first-visit adjacency; emits merged snapshot for same-iter consumers.</td></tr>
+<tr><td><code>mapgpt__build_options</code></td><td><code>topo_snapshot</code>, <code>candidates_json</code></td><td><code>options_text:TEXT</code>, <code>options_json:TEXT</code></td><td>Letter-prefixed options + machine-readable manifest <code>[{letter, vp, phrase}]</code>; prepends <code>stop</code> when <code>ctx.step ≥ stop_after</code> (slider, default 3).</td></tr>
+<tr><td><code>mapgpt__render_prompt</code></td><td><code>instruction</code>, <code>topo_snapshot</code>, <code>options_text</code></td><td><code>prompt:TEXT</code>, <code>image_list:LIST[IMAGE]</code>, <code>image_labels:LIST[TEXT]</code>, <code>image_count:TEXT</code></td><td>7-field user prompt; reads <code>history</code>/<code>planning</code> state; packs cached tiles with <code>"Image i:"</code> labels aligned to Place IDs.</td></tr>
+<tr><td><code>mapgpt__parse_action</code></td><td><code>response:TEXT</code>, <code>options_json:TEXT</code></td><td><code>viewpoint_id:TEXT</code>, <code>action_phrase:TEXT</code>, <code>thought:TEXT</code>, <code>new_planning:TEXT</code>, <code>is_stop:BOOL</code></td><td>Two-tier parse (JSON → regex fallback); letter → manifest record; writes <code>planning</code> state; fallback = record 0 (upstream index-shift semantics); <code>is_stop</code> is unwired in the reference graph — stop reaches the env as <code>viewpoint_id="STOP"</code>.</td></tr>
+<tr><td><code>mapgpt__update_history</code></td><td><code>action_phrase</code>, <code>thought?</code></td><td><code>history:TEXT</code></td><td>Appends <code>"step t: &lt;phrase&gt;"</code> to <code>history</code> state — upstream <code>make_history</code> payload shape.</td></tr>
+<tr><td><code>mapgpt__image_budget</code></td><td><code>image_count:TEXT</code></td><td><code>done:BOOL</code></td><td>Guard — emits <code>done=True</code> when count exceeds <code>max_images</code> (slider, default 20); omits the key otherwise so the done-scan doesn't fire early.</td></tr>
+</tbody>
+</table>
+
+<h3 id="23-state"><span class="num">2.3</span> State &amp; memory</h3>
+
+<table>
+<thead><tr><th>graph_state entry</th><th>Reducer · type · lifetime</th><th>Writer(s)</th><th>Upstream counterpart</th></tr></thead>
+<tbody>
+<tr><td><code>topo_map</code></td><td>lastWrite · ANY · run</td><td><code>update_map</code> (sole)</td><td><code>self.nodes_list / .graph / .trajectory / .node_imgs</code> object attrs</td></tr>
+<tr><td><code>history</code></td><td>lastWrite · TEXT · run</td><td><code>update_history</code></td><td><code>self.history</code></td></tr>
+<tr><td><code>planning</code></td><td>lastWrite · TEXT · run (initial = upstream default-planning string)</td><td><code>parse_action</code></td><td><code>self.planning</code></td></tr>
+</tbody>
+</table>
+
+<h3 id="24-boundary"><span class="num">2.4</span> Boundary contract</h3>
+<p>Reasoning-only nodeset — no simulator calls, no model weights. Env side: <code>env_mp3d</code> via <code>reset</code> / <code>observe_navigable</code> / <code>observe_panorama</code> / <code>step_waypoint</code> / <code>evaluate</code> (waypoint action space, navigable + panorama obs spaces per the <a href="../env/template.html">env contract</a>). FM side: the built-in multimodal <code>llmCall</code>, model selected by LLM profile — no vendor lock-in in the nodeset. This page is boundary-compliant per TODO #56's method/foundation-model split.</p>
+
+<h3 id="25-prompts"><span class="num">2.5</span> Prompt assets</h3>
+<p>All prompt text lives as constants in <code>mapgpt.py</code>: the system prompt (verbatim from <code>one_stage_prompt_manager.py:218–236</code>), init-history / default-planning / no-supplementary strings (lines 189, 14, 163). The 7-field user prompt is assembled at runtime by <code>render_prompt</code> with upstream's exact field order and labels. The reference graph additionally duplicates the system prompt byte-identically into <code>planner_llm.config.system_prompt</code> (verified 2026-06-11) — when editing one copy, update the other.</p>
+
+<h2 id="3-delta"><span class="num">3.</span> Delta vs upstream — four buckets</h2>
+
+<h3 id="3a-verbatim">A. Preserved verbatim</h3>
+<table>
+<thead><tr><th>Element</th><th>Upstream anchor</th><th>How preserved</th></tr></thead>
+<tbody>
+<tr><td>JSON-mode system prompt</td><td><code>one_stage_prompt_manager.py:218–236</code></td><td>Character-for-character (<code>_SYSTEM_PROMPT</code>)</td></tr>
+<tr><td>Direction-phrase function</td><td><code>:16–39</code> (<code>get_action_concept</code>)</td><td>Verbatim port (<code>_get_action_concept</code>), radians in/out</td></tr>
+<tr><td>Map / trajectory / supplementary serialization</td><td><code>:124–165</code> (<code>make_map_prompt</code>)</td><td>Verbatim port (<code>_make_map_text</code>), incl. <code>"Nothing yet."</code></td></tr>
+<tr><td>History payload shape <code>"step t: &lt;phrase&gt;"</code></td><td><code>:114–122</code> (<code>make_history</code>)</td><td>Same string; lookup unnecessary because <code>parse_action</code> forwards the exact phrase</td></tr>
+<tr><td>Init constants (history / planning / no-supp)</td><td><code>:189, :14, :163</code></td><td>Verbatim strings; <code>planning</code> initial value also declared in the graph's state container</td></tr>
+<tr><td>Stop gating + index-shift fallback</td><td>options assembly + <code>parse_json_action</code> default</td><td>Same semantics: stop prepended after threshold; parse fallback resolves to record 0</td></tr>
+<tr><td>First-visit adjacency, tile cache, Place-ID indexing</td><td>map-update logic (lines ~54–87)</td><td>Same fold order in <code>update_map</code></td></tr>
+<tr><td><code>"Image i:"</code> label ↔ Place-ID alignment</td><td><code>GPT/api.py:22–44</code></td><td><code>render_prompt</code> emits aligned <code>image_labels</code></td></tr>
+<tr><td>Image-budget abort semantics</td><td><code>vln/gpt_agent.py:133–136</code> (<code>&gt;20 ⇒ stop</code>)</td><td><code>image_budget</code> node, default 20</td></tr>
+</tbody>
+</table>
+
+<h3 id="3b-substrate">B. Forced by substrate (script → typed graph)</h3>
+<table>
+<thead><tr><th>Upstream</th><th>Port</th><th>Why forced</th></tr></thead>
+<tbody>
+<tr><td>One <code>OneStagePromptManager</code> object</td><td>4-node pipeline <code>observe → update_map → build_options → render_prompt</code></td><td>Canvas nodes are single-responsibility; the split is dictated by data availability — heading pairs only coexist at the env boundary, so directions are frozen into <code>candidates_json</code> in <code>observe</code></td></tr>
+<tr><td>Python object attributes carry state</td><td><code>graph_state</code> entries (<code>topo_map</code> / <code>history</code> / <code>planning</code>), declared in graph JSON</td><td>Cross-iteration state must live in visible, checkpointable containers, not node instances</td></tr>
+<tr><td>Letter→viewpoint resolved inside the manager</td><td><code>options_json</code> manifest wire from <code>build_options</code> to <code>parse_action</code> (STOP rides as sentinel <code>vp="STOP"</code>)</td><td>Producer and consumer are separate nodes; the mapping must cross a wire as data</td></tr>
+<tr><td>Per-candidate image keyed by <code>pointId</code> crop</td><td><code>views[view_index]</code> from the env's per-view panorama primitive (nearest heading+elevation fallback)</td><td><code>env_mp3d</code> exposes the panorama as an indexed view list; no cropping primitive on the wire surface</td></tr>
+</tbody>
+</table>
+
+<h3 id="3c-cost">C. Forced by environment / cost</h3>
+<table>
+<thead><tr><th>Upstream</th><th>Port</th><th>Reason</th></tr></thead>
+<tbody>
+<tr><td>Model pinned to gpt-4o (JSON mode)</td><td>Profile-driven <code>llmCall</code>; the reference graph pins <code>gpt-5-mini</code> @ temperature 1.0, max_tokens 6000 (gpt-5-family floor: temp 1.0 + max_tokens ≳ 2000, else silently empty replies)</td><td>Model availability + search-loop cost; gpt-5-family silently returns empty below these params</td></tr>
+<tr><td>Headline eval = authors' 72-scene R2R sample</td><td>Same cut available as split <code>MapGPT72</code> (216 ep); loop-progress signal uses val_unseen eps 0–49</td><td>val_unseen front-loads easy scans (a 50-ep prefix overstates SR by 18–22 pp) — slices must be disclosed (§4)</td></tr>
+<tr><td>Simulator batched upstream</td><td><code>env_mp3d</code> wrapper pinned batch=1, subprocess-per-worker (ADR-server-003)</td><td>Our MatterSim wrapper parallelises at the worker level, not the sim-batch level</td></tr>
+</tbody>
+</table>
+
+<h3 id="3d-intentional">D. Intentional divergences</h3>
+<table>
+<thead><tr><th>Upstream</th><th>Port</th><th>Rationale</th></tr></thead>
+<tbody>
+<tr><td>JSON-only response parsing (<code>parse_json_action</code>, <code>:336–352</code>)</td><td>Two-tier parse: JSON (with markdown-fence / embedded-JSON tolerance) → regex letter fallback</td><td>Profile-driven LLMs drift to free-form answers once the JSON instruction leaves recent context; tier 2 recovers the letter instead of burning the step on fallback</td></tr>
+<tr><td>Free-text prompt variant (<code>make_r2r_prompts</code>, <code>:169–187</code>) for gpt-4-vision</td><td>Omitted — JSON path only</td><td>We never target gpt-4-vision-preview; one path is simpler and the variant is recoverable from upstream</td></tr>
+<tr><td>Stop threshold + image budget hard-coded</td><td><code>stop_after</code> / <code>max_images</code> exposed as ConfigField sliders (defaults 3 / 20)</td><td>Search-loop knobs; defaults preserve upstream behaviour exactly</td></tr>
+</tbody>
+</table>
+
+<h3 id="3e-audit">E. Unexplained / defects</h3>
+<p>Inventory-first audit, 2026-06-11 — three findings, none with recorded intent (hence E, not D):</p>
+<table>
+<thead><tr><th>Element</th><th>Upstream</th><th>Observed in port</th><th>Severity</th><th>Tracking</th></tr></thead>
+<tbody>
+<tr><td>Image fidelity sent to the LLM</td><td><code>"detail": "low"</code> pinned on every image (<code>api.py:40</code>)</td><td><code>llmCall</code> has no detail parameter — provider default (<code>auto</code>, typically high)</td><td><strong>Moderate</strong> — the port's model sees higher-fidelity images than the paper's; changes token cost and is an inflationary confound candidate for the +9 pp closure margin (§4)</td><td>Decide: record as intent (→ D) or add a detail knob to <code>llmCall</code> and pin <code>low</code> — candidate TODO</td></tr>
+<tr><td>Place-tile refresh on re-sight</td><td>Unconditional overwrite <code>node_imgs[idx] = cc['image']</code> (<code>one_stage_prompt_manager.py:76</code>)</td><td><code>update_map</code> refreshes only when the resolved tile is not <code>None</code> — a failed view resolution retains the stale tile</td><td>Low — divergent only when <code>observe</code> fails to resolve a candidate view</td><td>Note in code review of <code>update_map</code></td></tr>
+<tr><td>History write on the stop step</td><td>Rollout breaks <em>before</em> <code>make_history</code> on stop (<code>gpt_agent.py:171–174</code>) — history never logs the stop</td><td><code>update_history</code> appends <code>"step t: stop"</code> in the final iteration</td><td>None — post-terminal state write, never read by a subsequent prompt</td><td>—</td></tr>
+</tbody>
+</table>
+<p>Probed and cleared (adjudicated non-issues): ① <code>previous_angle</code> is the agent's heading at prompt time (set from fresh obs at <code>gpt_agent.py:93/:167</code>) — the port's <code>cand_heading − cur_heading</code> is equivalent despite the misleading upstream name; ② upstream stores plannings as a list but every prompt reads only <code>[-1]</code> (<code>:200/:202, :285</code>) — the port's lastWrite string is behaviour-equivalent; ③ <code>make_history</code> is live on the json path (<code>:174</code>); ④ packed <code>image_list</code> = all cached place images with <code>None</code> skipped — matches <code>render_prompt</code>; ⑤ upstream loop budget <code>max_action_len=15</code> (<code>parser.py:16</code>) maps to the eval-side step budget, not a nodeset constant. No mapgpt equivalence test exists to run (unlike SmartWay) — eval-parity is the only executable check.</p>
+
+<h2 id="4-eval"><span class="num">4.</span> Evaluation</h2>
+
+<table>
+<thead><tr><th>What</th><th>Number</th><th>Evidence</th></tr></thead>
+<tbody>
+<tr><td>Paper-reported (R2R val_unseen, the paper's 72-scene subset)</td><td>SR 0.46</td><td>Chen et al. 2024, as recorded in the PortBench method checklist</td></tr>
+<tr><td>Our port, closure run (gpt-4o, 100 ep, R2R val_unseen)</td><td><strong>SR 0.55</strong></td><td>run <code>675821f9</code>, 2026-05-08 — archived as <code>outputs/archive/mapgpt_r2r_100ep_2026-05-08/</code> (<em>pruned from disk 2026-05-21</em> — the run_id is the surviving citation); stop_after=3, step_budget=30, 10 workers. Checklist's own caveat: +9 pp sits within 100-ep sample variance plus the tier-2 regex-parser advantage; the run also pre-dates the 2026-05-11 stratification finding, so a val_unseen 100-ep prefix likely runs high (see callout).</td></tr>
+<tr><td>MapGPT72 full 216-ep (AAS iter_3 evolved graph, gpt-5-mini era)</td><td>SR 0.500 (95% CI 0.435–0.565)</td><td>2026-05-11 stratification study; same study: val_unseen eps 0–199 = 0.455</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<p><strong>Slice discipline.</strong> R2R val_unseen is ordered easy-first: eps 0–49 run ~18–22 pp above the full split. Quote headline numbers on <code>MapGPT72</code> (216 ep, the paper's own random sample — split auto-discovered from <code>R2R_MapGPT72.json</code>); never quote a val_unseen prefix without naming the ep range.</p>
+</div>
+
+<p><strong>Comparability caveat (from §3E):</strong> upstream sends every image at <code>detail:"low"</code>; our <code>llmCall</code> sends no detail parameter, so the port's model sees higher-fidelity images than the paper's. Treat the +9 pp closure margin as partially confounded until the detail divergence is resolved.</p>
+
+<p><strong>Known gap — closed structurally (2026-06-11):</strong> the loop-body <code>evaluate</code> pattern that under-counted SR after the terminal STOP step (roadmap TODO #64) was eliminated by the two-sided-iterOut refactor: <code>evaluate</code> is now after-loop, fed exactly once at termination via <code>final_stop</code>, so the harvested <code>output_port__metrics</code> reflects the terminal step by construction. The 2026-06-13 re-eval confirms it: run <code>20260613_120854</code> harvested SR 0.55 (11/20) with every episode logging real decision steps and zero step_count=0 completions.</p>
+
+<p><strong>Current status:</strong> <code>mapgpt_mp3d.json</code> was promoted to <code>workspace/graphs/vln/verified/</code> on 2026-06-13 after the post-migration re-eval (run <code>20260613_120854</code>: gpt-5-mini, MapGPT72 20 ep, SR 0.55 reproducing the closure number) confirmed the gym-rewired surface (<code>observe_navigable</code> / <code>observe_panorama</code> / <code>step_waypoint</code>) and the two-pivot harvest behave correctly. A full 216-ep MapGPT72 run remains the headline-number target.</p>
+
+<h2 id="5-usage"><span class="num">5.</span> Usage</h2>
+
+<pre><code># load (canvas: NodeSet Manager page, or REST)
+POST /api/components/nodesets/mapgpt/load          # local mode; env_mp3d loads in server mode
+
+# graph
+workspace/graphs/vln/verified/mapgpt_mp3d.json     # open in canvas, or submit via eval
+
+# batch eval — graph-only form: /experiment:run &lt;profile&gt; &lt;graph_name&gt; [key=value ...]
+# (the legacy "profile -- command" form was removed 2026-05-07)
+/experiment:run perf_mapgpt_mp3d mapgpt_mp3d split=MapGPT72 episode_count=216 worker_count=4</code></pre>
+
+<h2 id="6-not"><span class="num">6.</span> What this nodeset is NOT</h2>
+<ul>
+  <li><strong>Not the metric-grid MapGPT</strong> (roadmap M2): that variant builds an occupancy map from depth. This nodeset is the paper's linguistic-topo-map method, used for PortBench v1.</li>
+  <li><strong>Not env logic:</strong> no MatterSim calls, no episode control — all simulator interaction goes through <code>env_mp3d</code> wires.</li>
+  <li><strong>Not model-locked:</strong> the upstream gpt-4o pin became an LLM-profile choice; the prompt contract is the only model-facing assumption.</li>
+</ul>
+
+<h2 id="7-sources"><span class="num">7.</span> Source files</h2>
+<table>
+<thead><tr><th>File</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>workspace/nodesets/method/mapgpt.py</code></td><td>The nodeset — 8 nodes, verbatim constants, helpers (983 lines; module docstring is the design note)</td></tr>
+<tr><td><code>workspace/graphs/vln/verified/mapgpt_mp3d.json</code></td><td>The agent graph (22 nodes / 49 edges / 1 state container)</td></tr>
+<tr><td><code>workspace/nodesets/_upstream/mapgpt/fetch_upstream.sh</code></td><td>Clones upstream @ <code>7c642f4</code> into a gitignored <code>upstream/</code> for diffing (no LICENSE upstream — fair-use attribution)</td></tr>
+<tr><td><code>workspace/nodesets/env/env_mp3d/__init__.py</code></td><td>The env nodeset this method drives (<a href="../env/matterport3d.html">doc</a>)</td></tr>
+</tbody>
+</table>
+
+<h2 id="8-changelog"><span class="num">8.</span> Changelog</h2>
+<ul>
+  <li><strong>2026-06-11</strong>: Initial page — first instantiation of the <a href="template.html">method-nodeset doc template</a>.</li>
+  <li><strong>2026-06-11</strong>: Inventory-first fidelity audit completed — E bucket earned with 3 findings (image <code>detail:"low"</code> missing in llmCall — moderate; tile-refresh None-guard — low; stop-step history write — none) and 5 probed-and-cleared items; comparability caveat added to §4.</li>
+  <li><strong>2026-06-12</strong>: Verify pass #2 (graph-truth re-audit): graph is 22 nodes post two-pivot wave (was 23 — <code>termination</code> node removed); §2.1 diagram redrawn to the two-sided iterOut shape (<code>done</code>/<code>terminated</code> → <code>iter_out.stop</code>, <code>final_stop</code> → <code>evaluate.trigger</code> — prose was already correct, the figure had lagged); §2/§7 paths updated for the nodesets role-directory reorg (<code>method/mapgpt.py</code>, <code>env/env_mp3d/</code>). Re-verified clean: system prompt byte-identity (graph config = nodeset constant, 2706 B), llmCall params, <code>stop_after</code>/<code>max_images</code> defaults, state containers + grants, <code>is_stop</code> unwired, 983-line count, <code>perf_mapgpt_mp3d</code> profile.</li>
+  <li><strong>2026-06-11</strong>: Review pass against upstream @<code>7c642f4</code> + the graph JSON: fixed §2.1 termination/evaluate wiring (step.terminated, loop_nav trigger), system-prompt provenance (llmCall config, no node), llmCall config values, index-shift mechanics, image-budget rationale, eval slice disclosure, and <code>/experiment:run</code> syntax.</li>
+  <li><strong>2026-06-13</strong>: Post-migration re-eval + promotion to <code>graphs/vln/verified/</code>. Run <code>20260613_120854</code> (gpt-5-mini, MapGPT72 20 ep, 20 workers, step_budget 50): SR 0.55 · SPL 0.394 · nDTW 0.436 · OS 0.75 — reproduces the gpt-4o closure SR 0.55 on the rewired two-pivot topology; 11/20 successes, zero step_count=0 completions. Status, §4 and all graph paths updated unverified→verified.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-upstream">1. Upstream method analysis (Chen et al. 2024)</a>
+      <a class="toc-h3" href="#11-invariants">1.1 Upstream invariants worth marking</a>
+      <a class="toc-h2" href="#2-port">2. The AgentCanvas port</a>
+      <a class="toc-h3" href="#21-flow">2.1 Per-step flow</a>
+      <a class="toc-h3" href="#22-nodes">2.2 Node inventory</a>
+      <a class="toc-h3" href="#23-state">2.3 State &amp; memory</a>
+      <a class="toc-h3" href="#24-boundary">2.4 Boundary contract</a>
+      <a class="toc-h3" href="#25-prompts">2.5 Prompt assets</a>
+      <a class="toc-h2" href="#3-delta">3. Delta vs upstream — four buckets</a>
+      <a class="toc-h3" href="#3a-verbatim">A. Preserved verbatim</a>
+      <a class="toc-h3" href="#3b-substrate">B. Forced by substrate (script → typed graph)</a>
+      <a class="toc-h3" href="#3c-cost">C. Forced by environment / cost</a>
+      <a class="toc-h3" href="#3d-intentional">D. Intentional divergences</a>
+      <a class="toc-h3" href="#3e-audit">E. Unexplained / defects</a>
+      <a class="toc-h2" href="#4-eval">4. Evaluation</a>
+      <a class="toc-h2" href="#5-usage">5. Usage</a>
+      <a class="toc-h2" href="#6-not">6. What this nodeset is NOT</a>
+      <a class="toc-h2" href="#7-sources">7. Source files</a>
+      <a class="toc-h2" href="#8-changelog">8. Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Habitat NodeSet — AgentCanvas</title>
+<meta name="description" content="The Habitat NodeSet ( EnvHabitatNodeSet ) exposes the Habitat-Sim VLN-CE environment as a unified suite of canvas tools for navigation and observation. It manages the simulator lifecycle, handles…">
+<meta property="og:title" content="Habitat NodeSet — AgentCanvas">
+<meta property="og:description" content="The Habitat NodeSet ( EnvHabitatNodeSet ) exposes the Habitat-Sim VLN-CE environment as a unified suite of canvas tools for navigation and observation. It manages the simulator lifecycle, handles…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/habitat.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Habitat">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/habitat.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">Habitat</span>
+  </div>
+  <div class="last-updated">2026-06-11 13:46</div>
+</div>
+  <header class="page-header guide">
+  <h1>Habitat NodeSet</h1>
+</header>
+
+<p>The <strong>Habitat NodeSet</strong> (<code>EnvHabitatNodeSet</code>) exposes the Habitat-Sim VLN-CE environment as a unified suite of <strong>canvas tools</strong> for navigation and observation. It manages the simulator lifecycle, handles both local and server-mode execution, and provides tools for stepping through episodes, observing the environment, and controlling episode state.</p>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<h3 id="purpose">Purpose</h3>
+<p>The Habitat NodeSet wraps the <strong>Habitat-Sim 0.1.7</strong> VLN-CE (Vision-and-Language Navigation, Continuous Embodied) simulator. It enables graphs to:
+- Step through navigation episodes with RGB + depth observation
+- Query agent position and orientation
+- Control episode lifecycle (switch episodes, change splits)
+- Render panoramic multi-view composites for scene understanding</p>
+<h3 id="architecture">Architecture</h3>
+<p>The nodeset is organized around a <strong>singleton <code>HabitatEnvManager</code></strong> that:
+- Maintains the single Habitat environment instance
+- Enforces thread safety via locks
+- Uses a dedicated single-threaded executor for GL/physics affinity
+- Exposes blocking methods safe for async/sync code boundaries</p>
+<h3 id="local-vs-server-mode">Local vs Server Mode</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Execution</th>
+<th>Deployment</th>
+<th>When to use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Local</strong></td>
+<td>Same process</td>
+<td><code>agentcanvas</code> env</td>
+<td>Fast iteration, local graphs</td>
+</tr>
+<tr>
+<td><strong>Server</strong></td>
+<td>Separate process</td>
+<td><code>ac-vlnce</code> env (Python 3.8)</td>
+<td>Env isolation, production, complex setups</td>
+</tr>
+<tr>
+<td><strong>Auto-hosted</strong></td>
+<td>Separate process</td>
+<td>Auto-detected via <code>server_python</code></td>
+<td>Auto-routing; no manual <code>?mode=server</code></td>
+</tr>
+</tbody>
+</table>
+<p>When loaded via <code>POST /api/components/nodesets/env_habitat/load?mode=server</code>, the framework spins up a server subprocess using the path specified in <code>server_python</code>. The proxy nodes preserve the original <code>node_type</code> IDs (e.g., <code>env_habitat__step</code>), so graphs work identically regardless of deployment mode.</p>
+<h3 id="habitatenvmanager-singleton">HabitatEnvManager Singleton</h3>
+<div class="highlight"><pre><span></span><code><span class="n">mgr</span> <span class="o">=</span> <span class="n">HabitatEnvManager</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>  <span class="c1"># Always returns the same instance</span>
+<span class="n">mgr</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span><span class="n">exp_config</span><span class="p">,</span> <span class="n">split</span><span class="p">,</span> <span class="n">gpu_id</span><span class="p">,</span> <span class="n">max_steps</span><span class="p">)</span>
+<span class="n">obs</span> <span class="o">=</span> <span class="n">mgr</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">action</span><span class="p">)</span>  <span class="c1"># Returns dict with rgb, depth, state, done</span>
+</code></pre></div>
+<p>All public methods are <strong>blocking and thread-safe</strong>. Async code calls them via:
+<div class="highlight"><pre><span></span><code><span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">run_in_executor</span><span class="p">(</span><span class="n">mgr</span><span class="o">.</span><span class="n">executor</span><span class="p">,</span> <span class="n">mgr</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="n">action</span><span class="p">)</span>
+</code></pre></div></p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<h3 id="user-facing-tools">User-Facing Tools</h3>
+<p>These nodes appear in the canvas sidebar and are safe to use in graphs:</p>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Display Name</th>
+<th>Category</th>
+<th>Input Ports</th>
+<th>Output Ports</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_habitat__reset</code></td>
+<td>Habitat: Reset</td>
+<td>environment</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>instruction</code> (TEXT), <code>episode_id</code> (TEXT), <code>scene_id</code> (TEXT)</td>
+<td>Begin episode — emit metadata only, <strong>no observation</strong>. Episode placement is env panel-owned (<code>set_episode</code>); reset never re-runs <code>env.reset()</code>.</td>
+</tr>
+<tr>
+<td><code>env_habitat__step_discrete</code></td>
+<td>Habitat: Step (discrete)</td>
+<td>environment</td>
+<td><code>action</code> (ACTION, 0-3)</td>
+<td><code>reward</code> (ANY), <code>terminated</code> (BOOL), <code>truncated</code> (BOOL), <code>info</code> (ANY)</td>
+<td>Advance one tick with a discrete action; returns control signals only (no observation — pull from <code>observe_egocentric</code>).</td>
+</tr>
+<tr>
+<td><code>env_habitat__step_pose</code></td>
+<td>Habitat: Step (pose)</td>
+<td>environment</td>
+<td><code>target</code> (POSE)</td>
+<td><code>reward</code> (ANY), <code>terminated</code> (BOOL), <code>truncated</code> (BOOL), <code>info</code> (ANY)</td>
+<td>Navigate toward a target SE(3) pose via shortest-path following.</td>
+</tr>
+<tr>
+<td><code>env_habitat__step_hightolow</code></td>
+<td>Habitat: Step (HIGHTOLOW)</td>
+<td>environment</td>
+<td><code>angle</code> (TEXT), <code>distance</code> (TEXT)</td>
+<td><code>reward</code> (ANY), <code>terminated</code> (BOOL), <code>truncated</code> (BOOL), <code>info</code> (ANY)</td>
+<td>Rotate by angle (rad) then walk distance (m) — Open-Nav HIGHTOLOW macro action.</td>
+</tr>
+<tr>
+<td><code>env_habitat__observe_egocentric</code></td>
+<td>Habitat: Observe (egocentric)</td>
+<td>environment</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>rgb</code> (IMAGE), <code>depth</code> (DEPTH), <code>pose</code> (POSE), <code>intrinsics</code> (ANY), <code>raw_obs</code> (ANY), <code>instruction_text</code> (TEXT)</td>
+<td>Pull the current first-person observation; auto-resets if episode done. Pose + intrinsics folded in here. <code>instruction_text</code> is the current episode's raw instruction string (per-episode metadata) — feed a tokenizer node (e.g. <code>policy_vlnce__tokenize_instruction</code>) rather than emitting tokenized data from the env.</td>
+</tr>
+<tr>
+<td><code>env_habitat__observe_panorama</code></td>
+<td>Habitat: Observe (panorama)</td>
+<td>environment</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>views</code> (ANY), <code>directions</code> (TEXT), <code>n_views</code> (ANY), <code>composite</code> (IMAGE)</td>
+<td>Multi-view panorama. Config <code>representation</code>: <code>views_rgbd</code> (aligned RGB-D views, default) or <code>composite</code> (stitched grid image). Expensive — pull on demand.</td>
+</tr>
+<tr>
+<td><code>env_habitat__evaluate</code></td>
+<td>Habitat: Evaluate</td>
+<td>evaluation</td>
+<td><code>trigger</code> (TEXT, optional)</td>
+<td><code>metrics</code> (METRICS), <code>success</code> (TEXT), <code>spl</code> (TEXT)</td>
+<td>Pull current task metrics (SR/SPL/nDTW/SDTW) without stepping; thin metric sink reading terminal <code>info</code>.</td>
+</tr>
+</tbody>
+</table>
+<p class="note">This nodeset implements the <a href="template.html">gym-like env interface</a> (4 verbs + pull perception, 2026-06-09). <code>step_*</code> nodes return no observation — perception is pulled via the <code>observe_*</code> family. The old <code>step_native</code> / <code>observe</code> / <code>localize</code> / <code>episode_info</code> / <code>panorama_rgbd</code> nodes and the two <code>[Mock]</code> nodes were retired; see the template's migration map.</p>
+<h4 id="notable-output-ports">Notable Output Ports</h4>
+<ul>
+<li><strong><code>pose</code></strong> (POSE wire type): <code>{"position": [x, y, z], "orientation": [qx, qy, qz, qw]}</code> — emitted by <code>observe_egocentric</code>.</li>
+<li><strong><code>raw_obs</code></strong> (ANY): Raw Habitat observation dict; used by policy nodes that need full sensor data.</li>
+<li><strong><code>terminated</code> / <code>truncated</code></strong> (BOOL): gym-style episode-end split — STOP/goal vs step-budget cutoff.</li>
+<li><strong><code>info</code></strong> (ANY): per-step diagnostics + terminal metrics dict (populated when terminated/truncated).</li>
+<li><strong><code>composite</code></strong> (IMAGE) / <strong><code>views</code></strong> (ANY): the two panorama representations from <code>observe_panorama</code>.</li>
+</ul>
+<h3 id="internal-tools-episode-control-adr-legacy-002">Internal Tools (Episode Control, ADR-legacy-002)</h3>
+<p>These tools are hidden from the sidebar (<code>category="internal"</code>) but auto-proxied when the nodeset runs in server mode. Canvas evaluation env panels use them to manage episodes:</p>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Display Name</th>
+<th>Category</th>
+<th>Input Ports</th>
+<th>Output Ports</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_habitat__ep_metadata</code></td>
+<td>[Internal] Episode Metadata</td>
+<td>internal</td>
+<td>(none)</td>
+<td><code>result</code> (TEXT)</td>
+<td>Return splits, current index, episode counts, max steps</td>
+</tr>
+<tr>
+<td><code>env_habitat__ep_list</code></td>
+<td>[Internal] Episode List</td>
+<td>internal</td>
+<td><code>offset</code> (TEXT), <code>limit</code> (TEXT)</td>
+<td><code>result</code> (TEXT)</td>
+<td>Paginated episode list with instruction + scene_id</td>
+</tr>
+<tr>
+<td><code>env_habitat__ep_peek</code></td>
+<td>[Internal] Episode Peek</td>
+<td>internal</td>
+<td><code>index</code> (TEXT)</td>
+<td><code>result</code> (TEXT)</td>
+<td>Read episode info by index without switching</td>
+</tr>
+<tr>
+<td><code>env_habitat__ep_set</code></td>
+<td>[Internal] Set Episode</td>
+<td>internal</td>
+<td><code>index</code> (TEXT)</td>
+<td><code>result</code> (TEXT)</td>
+<td>Switch to episode by index within current split</td>
+</tr>
+<tr>
+<td><code>env_habitat__ep_set_split</code></td>
+<td>[Internal] Set Split</td>
+<td>internal</td>
+<td><code>split</code> (TEXT)</td>
+<td><code>result</code> (TEXT)</td>
+<td>Switch dataset split (val_unseen, val_seen, train) — heavyweight rebuild</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="3-configuration"><span class="num">3.</span> Configuration</h2>
+<h3 id="initialization-parameters">Initialization Parameters</h3>
+<p>When loading the nodeset via <code>POST /api/components/nodesets/env_habitat/load</code>, pass these kwargs in the request body:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;dataset&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;R2R-CE&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;split&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;val_unseen&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;gpu_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;max_steps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">500</span>
+<span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataset</code></td>
+<td>str</td>
+<td><code>R2R-CE</code></td>
+<td><code>R2R-CE</code> or <code>RxR-CE</code>. Selects the VLN-CE YAML and RxR language YAML at load time. Ignored when <code>exp_config</code> is supplied.</td>
+</tr>
+<tr>
+<td><code>split</code></td>
+<td>str</td>
+<td>dataset-default</td>
+<td>For R2R-CE: <code>val_unseen</code>, <code>val_seen</code>, <code>train</code>. For RxR-CE: the same base splits plus <code>test_challenge</code>, each suffixed with <code>_en</code>, <code>_hi</code>, or <code>_te</code> (e.g. <code>val_unseen_en</code>).</td>
+</tr>
+<tr>
+<td><code>exp_config</code></td>
+<td>str</td>
+<td>auto</td>
+<td>Explicit VLN-CE config path (relative to VLN-CE root). When supplied, overrides the dataset→YAML lookup.</td>
+</tr>
+<tr>
+<td><code>gpu_id</code></td>
+<td>int</td>
+<td>0</td>
+<td>CUDA device index for simulator rendering</td>
+</tr>
+<tr>
+<td><code>max_steps</code></td>
+<td>int</td>
+<td>500</td>
+<td>Max episode steps before auto-done</td>
+</tr>
+</tbody>
+</table>
+<h3 id="environment-variables">Environment Variables</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Path to vlnce conda environment (Python 3.8)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNCE_PYTHON</span><span class="o">=</span><span class="s2">&quot;python&quot;</span>
+
+<span class="c1"># VLN-CE root directory (if not found via discovery)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNCE_ROOT</span><span class="o">=</span><span class="s2">&quot;/path/to/VLN-CE&quot;</span>
+</code></pre></div>
+<p>The nodeset auto-discovers VLN-CE in this order:
+1. <code>$VLNCE_ROOT/data</code> if set
+2. <code>../VLN-CE/data</code> (relative to agentcanvas repo root)
+3. <code>third_party/VLN-CE/data</code></p>
+<p>If found, the process cwd is changed to the VLN-CE root so Hydra configs resolve correctly.</p>
+<h3 id="node-level-config-panorama-view-count">Node-Level Config: Panorama View Count</h3>
+<p>The <strong>Panorama tool</strong> exposes a UI config field:</p>
+<div class="highlight"><pre><span></span><code><span class="n">ConfigField</span><span class="p">(</span><span class="s2">&quot;n_views&quot;</span><span class="p">,</span> <span class="s2">&quot;select&quot;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;Views&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span>
+            <span class="n">options</span><span class="o">=</span><span class="p">[</span>
+                <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">:</span> <span class="s2">&quot;4 views (90°)&quot;</span><span class="p">},</span>
+                <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">:</span> <span class="s2">&quot;8 views (45°)&quot;</span><span class="p">},</span>
+                <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">12</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">:</span> <span class="s2">&quot;12 views (30°)&quot;</span><span class="p">},</span>
+                <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">24</span><span class="p">,</span> <span class="s2">&quot;label&quot;</span><span class="p">:</span> <span class="s2">&quot;24 views (15°)&quot;</span><span class="p">},</span>
+            <span class="p">])</span>
+</code></pre></div>
+<p>Users can adjust view density in the node inspector before firing.</p>
+<hr>
+<h2 id="4-datasets-r2r-ce-and-rxr-ce"><span class="num">4.</span> Datasets: R2R-CE and RxR-CE</h2>
+<p>The Habitat NodeSet supports two VLN-CE benchmarks under a single unified env panel:</p>
+<table>
+<thead>
+<tr>
+<th>Dataset</th>
+<th>Episodes dir</th>
+<th>Splits</th>
+<th>Splits with language suffix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>R2R-CE</strong></td>
+<td><code>data/habitat/datasets/R2R_VLNCE_v1-3_preprocessed/</code></td>
+<td><code>train</code>, <code>val_seen</code>, <code>val_unseen</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td><strong>RxR-CE</strong></td>
+<td><code>data/habitat/datasets/RxR_VLNCE_v0/</code></td>
+<td><code>train</code>, <code>val_seen</code>, <code>val_unseen</code>, <code>test_challenge</code></td>
+<td>yes — <code>_en</code> / <code>_hi</code> / <code>_te</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="41-language-suffixed-splits-rxr-ce"><span class="num">4.1</span> Language-Suffixed Splits (RxR-CE)</h3>
+<p>RxR-CE episodes carry a BCP-47 <code>language</code> field per instruction (e.g. <code>en-US</code>, <code>hi-IN</code>, <code>te-IN</code>). The env panel exposes each base split three times, one per language group, following the same convention as the MP3D discrete nodeset:</p>
+<div class="highlight"><pre><span></span><code>val_unseen_en   (matches en-US, en-IN)
+val_unseen_hi   (matches hi-IN)
+val_unseen_te   (matches te-IN)
+</code></pre></div>
+<p>Behind the scenes the suffix selects the matching <code>rxr_cma_{en,hi,te}.yaml</code> upstream config — each YAML already sets <code>EVAL.LANGUAGES</code> to the right BCP-47 list, which <code>HabitatEnvManager.initialize</code> threads into <code>TASK_CONFIG.DATASET.LANGUAGES</code> so <code>RxRVLNCEDatasetV1</code>'s loader filters correctly at load time.</p>
+<h3 id="42-episode-extras"><span class="num">4.2</span> Episode Extras</h3>
+<p>Every episode info dict (from <code>_get_episode_info_unlocked</code>, <code>get_episodes_list</code>, and <code>_peek_episode_sync</code>) now carries:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>language</code></td>
+<td><code>str \| None</code></td>
+<td>Full BCP-47 tag from <code>ep.instruction.language</code> (e.g. <code>"en-IN"</code>). <code>None</code> for R2R-CE.</td>
+</tr>
+<tr>
+<td><code>extras.language</code></td>
+<td>same</td>
+<td>Mirrored under <code>extras</code> for cross-nodeset parity with MP3D.</td>
+</tr>
+<tr>
+<td><code>extras.instruction_id</code></td>
+<td><code>int \| str \| None</code></td>
+<td>From <code>ep.instruction.instruction_id</code> if present.</td>
+</tr>
+<tr>
+<td><code>extras.annotator_id</code></td>
+<td><code>str \| None</code></td>
+<td>From <code>ep.instruction.annotator_id</code> if present.</td>
+</tr>
+<tr>
+<td><code>extras.timed_instruction</code></td>
+<td><code>list \| None</code></td>
+<td>Word-level timestamps for RxR (only when loaded).</td>
+</tr>
+<tr>
+<td><code>extras.pose_trace_path</code></td>
+<td><code>None</code></td>
+<td>Reserved; CE pose-trace preprocessing is tracked as E8.</td>
+</tr>
+</tbody>
+</table>
+<p>The same <code>extras</code> schema is emitted by the MP3D nodeset (<code>matterport3d.py::_load_rxr</code>), so downstream agent graphs can consume <code>extras.language</code> / <code>extras.instruction_id</code> uniformly across simulators.</p>
+<h3 id="43-data-download"><span class="num">4.3</span> Data Download</h3>
+<p>Episodes for R2R-CE and RxR-CE land under <code>data/habitat/datasets/</code> via <code>scripts/data/fetch_episodes_vln.sh</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># RxR-CE episodes (~150 MB, via gdown from the upstream Google Drive)</span>
+bash<span class="w"> </span>scripts/data/fetch_episodes_vln.sh<span class="w"> </span>--rxr-ce
+</code></pre></div>
+<p>The flag is <strong>idempotent</strong> — if every expected <code>{split}/{split}_guide.json.gz</code> file is already on disk, it no-ops. Without <code>gdown</code>, it prints a clear manual-download hint pointing at the official RxR-Habitat Challenge zip.</p>
+<blockquote>
+<p><strong>Out of scope (tracked separately):</strong> pre-computed BERT instruction features (<code>E7</code>) needed only for the CMA policy baseline, and pose-trace <code>trajectories.json.gz</code> preprocessing (<code>E8</code>) needed only for VLN-CE's recollect trainer.</p>
+</blockquote>
+<hr>
+<h2 id="5-envcontroller-integration"><span class="num">5.</span> Env Panel Integration</h2>
+<h3 id="adr-legacy-002-episode-lifecycle-management">ADR-server-002: Episode Lifecycle Management</h3>
+<p>The Habitat NodeSet declares a <strong><code>HabitatEnvPanel</code></strong> (a <code>BaseEnvPanel</code> subclass) as a class-level attribute. This enables the canvas <strong>Evaluate</strong> page to manage episodes uniformly across all environments:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># On EnvHabitatNodeSet (registered by WorkspaceComponentRegistry on load)</span>
+<span class="n">env_panel</span> <span class="o">=</span> <span class="n">HabitatEnvPanel</span>
+</code></pre></div>
+<p>The env panel provides:
+- Metadata queries (splits, episode counts) via <code>on_load()</code> / <code>get_options()</code>
+- Episode switching by index via <code>on_field_change("episode_index", …)</code>
+- Split switching with full teardown + rebuild
+- Run lifecycle buttons (play / pause / stop / reset) via <code>on_action()</code></p>
+<h3 id="how-it-works">How It Works</h3>
+<ol>
+<li>Evaluate page calls <code>GET /api/env-panels/env_habitat/state</code> → splits + current state from <code>on_load()</code></li>
+<li>User selects episode from dropdown → <code>POST /api/env-panels/env_habitat/field/episode_index</code></li>
+<li><code>HabitatEnvPanel.on_field_change</code> calls <code>mgr.set_episode(…)</code> and emits the <code>episode_reset</code> signal</li>
+<li>Graph continues; agent navigates in the new episode</li>
+</ol>
+<p>This abstraction allows the same Evaluate UI to work with Habitat, SAPIEN, or any future environment that ships a <code>BaseEnvPanel</code> subclass. In server mode the panel is hosted inside the env subprocess and bridged over <code>/env-panel/*</code> via <code>RemoteEnvPanelProxy</code>.</p>
+<h3 id="three-field-cascade-dataset-split-episode">Three-Field Cascade (Dataset → Split → Episode)</h3>
+<p>The <code>HabitatEnvPanel</code> exposes a three-field cascade mirroring <code>MP3DEnvPanel</code>:</p>
+<ul>
+<li><strong><code>dataset</code></strong> — <code>R2R-CE</code> or <code>RxR-CE</code>. Changing resets <code>split</code> and <code>episode_index</code>.</li>
+<li><strong><code>split</code></strong> — dataset-conditional list via <code>_dataset_splits(dataset)</code>. Changing triggers <code>_switch_split</code>, which resolves the <code>(exp_config, base_split)</code> pair via <code>_resolve_dataset_config</code>, shuts the simulator down, and re-initializes against the new YAML.</li>
+<li><strong><code>episode_index</code></strong> — index into the currently loaded dataset/split.</li>
+</ul>
+<p>Each field change emits a <code>signal</code> side-effect with <code>signal_name="episode_reset"</code>, so any <code>lifetime="episode"</code> state container clears downstream. This matches the MP3D nodeset contract so agent graphs can bind state lifetimes without knowing which simulator is active.</p>
+<hr>
+<h2 id="6-usage"><span class="num">6.</span> Usage</h2>
+<h3 id="loading-the-nodeset">Loading the NodeSet</h3>
+<p><strong>Local mode:</strong>
+<div class="highlight"><pre><span></span><code>POST<span class="w"> </span>/api/components/nodesets/env_habitat/load
+</code></pre></div></p>
+<p><strong>Server mode (explicit):</strong>
+<div class="highlight"><pre><span></span><code>POST<span class="w"> </span>/api/components/nodesets/env_habitat/load?mode<span class="o">=</span>server
+</code></pre></div></p>
+<p><strong>Auto-routed (default):</strong>
+<div class="highlight"><pre><span></span><code>POST<span class="w"> </span>/api/components/nodesets/env_habitat/load
+</code></pre></div>
+The framework detects <code>server_python != sys.executable</code> and routes to server mode automatically.</p>
+<h3 id="typical-graph-workflow">Typical Graph Workflow</h3>
+<div class="highlight"><pre><span></span><code>1. Load Habitat nodeset
+   ↓
+2. Habitat: Episode Info → get instruction
+   ↓
+3. Loop:
+   - Habitat: Observe → current RGB + depth
+   - [Policy or reasoning node] → decide action
+   - Habitat: Step → action=[0-3], get new obs + done
+   - [Iterate or break if done]
+   ↓
+4. Final metrics available when done=True
+</code></pre></div>
+<h3 id="common-patterns">Common Patterns</h3>
+<h4 id="panoramic-scene-understanding">Panoramic Scene Understanding</h4>
+<div class="highlight"><pre><span></span><code>Habitat: Observe → current RGB
+   ↓ (optionally wire agent_state)
+Habitat: Panorama (n_views=12) → composite grid + directions JSON
+   ↓
+Vision model for multi-view analysis
+</code></pre></div>
+<h4 id="navigation-with-shortest-path">Navigation with Shortest Path</h4>
+<div class="highlight"><pre><span></span><code>Habitat: Episode Info → get current position
+   ↓
+[Planner determines target] → target_state={position: [x,y,z]}
+   ↓
+Habitat: Navigate To → done, final_state
+</code></pre></div>
+<h4 id="episode-switching-in-evaluation">Episode Switching in Evaluation</h4>
+<p>Use the Evaluate page's <strong>Episode</strong> dropdown. Behind the scenes:
+1. Evaluator calls <code>env_habitat__ep_metadata</code> → get split + count
+2. User selects episode index
+3. Evaluator calls <code>env_habitat__ep_set</code> with index
+4. Graph resets and continues in new episode</p>
+<h3 id="error-handling">Error Handling</h3>
+<ul>
+<li><strong>"Environment not initialized"</strong>: Habitat nodeset not loaded; load it first</li>
+<li><strong>"Episode already done"</strong>: Auto-reset on next Observe or explicitly call Episode Info → Set Episode</li>
+<li><strong>"Index out of range"</strong>: Requested episode index exceeds dataset size; check Episode List</li>
+<li><strong>Split switch fails</strong>: Ensure VLN-CE is at the expected path or set <code>$VLNCE_ROOT</code></li>
+</ul>
+<h3 id="performance-considerations">Performance Considerations</h3>
+<ul>
+<li><strong>Single simulator</strong>: All graph executions share one Habitat instance (thread-safe via locks)</li>
+<li><strong>Thread affinity</strong>: GPU/physics operations run on dedicated executor thread</li>
+<li><strong>Observation caching</strong>: Observe returns <code>raw_obs</code> dict; extract specific keys (rgb, depth) as needed</li>
+<li><strong>Panorama rendering</strong>: N_views=24 takes ~2-3s per panorama on typical GPU; use 4 or 8 for quick iteration</li>
+</ul>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-04-24: Multi-dataset support (E2) — added <code>dataset</code> field to <code>HabitatEnvPanel</code> (three-field cascade <code>dataset → split → episode_index</code> mirroring <code>MP3DEnvPanel</code>), RxR-CE integration via <code>rxr_cma_{en,hi,te}.yaml</code> upstream configs with language-suffixed splits (<code>val_unseen_en/hi/te</code>), episode <code>extras</code> schema (<code>language</code>, <code>instruction_id</code>, <code>annotator_id</code>, <code>timed_instruction</code>, <code>pose_trace_path</code>) mirrored with the MP3D nodeset, <code>--rxr-ce</code> flag on <code>scripts/data/fetch_episodes_vln.sh</code>. E7 / E8 tracked separately for BERT features and pose-trace preprocessing.</li>
+<li>2026-04-10 10:25: Initial documentation — Habitat NodeSet as VLN-CE canvas tools, local/server/auto-hosted modes, node catalog, EnvController integration, usage patterns</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#purpose">Purpose</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h3" href="#local-vs-server-mode">Local vs Server Mode</a>
+      <a class="toc-h3" href="#habitatenvmanager-singleton">HabitatEnvManager Singleton</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#user-facing-tools">User-Facing Tools</a>
+      <a class="toc-h3" href="#internal-tools-episode-control-adr-legacy-002">Internal Tools (Episode Control, ADR-legacy-002)</a>
+      <a class="toc-h2" href="#3-configuration">3. Configuration</a>
+      <a class="toc-h3" href="#initialization-parameters">Initialization Parameters</a>
+      <a class="toc-h3" href="#environment-variables">Environment Variables</a>
+      <a class="toc-h3" href="#node-level-config-panorama-view-count">Node-Level Config: Panorama View Count</a>
+      <a class="toc-h2" href="#4-datasets-r2r-ce-and-rxr-ce">4. Datasets: R2R-CE and RxR-CE</a>
+      <a class="toc-h3" href="#41-language-suffixed-splits-rxr-ce">4.1 Language-Suffixed Splits (RxR-CE)</a>
+      <a class="toc-h3" href="#42-episode-extras">4.2 Episode Extras</a>
+      <a class="toc-h3" href="#43-data-download">4.3 Data Download</a>
+      <a class="toc-h2" href="#5-envcontroller-integration">5. Env Panel Integration</a>
+      <a class="toc-h3" href="#adr-legacy-002-episode-lifecycle-management">ADR-server-002: Episode Lifecycle Management</a>
+      <a class="toc-h3" href="#how-it-works">How It Works</a>
+      <a class="toc-h3" href="#three-field-cascade-dataset-split-episode">Three-Field Cascade (Dataset → Split → Episode)</a>
+      <a class="toc-h2" href="#6-usage">6. Usage</a>
+      <a class="toc-h3" href="#loading-the-nodeset">Loading the NodeSet</a>
+      <a class="toc-h3" href="#typical-graph-workflow">Typical Graph Workflow</a>
+      <a class="toc-h3" href="#common-patterns">Common Patterns</a>
+      <a class="toc-h3" href="#error-handling">Error Handling</a>
+      <a class="toc-h3" href="#performance-considerations">Performance Considerations</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

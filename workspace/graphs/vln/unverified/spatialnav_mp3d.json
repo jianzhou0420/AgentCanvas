@@ -1,0 +1,1129 @@
+{
+  "name": "SpatialNav-MP3D",
+  "description": "SpatialNav (arXiv 2601.06806, Zhang et al. 2026) reasoning graph for discrete R2R / REVERIE navigation on Matterport3D. Forked from NavGPT-MP3D with three SpatialNav-specific additions: (1) Spatial Scene Graph (SSG) — agent-centric top-down map + instruction-aligned nearby-object retrieval from MP3D ground-truth .house + _semantic.ply; (2) 'Final Answer > Action' parse priority (reversed from NavGPT's raise-on-both); (3) max_scratchpad_length=4096 and 'Current Top-down Map: [SSG map image]' observation label. The SSG map IMAGE flows through a persisted `scene_graph` port: init_render_map seeds it on step 0, step_render_map refreshes it after each successful navigation, iter_out carries it forward, and the orchestrator LLM receives it via a dedicated scene_graph IMAGE port on the prompt. SSG data layer (SceneGraphMapper + SceneObjectGraph + SentenceTransformer) is lazy-loaded on first render/query and held process-wide. Requires: env_mp3d + navgpt_mp3d_tools (for BLIP-2 + R-CNN perception) + ssg + spatialnav nodesets.",
+  "nodes": [
+    {
+      "id": "reset",
+      "type": "env_mp3d__reset",
+      "label": "MP3D: Reset",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "config": {
+        "n_headings": 12
+      }
+    },
+    {
+      "id": "init_blip2",
+      "type": "navgpt_mp3d_tools__blip2_caption",
+      "label": "BLIP-2 (init)",
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "config": {
+        "prompt": "This is a scene of",
+        "merge_style": "primary"
+      }
+    },
+    {
+      "id": "init_rcnn",
+      "type": "navgpt_mp3d_tools__fasterrcnn_detect",
+      "label": "Faster R-CNN (init)",
+      "position": {
+        "x": 280,
+        "y": 120
+      },
+      "config": {
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "init_observe",
+      "type": "env_mp3d__observe_navigable",
+      "label": "MP3D: Observation (init)",
+      "position": {
+        "x": 560,
+        "y": 120
+      },
+      "config": {}
+    },
+    {
+      "id": "init_ssg_reset",
+      "type": "ssg__reset_episode",
+      "label": "SSG: Reset Episode",
+      "position": {
+        "x": 560,
+        "y": -40
+      },
+      "config": {
+        "evict_scan_from_room_cache": false
+      }
+    },
+    {
+      "id": "init_ssg_query",
+      "type": "ssg__query_objects",
+      "label": "SSG: Query Objects (init)",
+      "position": {
+        "x": 840,
+        "y": -40
+      },
+      "config": {
+        "data_name": "R2R",
+        "visibility_radius": 3.0
+      }
+    },
+    {
+      "id": "init_ssg_render",
+      "type": "ssg__render_map",
+      "label": "SSG: Render Map (init)",
+      "position": {
+        "x": 840,
+        "y": 240
+      },
+      "config": {
+        "grid_size": 0.01,
+        "agent_front_up": false,
+        "crop_map": false,
+        "draw_history": true,
+        "draw_room_labels": true
+      }
+    },
+    {
+      "id": "init_format",
+      "type": "spatialnav__observation_format",
+      "label": "SpatialNav: Format Observation (init)",
+      "position": {
+        "x": 1120,
+        "y": 120
+      },
+      "config": {
+        "use_relative_angle": true,
+        "use_surround_objects": true
+      }
+    },
+    {
+      "id": "init_observation",
+      "type": "spatialnav__init_observation",
+      "label": "SpatialNav: Init Observation",
+      "position": {
+        "x": 1400,
+        "y": 120
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Start",
+      "position": {
+        "x": 0,
+        "y": 440
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "required": true,
+            "persist": true
+          },
+          {
+            "name": "init_observation",
+            "wire_type": "TEXT",
+            "required": true,
+            "persist": true
+          },
+          {
+            "name": "history_0",
+            "wire_type": "TEXT",
+            "required": true,
+            "persist": true
+          },
+          {
+            "name": "scratchpad",
+            "wire_type": "TEXT",
+            "required": true,
+            "persist": true
+          },
+          {
+            "name": "scan_id",
+            "wire_type": "TEXT",
+            "required": true,
+            "persist": true
+          },
+          {
+            "name": "path_id",
+            "wire_type": "TEXT",
+            "required": false,
+            "persist": true
+          },
+          {
+            "name": "scene_graph",
+            "wire_type": "IMAGE",
+            "required": true,
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "orchestrator_llm",
+      "type": "llmCall",
+      "label": "Orchestrator LLM",
+      "position": {
+        "x": 280,
+        "y": 440
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "init_observation",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "scratchpad",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "scene_graph",
+            "wire_type": "IMAGE"
+          }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "mode": "single_turn",
+        "template": "You are an intelligent embodied agent that follows an instruction to navigate in an indoor environment. You reason over both a top-down spatial scene graph map and a per-viewpoint compass observation, and move among the static viewpoints (positions) of a pre-defined graph of the environment to reach the target described by the given instruction with the least steps.\n\nAt the beginning of the navigation, you will be given an instruction of a trajectory which describes all observations and the action you should take at each step.\nDuring navigation, at each step, you will be at a specific viewpoint and receive: (a) a top-down **Current Top-down Map** image showing your position (red dot), orientation, navigable candidates (blue dots), past trajectory (orange dots), and room-type labels; (b) a **Current Viewpoint** 8-compass observation with scene descriptions, objects, and navigable viewpoint IDs; (c) optional SSG-derived nearby objects, interest objects, and room type; (d) the history of previous Thought / Action / Action Input / Observation cycles.\nOrientations range from -180 to 180 degrees: \"0\" signifies forward, \"right 90\" rightward, \"right (or left) 180\" backward, and \"left 90\" leftward.\n\nYou make actions by selecting navigable viewpoints. Explore efficiently while avoiding revisiting past viewpoints. The ultimate goal is to stop within 3 meters of the destination. If the destination is visible but the target object is not detected within 3 metres, move closer.\nAt each step, you should consider:\n(1) According to the Current Top-down Map, Current Viewpoint observation and History, have you reached the destination?\nIf yes you should stop — output 'Final Answer: Finished!' to stop. 'Final Answer:' takes priority over 'Action:' — if you output both, Final Answer wins.\nIf not you should continue:\n    (2) Consider where you are on the trajectory and what should be the next viewpoint to navigate according to the instruction.\n    Use the action_maker tool, input the next navigable viewpoint ID to move to that location.\n\nShow your reasoning in the Thought section.\n\nHere are the descriptions of these tools:\naction_maker: Can be used to move to next adjacent viewpoint.\nThe input to this tool should be a viewpoint ID string of the next viewpoint you wish to visit. For example:\nAction: action_maker\nAction Input: \"4a153b13a3f6424784cb8e5dabbb3a2c\".\n\nEvery viewpoint has a unique viewpoint ID. You are very strict to the viewpoint ID and will never fabricate nonexistent IDs.\n\n----\nStarting below, you should follow this format:\n\nInstruction: an instruction of a trajectory which describes all observations and the actions should be taken\n\t**Current Top-down Map**: {scene_graph}\nInitial Observation: {init_observation}\nThought: you should always think about what to do next and why\nAction: the action to take, must be one of the tools [action_maker]\nAction Input: \"Viewpoint ID\"\nObservation: the result of the action\n... (this Thought/Action/Action Input/Observation can repeat N times)\nThought: I have reached the destination, I can stop.\nFinal Answer: Finished!\n----\n\nBegin!\n\nInstruction: {instruction}\n\t**Current Top-down Map**: {scene_graph}\nInitial Observation: {init_observation}\nThought: I should start navigation according to the instruction, {scratchpad}"
+      }
+    },
+    {
+      "id": "parse_action",
+      "type": "spatialnav__parse_action",
+      "label": "SpatialNav: Parse Action",
+      "position": {
+        "x": 560,
+        "y": 440
+      },
+      "config": {}
+    },
+    {
+      "id": "navigate_to",
+      "type": "env_mp3d__step_waypoint",
+      "label": "MP3D: Navigate To",
+      "position": {
+        "x": 840,
+        "y": 440
+      },
+      "config": {}
+    },
+    {
+      "id": "step_panorama",
+      "type": "env_mp3d__observe_panorama",
+      "label": "MP3D: Panorama (step)",
+      "position": {
+        "x": 1120,
+        "y": 440
+      },
+      "config": {
+        "n_headings": 12
+      }
+    },
+    {
+      "id": "step_blip2",
+      "type": "navgpt_mp3d_tools__blip2_caption",
+      "label": "BLIP-2 (step)",
+      "position": {
+        "x": 1400,
+        "y": 600
+      },
+      "config": {
+        "prompt": "This is a scene of",
+        "merge_style": "primary"
+      }
+    },
+    {
+      "id": "step_rcnn",
+      "type": "navgpt_mp3d_tools__fasterrcnn_detect",
+      "label": "Faster R-CNN (step)",
+      "position": {
+        "x": 1400,
+        "y": 440
+      },
+      "config": {
+        "confidence": 0.5
+      }
+    },
+    {
+      "id": "step_observe",
+      "type": "env_mp3d__observe_navigable",
+      "label": "MP3D: Observation (step)",
+      "position": {
+        "x": 1680,
+        "y": 440
+      },
+      "config": {}
+    },
+    {
+      "id": "step_ssg_render",
+      "type": "ssg__render_map",
+      "label": "SSG: Render Map (step)",
+      "position": {
+        "x": 1680,
+        "y": 280
+      },
+      "config": {
+        "grid_size": 0.01,
+        "agent_front_up": false,
+        "crop_map": false,
+        "draw_history": true,
+        "draw_room_labels": true
+      }
+    },
+    {
+      "id": "step_ssg_query",
+      "type": "ssg__query_objects",
+      "label": "SSG: Query Objects (step)",
+      "position": {
+        "x": 1960,
+        "y": 280
+      },
+      "config": {
+        "data_name": "R2R",
+        "visibility_radius": 3.0
+      }
+    },
+    {
+      "id": "step_format",
+      "type": "spatialnav__observation_format",
+      "label": "SpatialNav: Format Observation (step)",
+      "position": {
+        "x": 1960,
+        "y": 440
+      },
+      "config": {
+        "use_relative_angle": true,
+        "use_surround_objects": true
+      }
+    },
+    {
+      "id": "scratchpad_writer",
+      "type": "spatialnav__scratchpad_writer",
+      "label": "SpatialNav: Scratchpad",
+      "position": {
+        "x": 2240,
+        "y": 440
+      },
+      "config": {
+        "max_scratchpad_length": 4096
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2520,
+        "y": 440
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "init_observation",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "scratchpad",
+            "wire_type": "TEXT",
+            "persist": true
+          },
+          {
+            "name": "scene_graph",
+            "wire_type": "IMAGE",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_mp3d__evaluate",
+      "label": "MP3D: Evaluate",
+      "position": {
+        "x": 1120,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_thinking",
+      "type": "textScroll",
+      "label": "Thinking Log",
+      "position": {
+        "x": 560,
+        "y": 950
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_action",
+      "type": "actionLog",
+      "label": "Action Log",
+      "position": {
+        "x": 280,
+        "y": 950
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_metrics",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 1120,
+        "y": 950
+      },
+      "config": {}
+    },
+    {
+      "id": "viewer_map",
+      "type": "imageViewer",
+      "label": "SSG Map Viewer",
+      "position": {
+        "x": 2240,
+        "y": 120
+      },
+      "config": {}
+    },
+    {
+      "id": "init_summarizer",
+      "type": "llmCall",
+      "label": "Init Obs Summarizer",
+      "position": {
+        "x": 840,
+        "y": -240
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "description",
+            "wire_type": "TEXT"
+          }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 100,
+        "mode": "single_turn",
+        "template": "Given the description of a viewpoint. Summarize the scene from the viewpoint in one concise sentence.\n\nDescription:\n{description}\n\nSummarization: The scene from the viewpoint is a"
+      }
+    },
+    {
+      "id": "step_summarizer",
+      "type": "llmCall",
+      "label": "Step Obs Summarizer",
+      "position": {
+        "x": 1680,
+        "y": 600
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "description",
+            "wire_type": "TEXT"
+          }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 100,
+        "mode": "single_turn",
+        "template": "Given the description of a viewpoint. Summarize the scene from the viewpoint in one concise sentence.\n\nDescription:\n{description}\n\nSummarization: The scene from the viewpoint is a"
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 1440,
+        "y": 320
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "seed_pano",
+      "type": "env_mp3d__observe_panorama",
+      "label": "MP3D: Observe (panorama)",
+      "position": {
+        "x": -220,
+        "y": 260
+      },
+      "config": {
+        "n_headings": 12
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_pano_to_init_blip2",
+      "source": "seed_pano",
+      "target": "init_blip2",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_reset_dirs_to_init_blip2",
+      "source": "seed_pano",
+      "target": "init_blip2",
+      "sourceHandle": "view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_reset_pano_to_init_rcnn",
+      "source": "seed_pano",
+      "target": "init_rcnn",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_reset_dirs_to_init_rcnn",
+      "source": "seed_pano",
+      "target": "init_rcnn",
+      "sourceHandle": "view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_init_blip2_to_observe",
+      "source": "init_blip2",
+      "target": "init_observe",
+      "sourceHandle": "descriptions",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_init_rcnn_to_observe",
+      "source": "init_rcnn",
+      "target": "init_observe",
+      "sourceHandle": "objects_text",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_reset_scan_to_ssg_reset",
+      "source": "reset",
+      "target": "init_ssg_reset",
+      "sourceHandle": "scan_id",
+      "targetHandle": "scan_id"
+    },
+    {
+      "id": "e_init_observe_vp_to_ssg_reset_trigger",
+      "source": "init_observe",
+      "target": "init_ssg_reset",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_init_observe_scan_to_ssg_query",
+      "source": "init_observe",
+      "target": "init_ssg_query",
+      "sourceHandle": "scan_id",
+      "targetHandle": "scan_id"
+    },
+    {
+      "id": "e_init_observe_vp_to_ssg_query",
+      "source": "init_observe",
+      "target": "init_ssg_query",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_init_observe_pos_to_ssg_query",
+      "source": "init_observe",
+      "target": "init_ssg_query",
+      "sourceHandle": "position_json",
+      "targetHandle": "position_json"
+    },
+    {
+      "id": "e_reset_episode_to_ssg_query_pathid",
+      "source": "reset",
+      "target": "init_ssg_query",
+      "sourceHandle": "episode_id",
+      "targetHandle": "path_id"
+    },
+    {
+      "id": "e_reset_instr_to_ssg_query",
+      "source": "reset",
+      "target": "init_ssg_query",
+      "sourceHandle": "instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_init_observe_scan_to_ssg_render",
+      "source": "init_observe",
+      "target": "init_ssg_render",
+      "sourceHandle": "scan_id",
+      "targetHandle": "scan_id"
+    },
+    {
+      "id": "e_init_observe_pos_to_ssg_render",
+      "source": "init_observe",
+      "target": "init_ssg_render",
+      "sourceHandle": "position_json",
+      "targetHandle": "position_json"
+    },
+    {
+      "id": "e_init_observe_heading_to_ssg_render",
+      "source": "init_observe",
+      "target": "init_ssg_render",
+      "sourceHandle": "heading",
+      "targetHandle": "heading_deg"
+    },
+    {
+      "id": "e_init_observe_nav_to_ssg_render",
+      "source": "init_observe",
+      "target": "init_ssg_render",
+      "sourceHandle": "navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_init_obs_heading_to_format",
+      "source": "init_observe",
+      "target": "init_format",
+      "sourceHandle": "heading",
+      "targetHandle": "heading"
+    },
+    {
+      "id": "e_init_obs_nav_to_format",
+      "source": "init_observe",
+      "target": "init_format",
+      "sourceHandle": "navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_init_blip2_descs_to_format",
+      "source": "init_blip2",
+      "target": "init_format",
+      "sourceHandle": "descriptions_json",
+      "targetHandle": "scene_descriptions_json"
+    },
+    {
+      "id": "e_init_rcnn_objs_to_format",
+      "source": "init_rcnn",
+      "target": "init_format",
+      "sourceHandle": "objects_json",
+      "targetHandle": "scene_objects_json"
+    },
+    {
+      "id": "e_init_ssg_local_to_format",
+      "source": "init_ssg_query",
+      "target": "init_format",
+      "sourceHandle": "local_objects_json",
+      "targetHandle": "local_objects_json"
+    },
+    {
+      "id": "e_init_ssg_interest_to_format",
+      "source": "init_ssg_query",
+      "target": "init_format",
+      "sourceHandle": "interest_objects_json",
+      "targetHandle": "interest_objects_json"
+    },
+    {
+      "id": "e_init_ssg_room_to_format",
+      "source": "init_ssg_query",
+      "target": "init_format",
+      "sourceHandle": "room_type",
+      "targetHandle": "room_type"
+    },
+    {
+      "id": "e_init_format_to_init_obs",
+      "source": "init_format",
+      "target": "init_observation",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_init_obs_vp_to_init_obs",
+      "source": "init_observe",
+      "target": "init_observation",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_reset_scan_to_init_obs",
+      "source": "reset",
+      "target": "init_observation",
+      "sourceHandle": "scan_id",
+      "targetHandle": "scan_id"
+    },
+    {
+      "id": "e_reset_epid_to_init_obs",
+      "source": "reset",
+      "target": "init_observation",
+      "sourceHandle": "episode_id",
+      "targetHandle": "path_id"
+    },
+    {
+      "id": "e_reset_instr_to_initialize",
+      "source": "reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_init_obs_full_to_initialize",
+      "source": "init_observation",
+      "target": "iter_in",
+      "sourceHandle": "init_observation",
+      "targetHandle": "init_init_observation"
+    },
+    {
+      "id": "e_init_history0_to_initialize",
+      "source": "init_observation",
+      "target": "iter_in",
+      "sourceHandle": "history_0",
+      "targetHandle": "init_history_0"
+    },
+    {
+      "id": "e_init_scratchpad_to_initialize",
+      "source": "init_observation",
+      "target": "iter_in",
+      "sourceHandle": "scratchpad_init",
+      "targetHandle": "init_scratchpad"
+    },
+    {
+      "id": "e_init_scan_to_initialize",
+      "source": "init_observation",
+      "target": "iter_in",
+      "sourceHandle": "scan_id_out",
+      "targetHandle": "init_scan_id"
+    },
+    {
+      "id": "e_init_path_to_initialize",
+      "source": "init_observation",
+      "target": "iter_in",
+      "sourceHandle": "path_id_out",
+      "targetHandle": "init_path_id"
+    },
+    {
+      "id": "e_init_scene_graph_to_initialize",
+      "source": "init_ssg_render",
+      "target": "iter_in",
+      "sourceHandle": "map_image",
+      "targetHandle": "init_scene_graph"
+    },
+    {
+      "id": "e_iter_history0_swap_to_iter_out",
+      "source": "iter_in",
+      "target": "iter_out",
+      "sourceHandle": "init_history_0",
+      "targetHandle": "init_observation"
+    },
+    {
+      "id": "e_iter_instr_to_orch",
+      "source": "iter_in",
+      "target": "orchestrator_llm",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iter_initobs_to_orch",
+      "source": "iter_in",
+      "target": "orchestrator_llm",
+      "sourceHandle": "iterout_init_observation",
+      "targetHandle": "init_observation"
+    },
+    {
+      "id": "e_iter_scratch_to_orch",
+      "source": "iter_in",
+      "target": "orchestrator_llm",
+      "sourceHandle": "iterout_scratchpad",
+      "targetHandle": "scratchpad"
+    },
+    {
+      "id": "e_iter_scene_to_orch",
+      "source": "iter_in",
+      "target": "orchestrator_llm",
+      "sourceHandle": "iterout_scene_graph",
+      "targetHandle": "scene_graph"
+    },
+    {
+      "id": "e_iter_scratch_to_scratchpad_writer",
+      "source": "iter_in",
+      "target": "scratchpad_writer",
+      "sourceHandle": "iterout_scratchpad",
+      "targetHandle": "scratchpad_in"
+    },
+    {
+      "id": "e_orch_to_parse",
+      "source": "orchestrator_llm",
+      "target": "parse_action",
+      "sourceHandle": "response",
+      "targetHandle": "llm_response"
+    },
+    {
+      "id": "e_parse_to_navigate",
+      "source": "parse_action",
+      "target": "navigate_to",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_orch_to_scratchpad",
+      "source": "orchestrator_llm",
+      "target": "scratchpad_writer",
+      "sourceHandle": "response",
+      "targetHandle": "llm_response"
+    },
+    {
+      "id": "e_nav_success_to_scratchpad",
+      "source": "navigate_to",
+      "target": "scratchpad_writer",
+      "sourceHandle": "success",
+      "targetHandle": "success"
+    },
+    {
+      "id": "e_nav_error_to_scratchpad",
+      "source": "navigate_to",
+      "target": "scratchpad_writer",
+      "sourceHandle": "error",
+      "targetHandle": "error"
+    },
+    {
+      "id": "e_nav_turned_to_scratchpad",
+      "source": "navigate_to",
+      "target": "scratchpad_writer",
+      "sourceHandle": "turned_angle",
+      "targetHandle": "turned_angle"
+    },
+    {
+      "id": "e_step_heading_to_scratchpad",
+      "source": "step_observe",
+      "target": "scratchpad_writer",
+      "sourceHandle": "heading",
+      "targetHandle": "heading"
+    },
+    {
+      "id": "e_nav_to_step_panorama",
+      "source": "navigate_to",
+      "target": "step_panorama",
+      "sourceHandle": "new_viewpoint",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_pano_to_blip2",
+      "source": "step_panorama",
+      "target": "step_blip2",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_step_pano_dir_to_blip2",
+      "source": "step_panorama",
+      "target": "step_blip2",
+      "sourceHandle": "view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_step_pano_to_rcnn",
+      "source": "step_panorama",
+      "target": "step_rcnn",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_step_pano_dir_to_rcnn",
+      "source": "step_panorama",
+      "target": "step_rcnn",
+      "sourceHandle": "view_meta",
+      "targetHandle": "view_meta"
+    },
+    {
+      "id": "e_step_blip2_to_observe",
+      "source": "step_blip2",
+      "target": "step_observe",
+      "sourceHandle": "descriptions",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_rcnn_to_observe",
+      "source": "step_rcnn",
+      "target": "step_observe",
+      "sourceHandle": "objects_text",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_observe_scan_to_render",
+      "source": "step_observe",
+      "target": "step_ssg_render",
+      "sourceHandle": "scan_id",
+      "targetHandle": "scan_id"
+    },
+    {
+      "id": "e_step_observe_pos_to_render",
+      "source": "step_observe",
+      "target": "step_ssg_render",
+      "sourceHandle": "position_json",
+      "targetHandle": "position_json"
+    },
+    {
+      "id": "e_step_observe_heading_to_render",
+      "source": "step_observe",
+      "target": "step_ssg_render",
+      "sourceHandle": "heading",
+      "targetHandle": "heading_deg"
+    },
+    {
+      "id": "e_step_observe_nav_to_render",
+      "source": "step_observe",
+      "target": "step_ssg_render",
+      "sourceHandle": "navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_step_observe_scan_to_query",
+      "source": "step_observe",
+      "target": "step_ssg_query",
+      "sourceHandle": "scan_id",
+      "targetHandle": "scan_id"
+    },
+    {
+      "id": "e_step_observe_vp_to_query",
+      "source": "step_observe",
+      "target": "step_ssg_query",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_step_observe_pos_to_query",
+      "source": "step_observe",
+      "target": "step_ssg_query",
+      "sourceHandle": "position_json",
+      "targetHandle": "position_json"
+    },
+    {
+      "id": "e_iter_path_to_step_query",
+      "source": "iter_in",
+      "target": "step_ssg_query",
+      "sourceHandle": "init_path_id",
+      "targetHandle": "path_id"
+    },
+    {
+      "id": "e_iter_instr_to_step_query",
+      "source": "iter_in",
+      "target": "step_ssg_query",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_step_obs_heading_to_format",
+      "source": "step_observe",
+      "target": "step_format",
+      "sourceHandle": "heading",
+      "targetHandle": "heading"
+    },
+    {
+      "id": "e_step_obs_nav_to_format",
+      "source": "step_observe",
+      "target": "step_format",
+      "sourceHandle": "navigable_json",
+      "targetHandle": "navigable_json"
+    },
+    {
+      "id": "e_step_blip2_descs_to_format",
+      "source": "step_blip2",
+      "target": "step_format",
+      "sourceHandle": "descriptions_json",
+      "targetHandle": "scene_descriptions_json"
+    },
+    {
+      "id": "e_step_rcnn_objs_to_format",
+      "source": "step_rcnn",
+      "target": "step_format",
+      "sourceHandle": "objects_json",
+      "targetHandle": "scene_objects_json"
+    },
+    {
+      "id": "e_step_ssg_local_to_format",
+      "source": "step_ssg_query",
+      "target": "step_format",
+      "sourceHandle": "local_objects_json",
+      "targetHandle": "local_objects_json"
+    },
+    {
+      "id": "e_step_ssg_interest_to_format",
+      "source": "step_ssg_query",
+      "target": "step_format",
+      "sourceHandle": "interest_objects_json",
+      "targetHandle": "interest_objects_json"
+    },
+    {
+      "id": "e_step_ssg_room_to_format",
+      "source": "step_ssg_query",
+      "target": "step_format",
+      "sourceHandle": "room_type",
+      "targetHandle": "room_type"
+    },
+    {
+      "id": "e_step_format_to_scratchpad",
+      "source": "step_format",
+      "target": "scratchpad_writer",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_step_obs_vp_to_scratchpad",
+      "source": "step_observe",
+      "target": "scratchpad_writer",
+      "sourceHandle": "viewpoint_id",
+      "targetHandle": "viewpoint_id"
+    },
+    {
+      "id": "e_step_summarizer_to_scratchpad",
+      "source": "step_summarizer",
+      "target": "scratchpad_writer",
+      "sourceHandle": "response",
+      "targetHandle": "summary"
+    },
+    {
+      "id": "e_scratchpad_out_to_iter_out",
+      "source": "scratchpad_writer",
+      "target": "iter_out",
+      "sourceHandle": "scratchpad_out",
+      "targetHandle": "scratchpad"
+    },
+    {
+      "id": "e_step_render_to_iter_out",
+      "source": "step_ssg_render",
+      "target": "iter_out",
+      "sourceHandle": "map_image",
+      "targetHandle": "scene_graph"
+    },
+    {
+      "id": "e_nav_done_to_term__stop",
+      "source": "navigate_to",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_eval_metrics_to_viewer",
+      "source": "evaluate",
+      "target": "viewer_metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_orch_to_thinking",
+      "source": "orchestrator_llm",
+      "target": "viewer_thinking",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_orch_to_action_log",
+      "source": "orchestrator_llm",
+      "target": "viewer_action",
+      "sourceHandle": "response",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_render_to_viewer",
+      "source": "step_ssg_render",
+      "target": "viewer_map",
+      "sourceHandle": "map_image",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_init_blip2_descs_to_summarizer",
+      "source": "init_blip2",
+      "target": "init_summarizer",
+      "sourceHandle": "descriptions",
+      "targetHandle": "description"
+    },
+    {
+      "id": "e_init_summarizer_to_init_obs",
+      "source": "init_summarizer",
+      "target": "init_observation",
+      "sourceHandle": "response",
+      "targetHandle": "summary"
+    },
+    {
+      "id": "e_step_blip2_descs_to_summarizer",
+      "source": "step_blip2",
+      "target": "step_summarizer",
+      "sourceHandle": "descriptions",
+      "targetHandle": "description"
+    },
+    {
+      "id": "e_output_85__po",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ],
+  "containers": [
+    {
+      "id": "graph_state",
+      "label": "Navigation State",
+      "states": {
+        "step": {
+          "type": "counter",
+          "value_type": "ANY",
+          "config": {
+            "initial_value": 0
+          }
+        },
+        "trajectory": {
+          "type": "accumulator",
+          "value_type": "TEXT"
+        }
+      },
+      "position": {
+        "x": 616,
+        "y": 1190
+      }
+    }
+  ],
+  "step_budget": 30,
+  "access_grants": [
+    {
+      "id": "ag_graph_state_reset",
+      "node_id": "reset",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_evaluate",
+      "node_id": "evaluate",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_thinking",
+      "node_id": "viewer_thinking",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_action",
+      "node_id": "viewer_action",
+      "container_id": "graph_state"
+    },
+    {
+      "id": "ag_graph_state_viewer_metrics",
+      "node_id": "viewer_metrics",
+      "container_id": "graph_state"
+    }
+  ]
+}

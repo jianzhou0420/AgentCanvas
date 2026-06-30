@@ -1,0 +1,438 @@
+{
+  "name": "Example: Simple Navigator",
+  "description": "Demo-level VLN agent assembled entirely from built-in glue (llmCall, textParse, historyLog) + basic_agent encoding nodes (image_analyze, obs_to_text) + the habitat env nodeset. Loop: observe -> caption -> format obs -> LLM decides -> parse action -> step. No method-specific code. Demo-level: shows the loop runs end-to-end; SR numbers are out of scope (see TODO #64 for the loop-body evaluate caveat).",
+  "step_budget": 50,
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_habitat__reset",
+      "label": "Habitat: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_habitat__observe_egocentric",
+      "label": "Habitat: Observe (seed)",
+      "position": {
+        "x": 0,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 280,
+        "y": 200
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "caption",
+      "type": "basic_agent__image_analyze",
+      "label": "Vision: Analyze",
+      "position": {
+        "x": 560,
+        "y": 320
+      },
+      "config": {
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "obs_to_text",
+      "type": "basic_agent__obs_to_text",
+      "label": "Obs: To Text",
+      "position": {
+        "x": 840,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "planner_llm",
+      "type": "llmCall",
+      "label": "LLM: Decide Action",
+      "position": {
+        "x": 1120,
+        "y": 200
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "observation",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "history",
+            "wire_type": "TEXT",
+            "required": false
+          }
+        ],
+        "template": "Instruction: {instruction}\n\nCurrent observation:\n{observation}\n\nAction history:\n{history}\n\nChoose exactly one action: FORWARD (move 0.25m ahead), LEFT (turn 15 degrees), RIGHT (turn 15 degrees), or STOP (only when you believe you have reached the goal). Give one short sentence of reasoning, then write the action keyword alone on the last line.",
+        "system_prompt": "You are a navigation agent inside an indoor environment. You follow the instruction step by step.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "parse_action",
+      "type": "textParse",
+      "label": "Parse Action",
+      "position": {
+        "x": 1400,
+        "y": 200
+      },
+      "config": {
+        "mode": "choice",
+        "choices": "STOP,FORWARD,LEFT,RIGHT",
+        "scan": "last_line_first",
+        "default": "FORWARD"
+      }
+    },
+    {
+      "id": "history_log",
+      "type": "historyLog",
+      "label": "History Log",
+      "position": {
+        "x": 1680,
+        "y": 380
+      },
+      "config": {
+        "max_entries": 20,
+        "template": "Step {step}: {entry}"
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_habitat__step_discrete",
+      "label": "Habitat: Step",
+      "position": {
+        "x": 1680,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_habitat__observe_egocentric",
+      "label": "Habitat: Observe (loop)",
+      "position": {
+        "x": 1960,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2240,
+        "y": 200
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "pose",
+            "wire_type": "POSE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "history",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_habitat__evaluate",
+      "label": "Habitat: Evaluate",
+      "position": {
+        "x": 1960,
+        "y": 500
+      },
+      "config": {}
+    },
+    {
+      "id": "obs_viewer",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 2240,
+        "y": 560
+      },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "reasoning_scroll",
+      "type": "textScroll",
+      "label": "LLM Reasoning",
+      "position": {
+        "x": 1120,
+        "y": 560
+      },
+      "config": {}
+    },
+    {
+      "id": "action_log_viewer",
+      "type": "actionLog",
+      "label": "Action Log",
+      "position": {
+        "x": 1400,
+        "y": 560
+      },
+      "config": {}
+    },
+    {
+      "id": "metrics_viewer",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 1960,
+        "y": 660
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 2240,
+        "y": 700
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "note_demo",
+      "type": "note",
+      "label": "Demo: built-in navigator",
+      "position": {
+        "x": 560,
+        "y": -260
+      },
+      "config": {
+        "markdown": "**Demo: a navigator from built-in parts only**\n\nEvery reasoning node here ships with the platform:\n\n- `llmCall` (built-in) — prompt template + LLM call\n- `textParse` (built-in) — choice mode; index 0-3 doubles as the discrete env action\n- `historyLog` (built-in) — per-step history, loop-carried via iterOut\n- `basic_agent__image_analyze` + `obs_to_text` (standard nodeset) — observation encoding\n\nThe env side is the habitat nodeset's gym verbs (reset / observe / step / evaluate). No method-specific code anywhere.\n\n*Demo-level*: shows the loop runs; headline SR is out of scope (loop-body evaluate misses the terminal STOP step — TODO #64)."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_instruction_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_reset_to_seedobs",
+      "source": "env_reset",
+      "target": "seed_obs",
+      "sourceHandle": "episode_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_seedobs_rgb_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "rgb",
+      "targetHandle": "iterout_rgb"
+    },
+    {
+      "id": "e_seedobs_pose_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "pose",
+      "targetHandle": "iterout_pose"
+    },
+    {
+      "id": "e_iterin_rgb_to_caption",
+      "source": "iter_in",
+      "target": "caption",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_caption_to_obstext",
+      "source": "caption",
+      "target": "obs_to_text",
+      "sourceHandle": "response",
+      "targetHandle": "caption"
+    },
+    {
+      "id": "e_iterin_pose_to_obstext",
+      "source": "iter_in",
+      "target": "obs_to_text",
+      "sourceHandle": "iterout_pose",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_iterin_instruction_to_llm",
+      "source": "iter_in",
+      "target": "planner_llm",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_obstext_to_llm",
+      "source": "obs_to_text",
+      "target": "planner_llm",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_iterin_history_to_llm",
+      "source": "iter_in",
+      "target": "planner_llm",
+      "sourceHandle": "iterout_history",
+      "targetHandle": "history"
+    },
+    {
+      "id": "e_llm_to_parse",
+      "source": "planner_llm",
+      "target": "parse_action",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_llm_to_scroll",
+      "source": "planner_llm",
+      "target": "reasoning_scroll",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_parse_index_to_step",
+      "source": "parse_action",
+      "target": "env_step",
+      "sourceHandle": "index",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_parse_index_to_actionlog",
+      "source": "parse_action",
+      "target": "action_log_viewer",
+      "sourceHandle": "index",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_parse_value_to_history",
+      "source": "parse_action",
+      "target": "history_log",
+      "sourceHandle": "value",
+      "targetHandle": "entry"
+    },
+    {
+      "id": "e_historylog_to_iterout",
+      "source": "history_log",
+      "target": "iter_out",
+      "sourceHandle": "history",
+      "targetHandle": "history"
+    },
+    {
+      "id": "e_step_info_to_loopobs",
+      "source": "env_step",
+      "target": "loop_obs",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_loopobs_rgb_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_loopobs_pose_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "pose",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_loopobs_rgb_to_viewer",
+      "source": "loop_obs",
+      "target": "obs_viewer",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_terminated_to_termination__stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_evaluate_to_metricsviewer",
+      "source": "evaluate",
+      "target": "metrics_viewer",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_evaluate_to_graphout",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ]
+}

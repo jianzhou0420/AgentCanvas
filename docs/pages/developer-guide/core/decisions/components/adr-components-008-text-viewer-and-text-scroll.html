@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-008 — AgentCanvas</title>
+<meta name="description" content="Split `thinkingLog` into `textViewer` (latest) + `textScroll` (accumulating), one shared `text_viewer` renderer">
+<meta property="og:title" content="ADR-components-008 — AgentCanvas">
+<meta property="og:description" content="Split `thinkingLog` into `textViewer` (latest) + `textScroll` (accumulating), one shared `text_viewer` renderer">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-008-text-viewer-and-text-scroll.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-008-text-viewer-and-text-scroll.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-008</span>
+  </div>
+  <div class="last-updated">2026-04-18 10:40</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-008</h1>
+  <p class="tagline">Split `thinkingLog` into `textViewer` (latest) + `textScroll` (accumulating), one shared `text_viewer` renderer</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-18 10:40</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-032</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Four output sink nodes existed for text-like data: <code>textViewer</code> (scalar latest, <code>text_viewer</code> display_type), <code>thinkingLog</code> (accumulating, <code>log_list</code> display_type), <code>actionLog</code> (accumulating, <code>log_list</code>), <code>metrics</code> (scalar, <code>metric_table</code>). Two problems. (1) <strong>Latent rendering bug on <code>thinkingLog</code></strong>: <code>LogListField.tsx</code> dispatches entries on <code>entry.action_name</code> (nav-action shape) or <code>entry.type/tool/content</code> (LLM-step shape) — both structured. But <code>LLMCallNode</code> emits <code>response</code> as a <strong>plain string</strong> (<code>builtin_nodes.py:335</code>, <code>{"response": response or ""}</code>), so every accumulated entry in 5 shipped graphs (<code>navgpt_mp3d</code>, <code>navgpt_ce</code>, <code>mapgpt_mp3d</code>, <code>opennav_habitat</code>, <code>text_analysis_demo</code>) rendered as a colored left-border card with an empty body and the literal <code>undefined</code> as the type label — silently broken. (2) <strong>Near-duplication with <code>textViewer</code></strong>: same color, same <code>viewer</code> layout, same TEXT input; the only real axis was <code>accumulate=True</code>. Two nodes with different port names (<code>response</code> vs <code>text</code>), a broken renderer, and confusing naming wasn't pulling its weight. Separately, <code>opennav_habitat.json</code> edge <code>e_decision_to_viewer_thinking</code> had a pre-existing orphan <code>targetHandle: "thought"</code> into <code>thinkingLog</code> (which only exposed a <code>response</code> port); the graph executor silently drops edges whose target port doesn't exist, so that viewer had never received data.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Collapse to two clearly-named sink nodes sharing one renderer. <strong><code>textViewer</code></strong> ("Text") — unchanged, scalar latest-value display. <strong><code>textScroll</code></strong> ("Scroll Text") — new, replaces <code>thinkingLog</code>; accumulating TEXT history, newest-last, bounded by <code>max_visible</code> (default 20). Both declare a single <code>text: TEXT</code> optional input port for symmetry; the old <code>response</code> port is gone. Both use the same <code>text_viewer</code> display_type. <code>TextViewerField.tsx</code> detects <code>Array.isArray(value)</code> at render time — <strong>scalar</strong> → single block (original rendering), <strong>array</strong> → scrollable stack with hairline dividers between entries and a <code>+N earlier</code> badge when trimmed by <code>max_visible</code>. <code>TextScrollSink</code> subclasses <code>_SinkBase</code> and declares <code>accumulate=True</code> on its <code>DisplayField("history", "text_viewer", "", data_key="text", max_visible=20, accumulate=True)</code>, routing through the existing <code>vacc_*</code> history path in <code>_SinkBase.execute</code> — <code>_SinkBase</code> itself is unchanged. <code>actionLog</code> and <code>metrics</code> are untouched — they need structured input and distinct renderers (<code>log_list</code> stays for <code>actionLog</code>, which receives <code>ACTION</code>-shaped dicts with <code>action_name</code>/<code>action</code>/<code>step</code>/<code>done</code>). All 5 in-repo graphs migrated: node <code>type: thinkingLog → textScroll</code> and the single inbound edge per graph updated to <code>targetHandle: "text"</code>. Node IDs (<code>viewer_thinking</code>) and access-grant IDs (<code>ag_graph_state_viewer_thinking</code>) preserved — IDs are stable across the rename, so the 3 graphs with <code>graph_state</code> grants to this viewer keep working without a further migration. Dead barrel <code>viewerFieldRenderers.tsx</code> deleted (superseded by <code>fields/*</code> in a prior refactor per <code>.claude/log.md:1190</code>). Palette entries added/removed in <code>unifiedCatalog.ts</code>; <code>OUTPUT_NODE_TYPES</code> (unifiedNodeTypes.ts), <code>_TYPE_HEIGHT</code> + <code>VIEWER_TYPES</code> (backend <code>layout.py</code>), <code>nodeColors.ts</code>, <code>ExplorerPanel.tsx</code> icon map all updated.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Fix <code>LogListField</code> to render plain strings gracefully</strong>, keep <code>thinkingLog</code> as a separate node — rejected; leaves the taxonomy redundant (two text sinks with different port names, same purpose) and papers over the <code>log_list</code>-on-strings dispatch mismatch rather than moving to a renderer matched to the data shape. (b) <strong>Add an <code>accumulate</code> toggle to <code>textViewer</code> and drop <code>thinkingLog</code> entirely</strong> (one node, two modes via config) — rejected in favor of two node types: a node's type on the canvas should telegraph its behavior; a hidden config toggle forces the reader to click in to know whether they're looking at history or the latest value. Two backend classes cost nothing — both subclass <code>_SinkBase</code> with a different <code>DisplayField</code>. (c) <strong>Add a new <code>text_scroll</code> display_type with its own renderer</strong> — rejected; the only visual difference between scalar and array rendering is "stacked blocks with dividers" vs "single block", a trivial conditional in one renderer. Two renderers would duplicate styling and force frontend changes any time the TEXT styling evolved. (d) <strong>Keep <code>log_list</code> for <code>textScroll</code> but pre-wrap plain strings into <code>{type: "reasoning", content: str}</code> in the backend</strong> — rejected; this forces every upstream TEXT source to know about <code>log_list</code>'s entry shape, leaking a display concern into business logic. (e) <strong>Name the new node <code>scrollText</code> instead of <code>textScroll</code></strong> — rejected for catalog grouping: <code>text…</code> prefix keeps the two text sinks adjacent in the sidebar palette alphabetically and under the same mental index.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The <code>text_viewer</code> display_type is the right unit of abstraction for plain-string display — scalar and array are just two shapes of the same semantic value. <code>_SinkBase</code>'s <code>accumulate</code> flag is already the backend-side expression of "scalar vs array", so <code>TextScrollSink</code> is a 15-line subclass that needs zero new infrastructure. Two canvas-visible node types with clear names (<code>Text</code> / <code>Scroll Text</code>) beats one node with a hidden config toggle: the palette communicates intent, and there's no config UI burden. Preserving node IDs across the type rename means existing state grants resolve unchanged — the rename is user-visible only in the palette and the serialized <code>type</code> field. The <code>opennav_habitat</code> orphan-port bug was a free side-win: forcing every graph's edge through a targeted audit during migration made the stale <code>targetHandle: "thought"</code> visible. Deleting <code>viewerFieldRenderers.tsx</code> was a deferred cleanup noted in <code>.claude/log.md:1190</code> — this session was a natural home for it. Trade-off explicitly accepted: the <code>thinkingLog</code> node_type is removed without a legacy alias, so any out-of-repo graph referencing it will fail to load; the 5 in-repo graphs are migrated and the change is documented in the log and this ADR for user-owned graphs.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>core/architecture.md (output viewer catalog tables), design-docs/canvas-system.md (output node_type table + header diagram), core/codebase-map.md (sink class table; dead barrel row removed), api-reference/base-canvas-node.md (viewer sink list), tutorials/execution-logs.md (viewer table + ASCII diagram), capabilities/real-time-observability.md (viewer node_type tables), core/roadmap.md (changelog)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

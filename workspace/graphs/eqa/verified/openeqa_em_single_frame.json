@@ -1,0 +1,262 @@
+{
+  "name": "OpenEQA EM (single-frame VLM)",
+  "description": "OpenEQA EM-EQA: load pre-recorded episode frames, send 1 keyframe (middle of episode) to a VLM with the question, score with a composed judge: builtin llmCall (mmbench prompt) → env_openeqa_em__parse_score → env_openeqa_em__emit_metrics. Sits between blind-LLM (no vision) and multi-frame VLM (K=50) on the baseline ladder — the standard ablation that isolates 'first-look' vision contribution from multi-frame fusion.",
+  "presetId": "openeqa_em_single_frame",
+  "step_budget": 1,
+  "nodes": [
+    {
+      "id": "reset_a1b2c3d4",
+      "type": "env_openeqa_em__reset",
+      "label": "OpenEQA EM: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "sample_b2c3d4e5",
+      "type": "env_openeqa_em__sample_frames",
+      "label": "OpenEQA EM: Sample Frames (K=1, middle)",
+      "position": {
+        "x": 320,
+        "y": 0
+      },
+      "config": {
+        "k": 1,
+        "strategy": "first_last_middle"
+      }
+    },
+    {
+      "id": "vlm_c3d4e5f6",
+      "type": "llmCall",
+      "label": "VLM Call (single-frame answer)",
+      "position": {
+        "x": 640,
+        "y": 0
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "LIST[IMAGE]"
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT"
+          }
+        ],
+        "template": "User Query: {question}",
+        "system_prompt": "You are an intelligent question answering agent. I will ask you questions about an indoor space and you must provide an answer.\nYou will be shown a single image of the space.\nGiven a user query, you must output `text` to answer to the question asked by the user.",
+        "profile": "",
+        "temperature": 0.2,
+        "max_tokens": 128,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "judge_llm_d4e5f6a7",
+      "type": "llmCall",
+      "label": "Judge LLM Call (mmbench prompt)",
+      "position": {
+        "x": 960,
+        "y": 0
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "question",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "answer",
+            "wire_type": "TEXT"
+          },
+          {
+            "name": "prediction",
+            "wire_type": "TEXT"
+          }
+        ],
+        "template": "You are an AI assistant who will help me to evaluate the response given the question and the correct answer.\nTo mark a response, you should output a single integer between 1 and 5 (including 1, 5).\n5 means that the response perfectly matches the answer.\n1 means that the response is completely different from the answer.\n\nExample 1:\nQuestion: Is it overcast?\nAnswer: no\nResponse: yes\nYour mark: 1\n\nExample 2:\nQuestion: Who is standing at the table?\nAnswer: woman\nResponse: Jessica\nYour mark: 3\n\nExample 3:\nQuestion: Are there drapes to the right of the bed?\nAnswer: yes\nResponse: yes\nYour mark: 5\n\nYour Turn:\nQuestion: {question}\nAnswer: {answer}\nResponse: {prediction}",
+        "system_prompt": "You are a careful evaluator. Read the example format and output a single 'Your mark: N' line where N is an integer 1-5.",
+        "profile": "",
+        "temperature": 0.2,
+        "max_tokens": 128,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "parse_score_e5f6a7b8",
+      "type": "env_openeqa_em__parse_score",
+      "label": "Parse Score (1-5)",
+      "position": {
+        "x": 1280,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "emit_metrics_f6a7b8c9",
+      "type": "env_openeqa_em__emit_metrics",
+      "label": "Emit OpenEQA Metrics",
+      "position": {
+        "x": 1560,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "pred_text_b8c9d0e1",
+      "type": "textViewer",
+      "label": "Predicted answer",
+      "position": {
+        "x": 640,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "judge_text_c9d0e1f2",
+      "type": "textViewer",
+      "label": "Judge response",
+      "position": {
+        "x": 960,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "metrics_d0e1f2a3",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 1560,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "note_data_provenance",
+      "type": "note",
+      "label": "Data provenance",
+      "position": {
+        "x": 0,
+        "y": -300
+      },
+      "config": {
+        "markdown": "**Dataset: OpenEQA EM-EQA (HM3D + ScanNet, full)**\n\n- **Frames source:** Hugging Face mirror [`AIGeeksGroup/OpenEQA`](https://huggingface.co/datasets/AIGeeksGroup/OpenEQA) — paper-canonical, full original episodes.\n- **QA JSON:** `open-eqa-v0.json` from upstream [`facebookresearch/open-eqa`](https://github.com/facebookresearch/open-eqa).\n- **This graph (K=1, middle):** ablation that isolates 'first-look' vision contribution from multi-frame fusion. Compare against `openeqa_em_blind_llm` (no vision) and `openeqa_em_multiframe` (full K=50) to read off the marginal value of (a) seeing one frame and (b) seeing many frames.\n\n**Why not the original Meta release?**\n\nThe upstream `open-eqa-hm3d-frames-v0.tgz` Dropbox link is **permanently expired** (verified 2026-05-04). See `openeqa_em_multiframe` Note for the full provenance discussion."
+      }
+    },
+    {
+      "id": "note_judge_composition",
+      "type": "note",
+      "label": "Judge = composed",
+      "position": {
+        "x": 960,
+        "y": -300
+      },
+      "config": {
+        "markdown": "**Judge = builtin `llmCall` + nodeset parse/emit**\n\nReplaces the legacy `env_openeqa_em__llm_judge` 3-in-1 node with a 3-piece composition:\n\n1. **`llmCall` (builtin)** — runs the LLM with the OpenEQA `mmbench.txt` few-shot prompt. Profile is left blank in this graph (= uses the active profile from the LLM Profiles panel); pick a model in the canvas UI per node if you want to decouple reasoner / judge.\n2. **`parse_score`** — extracts the 1-5 integer.\n3. **`emit_metrics`** — wraps the score into `{openeqa_score, openeqa_llm_match=(s-1)/4}`."
+      }
+    },
+    {
+      "id": "output_a7b8c9d0__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 1840,
+        "y": 0
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e01",
+      "source": "reset_a1b2c3d4",
+      "target": "sample_b2c3d4e5",
+      "sourceHandle": "frames",
+      "targetHandle": "frames"
+    },
+    {
+      "id": "e02",
+      "source": "sample_b2c3d4e5",
+      "target": "vlm_c3d4e5f6",
+      "sourceHandle": "sampled",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e03",
+      "source": "reset_a1b2c3d4",
+      "target": "vlm_c3d4e5f6",
+      "sourceHandle": "question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e04",
+      "source": "reset_a1b2c3d4",
+      "target": "judge_llm_d4e5f6a7",
+      "sourceHandle": "question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e05",
+      "source": "reset_a1b2c3d4",
+      "target": "judge_llm_d4e5f6a7",
+      "sourceHandle": "answer_gt",
+      "targetHandle": "answer"
+    },
+    {
+      "id": "e06",
+      "source": "vlm_c3d4e5f6",
+      "target": "judge_llm_d4e5f6a7",
+      "sourceHandle": "response",
+      "targetHandle": "prediction"
+    },
+    {
+      "id": "e07",
+      "source": "vlm_c3d4e5f6",
+      "target": "pred_text_b8c9d0e1",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e08",
+      "source": "judge_llm_d4e5f6a7",
+      "target": "parse_score_e5f6a7b8",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e09",
+      "source": "judge_llm_d4e5f6a7",
+      "target": "judge_text_c9d0e1f2",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e10",
+      "source": "parse_score_e5f6a7b8",
+      "target": "emit_metrics_f6a7b8c9",
+      "sourceHandle": "score_1to5",
+      "targetHandle": "score_1to5"
+    },
+    {
+      "id": "e12",
+      "source": "emit_metrics_f6a7b8c9",
+      "target": "metrics_d0e1f2a3",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e11__po",
+      "source": "emit_metrics_f6a7b8c9",
+      "sourceHandle": "metrics",
+      "target": "output_a7b8c9d0__metrics",
+      "targetHandle": "value"
+    }
+  ]
+}

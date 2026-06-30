@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Env &amp; Episode Lifecycle — AgentCanvas</title>
+<meta name="description" content="Five nested scopes, five signals — who owns env / episode / run lifecycle and how the layers connect">
+<meta property="og:title" content="Env &amp; Episode Lifecycle — AgentCanvas">
+<meta property="og:description" content="Five nested scopes, five signals — who owns env / episode / run lifecycle and how the layers connect">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/components/env-lifecycle.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="el-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:640px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .ring { fill:none; stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .ring.inner { stroke: var(--designdoc); stroke-width:1.6; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/components/env-lifecycle.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">Env &amp; Episode Lifecycle</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Env &amp; Episode Lifecycle</h1>
+  <p class="tagline">Five nested scopes, five signals — who owns env / episode / run lifecycle and how the layers connect</p>
+</header>
+
+<p class="lede">An evaluation run nests like rings: a job holds a suite, a suite holds episodes, an episode holds iterations. Each ring has a single owner — the <a href="env-panels.html">env panel</a> owns the heavy operations (build the env, choose the episode), graph nodes own the light ones (revive an episode, advance it), and the executor stitches the rings together with broadcast <strong>signals</strong>. This page is the ownership-and-timing map. The loop rings themselves are <a href="../graph/loop-control-system.html">Loop Control</a>; what the signals reset is <a href="../graph/state-containers.html#6-lifetimes">State Containers</a>; the panel contract is <a href="env-panels.html">Env Panels</a>.</p>
+
+<hr>
+
+<h2 id="1-scopes"><span class="num">1.</span> The five scopes</h2>
+
+<svg class="rxsvg" viewBox="0 0 640 200" role="img" aria-label="Five nested scopes drawn as concentric bands, outermost to innermost: Job (JobScheduler), Suite/process (env panel + manager), Episode placement (env panel), Episode liveness (reset node), In-episode advance (step nodes + loop). The two innermost are the engine's loop band.">
+  <rect x="14" y="14" width="612" height="172" rx="10" class="ring"/><text x="28" y="32" class="dim">Job — JobScheduler</text>
+  <rect x="44" y="40" width="552" height="132" rx="9" class="ring"/><text x="58" y="58" class="dim">Suite / process — env panel + manager</text>
+  <rect x="78" y="66" width="484" height="92" rx="8" class="ring"/><text x="92" y="84" class="dim">Episode placement — env panel</text>
+  <rect x="116" y="92" width="408" height="58" rx="7" class="ring inner"/><text x="130" y="110" class="dim at">Episode liveness — reset node</text>
+  <rect x="156" y="116" width="328" height="26" rx="6" class="ring inner"/><text x="320" y="133" text-anchor="middle" class="at">In-episode advance — step_* + loop</text>
+</svg>
+
+<p>Every lifecycle operation belongs to exactly one ring; the recurring failure mode is an operation drifting to a neighbouring ring's owner (§5).</p>
+
+<table>
+<thead><tr><th>Scope</th><th>Owner</th><th>Key operations</th></tr></thead>
+<tbody>
+<tr><td><strong>Job</strong> (cross-session)</td><td>JobScheduler</td><td>admission (VRAM / exclusive-GPU), subprocess spawn, finalisation, orphan reaping (<code>POST /api/eval/v2/start</code>).</td></tr>
+<tr><td><strong>Suite / process</strong></td><td>Env manager singleton, driven by the <a href="env-panels.html">env panel</a></td><td><code>initialize()</code> (build config, create env, reset to first episode), <code>shutdown()</code> — <strong>never a graph node</strong>.</td></tr>
+<tr><td><strong>Episode placement</strong></td><td>Env panel</td><td>field cascade <code>dataset → split → episode_index</code> → <code>set_episode</code>; emits the <code>episode_reset</code> request.</td></tr>
+<tr><td><strong>Episode liveness</strong></td><td><code>reset</code> node</td><td>pre-loop band, fires once: idempotent ensure-live (habitat re-arms a finished episode; others read metadata — §6).</td></tr>
+<tr><td><strong>In-episode advance</strong></td><td><code>step_*</code> nodes + loop control</td><td>sim mutation, <code>terminated</code>/<code>truncated</code> emission; loop end seeds the after-loop band via <code>final_*</code>.</td></tr>
+</tbody>
+</table>
+
+<p>On top of the two innermost rings the executor lays its own banding: <code>run_start</code> → pre-loop band (entry nodes, <code>reset</code>) → loop (<code>observe_* → reason → step_*</code>) → after-loop band (<code>evaluate</code>, fed once by the loop iterOut's <code>final_*</code> edges). The banding mechanics are <a href="../graph/graph-executor.html">Graph Executor</a>; the loop's stop/final side is <a href="../graph/loop-control-system.html#6-final-side">Loop Control §6</a>.</p>
+
+<h2 id="2-signals"><span class="num">2.</span> The five signals</h2>
+
+<p>Signals are the only mechanism that crosses scope boundaries: the bus (<code>broadcast_signal</code> → each container's <code>on_signal</code>) is the <em>only</em> lifecycle channel state containers respond to (<a href="../graph/state-containers.html#6-lifetimes">State Containers §6</a>). There are five canonical ones:</p>
+
+<table>
+<thead><tr><th>Signal</th><th>Emitter — when</th><th>Clears (lifetime)</th></tr></thead>
+<tbody>
+<tr><td><code>run_start</code></td><td>executor — before any node fires</td><td><code>run</code></td></tr>
+<tr><td><code>run_end</code></td><td>executor — at teardown (clean and error paths)</td><td>—</td></tr>
+<tr><td><code>step_start</code></td><td>executor at the iterIn boundary — opens each iteration (payload carries <code>scope_id</code>)</td><td><code>step</code> (on the matching boundary)</td></tr>
+<tr><td><code>step_end</code></td><td>executor at the iterOut boundary — closes each iteration (payload carries <code>scope_id</code>)</td><td><code>step</code></td></tr>
+<tr><td><code>episode_reset</code></td><td>env panel, via the env-panel router — on a committed episode change</td><td><code>episode</code></td></tr>
+</tbody>
+</table>
+
+<div class="callout note"><p><strong><code>final_*</code> is not a signal.</strong> The iterOut final side (<code>final_&lt;name&gt;</code> / <code>final_stop</code>) is a set of <em>edge handles</em> that route values to the after-loop band once at termination — it never goes through <code>broadcast_signal</code>. It seeds <code>evaluate</code> by ordinary dataflow, not by the signal bus. (<a href="../graph/loop-control-system.html#6-final-side">Loop Control §6</a>.)</p></div>
+
+<h2 id="3-ownership"><span class="num">3.</span> Who owns each transition</h2>
+
+<table>
+<thead><tr><th>Transition</th><th>Owner</th><th>Mechanism</th></tr></thead>
+<tbody>
+<tr><td>build / tear down the env</td><td>env panel + manager</td><td><code>initialize()</code> / <code>shutdown()</code> (suite scope) — never a node</td></tr>
+<tr><td>choose the episode</td><td>env panel</td><td>field cascade → <code>set_episode</code>, returns <code>episode_reset</code> intent</td></tr>
+<tr><td>revive the episode</td><td><code>reset</code> node</td><td>pre-loop, idempotent ensure-live</td></tr>
+<tr><td>advance the episode</td><td><code>step_*</code> node + loop</td><td>sim mutation; <code>terminated → iterOut.stop</code></td></tr>
+<tr><td>run / step signals</td><td>executor</td><td><code>run_start</code>/<code>run_end</code>/<code>step_start</code>/<code>step_end</code> broadcast at the band boundaries</td></tr>
+<tr><td>the verdict</td><td><code>evaluate</code> node</td><td>after-loop band, fed once by <code>final_*</code></td></tr>
+</tbody>
+</table>
+
+<h2 id="4-modes"><span class="num">4.</span> Two driving modes</h2>
+
+<p><strong>Interactive (canvas).</strong> The user opens the env panel; the field cascade initialises the manager and places an episode. Pressing Play returns a <code>side_effect</code> the frontend acts on (the panel only requests — <a href="env-panels.html#6-signal">Env Panels §6</a>); the executor then runs <code>run_start</code> → pre-loop <code>reset</code> (re-armed if the previous run finished the episode) → loop → after-loop <code>evaluate</code>. Re-running without touching the panel replays the same episode — placement is sticky, liveness is re-armed by <code>reset</code>.</p>
+
+<p><strong>Batch eval.</strong> The job is admitted by the JobScheduler and runs as a backend subprocess. Per episode the runner drives the <em>same</em> panel programmatically — <code>on_field_change("episode_index", i)</code> then <code>on_action("play")</code> — each env family keeping its own cascade shape. At <code>worker_count &gt; 1</code>, <code>env_panel_overrides</code> map panel names to per-worker proxies so each worker's nodes and panel resolve to the same env instance.</p>
+
+<div class="callout note"><p><strong>One asymmetry between the modes.</strong> The control plane is symmetric on <em>placement</em> — batch chooses episodes through the panel exactly as a user would — but not on the <code>episode_reset</code> <em>signal</em>. The panel's <code>signal</code> side-effect is only forwarded to <code>broadcast_signal</code> on the interactive canvas API path; in batch the runner reads the panel's return for episode metadata and <code>step_budget</code> but does not re-broadcast <code>episode_reset</code>. Batch gets per-episode isolation a different way: a <em>fresh</em> <code>LoopRunner</code> (and thus fresh containers) is built per episode, so <code>lifetime="episode"</code> state is clean by construction.</p></div>
+
+<h2 id="5-invariants"><span class="num">5.</span> Invariants (the contract)</h2>
+
+<ol>
+  <li><strong>Suite init/teardown is panel/manager-owned</strong> — never a graph node. Per-episode <code>close</code> is forbidden (SIMPLER: SAPIEN GC-ordering segfault; mirror upstream's no-close pattern).</li>
+  <li><strong>Placement is panel-owned</strong> — nodes never choose which episode runs; the batch runner chooses <em>through</em> the panel, not around it.</li>
+  <li><strong>Liveness is reset-owned</strong> — <code>reset</code> is an idempotent ensure-live in the pre-loop band. It revives, never chooses.</li>
+  <li><strong><code>observe_*</code> is a pure read</strong> — no lifecycle action, ever. A finished episode observed again returns the terminal frame.</li>
+  <li><strong><code>step_*</code> is the only in-episode state advance</strong>, and emits control signals only (<code>reward/terminated/truncated/info</code> — never an observation).</li>
+  <li><strong><code>evaluate</code> fires once, in the after-loop band</strong>, fed by the iterOut final side. Per-step telemetry rides <code>step.info</code> into viewers; the verdict never comes from an in-loop evaluate.</li>
+  <li><strong>Method-side state clears via signals only</strong> — <code>run_start</code> for <code>lifetime="run"</code>, <code>episode_reset</code> for <code>lifetime="episode"</code>. No node manually wipes containers at lifecycle boundaries.</li>
+  <li><strong>One control plane (for placement)</strong> — anything batch does to place an env, a user can do through the panel, and vice versa. New lifecycle abilities go into the panel or the engine's signals, not into ad-hoc node behaviour.</li>
+</ol>
+
+<h2 id="6-seams"><span class="num">6.</span> Known seams</h2>
+
+<p>Every lifecycle bug to date sat on a boundary <em>between</em> scopes, not inside one. The watch-list:</p>
+
+<table>
+<thead><tr><th>Seam</th><th>What happened / can happen</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>placement ↔ liveness</td><td>an early auto-reset inside habitat's <code>observe_*</code> left episode rollover homeless, later a metric-pollution hazard (a post-loop observe re-fire could roll into a new episode under <code>evaluate</code>)</td><td><strong>resolved 2026-06-11</strong> — rollover moved to <code>reset</code></td></tr>
+<tr><td>advance ↔ run accounting</td><td>a node returning <code>{"error": …}</code> instead of its declared port dict makes the engine silently complete the episode with <code>step_count=0</code> (routing checks <code>src_handle in result</code>) — cost 11/100 episodes in a smartway-ce run</td><td><strong>open</strong> (engine)</td></tr>
+<tr><td>loop ↔ after-loop band</td><td>a post-loop node fed by a loop-body node resolves that input to <code>None</code> on the final re-fire (collapsed explore-eqa SR 0.43→0) — which is exactly why the after-loop band purity rule now bars body→band edges</td><td>structural rule — <a href="../graph/loop-control-system.html#9-validator">Loop Control §9</a></td></tr>
+<tr><td>liveness, per-env</td><td>only habitat's <code>reset</code> implements the re-arm today; the other MDP envs (MP3D's is a pure metadata read) were never audited against the ensure-live wording — a dead-episode canvas re-run may hang on them</td><td><strong>open</strong> (audit pending)</td></tr>
+</tbody>
+</table>
+
+<h2 id="7-related"><span class="num">7.</span> Related pages</h2>
+<ul>
+  <li><a href="env-panels.html">Nodeset Env Panels</a> — the panel API: fields, actions, side-effects, server-mode bridge.</li>
+  <li><a href="../graph/state-containers.html#6-lifetimes">State Containers</a> — lifetimes and the signal bus.</li>
+  <li><a href="../graph/loop-control-system.html">Loop Control System</a> — two-sided iterIn/iterOut, stop port, final side.</li>
+  <li><a href="../graph/graph-executor.html">Graph Executor</a> — pre/in/after-loop banding, entry-node seeding, after-loop drain.</li>
+  <li><a href="../graph/batch-eval.html">Batch Eval System</a> — BatchEvalRunner, EnvWorkerPool, per-worker routing.</li>
+</ul>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+  <li>2026-06-17: §2 — <code>run_start</code>/<code>run_end</code> emitter corrected "LoopRunner / executor" → <strong>executor</strong> (both are emitted by <code>GraphExecutor.run()</code>, not LoopRunner; now consistent with the §3 ownership table). Code-faithfulness pass; the five signals, the <code>scope_id</code> payloads, and the batch-vs-interactive <code>episode_reset</code> asymmetry (eval builds a fresh per-episode LoopRunner, never re-broadcasts the signal) all re-verified accurate.</li>
+  <li>2026-06-13 14:08: <strong>Rewrite for code-accuracy and the inverted-pyramid structure.</strong> Added the concentric-scope figure. Corrected the central error: <strong>five signals, not three</strong> — added <code>run_end</code>, <code>step_start</code>, <code>step_end</code>, and removed <code>final_*</code> from the signal table (it's an iterOut edge handle, not a <code>broadcast_signal</code>, now a callout in §2). Added §3 ownership table and the <strong>batch-vs-interactive <code>episode_reset</code> asymmetry</strong> (batch isolates via a fresh per-episode LoopRunner, not a re-broadcast signal). Generalised the reset re-arm caveat (habitat-only; MP3D reset is a pure metadata read). Replaced the obsolete <code>final_fire</code> seam with the after-loop band purity rule that superseded it.</li>
+  <li>2026-06-11 18:05: Initial version — written after the observe auto-reset fix consolidated lifecycle ownership; collected rules previously scattered across the env template, env-panels, state-containers, and class docstrings.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-scopes">1. The five scopes</a>
+      <a class="toc-h2" href="#2-signals">2. The five signals</a>
+      <a class="toc-h2" href="#3-ownership">3. Who owns each transition</a>
+      <a class="toc-h2" href="#4-modes">4. Two driving modes</a>
+      <a class="toc-h2" href="#5-invariants">5. Invariants (the contract)</a>
+      <a class="toc-h2" href="#6-seams">6. Known seams</a>
+      <a class="toc-h2" href="#7-related">7. Related pages</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

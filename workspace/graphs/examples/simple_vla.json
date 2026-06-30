@@ -1,0 +1,243 @@
+{
+  "name": "Example: Simple VLA",
+  "description": "Demo-level VLA rollout: Octo-Small on SimplerEnv as a single predict node inside the standard observe -> predict -> step loop. Built-in loop skeleton (iterIn / iterOut / termination) + the simpler env nodeset's gym verbs + one policy node. Lean variant of vla/unverified/octo_simpler.json kept as a minimal teaching example.",
+  "step_budget": 80,
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_simpler__reset",
+      "label": "SIMPLER: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_simpler__observe_egocentric",
+      "label": "SIMPLER: Observe (seed)",
+      "position": {
+        "x": 0,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "predict",
+      "type": "policy_octo__predict",
+      "label": "Octo: Predict",
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "config": {
+        "checkpoint_path": "",
+        "model_type": "octo-small",
+        "policy_setup": "widowx_bridge",
+        "horizon": 2,
+        "pred_action_horizon": 4,
+        "exec_horizon": 1,
+        "image_size": 256,
+        "action_scale": 1.0,
+        "init_rng": 0
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_simpler__step_continuous",
+      "label": "SIMPLER: Step",
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "config": {
+        "max_chunk_steps": 1
+      }
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_simpler__observe_egocentric",
+      "label": "SIMPLER: Observe (loop)",
+      "position": {
+        "x": 1120,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 1400,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "agentview_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_simpler__evaluate",
+      "label": "SIMPLER: Evaluate",
+      "position": {
+        "x": 1400,
+        "y": 360
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__success",
+      "type": "graphOut",
+      "label": "success",
+      "position": {
+        "x": 1680,
+        "y": 320
+      },
+      "config": {
+        "portName": "success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 1680,
+        "y": 420
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "note_demo",
+      "type": "note",
+      "label": "Demo: built-in VLA loop",
+      "position": {
+        "x": 560,
+        "y": -280
+      },
+      "config": {
+        "markdown": "**Demo: a VLA rollout from built-in parts only**\n\nThe whole agent is the built-in loop skeleton (`iterIn` / `iterOut` / `termination`) around the simpler nodeset's gym verbs (reset / observe / step / evaluate) plus **one** policy node (`policy_octo__predict`). No glue code.\n\n- `policy_setup` must match the SIMPLER split chosen in the env panel (`widowx_bridge` vs `google_robot`).\n- Empty `checkpoint_path` falls back to `data/vla_policy/checkpoints/octo-small-1.5`, then `hf://rail-berkeley/octo-small`.\n\nFull-featured variant with operational notes: `vla/unverified/octo_simpler.json`."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_instruction_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_reset_to_seedobs",
+      "source": "env_reset",
+      "target": "seed_obs",
+      "sourceHandle": "episode_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_seedobs_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "iterout_agentview_image"
+    },
+    {
+      "id": "e_iterin_instruction_to_predict",
+      "source": "iter_in",
+      "target": "predict",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iterin_image_to_predict",
+      "source": "iter_in",
+      "target": "predict",
+      "sourceHandle": "iterout_agentview_image",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_predict_to_step",
+      "source": "predict",
+      "target": "env_step",
+      "sourceHandle": "action_chunk",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_info_to_loopobs",
+      "source": "env_step",
+      "target": "loop_obs",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_loopobs_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "agentview_image"
+    },
+    {
+      "id": "e_step_terminated_to_termination__stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_evaluate_success_to_graphout",
+      "source": "evaluate",
+      "target": "output_port__success",
+      "sourceHandle": "success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_evaluate_metrics_to_graphout",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ]
+}

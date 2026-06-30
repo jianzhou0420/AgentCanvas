@@ -1,0 +1,1392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph Executor — AgentCanvas</title>
+<meta name="description" content="How a canvas graph runs — diagrams first, one annotated source listing second">
+<meta property="og:title" content="Graph Executor — AgentCanvas">
+<meta property="og:description" content="How a canvas graph runs — diagrams first, one annotated source listing second">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/graph-executor.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="rx-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:740px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#rxa); }
+  .rxsvg .edgeA { stroke: var(--designdoc); stroke-width:1.7; fill:none; marker-end:url(#rxaA); }
+  .rxsvg .num { fill: var(--designdoc); stroke: var(--designdoc); }
+  .rxsvg .numt { fill: var(--bg); font-size:12px; font-weight:700; }
+  .part-banner { margin:2.4rem 0 1.2rem; padding:.85rem 1.1rem; border-radius:9px;
+    background: var(--designdoc-bg); border-left:5px solid var(--designdoc);
+    font-size:1.18rem; font-weight:700; color: var(--designdoc); }
+  .part-banner .sub { display:block; font-weight:400; font-size:.82rem;
+    color: var(--fg-dim); margin-top:.25rem; letter-spacing:.01em; }
+  .view-banner { margin:2.2rem 0 1rem; padding:.55rem .95rem; border-radius:7px;
+    background: var(--bg-alt); border-left:4px solid var(--designdoc);
+    font-size:1rem; font-weight:700; color: var(--fg); }
+  .view-banner .sub { display:block; font-weight:400; font-size:.8rem;
+    color: var(--muted); margin-top:.18rem; }
+  /* one big annotated source listing (Part II) */
+  .rxcode { font-size:.76rem; line-height:1.55; overflow-x:auto; }
+  .rxcode .h { display:block; background:var(--designdoc-bg); color:var(--designdoc);
+    font-weight:700; padding:3px 8px; margin:.8rem 0 .2rem; border-radius:4px; letter-spacing:.02em; }
+  [data-theme="dark"] .rxcode .h { background:#1f3a52; color:#cfe2f5; }
+  .rxcode .h .hr { font-weight:400; opacity:.78; font-size:.72rem; }
+  .rxcode .h a { color:inherit; text-decoration:underline; }
+  .codelegend { font-size:.82rem; color: var(--fg-dim); margin:.4rem 0 .8rem; }
+  .sw { font-family:"SF Mono",Menlo,monospace; font-weight:600; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/graph-executor.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Graph Executor</span>
+  </div>
+  <div class="last-updated">2026-06-16 12:00</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Graph Executor</h1>
+  <p class="tagline">How a canvas graph runs — diagrams first, one annotated source listing second</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="rxa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="rxaA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--designdoc)"/></marker>
+</defs></svg>
+
+<p class="lede">This page is in two parts. <strong>Part I</strong> teaches the concepts with diagrams. <strong>Part II</strong> prints the engine as <em>one continuous annotated listing</em> — colored region bands segment <code>run()</code> so you can see at a glance which block does what — keyed to <code>agentcanvas/backend/app/agent_loop/graph_executor.py</code>.</p>
+
+<hr>
+
+<div class="part-banner">Part I · Concepts — for people
+  <span class="sub">Two viewpoints on one example: first the <strong>graph</strong> you draw (§1), then the <strong>engine</strong> that runs it (§2–§5).</span></div>
+
+<div class="view-banner">View 1 · The graph — what you draw
+  <span class="sub">The contract a drawn graph makes: when nodes fire, and which loop structures the engine recognises. In §1's figures, every box is a node of one concrete graph.</span></div>
+
+<h2 id="1-the-core-idea"><span class="num">1.</span> The drawn graph and its contract</h2>
+
+<p>A canvas graph is nodes joined by typed wires. Its execution semantics rest on exactly two things: a <strong>firing rule</strong> that decides when any node runs (§1.1), and one recognised structure — the <strong>loop pivot pair</strong> — that expresses iteration, halting, and the episode verdict (§1.2). Everything else on the canvas is ordinary dataflow. This section states the contract; §2–§5 describe the algorithm that honours it.</p>
+
+<h3 id="11-firing-rule"><span class="num">1.1</span> The firing rule</h3>
+
+<div class="callout note">
+  <strong>The firing rule.</strong> A node fires when every <em>required</em> input port holds a value. The fire consumes those inputs and produces an output dict; the engine writes each output onto its outgoing wires, filling downstream ports — which may make further nodes ready. Fire → propagate → repeat, until nothing is ready.
+</div>
+
+<svg class="rxsvg" viewBox="0 0 700 150" role="img" aria-label="The firing rule, before and after: with one required input empty the node waits; once all required inputs hold values it fires, its outputs fan out along the wires in one pass, and downstream nodes become ready.">
+  <!-- before: one required port empty -->
+  <circle cx="30" cy="40" r="7" class="accent"/><text x="44" y="44" class="mono">rgb ✓</text>
+  <circle cx="30" cy="80" r="7" class="box"/><text x="44" y="84" class="mono">state —</text>
+  <path class="edge" d="M108,40 H140"/><path class="edge" d="M108,80 H140"/>
+  <rect x="140" y="38" width="96" height="44" rx="7" class="box"/><text x="188" y="64" text-anchor="middle">predict</text>
+  <text x="130" y="130" text-anchor="middle" class="dim">waits — a required input is empty</text>
+
+  <path class="edgeA" d="M252,60 H304"/>
+  <text x="278" y="48" text-anchor="middle" class="dim at">state arrives</text>
+
+  <!-- after: all required present → fire + fan-out -->
+  <circle cx="320" cy="40" r="7" class="accent"/><text x="334" y="44" class="mono">rgb ✓</text>
+  <circle cx="320" cy="80" r="7" class="accent"/><text x="334" y="84" class="mono">state ✓</text>
+  <path class="edge" d="M398,40 H430"/><path class="edge" d="M398,80 H430"/>
+  <rect x="430" y="38" width="96" height="44" rx="7" class="accent"/><text x="478" y="64" text-anchor="middle" class="at">predict</text>
+  <path class="edge" d="M526,52 C556,52 556,36 586,36"/>
+  <path class="edge" d="M526,68 C556,68 556,82 586,82"/>
+  <rect x="586" y="20" width="104" height="32" rx="6" class="box"/><text x="638" y="40" text-anchor="middle" class="mono">env_step</text>
+  <rect x="586" y="66" width="104" height="32" rx="6" class="box"/><text x="638" y="86" text-anchor="middle" class="mono">viewer</text>
+  <text x="505" y="130" text-anchor="middle" class="dim">fires — outputs fan out in one pass, consumers become ready</text>
+</svg>
+
+<p>Three consequences follow, and they shape everything below:</p>
+<ul>
+  <li><strong>Order is derived, not authored.</strong> There is no step list; whichever node is ready runs. A branch that never receives data never runs, so conditional paths need no special construct.</li>
+  <li><strong>Inputs are consumed.</strong> A fire empties the ports it read; the node fires again only when fresh values arrive. One delivery is one firing opportunity, not a standing subscription.</li>
+  <li><strong>No drawn cycles.</strong> The graph is acyclic as drawn — a wired cycle would give the data no valid order. Iteration is expressed instead by the pivot structure of §1.2 (<a href="../../core/decisions/executor/adr-executor-001-graph-executor.html">ADR-executor-001</a>).</li>
+</ul>
+
+<h3 id="12-anatomy"><span class="num">1.2</span> Anatomy of an agent loop</h3>
+
+<p>Plain dataflow ends when data stops flowing — enough for a pipeline, not for an agent that must observe, act, and observe again. Iteration is expressed by the one structure the engine recognises: a paired <strong>IterIn / IterOut</strong>, the <em>loop pivots</em>. The smallest agent loop:</p>
+
+<svg class="rxsvg" viewBox="0 0 700 260" role="img" aria-label="Agent loop: an entry node feeds init edges into IterIn; the body predict and env_step runs between the pivots; IterOut hands the loop-carry back to IterIn by pairing; done wires into the IterOut stop input; the final side feeds evaluate and graphOut once at termination. Legend: gray edges are wires you draw, blue is engine-timed.">
+  <path class="edgeA" d="M610,66 C610,14 196,14 196,64"/>
+  <text x="403" y="12" text-anchor="middle" class="dim at">loop-carry — handed back by pairing, not a drawn wire</text>
+  <rect x="6"   y="66" width="108" height="40" rx="7" class="box"/><text x="60"  y="91" text-anchor="middle">entry node</text><text x="60" y="124" text-anchor="middle" class="dim">init_* · run-invariants</text>
+  <rect x="142" y="66" width="108" height="40" rx="7" class="accent"/><text x="196" y="91" text-anchor="middle" class="at">IterIn</text><text x="196" y="124" text-anchor="middle" class="dim">opens each iteration</text>
+  <rect x="278" y="66" width="108" height="40" rx="7" class="box"/><text x="332" y="91" text-anchor="middle">predict</text>
+  <rect x="414" y="66" width="108" height="40" rx="7" class="box"/><text x="468" y="91" text-anchor="middle">env_step</text>
+  <rect x="556" y="66" width="108" height="40" rx="7" class="accent"/><text x="610" y="91" text-anchor="middle" class="at">IterOut</text><text x="610" y="124" text-anchor="middle" class="dim">closes each iteration</text>
+  <path class="edge" d="M114,86 H142"/><path class="edge" d="M250,86 H278"/><path class="edge" d="M386,86 H414"/><path class="edge" d="M522,86 H556"/>
+  <path class="edge" d="M468,106 C468,140 590,130 602,110"/><text x="510" y="140" class="dim">done → stop</text>
+  <path class="edgeA" d="M610,106 C610,150 560,150 560,168"/><text x="640" y="150" class="dim at">final_* · once</text>
+  <rect x="500" y="168" width="120" height="34" rx="7" class="box"/><text x="560" y="189" text-anchor="middle" class="mono">evaluate</text>
+  <path class="edge" d="M560,202 V218"/>
+  <rect x="500" y="218" width="120" height="34" rx="7" class="box"/><text x="560" y="239" text-anchor="middle" class="mono">graphOut</text>
+  <path class="edge" style="marker-end:none" d="M20,236 H56"/><text x="62" y="240" class="dim">wire you draw</text>
+  <path class="edgeA" style="marker-end:none" d="M160,236 H196"/><text x="202" y="240" class="dim">engine-timed</text>
+</svg>
+
+<p>Reading the figure in run order:</p>
+<ol>
+  <li><strong>Run start.</strong> The entry node fires once — it needs no inputs — and its <code>init_*</code> edges hand the run-invariants (instruction, episode config) to the IterIn's init side.</li>
+  <li><strong>Each iteration.</strong> The IterIn emits the loop-carry bundle; the body — here <code>predict</code> and <code>env_step</code>, ordinary nodes with no special treatment — computes; the IterOut collects the next carry. The engine hands the carry back to the IterIn by <em>pairing</em>: the top edge is not a wire you draw, and the drawn graph stays acyclic.</li>
+  <li><strong>Halting.</strong> Any BOOL wired into the IterOut's <code>stop</code> input — here the env's <code>done</code> — ends the loop after the current iteration. Left unwired, the loop runs to its step budget.</li>
+  <li><strong>Termination.</strong> The IterOut's <code>final_*</code> handles mirror its carry ports (plus a constant <code>final_stop</code>). They are real wires, but deliver exactly once — the terminal iteration's values.</li>
+  <li><strong>Verdict.</strong> Everything downstream of <code>final_*</code> — here <code>evaluate</code> and <code>graphOut</code> — is the <em>after-loop band</em>: it runs once, after the loop, and may not take inputs from the loop body.</li>
+</ol>
+
+<p>The drawing therefore has three places, and a run three times — the map that View 2 walks in order:</p>
+
+<table>
+  <thead><tr><th>Place in the drawing</th><th>When it runs</th><th>Engine view</th></tr></thead>
+  <tbody>
+    <tr><td><code>init_*</code> edges into the IterIn</td><td>once, at run start</td><td>pre-loop — §3</td></tr>
+    <tr><td>the body between the pivots</td><td>every iteration</td><td>in-loop — §4</td></tr>
+    <tr><td>downstream of <code>final_*</code> — the after-loop band</td><td>once, at termination</td><td>after-loop — §5</td></tr>
+  </tbody>
+</table>
+
+<div class="view-banner">View 2 · The engine — how <code>run()</code> executes it
+  <span class="sub">§2–§5: where the engine sits, then the run's three phases — pre-loop · in-loop · after-loop. From here on, boxes in figures are engine actions and decisions; no node of a concrete graph appears.</span></div>
+
+<h2 id="2-where-it-sits"><span class="num">2.</span> Where the engine sits</h2>
+
+<p>One class owns everything this page describes — <code>GraphExecutor</code>, entered through a single method, <code>run(graph, session, …)</code>. The layers above it (HTTP endpoint, <code>LoopRunner</code>) own lifecycle — pause, stop, resume — and never look inside the graph; the layer below (the node handlers) computes and never schedules. The executor is the only place that decides <em>what fires when</em>.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 250" role="img" aria-label="Layer stack: run endpoint, LoopRunner, GraphExecutor, NODE_HANDLERS">
+  <rect x="200" y="8"   width="300" height="40" rx="7" class="box"/><text x="350" y="33" text-anchor="middle" class="mono">POST /api/navigate/run</text>
+  <text x="690" y="33" text-anchor="end" class="dim">api/execution/run.py</text>
+  <path class="edge" d="M350,48 V64"/>
+  <rect x="200" y="64"  width="300" height="46" rx="7" class="box"/><text x="350" y="84" text-anchor="middle">LoopRunner</text><text x="350" y="100" text-anchor="middle" class="dim">pause/stop/resume · policy load · execution_id</text>
+  <path class="edge" d="M350,110 V126"/>
+  <rect x="200" y="126" width="300" height="46" rx="7" class="accent"/><text x="350" y="146" text-anchor="middle" class="at">GraphExecutor</text><text x="350" y="162" text-anchor="middle" class="dim">this page — firing · iteration · scopes · state</text>
+  <text x="690" y="152" text-anchor="end" class="dim">graph_executor.py</text>
+  <path class="edge" d="M350,172 V188"/>
+  <rect x="200" y="188" width="300" height="46" rx="7" class="box"/><text x="350" y="208" text-anchor="middle">NODE_HANDLERS</text><text x="350" y="224" text-anchor="middle" class="dim">per-type BaseCanvasNode.forward()</text>
+  <text x="690" y="214" text-anchor="end" class="dim">builtin_nodes.py</text>
+</svg>
+
+<p>A fresh executor is built per run, so no state leaks between episodes. For parallel batch eval it exposes two per-worker overrides — <code>get_env_panel(name)</code> and <code>get_server_url(nodeset)</code> — so each eval worker talks to its own env subprocess (ADR-eval-002); outside batch eval they pass through.</p>
+
+<p class="lede">Inside <code>run()</code>, every run has the same three-phase shape — the outline of the rest of View 2, and the engine-side mirror of §1.2's three places: <strong>pre-loop</strong> builds live state and primes the queue (§3) · <strong>in-loop</strong> fires until a halt (§4) · <strong>after-loop</strong> delivers the verdict and finalises (§5).</p>
+
+<svg class="rxsvg" viewBox="0 0 700 130" role="img" aria-label="The three phases of a run: pre-loop (build and entry discovery, section 3); in-loop (fire nodes until a halt, section 4, which iterates); after-loop (verdict stage and finalise, section 5).">
+  <path class="edgeA" d="M450,50 C450,18 262,18 262,50"/>
+  <text x="356" y="14" text-anchor="middle" class="dim at">iterate</text>
+  <rect class="accent" x="14" y="50" width="208" height="62" rx="9"/>
+  <text x="118" y="74" text-anchor="middle" class="at">Pre-loop · §3</text>
+  <text x="118" y="92" text-anchor="middle" class="dim">build &amp; discover</text>
+  <text x="118" y="106" text-anchor="middle" class="mono">BUILD · ENTRIES → queue</text>
+  <path class="edgeA" d="M222,81 H252"/>
+  <rect class="accent" x="252" y="50" width="208" height="62" rx="9"/>
+  <text x="356" y="74" text-anchor="middle" class="at">In-loop · §4</text>
+  <text x="356" y="92" text-anchor="middle" class="dim">fire until a halt</text>
+  <text x="356" y="106" text-anchor="middle" class="mono">guards · IterOut 4-phase</text>
+  <path class="edgeA" d="M460,81 H490"/>
+  <rect class="accent" x="490" y="50" width="200" height="62" rx="9"/>
+  <text x="590" y="74" text-anchor="middle" class="at">After-loop · §5</text>
+  <text x="590" y="92" text-anchor="middle" class="dim">verdict &amp; finalise</text>
+  <text x="590" y="106" text-anchor="middle" class="mono">final_* drain · run_end</text>
+</svg>
+
+<h2 id="3-pre-loop"><span class="num">3.</span> Pre-loop — build &amp; discover entries</h2>
+
+<p>Before a single node fires, <code>run()</code> does a deterministic, once-per-run setup in two movements. <strong>BUILD</strong> turns the static graph JSON into live, mutable runtime state; <strong>ENTRY DISCOVERY</strong> finds the <em>entry nodes</em> — the nodes that can fire with no inputs — and primes the queue with them. Nothing here loops — it is pure preparation, identical on every run.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 196" role="img" aria-label="Pre-loop: BUILD compiles the static graph JSON into live mutable state, then ENTRY DISCOVERY primes the ready-queue with no-input entry nodes, which feeds the in-loop">
+  <rect class="box" x="6" y="76" width="116" height="44" rx="8"/><text x="64" y="96" text-anchor="middle" class="mono">graph JSON</text><text x="64" y="112" text-anchor="middle" class="dim">static def</text>
+  <path class="edgeA" d="M122,98 H162"/>
+  <rect class="accent" x="162" y="34" width="246" height="128" rx="9"/>
+  <text x="285" y="56" text-anchor="middle" class="at">BUILD</text>
+  <text x="285" y="78" text-anchor="middle" class="mono">① hooks · ② flatten · ③ containers</text>
+  <text x="285" y="96" text-anchor="middle" class="mono">④ step_budget · ⑤ instances</text>
+  <text x="285" y="114" text-anchor="middle" class="mono">⑥ scopes · ⑦ adjacency</text>
+  <text x="285" y="142" text-anchor="middle" class="dim">static def → live, mutable state</text>
+  <path class="edgeA" d="M408,98 H448"/>
+  <rect class="accent" x="448" y="60" width="160" height="76" rx="9"/>
+  <text x="528" y="84" text-anchor="middle" class="at">ENTRIES</text>
+  <text x="528" y="104" text-anchor="middle" class="mono">queue no-input nodes</text>
+  <text x="528" y="122" text-anchor="middle" class="dim">never IterIn</text>
+  <path class="edge" d="M608,98 H660"/>
+  <rect class="box" x="660" y="78" width="34" height="40" rx="7"/><text x="677" y="102" text-anchor="middle" class="mono">§4</text>
+</svg>
+
+<h3 id="31-build"><span class="num">3.1</span> BUILD — compile the graph into live state</h3>
+
+<p>Seven steps, strictly in order — plain top-to-bottom code, no concurrency. Each step turns one part of the authored <code>GraphDefinition</code> into something the loop can read or mutate. (Run-start args need no build step of their own: they arrive over ordinary canvas edges into the iterIn's <code>init_*</code> handles — ADR-dataflow-008.)</p>
+
+<table>
+  <thead><tr><th>#</th><th>Step</th><th>What it does</th><th>Why this order</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Merge hooks</td><td>merge the shell-hook lists from all three levels — global, graph, per-node — into one runner</td><td>hook precedence must be settled before anything can fire</td></tr>
+    <tr><td>2</td><td><strong>Flatten</strong></td><td>expand every composite node's inner subgraph in place, leaving one flat node list (ADR-dataflow-001)</td><td><strong>early</strong>, so every later step sees the flat graph — no hidden subgraphs</td></tr>
+    <tr><td>3</td><td>State containers</td><td>create the shared state containers and record which node is allowed to read/write which container (the access grants)</td><td>shared state must exist before any node touches it</td></tr>
+    <tr><td>4</td><td>Resolve <code>step_budget</code></td><td>fix the per-episode iteration cap to one number (see chain below)</td><td>the loop's halt check needs a fixed cap</td></tr>
+    <tr><td>5</td><td>Node instances</td><td>create one live <code>NodeInstance</code> per authored node — its own input buffer (<code>pending_inputs</code>) and persistent <code>state</code></td><td>this is where the static definition becomes mutable per-run state</td></tr>
+    <tr><td>6</td><td>Scope state</td><td>find every (iterIn, iterOut) loop and how loops nest; give each loop its own step counter and budget. Nodes outside any loop land in the implicit <em>graph scope</em></td><td>nested loops count steps independently; a root-loop stop halts the run, an inner one only ends its own loop</td></tr>
+    <tr><td>7</td><td>Adjacency</td><td>index every node's outgoing edges by source id</td><td>routing a fired node's outputs becomes a single lookup in the loop</td></tr>
+  </tbody>
+</table>
+
+<div class="callout note" id="step-budget-resolution-chain">
+  <strong>Step-budget resolution chain (step 4).</strong> The budget is fixed once, in strict precedence: <code>step_budget_override</code> (passed in by the eval-batch runner — e.g. HM-EQA's scene-adaptive <code>int(√scene · 3)</code>) → the graph's authored <code>step_budget</code> → the framework default. The override is passed in as an argument, never written back onto the shared graph object, so parallel eval workers can each carry a different per-episode budget. (This is the anchor <code>batch-eval</code> links to for the resolver chain.)
+</div>
+
+<h3 id="32-seed"><span class="num">3.2</span> ENTRY DISCOVERY — find the entry nodes, prime the ready-queue</h3>
+
+<p>An <strong>entry node</strong> is discovered automatically — no author marking — as any node satisfying all three structural conditions; every entry node is queued at run-start:</p>
+
+<ul>
+  <li><strong>not an <code>iterIn</code></strong> — IterIn is the loop's entry; it fires only when its <code>init_*</code> edges deliver (iter 0) or via the IterOut transfer (iter 1+), <em>never</em> via entry discovery;</li>
+  <li><strong>no incoming edges</strong> — nothing upstream will ever fill it;</li>
+  <li><strong>no required input ports</strong> — it can fire on nothing.</li>
+</ul>
+
+<p><code>validate_graph_connectivity</code> (in <code>graph_def.py</code>) rejects required-but-unwired ports at load time, so the third condition only ever excludes well-formed leaf consumers — it never silently drops a real entry node. With the queue primed, three things arm the loop:</p>
+
+<ul>
+  <li><code>run_start</code> signal — state containers with <code>lifetime="run"</code> reset to a clean baseline;</li>
+  <li>the <code>GraphStart</code> hook fires;</li>
+  <li><code>max_firings = step_budget × nodes × 3</code> is computed — a runaway-loop backstop set far above any real run.</li>
+</ul>
+
+<div class="callout warn">
+  <strong>Sharp edge.</strong> IterIn is <em>never</em> an entry node (excluded by type). A loop is entered only via the <strong>init-side edges</strong> (upstream producers wired into the IterIn's <code>init_*</code> handles) or via an entry node that fills IterIn's <code>iterout_*</code> slots on iteration 0. A loop whose IterIn has no incoming init edge will never start — the body simply starves.
+</div>
+
+<h2 id="4-in-loop"><span class="num">4.</span> In-loop — the firing loop</h2>
+
+<p>With the queue primed, the engine starts turning. This chapter walks one turn from the inside out — the loop skeleton (§4.1), the guards before each fire (§4.2), the IterOut boundary that closes every iteration (§4.3), the propagation path every other node takes (§4.4) — then reassembles the pieces into the whole-run flowchart (§4.5) and a concrete trace (§4.6).</p>
+
+<h3 id="41-one-iteration"><span class="num">4.1</span> One iteration &amp; the loop skeleton</h3>
+
+<p>Keep <a href="#12-anatomy">§1.2</a>'s graph in mind — entry node, two pivots, a two-node body; this chapter is what the engine does with it. The main loop is deliberately tiny. Each turn:</p>
+
+<ol>
+  <li><strong>Gate.</strong> Run while the queue holds a node and total firings stay under the runaway cap (<code>while ready_queue and total_firings &lt; max_firings</code>); honour pause; a user Stop breaks out.</li>
+  <li><strong>Pop.</strong> Take the front of the FIFO ready-queue.</li>
+  <li><strong>Guard, then fire.</strong> Two structural guards (§4.2), then <code>_fire_node</code> — the per-node fire path (<code>graph_executor.py</code>).</li>
+  <li><strong>Fork.</strong> An <strong>IterOut</strong> runs the once-per-iteration boundary (§4.3); every other node takes the ordinary propagation path (§4.4).</li>
+</ol>
+
+<p>Nothing else is special: an agent's body is plain dataflow firing, and IterOut is the only node type the engine schedules differently.</p>
+
+<h3 id="42-the-gauntlet"><span class="num">4.2</span> The guards before a fire</h3>
+
+<p>A popped node is not fired blindly — two cheap structural guards run first, in order; each either skips the node or readies state for the fire:</p>
+
+<ol>
+  <li><strong>Scope barrier.</strong> A node belonging to an inner scope that has already <em>terminated</em> is frozen (<code>pending_inputs</code> cleared, fire skipped) until that scope re-enters — otherwise in-flight inner-body nodes fire one extra time after termination and leak per-iteration values through cross-scope wires. Exempt: <code>iterIn</code> / <code>graphIn</code>, the cascade that reopens the scope.</li>
+  <li><strong>IterIn step_start.</strong> An <code>iterIn</code> broadcasts <code>step_start</code> (per scope) so <code>lifetime="step"</code> state resets to a clean slate for the iteration about to run; a re-fired iterIn whose inner scope was terminated resets that scope's <code>terminated</code> flag + counter — the multi-scope re-entry path.</li>
+</ol>
+
+<p>Then the node fires. A <code>StopExecution</code> raised by the fire halts the run immediately; any other exception is published to the ErrorBus and the node's result becomes <code>{"error": …}</code> so downstream nodes can still react (in <code>AGENTCANVAS_STRICT_ERRORS</code> mode it re-raises and fails fast instead).</p>
+
+<p>(Until 2026-06-11 there were four guards. The termination-defer and post-loop-skip guards were deleted with the termination node and <code>config.post_loop</code> — the stop signal and the after-loop stage now live on the iterOut pivot itself, so there is nothing left to defer or skip.)</p>
+
+<h3 id="43-iterout-boundary"><span class="num">4.3</span> The IterOut boundary — four phases</h3>
+
+<p>IterOut fires exactly once per iteration, so the engine hangs every per-iteration chore on it. The order of the four phases is load-bearing — in particular <strong>Settle runs before Decide</strong>:</p>
+
+<svg class="rxsvg" viewBox="0 0 680 318" role="img" aria-label="The IterOut boundary in four phases: Record, Settle, Decide, Hand off — Settle runs before Decide">
+  <rect x="160" y="8" width="180" height="32" rx="7" class="box"/><text x="250" y="29" text-anchor="middle" class="mono">IterOut — once per iteration</text>
+  <path class="edge" d="M250,40 V58"/>
+  <rect x="70" y="58" width="360" height="46" rx="8" class="box"/>
+  <text x="90" y="80" style="font-weight:700">①  Record</text><text x="90" y="98" class="mono">step++ · checkpoint · log · broadcast nav_step</text>
+  <path class="edge" d="M250,104 V120"/>
+  <rect x="70" y="120" width="360" height="46" rx="8" class="accent"/>
+  <text x="90" y="142" class="at">②  Settle</text><text x="90" y="160" class="mono">fire this iteration's leftover sinks (e.g. evaluate)</text>
+  <path class="edge" d="M250,166 V182"/>
+  <rect x="70" y="182" width="360" height="46" rx="8" class="accent"/>
+  <text x="90" y="204" class="at">③  Decide</text><text x="90" y="222" class="mono">stop? budget hit? → emit final_* + halt, else loop</text>
+  <path class="edge" d="M250,228 V244"/>
+  <rect x="70" y="244" width="360" height="46" rx="8" class="box"/>
+  <text x="90" y="266" style="font-weight:700">④  Hand off</text><text x="90" y="284" class="mono">transfer state → IterIn, next iteration</text>
+  <path class="edgeA" style="marker-end:none" d="M444,124 H456 V224 H444"/>
+  <text x="466" y="166" class="at">settle before decide</text>
+  <text x="466" y="183" class="dim">terminal-step sinks fire</text>
+  <text x="466" y="198" class="dim">before the loop can halt</text>
+</svg>
+
+<p>What each phase does, and the subtle rule inside it:</p>
+<ul>
+  <li><strong>① Record.</strong> Advance the per-scope step counter (the root scope's counter also mirrors into <code>self.step_counter</code> + <code>session._current_step</code>); broadcast <code>step_end</code>; checkpoint all state containers (root scope only); flush the execution log; broadcast the consolidated <code>nav_step</code> (root only). IterOut's own outgoing edges are <em>not</em> routed per iteration — they are final-side handles, emitted once at termination (③).</li>
+  <li><strong>② Settle.</strong> Drain this iteration's leftover sinks (bounded at 64, restricted to the iterOut's own scope, skipping only <code>iterIn</code>). This is where in-loop viewer / telemetry sinks scheduled in this iteration's wave still emit — including on the terminal step.</li>
+  <li><strong>③ Decide.</strong> Read the just-fired iterOut's own <code>stop</code> input: truthy means this scope is done. A root-scope stop halts the run; an inner one ends only that loop. Then the per-scope <code>step_budget</code> exhaust check. Either way, termination triggers the <strong>final-side emission</strong>: the terminal iteration's collected values go out once on the <code>final_*</code> handles (root → seeds the after-loop stage, §5; inner → feeds outer-body consumers and the graphOut latch flush). The stop signal sits on the scope's own iterOut, so it is structurally bound to the right loop and read exactly once per iteration.</li>
+  <li><strong>④ Hand off.</strong> Sleep <code>step_delay_ms</code> (root only), then write each IterOut output <code>X</code> into the paired IterIn's <code>iterout_X</code> slot and re-enqueue the IterIn — arming the next iteration. (<code>stop</code> is not loop-carried, and the final-side handles never fire here — only at termination.)</li>
+</ul>
+
+<div class="callout warn">
+  <strong>What the final side bought.</strong> Before 2026-06-11 the episode verdict came from an in-loop <code>evaluate</code> whose terminal-step fire depended on the settle drain catching it — the SIMPLER / smartway metric-drop bug class (roadmap #64: 5/20 successes recorded as 0). Now the verdict consumes <code>final_*</code> values handed over by the engine at termination, so it is correct by construction; in-loop sinks are telemetry only.
+</div>
+
+<h3 id="44-propagation"><span class="num">4.4</span> Ordinary nodes &amp; propagation</h3>
+
+<p>Every non-IterOut fire ends the same way, in four moves:</p>
+<ol>
+  <li><strong>Consume.</strong> The node's <code>pending_inputs</code> are cleared — inputs are used up by the fire.</li>
+  <li><strong>Special cases.</strong> An <code>iterIn</code> additionally drops its <code>persist=false</code> slots, so one-shot values emit once and are gone. An inner-scope <code>graphOut</code> buffers its value into a latch (<code>state["latched_value"]</code>) instead of propagating outward — the latch is flushed to outer-scope consumers only when its scope terminates.</li>
+  <li><strong>Route.</strong> For every other node the engine walks its outgoing edges and writes each output onto the target's input port (<code>_route_value_to_port</code>). This is also where <code>LIST[T]</code> coercion happens (ADR-027): a scalar producer feeding a list consumer is auto-wrapped, and fan-in is concatenated in edge order.</li>
+  <li><strong>Enqueue.</strong> Any target whose required inputs are now all present joins the ready-queue.</li>
+</ol>
+<p>(Run-start args need no special branch: the iterIn's <code>init_*</code> handles are fed by ordinary canvas edges — ADR-dataflow-008 two-sided iterIn.)</p>
+
+<h3 id="45-the-whole-run"><span class="num">4.5</span> The whole run, end to end</h3>
+
+<p>Zoom out from one iteration to the whole of <code>run()</code>. The flowchart below stitches §3 and §4 into one picture, with the <strong>ready-queue at its centre</strong> — ENTRY DISCOVERY primes it, every turn pops it, and both return paths feed it again. Read it top-down:</p>
+
+<ol>
+  <li><strong>Set up once.</strong> BUILD compiles the graph JSON into live state (§3.1); ENTRY DISCOVERY finds the no-input entry nodes and primes the ready-queue (§3.2).</li>
+  <li><strong>Turn the loop.</strong> While the queue has a ready node — and neither the global firing cap nor a user Stop has hit — pop the front one and fire it: guards first (§4.2), then <code>_fire_node</code>.</li>
+  <li><strong>Fork on what fired.</strong> An <em>ordinary</em> node takes the fast path: route its outputs, enqueue whatever became ready (§4.4), turn again — this is almost every fire. An <strong>IterOut</strong> instead runs the once-per-iteration boundary (§4.3): Record, Settle, Decide, Hand off. Unless Decide halts, Hand off arms the paired IterIn and the loop turns again — that is one full iteration.</li>
+  <li><strong>Exit.</strong> Two doors out. <em>Decide halts</em> — the stop signal or the step budget — and the terminal iteration's values leave exactly once on the <code>final_*</code> handles. Or <em>the main loop runs dry</em> — queue drained, firing cap, user Stop — and the fallback reconstructs the final-side values best-effort. Every door lands in the same after-loop + finalise stage (§5); §7 tables every exit, including the <code>StopExecution</code> escape hatch.</li>
+</ol>
+
+<svg class="rxsvg" viewBox="0 0 700 595" role="img" aria-label="run() control flow with the ready-queue at the centre. BUILD compiles the graph; ENTRY DISCOVERY primes the FIFO ready-queue. While the queue has a node, pop the front and fire it. An ordinary node routes its outputs and enqueues newly-ready nodes back into the queue. An IterOut runs the four-phase boundary: Record, Settle, Decide, Hand off — Hand off re-enqueues the paired IterIn. Decide halts on the stop signal or the step budget, emitting final_* once. An empty queue, the firing cap, or a user Stop also exits. All exits converge in the after-loop and finalise stage.">
+  <!-- set-up spine (§3) -->
+  <rect class="box" x="165" y="10" width="210" height="44" rx="8"/>
+  <text x="270" y="29" text-anchor="middle" style="font-weight:700">BUILD — §3.1</text>
+  <text x="270" y="46" text-anchor="middle" class="dim">graph JSON → live state</text>
+
+  <rect class="box" x="165" y="74" width="210" height="44" rx="8"/>
+  <text x="270" y="93" text-anchor="middle" style="font-weight:700">ENTRY DISCOVERY — §3.2</text>
+  <text x="270" y="110" text-anchor="middle" class="dim">finds the no-input entry nodes</text>
+
+  <!-- the hub: ready-queue -->
+  <rect class="accent" x="165" y="142" width="210" height="56" rx="8"/>
+  <text x="270" y="161" text-anchor="middle" class="at">ready-queue · FIFO</text>
+  <rect class="box" x="190" y="170" width="44" height="18" rx="3"/>
+  <rect class="box" x="242" y="170" width="44" height="18" rx="3"/>
+  <rect class="box" x="294" y="170" width="44" height="18" rx="3"/>
+  <text x="352" y="184" class="dim">…</text>
+
+  <!-- one turn of the loop -->
+  <rect class="accent" x="165" y="226" width="210" height="44" rx="8"/>
+  <text x="270" y="245" text-anchor="middle" class="at">pop &amp; fire one node</text>
+  <text x="270" y="262" text-anchor="middle" class="dim">guards §4.2 → _fire_node</text>
+
+  <polygon class="box" points="270,290 352,322 270,354 188,322"/>
+  <text x="270" y="326" text-anchor="middle">fired an IterOut?</text>
+
+  <!-- ordinary-node fast path -->
+  <rect class="box" x="20" y="300" width="132" height="44" rx="8"/>
+  <text x="86" y="319" text-anchor="middle">route outputs</text>
+  <text x="86" y="336" text-anchor="middle" class="dim">enqueue ready — §4.4</text>
+
+  <!-- IterOut boundary group (§4.3) -->
+  <rect class="box" x="130" y="384" width="280" height="186" rx="10" style="fill:none;stroke-dasharray:5 4;"/>
+  <text x="146" y="403" class="dim at">IterOut boundary — §4.3</text>
+
+  <rect class="box" x="150" y="412" width="240" height="30" rx="6"/>
+  <text x="162" y="432" style="font-weight:700">① Record</text>
+  <text x="378" y="432" text-anchor="end" class="dim">step++ · checkpoint</text>
+  <path class="edge" d="M270,442 V450"/>
+
+  <rect class="box" x="150" y="450" width="240" height="30" rx="6"/>
+  <text x="162" y="470" style="font-weight:700">② Settle</text>
+  <text x="378" y="470" text-anchor="end" class="dim">leftover sinks</text>
+  <path class="edge" d="M270,480 V488"/>
+
+  <rect class="accent" x="150" y="488" width="240" height="30" rx="6"/>
+  <text x="162" y="508" class="at">③ Decide</text>
+  <text x="378" y="508" text-anchor="end" class="dim">stop? budget?</text>
+  <path class="edge" d="M270,518 V526"/>
+
+  <rect class="box" x="150" y="526" width="240" height="30" rx="6"/>
+  <text x="162" y="546" style="font-weight:700">④ Hand off</text>
+  <text x="378" y="546" text-anchor="end" class="dim">carry → IterIn</text>
+
+  <!-- exit target (§5) -->
+  <rect class="box" x="470" y="302" width="210" height="62" rx="9"/>
+  <text x="575" y="328" text-anchor="middle" class="at">AFTER-LOOP + FINALISE</text>
+  <text x="575" y="347" text-anchor="middle" class="dim">final_* → verdict · run_end — §5</text>
+
+  <!-- straight-through edges -->
+  <path class="edge" d="M270,54 V74"/>
+  <path class="edge" d="M270,118 V142"/><text x="280" y="136" class="dim">prime</text>
+  <path class="edge" d="M270,198 V226"/><text x="280" y="217" class="dim">has a node — pop front</text>
+  <path class="edge" d="M270,270 V290"/>
+  <path class="edge" d="M270,354 V382"/><text x="280" y="374" class="dim">yes</text>
+  <path class="edge" d="M188,322 H152"/><text x="170" y="312" text-anchor="middle" class="dim">no</text>
+
+  <!-- exits to finalise -->
+  <path class="edge" d="M375,170 H580 V302"/>
+  <text x="478" y="160" text-anchor="middle" class="dim">empty · firing cap · user Stop</text>
+  <path class="edge" d="M390,503 H580 V364"/>
+  <text x="478" y="495" text-anchor="middle" class="dim at">halt: stop or budget</text>
+  <text x="478" y="519" text-anchor="middle" class="dim">emit final_* once</text>
+
+  <!-- enqueues back into the ready-queue (blue) -->
+  <path class="edgeA" d="M86,300 V178 H165"/>
+  <text x="94" y="215" class="dim at">enqueue ready</text>
+  <path class="edgeA" d="M150,541 H8 V158 H165"/>
+  <text x="70" y="533" text-anchor="middle" class="dim at">re-enqueue IterIn</text>
+</svg>
+
+<p>That is the entire control flow — and the engine-view counterpart of <a href="#12-anatomy">§1.2</a>: there the boxes were the nodes of one drawn graph; here they are the engine's actions on <em>any</em> graph. Part II <a href="#6-the-run-listing">§6</a> prints this same shape as code — the colored region bands there are exactly these boxes.</p>
+
+<h3 id="46-a-concrete-trace"><span class="num">4.6</span> A concrete trace</h3>
+
+<p>One episode of the <a href="#12-anatomy">§1.2</a> graph, turn by turn. Watch the <strong>ready-queue</strong> column — it is the hub of the §4.5 flowchart; entry discovery put <code>entry</code> in it (and only <code>entry</code>: IterIn is never an entry node, §3.2). Each turn pops the front, fires it, and the effect column says what that made ready next.</p>
+
+<table>
+  <thead><tr><th>Turn</th><th>ready-queue</th><th>Fires</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>entry</code></td><td><code>entry</code></td><td><code>init_*</code> edges deliver the run-invariants into <code>iter_in</code>'s init slots → <code>iter_in</code> ready</td></tr>
+    <tr><td>2</td><td><code>iter_in</code></td><td><code>iter_in</code></td><td>emits the loop-carry bundle → <code>predict</code> ready</td></tr>
+    <tr><td>3</td><td><code>predict</code></td><td><code>predict</code></td><td><code>{action}</code> → <code>env_step</code> ready</td></tr>
+    <tr><td>4</td><td><code>env_step</code></td><td><code>env_step</code></td><td><code>{obs, done: false}</code> — <code>obs</code> fills <code>iter_out</code>'s carry port, <code>done</code> lands on its <code>stop</code> input → <code>iter_out</code> ready</td></tr>
+    <tr><td>5</td><td><code>iter_out</code></td><td><code>iter_out</code> — the §4.3 boundary</td><td>① Record step 1 · ② Settle leftover sinks · ③ Decide: <code>stop</code> false, budget fine → continue · ④ Hand off: carry into <code>iter_in</code>'s slots → <code>iter_in</code> re-enqueued</td></tr>
+    <tr><td>⟳</td><td><code>iter_in</code></td><td colspan="2">turns 2–5 repeat — iterations 2 … N−1</td></tr>
+    <tr><td>6</td><td><code>env_step</code></td><td><code>env_step</code></td><td>iteration N: <code>{obs, done: true}</code> — the <code>stop</code> input is now truthy</td></tr>
+    <tr><td>7</td><td><code>iter_out</code></td><td><code>iter_out</code></td><td>③ Decide: <code>stop</code> true → the final side emits <em>once</em> (terminal <code>obs</code>, <code>final_stop=True</code>) → <code>evaluate</code> ready; the loop ends</td></tr>
+    <tr><td>8</td><td><code>evaluate</code></td><td><code>evaluate</code> — after-loop</td><td>reads the terminal values off <code>final_*</code> → verdict; <code>graphOut</code> re-snapshotted, metrics harvested (§5)</td></tr>
+  </tbody>
+</table>
+
+<p>Note what never happens: <code>evaluate</code> appears in the queue exactly once, at turn 8 — during the loop its inputs simply never arrive (§5.1), so the verdict cannot read anything but the terminal iteration.</p>
+
+<h2 id="5-after-loop"><span class="num">5.</span> After-loop — the verdict stage &amp; finalise</h2>
+
+<p>However the loop exits — the stop signal fired, the step budget hit, the queue drained, or a node crashed — control lands in one finalise stage. It has three movements: the after-loop pass (§5.1), clean finalisation (§5.2), and the error path (§5.3).</p>
+
+<h3 id="51-post-loop-pass"><span class="num">5.1</span> The after-loop pass</h3>
+
+<p>The <strong>after-loop band</strong> is every node wired downstream of the root iterOut's <code>final_*</code> handles — the verdict chain, typically <code>evaluate → graphOut</code>, possibly with adjudicator steps in between. Two facts keep it dormant while the loop runs: the final side never emits mid-loop, and the validator forbids edges from the loop body into the band. Band nodes therefore <em>cannot</em> become ready before termination — there is nothing to skip, defer, or flag.</p>
+
+<p>When the final-side values arrive, <code>_after_loop_pass</code> drains whatever they made ready: fire a ready node, route its outputs, enqueue the consumers that became ready in turn. A node whose upstream band node hasn't fired yet is re-queued behind it, so a chain resolves in dependency order <em>without</em> a topological sort; the queue is bounded (<code>max(nodes×4, 64)</code>), so a never-satisfiable node cannot spin forever.</p>
+
+<p>Two rules keep the pass honest:</p>
+<ul>
+  <li><strong>Graph-scope only.</strong> The loop is over, so re-firing a loop-body node — or any <code>iterIn</code> / <code>iterOut</code>, or any node inside an author (loop) scope — is meaningless and barred. Only graph-scope nodes (the band and its sinks) fire.</li>
+  <li><strong>graphOut is harvested, not fired.</strong> A graph-scope <code>graphOut</code> the chain reaches is routed-to and re-snapshotted into <code>state["_last_inputs"]</code> — the channel the metric harvest reads — but never itself fired; inner-scope graphOuts are skipped entirely (their latch flush is scope-bound).</li>
+</ul>
+
+<p>Membership is topological, not declared: there is no flag to set (the former <code>config.post_loop</code> was removed 2026-06-11) — a node is after-loop because it hangs off the final side. The input contract is engine-guaranteed: the band receives exactly the terminal iteration's values ("verdict inputs ride the pivot" — anything the verdict needs must be an iterOut port, consumed via <code>final_&lt;name&gt;</code>). If the loop ends without a boundary emission (drained queue, <code>max_firings</code>, user stop, or a crash), <code>_emit_final_fallback</code> reconstructs the last completed iteration's values from the paired iterIn's <code>iterout_*</code> slots and emits best-effort before the drain.</p>
+
+<h3 id="52-finalise"><span class="num">5.2</span> Clean finalise</h3>
+
+<p>On a clean exit, in order:</p>
+
+<ol>
+  <li><strong>Harvest metrics</strong> — from any node's <code>state["metrics"]</code>; a value stored on <code>session._metrics</code> overrides node values.</li>
+  <li><strong>Broadcast <code>run_end</code></strong> — <code>lifetime="run"</code> state containers clear.</li>
+  <li><strong>Broadcast <code>nav_complete</code></strong> — final step and metrics, to the frontend.</li>
+  <li><strong>Fire the <code>GraphComplete</code> hook.</strong></li>
+  <li><strong>Flush the execution log.</strong> Session status becomes <code>done</code>.</li>
+</ol>
+
+<h3 id="53-error-path"><span class="num">5.3</span> The error path</h3>
+
+<p>If the loop body raises, the finalise stage still runs — and runs the verdict <em>first</em>:</p>
+
+<ol>
+  <li><strong>Fallback emission + after-loop pass, best-effort.</strong> The ordering is deliberate: even after a crash the verdict <code>evaluate</code> can often still emit fresh metrics from the env's real final step, so the harvest reports the true result rather than a stale pre-crash value. The pass is tolerant — a band node that raises because the env is already torn down is logged and skipped.</li>
+  <li><strong>Publish the exception</strong> to the ErrorBus (<code>GRAPH_CRASH</code>); session status becomes <code>error</code>, broadcast to the frontend as a <code>nav_status</code> error.</li>
+  <li><strong><code>run_end</code> still fires</strong>, carrying the error — run-lifetime state resets even on a crash.</li>
+  <li><strong>Fire the <code>GraphError</code> hook</strong>, then the final log flush.</li>
+</ol>
+
+<div class="part-banner">Part II · Implementation reference — for Claude Code &amp; maintainers
+  <span class="sub">One listing: <code>run()</code> — synced from the source file, comments included. The per-node fire path (<code>_fire_node</code>) and its helpers live in <code>graph_executor.py</code>; read them in source.</span></div>
+
+<h2 id="6-the-run-listing"><span class="num">6.</span> The <code>run()</code> listing — synced from source</h2>
+<p>The full method with its real comments: the annotations you read here <em>are</em> the source file's comments, so the listing and the engine cannot disagree about what a block does. The blue band headers are the file's own <code># ───</code> banner comments — the same phase vocabulary as Part I — with the matching section linked on each band, and the line numbers are real. After editing <code>run()</code>, refresh with <code>python3 docs/_lib/_sync_run_listing.py</code>; the sync stamp below names the commit it was last generated against.</p>
+
+<!-- run-listing:begin -->
+<p class="codelegend">Synced from <code>graph_executor.py:260–991</code> at <code>bbb22da3</code> by <code>docs/_lib/_sync_run_listing.py</code> — the band headers are the file's own banner comments; re-run the script after editing the source.</p>
+<pre class="rxcode hl">
+<span class="h">run() — signature &amp; docstring <span class="hr">── graph_executor.py:260–286</span></span>
+260      <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
+261          <span class="bp">self</span><span class="p">,</span>
+262          <span class="n">graph</span><span class="p">:</span> <span class="n">GraphDefinition</span><span class="p">,</span>
+263          <span class="n">session</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
+264          <span class="n">execution_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+265          <span class="n">step_delay_ms</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">200</span><span class="p">,</span>
+266          <span class="n">stop_event</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Event</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+267          <span class="n">pause_event</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Event</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+268          <span class="n">global_hooks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+269          <span class="n">step_budget_override</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+270      <span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="kc">None</span><span class="p">:</span>
+271  <span class="w">        </span><span class="sd">&quot;&quot;&quot;Main graph execution loop.</span>
+272
+273  <span class="sd">        ``step_budget_override`` (when set) wins over the graph&#x27;s authored</span>
+274  <span class="sd">        ``step_budget``. Used by the eval batch resolver chain to push an</span>
+275  <span class="sd">        env-supplied per-episode value (e.g. HM-EQA&#x27;s</span>
+276  <span class="sd">        ``int(sqrt(scene_size) * 3)``) without mutating the shared graph</span>
+277  <span class="sd">        object across worker coroutines.</span>
+278
+279  <span class="sd">        Structure (the ``# ───`` banners below mark the phases):</span>
+280  <span class="sd">        pre-loop (BUILD steps 1-7, then ENTRY DISCOVERY) → in-loop (the</span>
+281  <span class="sd">        firing loop; the iterOut boundary closes each iteration in four</span>
+282  <span class="sd">        phases: record → settle → decide → hand off) → after-loop (the</span>
+283  <span class="sd">        verdict stage) → finalise. Narrated walkthrough with diagrams:</span>
+284  <span class="sd">        docs/pages/developer-guide/design-docs/graph-executor.html (Part I).</span>
+285  <span class="sd">        &quot;&quot;&quot;</span>
+286
+<span class="h">pre-loop · BUILD — compile the static graph into live state <span class="hr">── graph_executor.py:287–407 · ↔ <a href="#31-build">§3.1</a></span></span>
+288
+289          <span class="c1"># BUILD 1/7 — merge hooks from 3 sources: global → graph → node (R3)</span>
+290          <span class="n">node_hooks</span> <span class="o">=</span> <span class="n">extract_node_hooks</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span>
+291          <span class="n">merged</span> <span class="o">=</span> <span class="n">merge_hooks</span><span class="p">(</span><span class="n">global_hooks</span> <span class="ow">or</span> <span class="p">[</span><span class="p">]</span><span class="p">,</span> <span class="n">graph</span><span class="o">.</span><span class="n">hooks</span><span class="p">,</span> <span class="n">node_hooks</span><span class="p">)</span>
+292          <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span> <span class="o">=</span> <span class="n">HookRunner</span><span class="p">(</span><span class="n">merged</span><span class="p">)</span>
+293
+294          <span class="c1"># BUILD 2/7 — flatten composite nodes before execution (ADR-dataflow-001)</span>
+295          <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="nn">flatten</span><span class="w"> </span><span class="kn">import</span> <span class="n">flatten_graph</span>
+296
+297          <span class="n">graph</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flatten_map</span> <span class="o">=</span> <span class="n">flatten_graph</span><span class="p">(</span><span class="n">graph</span><span class="p">)</span>
+298
+299          <span class="c1"># BUILD 3/7 — state containers + access grants from the graph definition</span>
+300          <span class="k">if</span> <span class="n">graph</span><span class="o">.</span><span class="n">containers</span><span class="p">:</span>
+301              <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="nn">state_containers</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_containers</span>
+302
+303              <span class="bp">self</span><span class="o">.</span><span class="n">containers</span> <span class="o">=</span> <span class="n">build_containers</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">containers</span><span class="p">)</span>
+304              <span class="k">for</span> <span class="n">ag</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">access_grants</span><span class="p">:</span>
+305                  <span class="bp">self</span><span class="o">.</span><span class="n">_access_grant_index</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">ag</span><span class="o">.</span><span class="n">node_id</span><span class="p">,</span> <span class="nb">set</span><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">ag</span><span class="o">.</span><span class="n">container_id</span><span class="p">)</span>
+306              <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+307                  <span class="s2">&quot;</span><span class="s2">State containers: </span><span class="si">%d</span><span class="s2"> containers, </span><span class="si">%d</span><span class="s2"> access grants</span><span class="s2">&quot;</span><span class="p">,</span>
+308                  <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">containers</span><span class="p">)</span><span class="p">,</span>
+309                  <span class="nb">len</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">access_grants</span><span class="p">)</span><span class="p">,</span>
+310              <span class="p">)</span>
+311              <span class="c1"># If a container with the well-known id &quot;graph_state&quot; exists,</span>
+312              <span class="c1"># set up the convenience binding.  Access is still gated by</span>
+313              <span class="c1"># explicit access grants — no auto-inject.</span>
+314              <span class="k">if</span> <span class="s2">&quot;</span><span class="s2">graph_state</span><span class="s2">&quot;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">containers</span><span class="p">:</span>
+315                  <span class="bp">self</span><span class="o">.</span><span class="n">_graph_state_id</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">graph_state</span><span class="s2">&quot;</span>
+316
+317          <span class="c1"># BUILD 4/7 — resolve the step budget. Order: explicit override →</span>
+318          <span class="c1"># graph authored value → framework default. The eval batch runner</span>
+319          <span class="c1"># computes the override via its resolver chain (env-dynamic → API</span>
+320          <span class="c1"># override).</span>
+321          <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="nn">.</span><span class="nn">config</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEFAULT_STEP_BUDGET</span> <span class="k">as</span> <span class="n">_DEFAULT_STEP_BUDGET</span>
+322
+323          <span class="k">if</span> <span class="n">step_budget_override</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+324              <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span> <span class="o">=</span> <span class="n">step_budget_override</span>
+325          <span class="k">elif</span> <span class="n">graph</span><span class="o">.</span><span class="n">step_budget</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+326              <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">step_budget</span>
+327          <span class="k">else</span><span class="p">:</span>
+328              <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span> <span class="o">=</span> <span class="n">_DEFAULT_STEP_BUDGET</span>
+329          <span class="bp">self</span><span class="o">.</span><span class="n">edges</span> <span class="o">=</span> <span class="p">[</span><span class="n">e</span><span class="o">.</span><span class="n">to_dict</span><span class="p">(</span><span class="p">)</span> <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">edges</span><span class="p">]</span>
+330          <span class="n">node_defs</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">nodes</span>
+331
+332          <span class="k">if</span> <span class="ow">not</span> <span class="n">node_defs</span><span class="p">:</span>
+333              <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Empty graph — nothing to execute</span><span class="s2">&quot;</span><span class="p">)</span>
+334              <span class="k">return</span>
+335
+336          <span class="c1"># BUILD 5/7 — node instances: the static definition becomes</span>
+337          <span class="c1"># per-run mutable state (pending_inputs buffer + persistent state)</span>
+338          <span class="k">for</span> <span class="n">nd</span> <span class="ow">in</span> <span class="n">node_defs</span><span class="p">:</span>
+339              <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">nd</span><span class="o">.</span><span class="n">id</span><span class="p">]</span> <span class="o">=</span> <span class="n">NodeInstance</span><span class="p">(</span>
+340                  <span class="nb">id</span><span class="o">=</span><span class="n">nd</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+341                  <span class="nb">type</span><span class="o">=</span><span class="n">nd</span><span class="o">.</span><span class="n">type</span><span class="p">,</span>
+342                  <span class="n">config</span><span class="o">=</span><span class="n">nd</span><span class="o">.</span><span class="n">config</span><span class="p">,</span>
+343                  <span class="n">label</span><span class="o">=</span><span class="n">nd</span><span class="o">.</span><span class="n">label</span><span class="p">,</span>
+344              <span class="p">)</span>
+345
+346          <span class="c1"># BUILD 6/7 — per-scope execution state. Always includes a</span>
+347          <span class="c1"># synthetic GRAPH_SCOPE_ID entry; for single-scope graphs there is</span>
+348          <span class="c1"># also one entry keyed by the outermost author scope&#x27;s iter_in id.</span>
+349          <span class="c1"># Multi-scope graphs add one entry per author scope. The root</span>
+350          <span class="c1"># scope&#x27;s stop signal halts the entire run; a non-root scope&#x27;s stop</span>
+351          <span class="c1"># only ends that inner loop and lets the outer one continue.</span>
+352          <span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="p">,</span> <span class="n">scope_errors</span> <span class="o">=</span> <span class="n">analyze_scopes</span><span class="p">(</span><span class="n">graph</span><span class="p">)</span>
+353          <span class="k">if</span> <span class="n">scope_errors</span><span class="p">:</span>
+354              <span class="k">for</span> <span class="n">err</span> <span class="ow">in</span> <span class="n">scope_errors</span><span class="p">:</span>
+355                  <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Scope analysis: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">err</span><span class="p">)</span>
+356          <span class="c1"># Always create the synthetic graph-scope entry — holds graph-scope</span>
+357          <span class="c1"># nodes (run-start entry nodes, after-loop sinks).</span>
+358          <span class="bp">self</span><span class="o">.</span><span class="n">scope_state</span><span class="p">[</span><span class="n">GRAPH_SCOPE_ID</span><span class="p">]</span> <span class="o">=</span> <span class="n">_ScopeState</span><span class="p">(</span>
+359              <span class="n">scope_id</span><span class="o">=</span><span class="n">GRAPH_SCOPE_ID</span><span class="p">,</span>
+360              <span class="n">parent_scope_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+361              <span class="n">step_budget</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span><span class="p">,</span>  <span class="c1"># graph-level cap also applies here</span>
+362              <span class="n">member_node_ids</span><span class="o">=</span><span class="nb">set</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">graph_scope_node_ids</span><span class="p">)</span><span class="p">,</span>
+363          <span class="p">)</span>
+364          <span class="c1"># Per-author-scope state; resolve step_budget with fallback chain</span>
+365          <span class="c1"># (scope&#x27;s own iter_in.step_budget → parent scope&#x27;s step_budget →</span>
+366          <span class="c1"># graph step_budget).</span>
+367          <span class="k">for</span> <span class="n">scope_id</span><span class="p">,</span> <span class="n">info</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">scopes</span><span class="o">.</span><span class="n">items</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+368              <span class="n">resolved_budget</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">step_budget</span>
+369              <span class="k">if</span> <span class="n">resolved_budget</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+370                  <span class="c1"># Walk up parent chain looking for a budget; fall back to graph</span>
+371                  <span class="n">p</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">parent_scope_id</span>
+372                  <span class="k">while</span> <span class="n">p</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">resolved_budget</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+373                      <span class="n">p_info</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">scopes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+374                      <span class="k">if</span> <span class="n">p_info</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+375                          <span class="k">break</span>
+376                      <span class="n">resolved_budget</span> <span class="o">=</span> <span class="n">p_info</span><span class="o">.</span><span class="n">step_budget</span>
+377                      <span class="n">p</span> <span class="o">=</span> <span class="n">p_info</span><span class="o">.</span><span class="n">parent_scope_id</span>
+378              <span class="k">if</span> <span class="n">resolved_budget</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+379                  <span class="n">resolved_budget</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span>
+380              <span class="bp">self</span><span class="o">.</span><span class="n">scope_state</span><span class="p">[</span><span class="n">scope_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">_ScopeState</span><span class="p">(</span>
+381                  <span class="n">scope_id</span><span class="o">=</span><span class="n">scope_id</span><span class="p">,</span>
+382                  <span class="n">parent_scope_id</span><span class="o">=</span><span class="n">info</span><span class="o">.</span><span class="n">parent_scope_id</span><span class="p">,</span>
+383                  <span class="n">step_budget</span><span class="o">=</span><span class="n">resolved_budget</span><span class="p">,</span>
+384                  <span class="n">member_node_ids</span><span class="o">=</span><span class="nb">set</span><span class="p">(</span><span class="n">info</span><span class="o">.</span><span class="n">member_node_ids</span><span class="p">)</span><span class="p">,</span>
+385                  <span class="n">graphout_node_ids</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">info</span><span class="o">.</span><span class="n">graphout_node_ids</span><span class="p">)</span><span class="p">,</span>
+386                  <span class="n">iter_out_id</span><span class="o">=</span><span class="n">info</span><span class="o">.</span><span class="n">iter_out_id</span><span class="p">,</span>
+387              <span class="p">)</span>
+388          <span class="c1"># The &quot;outermost&quot; scope id — used for backward compat: self.step_counter</span>
+389          <span class="c1"># and self.terminated mirror this scope&#x27;s state. For 0-scope graphs</span>
+390          <span class="c1"># this stays GRAPH_SCOPE_ID; for single-scope graphs it&#x27;s the sole</span>
+391          <span class="c1"># author scope&#x27;s id; for multi-scope graphs it&#x27;s the (single) root.</span>
+392          <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">root_scope_ids</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+393              <span class="bp">self</span><span class="o">.</span><span class="n">_outermost_scope_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">root_scope_ids</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+394          <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">root_scope_ids</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+395              <span class="c1"># Multiple peer roots — pick the first deterministically; legacy</span>
+396              <span class="c1"># self.step_counter mirrors only its counter (multi-root graphs</span>
+397              <span class="c1"># are an advanced shape; consumers should read scope_state directly).</span>
+398              <span class="bp">self</span><span class="o">.</span><span class="n">_outermost_scope_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_forest</span><span class="o">.</span><span class="n">root_scope_ids</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+399          <span class="k">else</span><span class="p">:</span>
+400              <span class="bp">self</span><span class="o">.</span><span class="n">_outermost_scope_id</span> <span class="o">=</span> <span class="n">GRAPH_SCOPE_ID</span>
+401
+402          <span class="c1"># BUILD 7/7 — adjacency: outgoing edges indexed by source id, so</span>
+403          <span class="c1"># routing a fired node&#x27;s outputs is a single lookup in the loop</span>
+404          <span class="k">for</span> <span class="n">edge</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">edges</span><span class="p">:</span>
+405              <span class="n">src</span> <span class="o">=</span> <span class="n">edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">source</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span>
+406              <span class="bp">self</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="p">[</span><span class="p">]</span><span class="p">)</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">edge</span><span class="p">)</span>
+407
+<span class="h">pre-loop · ENTRY DISCOVERY — prime the ready-queue, arm the loop <span class="hr">── graph_executor.py:408–472 · ↔ <a href="#32-seed">§3.2</a></span></span>
+409
+410          <span class="c1"># A node is an entry node if: explicitly marked OR (has no required</span>
+411          <span class="c1"># inputs AND has no incoming edges). Nodes with incoming edges to</span>
+412          <span class="c1"># optional ports should wait for data even if no required ports exist.</span>
+413          <span class="n">incoming_targets</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="p">)</span>
+414          <span class="k">for</span> <span class="n">edge</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">edges</span><span class="p">:</span>
+415              <span class="n">tgt</span> <span class="o">=</span> <span class="n">edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">target</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span>
+416              <span class="k">if</span> <span class="n">tgt</span><span class="p">:</span>
+417                  <span class="n">incoming_targets</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">tgt</span><span class="p">)</span>
+418
+419          <span class="c1"># Entry discovery: queue at run-start iff all three structural</span>
+420          <span class="c1"># conditions hold:</span>
+421          <span class="c1">#   1. type != &quot;iterIn&quot; (iterIn fires from init edges / iterOut transfer)</span>
+422          <span class="c1">#   2. no incoming edges</span>
+423          <span class="c1">#   3. no required input ports</span>
+424          <span class="c1"># validate_graph_connectivity (graph_def.py) rejects required-but-</span>
+425          <span class="c1"># unwired ports at load time, so condition 3 normally only excludes</span>
+426          <span class="c1"># well-formed leaf consumers — never silently drops an entry node.</span>
+427          <span class="n">ready_queue</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="p">]</span>
+428          <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+429              <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">iterIn</span><span class="s2">&quot;</span><span class="p">:</span>
+430                  <span class="k">continue</span>
+431              <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span> <span class="ow">in</span> <span class="n">incoming_targets</span><span class="p">:</span>
+432                  <span class="k">continue</span>
+433              <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_required_ports_for_node</span><span class="p">(</span><span class="n">node</span><span class="p">)</span><span class="p">:</span>
+434                  <span class="k">continue</span>
+435              <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+436
+437          <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+438              <span class="s2">&quot;</span><span class="s2">GraphExecutor: </span><span class="si">%d</span><span class="s2"> nodes, </span><span class="si">%d</span><span class="s2"> edges, entry_nodes=</span><span class="si">%s</span><span class="s2">, step_budget=</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span>
+439              <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span><span class="p">,</span>
+440              <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">edges</span><span class="p">)</span><span class="p">,</span>
+441              <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">nid</span><span class="p">]</span><span class="o">.</span><span class="n">label</span> <span class="ow">or</span> <span class="n">nid</span> <span class="k">for</span> <span class="n">nid</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">]</span><span class="p">,</span>
+442              <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span><span class="p">,</span>
+443          <span class="p">)</span>
+444
+445          <span class="n">stop</span> <span class="o">=</span> <span class="n">stop_event</span> <span class="ow">or</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Event</span><span class="p">(</span><span class="p">)</span>
+446          <span class="n">pause</span> <span class="o">=</span> <span class="n">pause_event</span> <span class="ow">or</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Event</span><span class="p">(</span><span class="p">)</span>
+447          <span class="k">if</span> <span class="ow">not</span> <span class="n">pause</span><span class="o">.</span><span class="n">is_set</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+448              <span class="n">pause</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="p">)</span>
+449
+450          <span class="n">session</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">running</span><span class="s2">&quot;</span>
+451          <span class="n">_suppress</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">principles</span><span class="s2">&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">suppress_nav_events</span><span class="s2">&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+452          <span class="k">if</span> <span class="ow">not</span> <span class="n">_suppress</span><span class="p">:</span>
+453              <span class="k">await</span> <span class="n">broadcast</span><span class="p">(</span><span class="n">session</span><span class="o">.</span><span class="n">_ws</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">nav_status</span><span class="s2">&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">status</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">running</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span><span class="p">)</span><span class="p">)</span>
+454
+455          <span class="c1"># run_start signal fires before any node fires, so state</span>
+456          <span class="c1"># containers with lifetime=&quot;run&quot; reset to a clean baseline.</span>
+457          <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">run_start</span><span class="s2">&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">graph_name</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">graph</span><span class="o">.</span><span class="n">name</span><span class="p">}</span><span class="p">)</span>
+458
+459          <span class="c1"># GraphStart hook</span>
+460          <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">has_hooks</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+461              <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span>
+462                  <span class="s2">&quot;</span><span class="s2">GraphStart</span><span class="s2">&quot;</span><span class="p">,</span>
+463                  <span class="n">payload</span><span class="o">=</span><span class="p">{</span>
+464                      <span class="s2">&quot;</span><span class="s2">graph_name</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">graph</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+465                      <span class="s2">&quot;</span><span class="s2">node_count</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span><span class="p">,</span>
+466                  <span class="p">}</span><span class="p">,</span>
+467              <span class="p">)</span>
+468
+469          <span class="c1"># Safety: max total firings to prevent infinite loops</span>
+470          <span class="n">max_firings</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span> <span class="o">*</span> <span class="mi">3</span>
+471          <span class="n">total_firings</span> <span class="o">=</span> <span class="mi">0</span>
+472
+<span class="h">in-loop · the firing loop — pop, guard, fire, route <span class="hr">── graph_executor.py:473–613 · ↔ <a href="#41-one-iteration">§4.1–§4.2</a></span></span>
+474          <span class="k">try</span><span class="p">:</span>
+475              <span class="k">while</span> <span class="n">ready_queue</span> <span class="ow">and</span> <span class="n">total_firings</span> <span class="o">&lt;</span> <span class="n">max_firings</span><span class="p">:</span>
+476                  <span class="c1"># Pause/stop check</span>
+477                  <span class="k">await</span> <span class="n">pause</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="p">)</span>
+478                  <span class="k">if</span> <span class="n">stop</span><span class="o">.</span><span class="n">is_set</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+479                      <span class="k">break</span>
+480
+481                  <span class="n">node_id</span> <span class="o">=</span> <span class="n">ready_queue</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+482                  <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+483                  <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+484                      <span class="k">continue</span>
+485
+486                  <span class="c1"># Guard 1 — scope barrier. Once an inner scope is marked</span>
+487                  <span class="c1"># terminated (by the iterOut boundary&#x27;s decide check at the</span>
+488                  <span class="c1"># end of the final inner iter), forbid any further fire of nodes belonging</span>
+489                  <span class="c1"># to that scope until the scope is re-entered. Without this</span>
+490                  <span class="c1"># guard, in-flight inner-body nodes that were enqueued</span>
+491                  <span class="c1"># before the scope stopped (e.g. ``move_to_pose`` already</span>
+492                  <span class="c1"># running, or ``episode_info`` triggered by it) fire one</span>
+493                  <span class="c1"># extra time AFTER the stop and leak per-iter outputs through any</span>
+494                  <span class="c1"># cross-scope wires (post-flatten direct edges from inner</span>
+495                  <span class="c1"># producers to outer consumers, OR direct graphOut→outer</span>
+496                  <span class="c1"># wires when graphOut is preserved), satisfying outer</span>
+497                  <span class="c1"># iterOut&#x27;s required gates and causing outer to cycle</span>
+498                  <span class="c1"># without inner actually re-entering.</span>
+499                  <span class="c1">#</span>
+500                  <span class="c1"># Exemption set — scope-entry cascade nodes that MUST be</span>
+501                  <span class="c1"># allowed to fire so the next outer iter can reopen this</span>
+502                  <span class="c1"># scope: ``iterIn`` (existing re-entry path below clears</span>
+503                  <span class="c1"># the terminated flag; its init slots re-capture</span>
+504                  <span class="c1"># outer-supplied scope-entry args), ``graphIn`` (ferries</span>
+505                  <span class="c1"># outer→inner values across the boundary into iterIn&#x27;s</span>
+506                  <span class="c1"># init side). Body nodes and iterOut stay barred — they</span>
+507                  <span class="c1"># have nothing useful to do between scope terminate and</span>
+508                  <span class="c1"># scope re-entry.</span>
+509                  <span class="n">_n_scope_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope_of</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+510                  <span class="n">_n_scope</span> <span class="o">=</span> <span class="p">(</span>
+511                      <span class="bp">self</span><span class="o">.</span><span class="n">scope_state</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">_n_scope_id</span><span class="p">)</span>
+512                      <span class="k">if</span> <span class="n">_n_scope_id</span> <span class="ow">and</span> <span class="n">_n_scope_id</span> <span class="o">!=</span> <span class="n">GRAPH_SCOPE_ID</span>
+513                      <span class="k">else</span> <span class="kc">None</span>
+514                  <span class="p">)</span>
+515                  <span class="k">if</span> <span class="p">(</span>
+516                      <span class="n">_n_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+517                      <span class="ow">and</span> <span class="n">_n_scope</span><span class="o">.</span><span class="n">terminated</span>
+518                      <span class="ow">and</span> <span class="n">_n_scope</span><span class="o">.</span><span class="n">parent_scope_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+519                      <span class="ow">and</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;</span><span class="s2">iterIn</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">graphIn</span><span class="s2">&quot;</span><span class="p">)</span>
+520                  <span class="p">)</span><span class="p">:</span>
+521                      <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{</span><span class="p">}</span>
+522                      <span class="k">continue</span>
+523
+524                  <span class="c1"># Guard 2 — iterIn step_start. iterIn marks the start of each</span>
+525                  <span class="c1"># iteration — emit step_start before the node fires so</span>
+526                  <span class="c1"># lifetime=&quot;step&quot; states see a fresh slate for the upcoming</span>
+527                  <span class="c1"># iteration.</span>
+528                  <span class="c1"># Multi-scope re-entry: an inner scope&#x27;s iter_in firing</span>
+529                  <span class="c1"># while its scope is marked terminated indicates outer just</span>
+530                  <span class="c1"># entered a new outer iter and is re-invoking inner. Reset</span>
+531                  <span class="c1"># inner scope&#x27;s terminated flag and step_counter — inner</span>
+532                  <span class="c1"># gets a fresh loop. (Root-scope iter_in re-firing after</span>
+533                  <span class="c1"># termination would only happen if main loop didn&#x27;t break;</span>
+534                  <span class="c1"># we still allow the reset for symmetry, though in practice</span>
+535                  <span class="c1"># root termination breaks the loop above.)</span>
+536                  <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">iterIn</span><span class="s2">&quot;</span><span class="p">:</span>
+537                      <span class="n">_ii_scope</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_state</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+538                      <span class="k">if</span> <span class="n">_ii_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">_ii_scope</span><span class="o">.</span><span class="n">terminated</span><span class="p">:</span>
+539                          <span class="k">if</span> <span class="n">_ii_scope</span><span class="o">.</span><span class="n">parent_scope_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+540                              <span class="c1"># Inner scope re-entry from outer iter — reset</span>
+541                              <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+542                                  <span class="s2">&quot;</span><span class="s2">Scope re-entry: </span><span class="si">%s</span><span class="s2"> (parent=</span><span class="si">%s</span><span class="s2">) — resetting terminated/counter</span><span class="s2">&quot;</span><span class="p">,</span>
+543                                  <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+544                                  <span class="n">_ii_scope</span><span class="o">.</span><span class="n">parent_scope_id</span><span class="p">,</span>
+545                              <span class="p">)</span>
+546                              <span class="n">_ii_scope</span><span class="o">.</span><span class="n">terminated</span> <span class="o">=</span> <span class="kc">False</span>
+547                              <span class="n">_ii_scope</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">=</span> <span class="mi">0</span>
+548                              <span class="c1"># Re-arm the final side: an inner scope emits</span>
+549                              <span class="c1"># final_* once per termination, i.e. once per</span>
+550                              <span class="c1"># outer iteration.</span>
+551                              <span class="bp">self</span><span class="o">.</span><span class="n">_final_emitted</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+552                              <span class="c1"># Reset per-fire state on body nodes that hold</span>
+553                              <span class="c1"># transient counters (only those tracked via</span>
+554                              <span class="c1"># state[&#x27;_scoped_reset&#x27;]=True)? — out of scope</span>
+555                              <span class="c1"># for v1; user tests must use cumulative counters.</span>
+556                          <span class="k">else</span><span class="p">:</span>
+557                              <span class="c1"># Root scope: should not happen (main loop breaks</span>
+558                              <span class="c1"># on root termination). Defensive: skip the fire.</span>
+559                              <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{</span><span class="p">}</span>
+560                              <span class="k">continue</span>
+561                      <span class="c1"># step_start signal — add scope_id (additive, single-scope</span>
+562                      <span class="c1"># readers using just `step` keep working).</span>
+563                      <span class="n">_next_step</span> <span class="o">=</span> <span class="p">(</span>
+564                          <span class="n">_ii_scope</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">+</span> <span class="mi">1</span>
+565                          <span class="k">if</span> <span class="n">_ii_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+566                          <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">+</span> <span class="mi">1</span>
+567                      <span class="p">)</span>
+568                      <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_signal</span><span class="p">(</span>
+569                          <span class="s2">&quot;</span><span class="s2">step_start</span><span class="s2">&quot;</span><span class="p">,</span>
+570                          <span class="p">{</span><span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">_next_step</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">scope_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">}</span><span class="p">,</span>
+571                      <span class="p">)</span>
+572
+573                  <span class="c1"># Fire the node</span>
+574                  <span class="k">try</span><span class="p">:</span>
+575                      <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fire_node</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">session</span><span class="p">)</span>
+576                  <span class="k">except</span> <span class="n">StopExecution</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+577                      <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+578                          <span class="s2">&quot;</span><span class="s2">StopExecution from </span><span class="si">%s</span><span class="s2">: </span><span class="si">%s</span><span class="s2"> at step </span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">e</span><span class="o">.</span><span class="n">reason</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span>
+579                      <span class="p">)</span>
+580                      <span class="bp">self</span><span class="o">.</span><span class="n">terminated</span> <span class="o">=</span> <span class="kc">True</span>
+581                      <span class="k">break</span>
+582                  <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+583                      <span class="n">origin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flatten_map</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flatten_map</span> <span class="k">else</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span>
+584                      <span class="c1"># Surface to user via Report tab; result still gets {&quot;error&quot;: ...}</span>
+585                      <span class="c1"># so downstream nodes can react to the failure.</span>
+586                      <span class="n">get_bus</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">from_exception</span><span class="p">(</span>
+587                          <span class="n">e</span><span class="p">,</span>
+588                          <span class="n">source</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">node</span><span class="s2">&quot;</span><span class="p">,</span>
+589                          <span class="n">code</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">NODE_EXEC_FAIL</span><span class="s2">&quot;</span><span class="p">,</span>
+590                          <span class="n">scope</span><span class="o">=</span><span class="p">{</span>
+591                              <span class="s2">&quot;</span><span class="s2">node_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+592                              <span class="s2">&quot;</span><span class="s2">node_type</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">,</span>
+593                              <span class="s2">&quot;</span><span class="s2">origin</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">origin</span><span class="p">,</span>
+594                              <span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span>
+595                              <span class="s2">&quot;</span><span class="s2">execution_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">_execution_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span><span class="p">,</span>
+596                          <span class="p">}</span><span class="p">,</span>
+597                          <span class="n">title</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Node </span><span class="si">{</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="si">}</span><span class="s2"> (</span><span class="si">{</span><span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="si">}</span><span class="s2">) failed</span><span class="s2">&quot;</span><span class="p">,</span>
+598                      <span class="p">)</span>
+599                      <span class="c1"># Strict mode (AGENTCANVAS_STRICT_ERRORS=1): re-raise after</span>
+600                      <span class="c1"># bus emit so the outer execution loop fails fast instead of</span>
+601                      <span class="c1"># quietly continuing with result={&quot;error&quot;: ...}. Designed for</span>
+602                      <span class="c1"># smoke / eval runs where any node failure should be visible.</span>
+603                      <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">AGENTCANVAS_STRICT_ERRORS</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">(</span><span class="p">)</span> <span class="ow">in</span> <span class="p">(</span>
+604                          <span class="s2">&quot;</span><span class="s2">1</span><span class="s2">&quot;</span><span class="p">,</span>
+605                          <span class="s2">&quot;</span><span class="s2">true</span><span class="s2">&quot;</span><span class="p">,</span>
+606                          <span class="s2">&quot;</span><span class="s2">yes</span><span class="s2">&quot;</span><span class="p">,</span>
+607                          <span class="s2">&quot;</span><span class="s2">on</span><span class="s2">&quot;</span><span class="p">,</span>
+608                      <span class="p">)</span><span class="p">:</span>
+609                          <span class="k">raise</span>
+610                      <span class="n">result</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">error</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="p">}</span>
+611
+612                  <span class="n">total_firings</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span>
+613
+<span class="h">iterOut boundary — fires once per iteration; four phases — record → settle → decide → hand off <span class="hr">── graph_executor.py:614–622 · ↔ <a href="#43-iterout-boundary">§4.3</a></span></span>
+616                  <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">iterOut</span><span class="s2">&quot;</span><span class="p">:</span>
+617                      <span class="c1"># Resolve which scope this iterOut belongs to. The scope</span>
+618                      <span class="c1"># is keyed by the paired iterIn&#x27;s id (== scope_id).</span>
+619                      <span class="n">_io_scope_id</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">pairedWith</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_outermost_scope_id</span>
+620                      <span class="n">_io_scope</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_state</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">_io_scope_id</span><span class="p">)</span>
+621                      <span class="n">_is_root_scope</span> <span class="o">=</span> <span class="n">_io_scope_id</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_outermost_scope_id</span>
+622
+<span class="h">boundary phase 1/4 · record — counters, checkpoint, log, nav_step <span class="hr">── graph_executor.py:623–676 · ↔ <a href="#43-iterout-boundary">§4.3 ①</a></span></span>
+624                      <span class="c1"># Advance per-scope counter. For backward compat,</span>
+625                      <span class="c1"># self.step_counter mirrors the OUTERMOST scope&#x27;s counter</span>
+626                      <span class="c1"># (single-scope graphs unchanged).</span>
+627                      <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+628                          <span class="n">_io_scope</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span>
+629                          <span class="n">_scope_step</span> <span class="o">=</span> <span class="n">_io_scope</span><span class="o">.</span><span class="n">step_counter</span>
+630                      <span class="k">else</span><span class="p">:</span>
+631                          <span class="n">_scope_step</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">+</span> <span class="mi">1</span>
+632                      <span class="k">if</span> <span class="n">_is_root_scope</span><span class="p">:</span>
+633                          <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span>
+634                          <span class="n">session</span><span class="o">.</span><span class="n">_current_step</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span>
+635
+636                      <span class="n">_parent_scope_id</span> <span class="o">=</span> <span class="n">_io_scope</span><span class="o">.</span><span class="n">parent_scope_id</span> <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+637                      <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+638                          <span class="s2">&quot;</span><span class="s2">Iter: scope=</span><span class="si">%s</span><span class="s2"> step=</span><span class="si">%d</span><span class="s2"> (parent=</span><span class="si">%s</span><span class="s2">, root=</span><span class="si">%s</span><span class="s2">)</span><span class="s2">&quot;</span><span class="p">,</span>
+639                          <span class="n">_io_scope_id</span><span class="p">,</span>
+640                          <span class="n">_scope_step</span><span class="p">,</span>
+641                          <span class="n">_parent_scope_id</span><span class="p">,</span>
+642                          <span class="n">_is_root_scope</span><span class="p">,</span>
+643                      <span class="p">)</span>
+644
+645                      <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_signal</span><span class="p">(</span>
+646                          <span class="s2">&quot;</span><span class="s2">step_end</span><span class="s2">&quot;</span><span class="p">,</span>
+647                          <span class="p">{</span><span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">_scope_step</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">scope_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">_io_scope_id</span><span class="p">}</span><span class="p">,</span>
+648                      <span class="p">)</span>
+649
+650                      <span class="c1"># Checkpoint all containers AFTER iter boundary</span>
+651                      <span class="c1"># Semantics: snapshot = state ready for step N+1 to begin</span>
+652                      <span class="c1"># Only checkpoint on root-scope iterations (single-scope</span>
+653                      <span class="c1"># graphs unchanged; nested inner scopes don&#x27;t checkpoint)</span>
+654                      <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">containers</span> <span class="ow">and</span> <span class="n">_is_root_scope</span><span class="p">:</span>
+655                          <span class="bp">self</span><span class="o">.</span><span class="n">_checkpoints</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+656                              <span class="n">cid</span><span class="p">:</span> <span class="n">c</span><span class="o">.</span><span class="n">checkpoint</span><span class="p">(</span><span class="p">)</span> <span class="k">for</span> <span class="n">cid</span><span class="p">,</span> <span class="n">c</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">containers</span><span class="o">.</span><span class="n">items</span><span class="p">(</span><span class="p">)</span>
+657                          <span class="p">}</span>
+658                          <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_checkpoints</span><span class="p">)</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_checkpoints</span><span class="p">:</span>
+659                              <span class="n">oldest</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_checkpoints</span><span class="p">)</span>
+660                              <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_checkpoints</span><span class="p">[</span><span class="n">oldest</span><span class="p">]</span>
+661
+662                      <span class="c1"># Flush execution log entries to JSONL at iteration boundary</span>
+663                      <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span><span class="p">:</span>
+664                          <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span><span class="o">.</span><span class="n">flush</span><span class="p">(</span><span class="p">)</span>
+665
+666                      <span class="c1"># Broadcast consolidated nav_step from all output viewer data</span>
+667                      <span class="c1"># Only on root-scope iter (matches pre-refactor: one</span>
+668                      <span class="c1"># nav_step per outer iteration).</span>
+669                      <span class="k">if</span> <span class="n">_is_root_scope</span><span class="p">:</span>
+670                          <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_broadcast_step</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
+671
+672                      <span class="c1"># Edges FROM iterOut are final-side only (``final_*``</span>
+673                      <span class="c1"># handles) — they emit once at scope termination via</span>
+674                      <span class="c1"># ``_emit_final_side``, never per-iteration, so iterOut&#x27;s</span>
+675                      <span class="c1"># own outputs are NOT propagated to adjacency here.</span>
+676
+<span class="h">boundary phase 2/4 · settle — drain this iter&#x27;s leftover sinks <span class="hr">── graph_executor.py:677–748 · ↔ <a href="#43-iterout-boundary">§4.3 ②</a></span></span>
+678                      <span class="c1"># Settle BEFORE the stop check, so in-loop viewer /</span>
+679                      <span class="c1"># telemetry sinks scheduled in this iter&#x27;s wave still</span>
+680                      <span class="c1"># emit on the terminal step.</span>
+681                      <span class="c1"># iterIn is excluded — it advances to next iter and is</span>
+682                      <span class="c1"># correctly fired only via the pairedWith handoff after</span>
+683                      <span class="c1"># the stop check.</span>
+684                      <span class="c1"># Multi-scope: settle drain restricted to nodes belonging</span>
+685                      <span class="c1"># to the same scope as the just-fired iterOut. Outer-scope</span>
+686                      <span class="c1"># / peer-scope nodes are not drained by inner iter_out.</span>
+687                      <span class="n">_max_settle</span> <span class="o">=</span> <span class="mi">64</span>  <span class="c1"># safety cap against pathological queues</span>
+688                      <span class="n">_settle_n</span> <span class="o">=</span> <span class="mi">0</span>
+689                      <span class="k">while</span> <span class="n">ready_queue</span> <span class="ow">and</span> <span class="n">_settle_n</span> <span class="o">&lt;</span> <span class="n">_max_settle</span><span class="p">:</span>
+690                          <span class="c1"># Skip iterIn — next iter, handled by the pairedWith</span>
+691                          <span class="c1"># handoff after the stop check.</span>
+692                          <span class="n">_next_idx</span> <span class="o">=</span> <span class="kc">None</span>
+693                          <span class="k">for</span> <span class="n">_i</span><span class="p">,</span> <span class="n">_nid</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">ready_queue</span><span class="p">)</span><span class="p">:</span>
+694                              <span class="n">_n</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">_nid</span><span class="p">)</span>
+695                              <span class="k">if</span> <span class="n">_n</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">_n</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">iterIn</span><span class="s2">&quot;</span><span class="p">:</span>
+696                                  <span class="k">continue</span>
+697                              <span class="c1"># Multi-scope: only drain nodes in the same scope</span>
+698                              <span class="c1"># as the iterOut that triggered this settle pass.</span>
+699                              <span class="c1"># Single-scope graphs: every body node is in the</span>
+700                              <span class="c1"># outermost scope, so this matches today&#x27;s behaviour.</span>
+701                              <span class="n">_n_scope</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope_of</span><span class="p">(</span><span class="n">_nid</span><span class="p">)</span>
+702                              <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">_n_scope</span> <span class="o">!=</span> <span class="n">_io_scope_id</span><span class="p">:</span>
+703                                  <span class="k">continue</span>
+704                              <span class="n">_next_idx</span> <span class="o">=</span> <span class="n">_i</span>
+705                              <span class="k">break</span>
+706                          <span class="k">if</span> <span class="n">_next_idx</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+707                              <span class="k">break</span>  <span class="c1"># nothing to settle in this scope</span>
+708                          <span class="n">_nid</span> <span class="o">=</span> <span class="n">ready_queue</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">_next_idx</span><span class="p">)</span>
+709                          <span class="n">_n</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">_nid</span><span class="p">]</span>
+710                          <span class="k">try</span><span class="p">:</span>
+711                              <span class="n">_r</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fire_node</span><span class="p">(</span><span class="n">_n</span><span class="p">,</span> <span class="n">session</span><span class="p">)</span>
+712                          <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+713                              <span class="n">log</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">settle: error firing </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">_nid</span><span class="p">)</span>
+714                              <span class="n">_n</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{</span><span class="p">}</span>
+715                              <span class="n">_settle_n</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span>
+716                              <span class="k">continue</span>
+717                          <span class="n">_n</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{</span><span class="p">}</span>
+718                          <span class="c1"># Multi-scope: graphOut nodes inside a non-graph</span>
+719                          <span class="c1"># scope BUFFER value into state[&quot;latched_value&quot;]</span>
+720                          <span class="c1"># instead of propagating outward. Mirrors the same</span>
+721                          <span class="c1"># suppression in the standard propagation block;</span>
+722                          <span class="c1"># without it, every inner iter would prematurely</span>
+723                          <span class="c1"># propagate graphOut to outer downstream.</span>
+724                          <span class="k">if</span> <span class="n">_n</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">graphOut</span><span class="s2">&quot;</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope_of</span><span class="p">(</span><span class="n">_nid</span><span class="p">)</span> <span class="o">!=</span> <span class="n">GRAPH_SCOPE_ID</span><span class="p">:</span>
+725                              <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">_r</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span><span class="p">:</span>
+726                                  <span class="n">_n</span><span class="o">.</span><span class="n">state</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">latched_value</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span>
+727                              <span class="n">_settle_n</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span>
+728                              <span class="k">continue</span>
+729                          <span class="c1"># Mirror the propagation block below (not extracted</span>
+730                          <span class="c1"># to keep main-loop changes minimal).</span>
+731                          <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">_r</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span><span class="p">:</span>
+732                              <span class="k">for</span> <span class="n">_edge</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">_nid</span><span class="p">,</span> <span class="p">[</span><span class="p">]</span><span class="p">)</span><span class="p">:</span>
+733                                  <span class="n">_tgt_id</span> <span class="o">=</span> <span class="n">_edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">target</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span>
+734                                  <span class="k">if</span> <span class="ow">not</span> <span class="n">_tgt_id</span><span class="p">:</span>
+735                                      <span class="k">continue</span>
+736                                  <span class="n">_tgt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">_tgt_id</span><span class="p">)</span>
+737                                  <span class="k">if</span> <span class="n">_tgt</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+738                                      <span class="k">continue</span>
+739                                  <span class="n">_sh</span> <span class="o">=</span> <span class="n">_edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">sourceHandle</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">default</span><span class="s2">&quot;</span><span class="p">)</span>
+740                                  <span class="n">_th</span> <span class="o">=</span> <span class="n">_edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">targetHandle</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">_sh</span><span class="p">)</span>
+741                                  <span class="k">if</span> <span class="n">_sh</span> <span class="ow">in</span> <span class="n">_r</span><span class="p">:</span>
+742                                      <span class="bp">self</span><span class="o">.</span><span class="n">_route_value_to_port</span><span class="p">(</span><span class="n">_tgt</span><span class="p">,</span> <span class="n">_th</span><span class="p">,</span> <span class="n">_r</span><span class="p">[</span><span class="n">_sh</span><span class="p">]</span><span class="p">)</span>
+743                                  <span class="k">elif</span> <span class="n">_sh</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">default</span><span class="s2">&quot;</span><span class="p">:</span>
+744                                      <span class="bp">self</span><span class="o">.</span><span class="n">_route_value_to_port</span><span class="p">(</span><span class="n">_tgt</span><span class="p">,</span> <span class="n">_th</span><span class="p">,</span> <span class="n">_r</span><span class="p">)</span>
+745                                  <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_ready</span><span class="p">(</span><span class="n">_tgt</span><span class="p">)</span> <span class="ow">and</span> <span class="n">_tgt_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">:</span>
+746                                      <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_tgt_id</span><span class="p">)</span>
+747                          <span class="n">_settle_n</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span>
+748
+<span class="h">boundary phase 3/4 · decide — stop input, then budget check <span class="hr">── graph_executor.py:749–815 · ↔ <a href="#43-iterout-boundary">§4.3 ③</a></span></span>
+750                      <span class="c1"># Read the just-fired iterOut&#x27;s own ``stop`` input. The</span>
+751                      <span class="c1"># stop signal is structurally bound to its scope (it sits</span>
+752                      <span class="c1"># on the scope&#x27;s own iterOut), and this check runs exactly</span>
+753                      <span class="c1"># once per iteration, after the settle drain and before</span>
+754                      <span class="c1"># the handoff. Unwired stop = budget-only loop.</span>
+755                      <span class="c1"># Termination (stop or budget) emits the terminal</span>
+756                      <span class="c1"># iteration&#x27;s values exactly once on the final_* handles.</span>
+757                      <span class="n">_stop</span> <span class="o">=</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">bool</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">stop</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+758                      <span class="k">if</span> <span class="n">_stop</span><span class="p">:</span>
+759                          <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+760                              <span class="s2">&quot;</span><span class="s2">Stop: iterOut </span><span class="si">%s</span><span class="s2"> stop=True at scope=</span><span class="si">%s</span><span class="s2"> step=</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span>
+761                              <span class="n">node_id</span><span class="p">,</span>
+762                              <span class="n">_io_scope_id</span> <span class="ow">or</span> <span class="s2">&quot;</span><span class="s2">(graph)</span><span class="s2">&quot;</span><span class="p">,</span>
+763                              <span class="n">_scope_step</span><span class="p">,</span>
+764                          <span class="p">)</span>
+765                          <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+766                              <span class="n">_io_scope</span><span class="o">.</span><span class="n">terminated</span> <span class="o">=</span> <span class="kc">True</span>
+767                          <span class="c1"># Final side: emit the terminal iteration&#x27;s values</span>
+768                          <span class="c1"># exactly once on the final_* handles.</span>
+769                          <span class="bp">self</span><span class="o">.</span><span class="n">_emit_final_side</span><span class="p">(</span>
+770                              <span class="n">node</span><span class="p">,</span>
+771                              <span class="n">result</span><span class="p">,</span>
+772                              <span class="n">_io_scope_id</span><span class="p">,</span>
+773                              <span class="n">ready_queue</span><span class="o">=</span><span class="kc">None</span> <span class="k">if</span> <span class="n">_is_root_scope</span> <span class="k">else</span> <span class="n">ready_queue</span><span class="p">,</span>
+774                          <span class="p">)</span>
+775                          <span class="k">if</span> <span class="n">_is_root_scope</span><span class="p">:</span>
+776                              <span class="bp">self</span><span class="o">.</span><span class="n">terminated</span> <span class="o">=</span> <span class="kc">True</span>
+777                              <span class="k">break</span>
+778
+779                      <span class="c1"># Per-scope step_budget exhaust check.</span>
+780                      <span class="n">_scope_budget</span> <span class="o">=</span> <span class="p">(</span>
+781                          <span class="n">_io_scope</span><span class="o">.</span><span class="n">step_budget</span> <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_budget</span>
+782                      <span class="p">)</span>
+783                      <span class="k">if</span> <span class="n">_scope_step</span> <span class="o">&gt;</span><span class="o">=</span> <span class="n">_scope_budget</span><span class="p">:</span>
+784                          <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+785                              <span class="s2">&quot;</span><span class="s2">Step budget (</span><span class="si">%d</span><span class="s2">) exhausted for scope=</span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+786                              <span class="n">_scope_budget</span><span class="p">,</span>
+787                              <span class="n">_io_scope_id</span> <span class="ow">or</span> <span class="s2">&quot;</span><span class="s2">(graph)</span><span class="s2">&quot;</span><span class="p">,</span>
+788                          <span class="p">)</span>
+789                          <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+790                              <span class="n">_io_scope</span><span class="o">.</span><span class="n">terminated</span> <span class="o">=</span> <span class="kc">True</span>
+791                          <span class="bp">self</span><span class="o">.</span><span class="n">_emit_final_side</span><span class="p">(</span>
+792                              <span class="n">node</span><span class="p">,</span>
+793                              <span class="n">result</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="k">else</span> <span class="p">{</span><span class="p">}</span><span class="p">,</span>
+794                              <span class="n">_io_scope_id</span><span class="p">,</span>
+795                              <span class="n">ready_queue</span><span class="o">=</span><span class="kc">None</span> <span class="k">if</span> <span class="n">_is_root_scope</span> <span class="k">else</span> <span class="n">ready_queue</span><span class="p">,</span>
+796                          <span class="p">)</span>
+797                          <span class="k">if</span> <span class="n">_is_root_scope</span><span class="p">:</span>
+798                              <span class="bp">self</span><span class="o">.</span><span class="n">terminated</span> <span class="o">=</span> <span class="kc">True</span>
+799                              <span class="k">break</span>
+800                          <span class="c1"># Inner-scope budget exhaust: don&#x27;t break root loop;</span>
+801                          <span class="c1"># propagate inner graphOut latches and let outer continue</span>
+802                          <span class="bp">self</span><span class="o">.</span><span class="n">_propagate_graphout_latches</span><span class="p">(</span><span class="n">_io_scope</span><span class="p">,</span> <span class="n">ready_queue</span><span class="p">)</span>
+803                          <span class="c1"># Skip the iterIn re-queue below (scope is done)</span>
+804                          <span class="k">continue</span>
+805
+806                      <span class="k">if</span> <span class="n">step_delay_ms</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">_is_root_scope</span><span class="p">:</span>
+807                          <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">step_delay_ms</span> <span class="o">/</span> <span class="mi">1000</span><span class="p">)</span>
+808
+809                      <span class="c1"># If this scope was just stopped (inner-scope stop above,</span>
+810                      <span class="c1"># without breaking the root loop), propagate graphOut</span>
+811                      <span class="c1"># latch + skip the iterIn re-queue.</span>
+812                      <span class="k">if</span> <span class="n">_io_scope</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">_io_scope</span><span class="o">.</span><span class="n">terminated</span><span class="p">:</span>
+813                          <span class="bp">self</span><span class="o">.</span><span class="n">_propagate_graphout_latches</span><span class="p">(</span><span class="n">_io_scope</span><span class="p">,</span> <span class="n">ready_queue</span><span class="p">)</span>
+814                          <span class="k">continue</span>
+815
+<span class="h">boundary phase 4/4 · hand off — carry → paired iterIn, next iteration <span class="hr">── graph_executor.py:816–838 · ↔ <a href="#43-iterout-boundary">§4.3 ④</a></span></span>
+817                      <span class="c1"># iterIn slots are prefixed with &quot;iterout_&quot; for</span>
+818                      <span class="c1"># iterOut writes (always-prefix synthesis). Each iterOut</span>
+819                      <span class="c1"># output key ``X`` maps to iterIn slot ``iterout_&lt;X&gt;``.</span>
+820                      <span class="c1"># ``stop`` is not loop-carried; final_* handles never fire here.</span>
+821                      <span class="n">paired_id</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">pairedWith</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span>
+822                      <span class="n">paired</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">paired_id</span><span class="p">)</span> <span class="k">if</span> <span class="n">paired_id</span> <span class="k">else</span> <span class="kc">None</span>
+823                      <span class="k">if</span> <span class="n">paired</span> <span class="ow">and</span> <span class="n">paired</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">iterIn</span><span class="s2">&quot;</span><span class="p">:</span>
+824                          <span class="n">slot_names</span> <span class="o">=</span> <span class="n">_iterin_port_names</span><span class="p">(</span><span class="n">paired</span><span class="p">)</span>
+825                          <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">val</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">items</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+826                              <span class="n">slot_key</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="s2">iterout_</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">&quot;</span>
+827                              <span class="k">if</span> <span class="n">slot_key</span> <span class="ow">in</span> <span class="n">slot_names</span><span class="p">:</span>
+828                                  <span class="bp">self</span><span class="o">.</span><span class="n">_write_iterin_slot</span><span class="p">(</span><span class="n">paired</span><span class="p">,</span> <span class="n">slot_key</span><span class="p">,</span> <span class="n">val</span><span class="p">)</span>
+829                          <span class="k">if</span> <span class="n">paired</span><span class="o">.</span><span class="n">id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">:</span>
+830                              <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">paired</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+831
+832                      <span class="c1"># Standard propagation (line ~750 below) is skipped for</span>
+833                      <span class="c1"># iterOut — adjacency was already propagated above (before</span>
+834                      <span class="c1"># the settle drain) so latch buffers see the final iter</span>
+835                      <span class="c1"># value. Clear pending_inputs and continue.</span>
+836                      <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{</span><span class="p">}</span>
+837                      <span class="k">continue</span>
+838
+<span class="h">ordinary path — consume · special cases · route · enqueue <span class="hr">── graph_executor.py:839–903 · ↔ <a href="#44-propagation">§4.4</a></span></span>
+840                  <span class="c1"># Clear fired node&#x27;s inputs (consumed)</span>
+841                  <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="o">=</span> <span class="p">{</span><span class="p">}</span>
+842
+843                  <span class="c1"># iterIn: after fire, clear slots for ports with persist=False</span>
+844                  <span class="c1"># so they don&#x27;t re-emit next iteration. persist=True slots</span>
+845                  <span class="c1"># stay populated until the next write by a matching writer</span>
+846                  <span class="c1"># (run-start init edge, or iterOut at iter boundary).</span>
+847                  <span class="c1"># Ordering — fire → clear → re-enqueue — persist=False</span>
+848                  <span class="c1"># semantics: emit once on the step of the write, then gone.</span>
+849                  <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">iterIn</span><span class="s2">&quot;</span><span class="p">:</span>
+850                      <span class="n">persist_map</span> <span class="o">=</span> <span class="n">_iterin_persist_map</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+851                      <span class="k">for</span> <span class="n">slot_name</span><span class="p">,</span> <span class="n">keep</span> <span class="ow">in</span> <span class="n">persist_map</span><span class="o">.</span><span class="n">items</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+852                          <span class="k">if</span> <span class="ow">not</span> <span class="n">keep</span><span class="p">:</span>
+853                              <span class="n">node</span><span class="o">.</span><span class="n">port_slots</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">slot_name</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+854
+855                  <span class="c1"># Multi-scope: graphOut nodes inside a non-graph scope BUFFER</span>
+856                  <span class="c1"># their value into ``state[&quot;latched_value&quot;]`` instead of</span>
+857                  <span class="c1"># propagating out immediately. ``_propagate_graphout_latches``</span>
+858                  <span class="c1"># flushes the latch to outer-scope downstream when the</span>
+859                  <span class="c1"># owning scope terminates. graphOuts in the graph scope (eval</span>
+860                  <span class="c1"># graph metric harvest) propagate normally as before.</span>
+861                  <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">graphOut</span><span class="s2">&quot;</span><span class="p">:</span>
+862                      <span class="n">_po_scope</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope_of</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+863                      <span class="k">if</span> <span class="n">_po_scope</span> <span class="o">!=</span> <span class="n">GRAPH_SCOPE_ID</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span><span class="p">:</span>
+864                          <span class="n">node</span><span class="o">.</span><span class="n">state</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">latched_value</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span>
+865                          <span class="k">if</span> <span class="n">total_firings</span> <span class="o">&lt;</span><span class="o">=</span> <span class="mi">5</span><span class="p">:</span>
+866                              <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+867                                  <span class="s2">&quot;</span><span class="s2">After </span><span class="si">%s</span><span class="s2">: queue=</span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+868                                  <span class="n">node</span><span class="o">.</span><span class="n">label</span> <span class="ow">or</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+869                                  <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">nid</span><span class="p">]</span><span class="o">.</span><span class="n">label</span> <span class="ow">or</span> <span class="n">nid</span> <span class="k">for</span> <span class="n">nid</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">]</span><span class="p">,</span>
+870                              <span class="p">)</span>
+871                          <span class="k">continue</span>  <span class="c1"># skip standard propagation block below</span>
+872
+873                  <span class="c1"># Propagate outputs to downstream nodes</span>
+874                  <span class="k">for</span> <span class="n">edge</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node_id</span><span class="p">,</span> <span class="p">[</span><span class="p">]</span><span class="p">)</span><span class="p">:</span>
+875                      <span class="n">target_id</span> <span class="o">=</span> <span class="n">edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">target</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span>
+876                      <span class="n">target</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">target_id</span><span class="p">)</span>
+877                      <span class="k">if</span> <span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+878                          <span class="k">continue</span>
+879
+880                      <span class="n">src_handle</span> <span class="o">=</span> <span class="n">edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">sourceHandle</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">default</span><span class="s2">&quot;</span><span class="p">)</span>
+881                      <span class="n">tgt_handle</span> <span class="o">=</span> <span class="n">edge</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">targetHandle</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">src_handle</span><span class="p">)</span>
+882
+883                      <span class="c1"># Route specific port value — the _route_value_to_port</span>
+884                      <span class="c1"># helper applies LIST[T] coercion (ADR-027) so scalar</span>
+885                      <span class="c1"># producers feeding a LIST[T] consumer are auto-wrapped</span>
+886                      <span class="c1"># and fan-in concatenates in edge declaration order.</span>
+887                      <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="ow">and</span> <span class="n">src_handle</span> <span class="ow">in</span> <span class="n">result</span><span class="p">:</span>
+888                          <span class="bp">self</span><span class="o">.</span><span class="n">_route_value_to_port</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">tgt_handle</span><span class="p">,</span> <span class="n">result</span><span class="p">[</span><span class="n">src_handle</span><span class="p">]</span><span class="p">)</span>
+889                      <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="ow">and</span> <span class="n">src_handle</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">default</span><span class="s2">&quot;</span><span class="p">:</span>
+890                          <span class="bp">self</span><span class="o">.</span><span class="n">_route_value_to_port</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">tgt_handle</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+891
+892                      <span class="c1"># Check if target is now ready to fire</span>
+893                      <span class="n">is_ready</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_ready</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+894                      <span class="k">if</span> <span class="n">is_ready</span> <span class="ow">and</span> <span class="n">target_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">:</span>
+895                          <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">target_id</span><span class="p">)</span>
+896
+897                  <span class="k">if</span> <span class="n">total_firings</span> <span class="o">&lt;</span><span class="o">=</span> <span class="mi">5</span><span class="p">:</span>
+898                      <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+899                          <span class="s2">&quot;</span><span class="s2">After </span><span class="si">%s</span><span class="s2">: queue=</span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+900                          <span class="n">node</span><span class="o">.</span><span class="n">label</span> <span class="ow">or</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+901                          <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">nid</span><span class="p">]</span><span class="o">.</span><span class="n">label</span> <span class="ow">or</span> <span class="n">nid</span> <span class="k">for</span> <span class="n">nid</span> <span class="ow">in</span> <span class="n">ready_queue</span><span class="p">]</span><span class="p">,</span>
+902                      <span class="p">)</span>
+903
+<span class="h">after-loop · verdict stage — fallback emission + band drain <span class="hr">── graph_executor.py:904–913 · ↔ <a href="#51-post-loop-pass">§5.1</a></span></span>
+905              <span class="c1"># If the loop ended without a boundary final-side emission</span>
+906              <span class="c1"># (drained queue, max_firings, user stop), reconstruct the last</span>
+907              <span class="c1"># completed iteration&#x27;s values from the paired iterIn&#x27;s slots</span>
+908              <span class="c1"># and emit best-effort; then drain the after-loop band — the</span>
+909              <span class="c1"># nodes fed by the root iterOut&#x27;s final_* handles (evaluate,</span>
+910              <span class="c1"># graphOut chains). This is the run-end verdict stage.</span>
+911              <span class="bp">self</span><span class="o">.</span><span class="n">_emit_final_fallback</span><span class="p">(</span><span class="p">)</span>
+912              <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_after_loop_pass</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
+913
+<span class="h">finalise — clean exit <span class="hr">── graph_executor.py:914–953 · ↔ <a href="#52-finalise">§5.2</a></span></span>
+915              <span class="n">session</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">done</span><span class="s2">&quot;</span>
+916              <span class="n">metrics</span> <span class="o">=</span> <span class="kc">None</span>
+917              <span class="c1"># Find metrics from any node that stored them (generic — any step node)</span>
+918              <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+919                  <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">metrics</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">:</span>
+920                      <span class="n">metrics</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">state</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">metrics</span><span class="s2">&quot;</span><span class="p">]</span>
+921              <span class="k">if</span> <span class="n">session</span><span class="o">.</span><span class="n">_metrics</span><span class="p">:</span>
+922                  <span class="n">metrics</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">_metrics</span>
+923
+924              <span class="c1"># run_end signal — fires after the loop finishes cleanly.</span>
+925              <span class="c1"># lifetime=&quot;run&quot; states clear here.</span>
+926              <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_signal</span><span class="p">(</span>
+927                  <span class="s2">&quot;</span><span class="s2">run_end</span><span class="s2">&quot;</span><span class="p">,</span>
+928                  <span class="p">{</span><span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">terminated</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">terminated</span><span class="p">}</span><span class="p">,</span>
+929              <span class="p">)</span>
+930
+931              <span class="k">if</span> <span class="ow">not</span> <span class="n">_suppress</span><span class="p">:</span>
+932                  <span class="k">await</span> <span class="n">broadcast</span><span class="p">(</span>
+933                      <span class="n">session</span><span class="o">.</span><span class="n">_ws</span><span class="p">(</span>
+934                          <span class="s2">&quot;</span><span class="s2">nav_complete</span><span class="s2">&quot;</span><span class="p">,</span>
+935                          <span class="p">{</span><span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">metrics</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">metrics</span><span class="p">}</span><span class="p">,</span>
+936                      <span class="p">)</span>
+937                  <span class="p">)</span>
+938
+939              <span class="c1"># GraphComplete hook</span>
+940              <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">has_hooks</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+941                  <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span>
+942                      <span class="s2">&quot;</span><span class="s2">GraphComplete</span><span class="s2">&quot;</span><span class="p">,</span>
+943                      <span class="n">payload</span><span class="o">=</span><span class="p">{</span>
+944                          <span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span>
+945                          <span class="s2">&quot;</span><span class="s2">terminated</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">terminated</span><span class="p">,</span>
+946                      <span class="p">}</span><span class="p">,</span>
+947                  <span class="p">)</span>
+948
+949              <span class="c1"># Final flush of any remaining log entries</span>
+950              <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span><span class="p">:</span>
+951                  <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span><span class="o">.</span><span class="n">flush</span><span class="p">(</span><span class="p">)</span>
+952
+953          <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+<span class="h">finalise — error path (verdict first, then error reporting) <span class="hr">── graph_executor.py:954–991 · ↔ <a href="#53-error-path">§5.3</a></span></span>
+955              <span class="c1"># Best-effort after-loop stage first: a final-side evaluate can</span>
+956              <span class="c1"># still emit fresh metrics even when the main loop crashed, so</span>
+957              <span class="c1"># eval harvest reports the actual final env step count instead</span>
+958              <span class="c1"># of a stale pre-crash value. Tolerant of cascading failures</span>
+959              <span class="c1"># (the env may be torn down already).</span>
+960              <span class="k">try</span><span class="p">:</span>
+961                  <span class="bp">self</span><span class="o">.</span><span class="n">_emit_final_fallback</span><span class="p">(</span><span class="p">)</span>
+962                  <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_after_loop_pass</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
+963              <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">_fpe</span><span class="p">:</span>
+964                  <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">after_loop_pass on error path raised: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">_fpe</span><span class="p">)</span>
+965              <span class="n">get_bus</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">from_exception</span><span class="p">(</span>
+966                  <span class="n">e</span><span class="p">,</span>
+967                  <span class="n">source</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">graph</span><span class="s2">&quot;</span><span class="p">,</span>
+968                  <span class="n">code</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">GRAPH_CRASH</span><span class="s2">&quot;</span><span class="p">,</span>
+969                  <span class="n">scope</span><span class="o">=</span><span class="p">{</span>
+970                      <span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span>
+971                      <span class="s2">&quot;</span><span class="s2">execution_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">_execution_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span><span class="p">,</span>
+972                  <span class="p">}</span><span class="p">,</span>
+973                  <span class="n">title</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Graph execution crashed at step </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+974              <span class="p">)</span>
+975              <span class="n">session</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">error</span><span class="s2">&quot;</span>
+976              <span class="c1"># run_end also fires on the error path so lifetime=&quot;run&quot;</span>
+977              <span class="c1"># states reset even when the loop crashes.</span>
+978              <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_signal</span><span class="p">(</span>
+979                  <span class="s2">&quot;</span><span class="s2">run_end</span><span class="s2">&quot;</span><span class="p">,</span>
+980                  <span class="p">{</span><span class="s2">&quot;</span><span class="s2">step</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">error</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="p">}</span><span class="p">,</span>
+981              <span class="p">)</span>
+982              <span class="k">if</span> <span class="ow">not</span> <span class="n">_suppress</span><span class="p">:</span>
+983                  <span class="k">await</span> <span class="n">broadcast</span><span class="p">(</span><span class="n">session</span><span class="o">.</span><span class="n">_ws</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">nav_status</span><span class="s2">&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">status</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">error</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">error</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="p">}</span><span class="p">)</span><span class="p">)</span>
+984
+985              <span class="c1"># GraphError hook — fires on unhandled exceptions</span>
+986              <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">has_hooks</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+987                  <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">GraphError</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">error</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="p">}</span><span class="p">)</span>
+988
+989              <span class="c1"># Flush log entries even on error</span>
+990              <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span><span class="p">:</span>
+991                  <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span><span class="o">.</span><span class="n">flush</span><span class="p">(</span><span class="p">)</span>
+</pre>
+<!-- run-listing:end -->
+
+<h2 id="7-termination-conditions"><span class="num">7.</span> Ways a run ends</h2>
+<table>
+<thead><tr><th>Condition</th><th>Where</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>iterOut.stop</code> truthy</td><td>Decide phase, iterOut boundary</td><td>scope ends + final side emits; root → break</td></tr>
+<tr><td><code>scope_step ≥ budget</code></td><td>Decide phase, after the stop check</td><td>scope ends + final side emits; root break, inner continue</td></tr>
+<tr><td><code>StopExecution</code></td><td>raised by node code (escape hatch)</td><td><code>terminated=True</code>, break now; fallback emission covers the final side</td></tr>
+<tr><td><code>stop_event</code></td><td>main-loop gate</td><td>user Stop → break; fallback emission</td></tr>
+<tr><td>queue empty</td><td>main-loop condition</td><td>graph exhausted (DAGs end here); fallback emission for loop graphs</td></tr>
+<tr><td><code>total_firings ≥ max</code></td><td>main-loop condition</td><td>backstop <code>budget × nodes × 3</code>; fallback emission</td></tr>
+</tbody>
+</table>
+
+<h2 id="8-execution-properties"><span class="num">8.</span> Execution properties</h2>
+<table>
+<tbody>
+<tr><td><strong>Concurrency</strong></td><td>single-threaded async — one node at a time; <code>forward()</code> may await</td></tr>
+<tr><td><strong>Determinism</strong></td><td>edge-declaration order + FIFO queue fix firing order</td></tr>
+<tr><td><strong>Cycles</strong></td><td>IterIn/IterOut <code>pairedWith</code> transfer, not edges</td></tr>
+<tr><td><strong>Step counting</strong></td><td>once per IterOut fire, per scope; root mirrors <code>self.step_counter</code></td></tr>
+<tr><td><strong>State</strong></td><td>per-node hidden + shared grant-gated <code>StateContainer</code>s; a grant to a container homed in another process resolves to a <code>RemoteContainerProxy</code> (see <a href="state-containers.html#9-nodeset-owned">State Containers §9</a>)</td></tr>
+<tr><td><strong>Errors</strong></td><td>default capture <code>{"error":…}</code>; <code>AGENTCANVAS_STRICT_ERRORS=1</code> re-raises</td></tr>
+</tbody>
+</table>
+
+<h2 id="9-file-reference"><span class="num">9.</span> File reference</h2>
+<table>
+<tbody>
+<tr><td><code>app/agent_loop/graph_executor.py</code></td><td><code>GraphExecutor</code>, <code>NodeInstance</code>, <code>_ScopeState</code>, <code>_NodeStateProxy</code></td></tr>
+<tr><td><code>app/agent_loop/loop_runner.py</code></td><td><code>LoopRunner</code> — lifecycle, policy loading</td></tr>
+<tr><td><code>app/agent_loop/builtin_nodes.py</code></td><td><code>NODE_HANDLERS</code> + built-in handlers</td></tr>
+<tr><td><code>app/agent_loop/scope_analysis.py</code></td><td><code>analyze_scopes</code> → <code>ScopeForest</code></td></tr>
+<tr><td><code>app/agent_loop/flatten.py</code></td><td><code>flatten_graph</code> + <code>FlattenMap</code></td></tr>
+<tr><td><code>app/components/bases.py</code></td><td><code>FireList</code> / <code>FireSpec</code></td></tr>
+<tr><td><code>app/api/execution/run.py</code></td><td><code>POST /api/navigate/run</code> (ADR-platform-002)</td></tr>
+</tbody>
+</table>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: <strong>Part II re-synced to HEAD <code>bbb22da3</code>; remote-container pointer added.</strong> The §6 listing's sync stamp had drifted (was <code>fa19b466</code>, before <code>run()</code> changed — line numbers off by 4 and the cross-process container path was missing); re-ran <code>docs/_lib/_sync_run_listing.py</code> so the listing matches current <code>graph_executor.py:260–991</code>. §8 &ldquo;State&rdquo; row now notes that a grant to a container homed in another process resolves to a <code>RemoteContainerProxy</code>, pointing at the new <a href="state-containers.html#9-nodeset-owned">State Containers §9</a>. (Part I prose re-verified against current <code>run()</code>: 7-step BUILD, two guards, four-phase iterOut boundary all still hold.)</li>
+<li>2026-06-11 18:29: §6 highlighting upgraded to a two-stage pipeline (user design) — stage 1: Pygments tokenizes <code>run()</code> into static spans (replaces the script's hand-rolled comment/string/keyword tokenizer; full token fidelity: <code>nf</code>/<code>bp</code>/<code>nb</code>/<code>si</code>/…); stage 2: the sync script only decorates (band split on banner comments, line gutter, §-links). Page CSS gains a GitHub-Primer palette for the Pygments classes, light + dark; the legacy <code>.rxcode</code> hand-span rules (<code>.p</code>/<code>.k</code>/<code>.w</code>/<code>.c</code>/<code>.s</code>) were removed — <code>.p</code> would have collided with Pygments' punctuation class. VSCode-grade semantic highlighting re-confirmed infeasible outside the editor (Pylance-bound; the abandoned <code>docs/_tools/vscode-highlight</code> attempt); Pygments + GitHub palette is the chosen stand-in. Run the sync with the <code>agentcanvas</code> env's python (pygments 2.20).</li>
+<li>2026-06-11 18:09: <strong>§6 listing now synced from source — comments are the annotations</strong> (user design: the annotation layer and the code must not be able to disagree). Source side: <code>run()</code> gained phase-banner comments in Part I's vocabulary (<code># ─── pre-loop · BUILD ───</code>, ENTRY DISCOVERY, in-loop, the four boundary-phase markers, ordinary path, after-loop, finalise ×2), BUILD steps renumbered 1/7–7/7 to match the §3.1 table, the two §4.2 guards labelled, and two dead references fixed (&ldquo;iterOut pull-check&rdquo; → decide check; &ldquo;§5 of the scratch doc&rdquo; dropped) — comments only, 117 tests green. Doc side: new <code>docs/_lib/_sync_run_listing.py</code> extracts <code>run()</code>, splits bands on the banner comments, adds the §-links per band (the §-mapping lives in the script, never in source), highlights comments/strings/keywords, and writes between <code>run-listing</code> markers with a commit-pinned sync stamp; stale-snapshot warning removed — the listing is current by construction, refresh = one command.</li>
+<li>2026-06-11 17:49: Part II slimmed to one listing (user decision) — §7 <code>_fire_node</code> + §7.1 helpers (≈490 lines of verbatim code) deleted; the per-node fire path is now read in source. Old §8/§9/§10 renumbered to §7/§8/§9 (Ways a run ends / Execution properties / File reference); all in-page references updated (Part II banner, stale-notice now singular, §4.1/§4.5 fire-path links point at <code>graph_executor.py</code>, two in-listing <code>◀──</code> annotations). The <code>run()</code> listing itself is unchanged this pass — its presentation (abridged skeleton vs verbatim) is the next decision.</li>
+<li>2026-06-11 17:30: §4.6 trace rewritten as a turn-by-turn table (reader feedback: the ASCII event log was unreadable) — columns Turn / ready-queue / Fires / Effect, so the queue column directly exercises §4.5's queue-hub flowchart; each Effect cell ends with what became ready, teaching the firing rule in motion; closing note points out that <code>evaluate</code> enters the queue exactly once (turn 8), which is the #64 fix made visible.</li>
+<li>2026-06-11 17:29: §4.5 flowchart — the ready-queue is now drawn as the hub it is (reader feedback: every edge referenced the queue but the queue itself was missing). An accent box with FIFO slots replaces the &ldquo;ready node?&rdquo; diamond; ENTRY DISCOVERY <em>primes</em> it, the spine <em>pops</em> it (&ldquo;has a node — pop front&rdquo;), and both blue return edges now visibly feed it (&ldquo;enqueue ready&rdquo;, &ldquo;re-enqueue IterIn&rdquo;) instead of pointing abstractly at a decision diamond; the empty/cap/Stop exit leaves from the queue box. Also fixed: the hand-off return lane used to pass straight through the route-outputs box (moved to the far-left lane).</li>
+<li>2026-06-11 17:18: View 2 rewritten in the same style as View 1 — §2 gains a lead (who schedules vs who computes) and reframes the three-phase figure as View 2's outline + the engine-side mirror of §1.2's place↔time table; §3 BUILD figure relabelled ①–⑦ to match the seven table rows (fixed a duplicated &ldquo;containers&rdquo; line); §4 intro de-duplicated, §4.1 skeleton recast as a four-step turn (gate / pop / guard+fire / fork); §4.2 history parenthetical moved out of the lead into a closing note; §4.6 trace rewritten on the §1.2 example (was an unrelated vlm/llm graph) with numbered boundary phases and §-references; §5.1 wall-of-text split into contract (why the band cannot fire early) then mechanism (the drain); §5.2 and §5.3 sequences converted from prose to ordered lists. One example now runs §1.2 → §4.1 → §4.6.</li>
+<li>2026-06-11 16:43: View 1 rewritten for concision and flow — §1 lead now states the whole contract in one sentence (one rule + one structure); §1.1 figure redrawn as a before/after pair (waits → fires/fan-out; the old right side leaked §1.2 concepts — IterOut/&ldquo;stop check&rdquo;/evaluate boxes removed) and gains three named consequences (order is derived / inputs are consumed / no drawn cycles — the old &ldquo;cycle is not special&rdquo; paragraph folded into the third); §1.2 walk re-ordered by run time (run start → each iteration → halting → termination → verdict), anatomy figure relabelled in contract language (&ldquo;opens/closes each iteration&rdquo; for the engine-speak step_start/step_end, loop-carry label de-jargonned) with an in-figure legend (gray = wire you draw, blue = engine-timed) replacing the prose paragraph; closes with a place↔time table (init edges/body/final band ↔ pre/in/after-loop §3–§5) as the hand-off to View 2.</li>
+<li>2026-06-11 16:28: <strong>Part I split into two viewpoints</strong> (reader feedback: the §1 / §4.1 / §4.5 figures looked interchangeable) — View 1 &ldquo;The graph — what you draw&rdquo; = §1, retitled &ldquo;The drawn graph and its contract&rdquo;, now §1.1 firing rule + §1.2 anatomy of an agent loop (figure moved up from §4.1, gains a per-element walk: entry node / two pivots / body / done→stop / final_* band, plus the &ldquo;blue = engine-timed, not plain dataflow&rdquo; key); View 2 &ldquo;The engine — how run() executes it&rdquo; = §2–§5, opened by a banner stating the box-semantics switch (engine actions, no concrete nodes). §4.1 now points back to §1.2 instead of duplicating the figure; §4.5's closing line names it the engine-view counterpart of §1.2. New <code>.view-banner</code> style; anchors unchanged.</li>
+<li>2026-06-11 16:18: §4.5 readability — lead paragraph rewritten as a four-step walk of the flowchart (set up / turn / fork / exit); flowchart redrawn: the ordinary-node fast path is now a real box (was a floating edge label), the four phases sit in a dashed &ldquo;IterOut boundary — §4.3&rdquo; group, and the exit labels say what they mean (&ldquo;queue drained · firing cap · user Stop&rdquo;, &ldquo;halt: stop or budget — emit final_* once&rdquo; instead of &ldquo;empty / cap&rdquo; / &ldquo;halt&rdquo; / &ldquo;else&rdquo;); loop-backs labelled &ldquo;turn again&rdquo; / &ldquo;next iteration&rdquo;; boxes carry their section numbers.</li>
+<li>2026-06-11 15:38: <strong>two-sided iterOut</strong> — Part I rewritten for the termination-node removal: §4.2 guards 4→2 (defer + post-loop-skip deleted); §4.3 Decide reads <code>iterOut.stop</code> and triggers the once-only final-side emission, Settle no longer skips termination, sharp-edge box replaced by &ldquo;what the final side bought&rdquo; (#64 fixed by construction); §4.6 trace shows the terminal-iter emission + after-loop drain; §5.1 rewritten as the after-loop band (topological membership, no <code>config.post_loop</code>, engine-guaranteed input contract, <code>_emit_final_fallback</code>); §8 table updated (stop / budget / fallback rows); SVGs relabelled. <strong>Part II listings intentionally left as a pre-refactor snapshot</strong> behind a prominent stale-notice — re-excerpt tracked in TODO #62.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-06-11 13:51: §5 verified against current finalise code — three touch-ups: §5.1 &ldquo;seeds&rdquo; verb → &ldquo;primes&rdquo; (word freed for the entry-node rename); §5.2 metrics precedence stated (<code>session._metrics</code> overrides node values); §5.3 now lists the full error-path tail (<code>nav_status</code> error broadcast, <code>GraphError</code> hook, final log flush).</li>
+<li>2026-06-11 13:45: §4 readability — §4.4 propagation rewritten from one dense paragraph into a four-move list (consume / special cases / route / enqueue); §4.3 ① &ldquo;propagate to adjacency&rdquo; → &ldquo;route along its outgoing edges&rdquo;. Content verified line-by-line against the current iterOut boundary code (no factual drift).</li>
+<li>2026-06-11 13:35: terminology — &ldquo;seed (node)&rdquo; renamed to <strong>entry node</strong> page-wide (&ldquo;seed&rdquo; collided with RNG seeds, AAS seed data, and init-side wiring); §3.2 retitled &ldquo;ENTRY DISCOVERY&rdquo; and its lead now states the discovery is automatic/structural; init-side wiring now consistently &ldquo;init edges / run-start values&rdquo;; listings re-synced to the renamed executor comments + <code>entry_nodes=</code> log field; stale &ldquo;INITIALIZE + PROPAGATION&rdquo; band reference in §6 walk-through fixed.</li>
+<li>2026-06-11 13:02: §3.1 readability pass — BUILD table gains a numbered <code>#</code> column (steps 1–7); each row's what/why rewritten in plain language (hooks/containers/scope rows no longer assume the reader knows <code>HookRunner</code> / <code>graph_state</code> binding / <code>ScopeForest</code> internals); step-budget callout anchored to step 4.</li>
+<li>2026-06-11 12:08: two-pivot follow-through (ADR-dataflow-008; <code>initialize</code> node removed 2026-06-10) — §3.1 BUILD table drops the &ldquo;Absorb Initialize&rdquo; row (seven steps now); §3.2 seed rules + sharp edge rewritten for init-side seed edges; §4.2 scope-barrier exemption set, §4.4 propagation note, §4.6 trace, §5.1 post-loop bar all updated; §4.1 loop SVG redrawn without the Initialize box; §6/§7 listings re-synced to the post-removal source (initialize branch deleted, writer comments updated) and <em>all gutter line numbers re-derived from the current file</em>.</li>
+<li>2026-06-09: moved the <code>run()</code> control-flow flowchart out of Part II into a new Part I §4 &ldquo;The whole run, end to end&rdquo; and redrew it (top-to-bottom, right-angle routing, single loop-back lane, IterOut four-phase strip) so it reads as a for-people overview; renumbered the following sections +1 (run-listing &rarr; §6 &hellip; file reference &rarr; §10).</li>
+<li>2026-06-08 (d): consolidated Part II into <em>one</em> continuous <code>run()</code> listing + one <code>_fire_node</code> listing, segmented by full-width colored region bands (<code>.rxcode .h</code>) with the IterOut four phases as sub-bands. Replaces the per-subsection fragments so the algorithm reads top-to-bottom as one flow.</li>
+<li>2026-06-08 (c): Part II code-ified — actual source with <code>◀──</code> annotations (ADAS-reference style).</li>
+<li>2026-06-08 (b): diagram-first rewrite — 5 inline theme-adaptive SVGs; explicit two-part split; IterOut boundary redrawn as a 4-phase flow.</li>
+<li>2026-06-08 (a): full rewrite from the markdown-converted page, re-synced to current code. Fixed drift: <code>init_port_cache</code> → <code>port_slots</code>; <code>final_fire</code> ClassVar → <code>config.post_loop</code> + <code>_post_loop_pass</code>.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-the-core-idea">1. The drawn graph and its contract</a>
+      <a class="toc-h3" href="#11-firing-rule">1.1 The firing rule</a>
+      <a class="toc-h3" href="#12-anatomy">1.2 Anatomy of an agent loop</a>
+      <a class="toc-h2" href="#2-where-it-sits">2. Where the engine sits</a>
+      <a class="toc-h2" href="#3-pre-loop">3. Pre-loop — build &amp; discover entries</a>
+      <a class="toc-h3" href="#31-build">3.1 BUILD — compile the graph into live state</a>
+      <a class="toc-h3" href="#32-seed">3.2 ENTRY DISCOVERY — find the entry nodes, prime the ready-queue</a>
+      <a class="toc-h2" href="#4-in-loop">4. In-loop — the firing loop</a>
+      <a class="toc-h3" href="#41-one-iteration">4.1 One iteration &amp; the loop skeleton</a>
+      <a class="toc-h3" href="#42-the-gauntlet">4.2 The guards before a fire</a>
+      <a class="toc-h3" href="#43-iterout-boundary">4.3 The IterOut boundary — four phases</a>
+      <a class="toc-h3" href="#44-propagation">4.4 Ordinary nodes &amp; propagation</a>
+      <a class="toc-h3" href="#45-the-whole-run">4.5 The whole run, end to end</a>
+      <a class="toc-h3" href="#46-a-concrete-trace">4.6 A concrete trace</a>
+      <a class="toc-h2" href="#5-after-loop">5. After-loop — the verdict stage &amp; finalise</a>
+      <a class="toc-h3" href="#51-post-loop-pass">5.1 The after-loop pass</a>
+      <a class="toc-h3" href="#52-finalise">5.2 Clean finalise</a>
+      <a class="toc-h3" href="#53-error-path">5.3 The error path</a>
+      <a class="toc-h2" href="#6-the-run-listing">6. The run() listing — synced from source</a>
+      <a class="toc-h2" href="#7-termination-conditions">7. Ways a run ends</a>
+      <a class="toc-h2" href="#8-execution-properties">8. Execution properties</a>
+      <a class="toc-h2" href="#9-file-reference">9. File reference</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

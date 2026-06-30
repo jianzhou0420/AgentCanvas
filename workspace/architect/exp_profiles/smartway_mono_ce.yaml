@@ -1,0 +1,30 @@
+# Experiment harness profile for the smartway_mono_ce graph.
+# Read by /experiment:run and /architect:experiment.
+# Schema: see .claude/commands/architect/_common/evaluator.md (profile block: split/worker_count/step_budget/per_step_budget_sec/metrics).
+
+# Eval-API parameters
+split: rand100                   # SmartWay paper's fixed 100-ep subset of val_unseen (paper Table 2; see eval.sh `EVAL.SPLIT rand100` + base_il_trainer.py episodes_to_eval=100). Strict subset of v1-3 val_unseen — verified ep_ids + start_positions identical.
+worker_count: 4                  # env_vlnce habitat-sim ~1.5GB marginal per worker
+step_budget: 20                  # SmartWay paper config (habitat_extensions/config/vlnce_task.yaml: MAX_EPISODE_STEPS=20, run_VLNBERT.yaml: max_traj_len=20)
+per_step_budget_sec: 180         # episode_timeout = 15 × 180 = 2700s; per-step has waypoint predict + RAM+ + GPT-4o + habitat step (heavier than env_mp3d)
+
+# Metric handling
+primary_metric: success          # paper-reported SR on val_unseen for headline
+secondary_metrics: [spl, nDTW, oracle_success, nav_error]
+
+# Free-form rationale
+rationale:
+  step_budget: |
+    SmartWay paper config in vlnce_baselines/config/r2r_baselines/test_r2r.yaml
+    caps the per-episode action count at 15. Mirrors VLN-CE convention and
+    upstream eval_checkpoint while-loop bound.
+  per_step_budget_sec: |
+    Per-step is heavier than mapgpt/navgpt: waypoint predictor (DDPPO masked
+    cross-attn) + RAM+ tagging + GPT-4o multi-image + habitat-CE step. 180s
+    gives wide headroom; tighten after iter_0 log p95 measurement.
+  worker_count: |
+    Unvalidated for env_vlnce in this codebase (no prior smartway eval runs
+    found). env_vlnce uses server-mode habitat (single sim instance per
+    worker, ~1.5GB marginal). 4 workers ~6GB total habitat — fits inside the
+    backend's usable_vram_mb after shared singletons (waypoint predictor +
+    RAM+) are reserved. Bump conservatively after first calibration.

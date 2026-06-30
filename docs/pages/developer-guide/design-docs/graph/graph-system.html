@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph System — AgentCanvas</title>
+<meta name="description" content="The graph as an artifact — schema, legality, storage, composition, and the handoff to the engine">
+<meta property="og:title" content="Graph System — AgentCanvas">
+<meta property="og:description" content="The graph as an artifact — schema, legality, storage, composition, and the handoff to the engine">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/graph-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="gs-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:740px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .ghost { fill: none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#gsa); }
+  .rxsvg .edgeA { stroke: var(--designdoc); stroke-width:1.7; fill:none; marker-end:url(#gsaA); }
+  .rxsvg .edgeAd { stroke: var(--designdoc); stroke-width:1.7; fill:none; stroke-dasharray:6 5; marker-end:url(#gsaA); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/graph-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Graph System</span>
+  </div>
+  <div class="last-updated">2026-06-16 12:00</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Graph System</h1>
+  <p class="tagline">The graph as an artifact — schema, legality, storage, composition, and the handoff to the engine</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="gsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="gsaA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--designdoc)"/></marker>
+</defs></svg>
+
+<p class="lede">Every agent pipeline in AgentCanvas is one JSON document. This page follows that document through its whole life — what its schema is (§2), which node types it may reference (§3), what makes it legal (§4), how it nests (§5), where it lives on disk and in the UI (§6) — then reads one real artifact end to end (§7) and walks it to the API boundary where it is handed to the engine (§8).</p>
+
+<div class="callout note"><p><strong>Boundary.</strong> This page treats the graph as <em>data at rest</em>. The story ends at the moment a validated artifact is handed to <code>GraphExecutor.run()</code> — which flattens it (§5) in its build phase, before any node fires. Everything after — flattening, when nodes fire, how loops execute, how a run ends — is <a href="graph-executor.html">Graph Executor</a>'s subject; its §1 states the execution contract a drawn graph makes.</p></div>
+
+<svg class="rxsvg" viewBox="0 0 740 214" role="img" aria-label="Lifecycle of the artifact: authored on canvas, file, or by code; exists as a JSON artifact; validated at the API; handed off via POST /run to GraphExecutor.run(), which flattens it (section 5) as its first step and then executes — execution belongs to the Graph Executor page.">
+  <rect x="8" y="36" width="104" height="44" rx="7" class="box"/><text x="60" y="63" text-anchor="middle">author</text>
+  <text x="60" y="100" text-anchor="middle" class="dim">canvas · file · code</text>
+  <path class="edge" d="M112,58 H152"/>
+  <rect x="152" y="36" width="150" height="44" rx="7" class="box"/><text x="227" y="63" text-anchor="middle">JSON artifact</text>
+  <text x="227" y="100" text-anchor="middle" class="dim">§2 schema · §3 types</text>
+  <text x="227" y="115" text-anchor="middle" class="dim">parked in workspace/ — §6</text>
+  <path class="edge" d="M302,58 H342"/>
+  <rect x="342" y="36" width="110" height="44" rx="7" class="box"/><text x="397" y="63" text-anchor="middle">validate</text>
+  <text x="397" y="100" text-anchor="middle" class="dim">§4 legality</text>
+  <path class="edge" d="M452,58 H492"/>
+  <rect x="492" y="36" width="130" height="44" rx="7" class="box"/><text x="557" y="63" text-anchor="middle">hand off</text>
+  <text x="557" y="100" text-anchor="middle" class="dim">§8 POST /run</text>
+  <path class="edgeA" d="M557,80 C557,116 600,158 580,158"/>
+  <rect x="250" y="138" width="330" height="40" rx="7" class="accent"/><text x="415" y="163" text-anchor="middle" class="at">GraphExecutor.run()</text>
+  <text x="415" y="195" text-anchor="middle" class="dim">build phase: flattens it (§5) — then executes</text>
+  <text x="415" y="210" text-anchor="middle" class="dim">from here on: the Graph Executor page</text>
+</svg>
+
+<h2 id="1-the-artifact"><span class="num">1.</span> The artifact</h2>
+
+<div class="callout note">
+  <strong>A graph = JSON. Period.</strong> A graph is pure data: a named collection of node <em>references</em> (type + config) joined by typed wires. No Python objects, no live state, no imports.
+</div>
+
+<p>Because it is only data, the same document moves freely between every surface of the system: saved to disk under <code>workspace/graphs/</code> or <code>workspace/graph_nodes/</code>, sent over HTTP (<code>POST /api/navigate/run</code>, <code>POST /api/graphs</code>), embedded inside another graph via <code>NodeDef.subgraph</code> (§5), authored on the canvas, loaded from a file, or generated by code — including by the AAS architect loop, which edits graphs purely through the API.</p>
+
+<p>The division of labour with the engine is the blueprint/factory split. The graph names <em>what</em> exists; only at fire time does the executor turn a type string into a live object:</p>
+
+<pre class="hl">
+<span class="c1"># GraphExecutor._fire_node() — the only place type strings become objects</span>
+<span class="n">handler_cls</span> <span class="o">=</span> <span class="n">NODE_HANDLERS</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">)</span>   <span class="c1"># registry lookup — None + warn if unknown</span>
+<span class="n">instance</span> <span class="o">=</span> <span class="n">handler_cls</span><span class="p">(</span><span class="p">)</span>                 <span class="c1"># fresh live instance</span>
+<span class="n">instance</span><span class="o">.</span><span class="n">config</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">config</span>            <span class="c1"># per-node knobs from the JSON</span>
+<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">instance</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span>
+</pre>
+
+<p>This separation is what makes graphs portable: the same JSON runs on any backend that registers the same node types, and nothing about a saved graph can hold a stale object alive.</p>
+
+<h2 id="2-the-schema"><span class="num">2.</span> The schema</h2>
+
+<p>All model types live in <code>agentcanvas/backend/app/graph_def.py</code> as plain recursive <code>@dataclass</code>es, mirrored one-to-one by the frontend's <code>types.ts</code>. Two fragments carry almost all of the structure — a node reference and a wire:</p>
+
+<pre class="hl">
+<span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;predict&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;policy_vlnce__predict&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Predict&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;position&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;x&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">420</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;y&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">96</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;model_adapter&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cma&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+
+<span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;e7&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;predict&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;sourceHandle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;model_output&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;target&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;adapt_model_to_canonical&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;targetHandle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;model_output&quot;</span><span class="w"> </span><span class="p">}</span>
+</pre>
+
+<h3 id="21-graphdefinition"><span class="num">2.1</span> GraphDefinition, NodeDef, EdgeDef</h3>
+
+<p><code>GraphDefinition</code> is the universal container — the same dataclass serves the root canvas graph, an agent-loop inner graph, a composite's subgraph, and a saved template:</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>name</code>, <code>description</code></td><td><code>str</code></td><td>Identity shown in the Explorer and save dialogs.</td></tr>
+    <tr><td><code>nodes</code></td><td><code>NodeDef[]</code></td><td>Node references — type + config, never instances.</td></tr>
+    <tr><td><code>edges</code></td><td><code>EdgeDef[]</code></td><td>Typed wires, output port → input port.</td></tr>
+    <tr><td><code>containers</code></td><td><code>ContainerDef[]</code></td><td>State containers — visible shared state (§2.2, ADR-dataflow-002).</td></tr>
+    <tr><td><code>access_grants</code></td><td><code>AccessGrantDef[]</code></td><td>Node ↔ container authorization — not wires (§2.2, ADR-dataflow-004).</td></tr>
+    <tr><td><code>hooks</code></td><td><code>HookDef[]</code></td><td>Shell hooks at lifecycle events (§2.3, ADR-observability-002).</td></tr>
+    <tr><td><code>step_budget</code></td><td><code>int | None</code></td><td>Per-episode iteration cap, default 500. The eval framework's resolver chain (<code>eval_batch.py</code>) may override it per episode from the env panel's <code>on_load()</code>.</td></tr>
+    <tr><td><code>eval_graph</code></td><td><code>bool</code></td><td>Default <code>true</code>: the graph must declare ≥1 <code>graphOut</code> (§4.2). Demo / playground graphs opt out with <code>false</code>.</td></tr>
+    <tr><td><code>kind</code></td><td><code>"graph" | "node"</code></td><td>Storage root + UX routing (§6, ADR-canvas-003).</td></tr>
+    <tr><td><code>group</code></td><td><code>str</code></td><td>Explorer grouping label for graph nodes.</td></tr>
+    <tr><td><code>presetId</code></td><td><code>str | None</code></td><td>Provenance of preset-derived graphs.</td></tr>
+  </tbody>
+</table>
+
+<p><code>NodeDef</code> and <code>EdgeDef</code> are deliberately thin:</p>
+
+<table>
+  <thead><tr><th></th><th>Field</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="4"><strong>NodeDef</strong></td><td><code>id</code></td><td>Unique within its graph. Conventionally <code>${type}_${hash8}</code>, but any unique string works.</td></tr>
+    <tr><td><code>type</code></td><td>Key into <code>NODE_HANDLERS</code> (§3) — a reference, not a class.</td></tr>
+    <tr><td><code>config</code></td><td>Per-instance knobs. May carry <code>config.ports: PortDef[]</code>, the per-instance port override (ADR-dataflow-003).</td></tr>
+    <tr><td><code>subgraph</code></td><td><code>GraphDefinition | None</code> — composite nesting (§5).</td></tr>
+    <tr><td rowspan="2"><strong>EdgeDef</strong></td><td><code>source</code>, <code>target</code></td><td>Node ids.</td></tr>
+    <tr><td><code>sourceHandle</code>, <code>targetHandle</code></td><td>Output / input port names. Wire types are checked per edge by <code>validate_edge_wire_type</code>.</td></tr>
+  </tbody>
+</table>
+
+<p>(<code>label</code> and <code>position</code> on NodeDef are canvas presentation only.)</p>
+
+<h3 id="22-state-containers"><span class="num">2.2</span> State containers and access grants</h3>
+
+<p>Shared state is part of the artifact, not a runtime side channel. A <code>ContainerDef</code> is a visible canvas element holding named <code>StateDef</code> entries; an <code>AccessGrantDef</code> authorizes one node to read/write one container. Grants render as dashed violet lines but are <strong>not wires</strong>: they carry no data and never make a node ready.</p>
+
+<table>
+  <thead><tr><th>StateDef field</th><th>Values</th></tr></thead>
+  <tbody>
+    <tr><td><code>type</code></td><td><code>accumulator</code> · <code>lastWrite</code> · <code>counter</code></td></tr>
+    <tr><td><code>value_type</code></td><td>any name in the <code>STATE_VALUE_TYPES</code> registry</td></tr>
+    <tr><td><code>lifetime</code></td><td><code>forever</code> · <code>step</code> · <code>episode</code> · <code>run</code> · <code>custom</code> (with <code>reset_on: str[]</code>)</td></tr>
+    <tr><td><code>config</code></td><td>per-type knobs, e.g. <code>{max_size, initial_value}</code></td></tr>
+  </tbody>
+</table>
+
+<p>A container with the well-known id <code>"graph_state"</code> plays the role of the graph-level blackboard — but since ADR-dataflow-004 there is no auto-inject: every node that wants it needs its own grant.</p>
+
+<h3 id="23-hooks"><span class="num">2.3</span> Hooks</h3>
+
+<p>A <code>HookDef</code> attaches a shell command to a lifecycle event: <code>event</code> (<code>PreNodeExecute</code> / <code>PostNodeExecute</code> / <code>GraphStart</code> / <code>GraphComplete</code> / <code>GraphError</code>), <code>command</code> (stdin receives a JSON payload), <code>match_node_type</code> (<code>*</code>, exact, or prefix-glob), optional <code>match_node_id</code>, <code>timeout_ms</code> (default 1000), <code>enabled</code>. One caveat lives in §5: hooks on inner composites do not survive flattening.</p>
+
+<h2 id="3-vocabulary"><span class="num">3.</span> The node-type vocabulary</h2>
+
+<p><code>NodeDef.type</code> draws from two namespaces, distinguished by a double-underscore separator (ADR-components-003).</p>
+
+<p><strong>NodeSet nodes</strong> are <code>${nodeset}__${node}</code> — the prefix is what lets the frontend auto-load the owning nodeset when a graph is opened (§6.4):</p>
+
+<table>
+<thead><tr><th>Example type</th><th>NodeSet</th><th>Node</th></tr></thead>
+<tbody>
+<tr><td><code>env_habitat__observe</code></td><td><code>env_habitat</code></td><td><code>observe</code></td></tr>
+<tr><td><code>env_habitat__step_native</code></td><td><code>env_habitat</code></td><td><code>step_native</code></td></tr>
+<tr><td><code>policy_vlnce__predict</code></td><td><code>policy_vlnce</code></td><td><code>predict</code></td></tr>
+<tr><td><code>env_mp3d__reset</code></td><td><code>env_mp3d</code></td><td><code>reset</code></td></tr>
+</tbody>
+</table>
+
+<p><strong>Built-in nodes</strong> have no separator. The 14 registered in <code>NODE_HANDLERS</code> at import time (<code>agent_loop/builtin_nodes.py</code>) — roles only; the pivots' execution semantics live in <a href="graph-executor.html#12-anatomy">Graph Executor §1.2</a>:</p>
+
+<table>
+<thead><tr><th>Node type</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>iterIn</code></td><td>Loop pivot, opens each iteration — init side takes run-start values into <code>init_&lt;X&gt;</code> handles (§4.1); output side feeds the loop body</td></tr>
+<tr><td><code>iterOut</code></td><td>Loop pivot, closes each iteration — collects carry ports + the <code>stop</code> halt input; its <code>final_*</code> side feeds the after-loop band</td></tr>
+<tr><td><code>graphIn</code> / <code>graphOut</code></td><td>Composite boundary I/O — rewired by <code>flatten_graph</code> (§5); <code>graphOut</code> doubles as the eval metric latch harvested by <code>BatchEvalRunner</code></td></tr>
+<tr><td><code>llmCall</code></td><td>LLM / VLM completion via litellm</td></tr>
+<tr><td><code>textParse</code></td><td>Extract a keyword, regex capture, or JSON field from text</td></tr>
+<tr><td><code>historyLog</code></td><td>Accumulate per-step entries into formatted history text (resets per episode)</td></tr>
+<tr><td><code>nullSource</code></td><td>Emits <code>None</code> on a typed output — an entry node; fires once at run start</td></tr>
+<tr><td><code>note</code></td><td>Markdown annotation on the canvas (passive — no execution effect)</td></tr>
+<tr><td><code>imageViewer</code></td><td>Viewer sink — configurable IMAGE/DEPTH grid (ADR-components-007)</td></tr>
+<tr><td><code>textViewer</code></td><td>Viewer sink — latest TEXT block</td></tr>
+<tr><td><code>textScroll</code></td><td>Viewer sink — accumulating TEXT history (ADR-components-008)</td></tr>
+<tr><td><code>actionLog</code></td><td>Viewer sink — action history with step numbers</td></tr>
+<tr><td><code>metrics</code></td><td>Viewer sink — SPL/SR/nDTW/SDTW</td></tr>
+</tbody>
+</table>
+
+<p><code>compositeNode</code> is deliberately absent: it is a frontend-only shell carrying a <code>subgraph</code>, expanded by <code>flatten_graph()</code> before the executor ever sees it. The former <code>initialize</code>, <code>termination</code>, and <code>outputPort</code> types are removed — graphs that still carry the first two are rejected with migration hints (§4.2).</p>
+
+<h2 id="4-legality"><span class="num">4.</span> What makes a graph legal</h2>
+
+<p>This section is the authority on legality. §4.1 explains the one structure with non-trivial data shape — the pivot pair; §4.2 lists every rule the validator enforces; §4.3 covers the conventions that matter but are not machine-checked.</p>
+
+<h3 id="41-pivot-pair"><span class="num">4.1</span> The pivot pair, data side</h3>
+
+<p>Loops are expressed by a paired <code>iterIn</code>/<code>iterOut</code> (<a href="../../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a> + <a href="../../core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a>). The authoring rule: run-start values (initial observation, instruction, episode config) go into iterIn's init side; values that change per iteration ride the loop-carry through iterOut. In the JSON, each pivot is two-sided:</p>
+
+<ul>
+  <li><code>iterIn</code> — its <strong>input side</strong> is declared under <code>config.initPorts</code>; run-start values arrive as ordinary edges targeting the prefixed <code>init_&lt;name&gt;</code> handles. Its <strong>output side</strong> exposes <code>init_&lt;name&gt;</code> + <code>iterout_&lt;name&gt;</code> handles to the loop body.</li>
+  <li><code>iterOut</code> — its <strong>input side</strong> takes the loop-carry values under <code>config.ports</code>, plus an optional <code>stop</code> BOOL halt input. Its <strong>output side</strong> mirrors the carry ports as <code>final_&lt;name&gt;</code> handles plus a constant <code>final_stop</code> — these feed the after-loop verdict stage. The pivots are linked by <code>config.pairedWith</code>; there is no canvas wire between them.</li>
+</ul>
+
+<p>iterIn's effective <code>config.ports</code> is <strong>synthesised at graph load</strong> by <code>_synthesize_iterin_ports</code> from two writers — its own <code>initPorts</code> (handles prefixed <code>init_</code>, default <code>persist=false</code>) and the paired iterOut's <code>config.ports</code> (handles prefixed <code>iterout_</code>, default <code>persist=true</code>) — and is never hand-written; the legacy <code>init_ports</code>/<code>loop_ports</code> keys are rejected at load. Direct canvas edges into iterIn targeting an undeclared handle are also accepted as init-writer surrogates (handle name used as-is).</p>
+
+<p>What these declarations <em>mean at runtime</em> — which value a consumer sees on which iteration, what <code>persist</code> does to a slot, when the final side delivers — is the execution contract, stated in <a href="graph-executor.html#12-anatomy">Graph Executor §1.2</a> with the boundary mechanics in <a href="graph-executor.html#43-iterout-boundary">§4.3</a>. The one trap worth flagging at authoring time: a name may appear on both sides (<code>init_X</code> for iter 0, <code>iterout_X</code> for iter ≥1) only if the init entry stays one-shot — §7.2 shows the canonical dual-wire example.</p>
+
+<h3 id="42-validation-rules"><span class="num">4.2</span> Load-time validation — the rule set</h3>
+
+<p>All rules are enforced by <code>validate_graph_connectivity()</code> (<code>graph_def.py</code>) at the API boundary (<code>POST /api/navigate/run</code>, <code>POST /api/eval/v2/start</code>); violations are batched into one HTTP 400 listing every error. Port requirements are resolved per instance — for each builtin the validator calls <code>cls._resolve_ports(node.config)</code> when present (so <code>config.ports</code> overrides are honoured), falling back to the class-level <code>input_ports</code>; nodeset types are skipped, since their handlers aren't registered at validation time.</p>
+
+<table>
+<thead><tr><th>Rule</th><th>Guards against</th></tr></thead>
+<tbody>
+<tr><td><strong>Required ports wired</strong> — every required input port has an incoming edge.</td><td>A node parked forever, silently never firing.</td></tr>
+<tr><td><strong>Removed types rejected</strong> — <code>initialize</code> (removed 2026-06-10, ADR-dataflow-008) and <code>termination</code> (removed 2026-06-11, ADR-dataflow-009) fail with migration hints: init values belong on iterIn's <code>initPorts</code>; the halt signal belongs on iterOut's <code>stop</code> input.</td><td>A stale graph failing later with an opaque unknown-node-type error.</td></tr>
+<tr><td><strong>iterIn integrity</strong> — legacy <code>init_ports</code>/<code>loop_ports</code> schema rejected; <code>pairedWith</code> must point at an iterOut; outgoing edges may only reference synthesised handles (<code>init_*</code>/<code>iterout_*</code>, plus <code>step</code>).</td><td>Edges sourcing from handles that will never exist at runtime.</td></tr>
+<tr><td><strong>iterOut integrity</strong> — non-empty <code>config.ports</code> (a pivot that transfers nothing is an author error); <code>pairedWith</code> must point at an iterIn; incoming edges may only target carry ports or <code>stop</code>; outgoing edges may only source from <code>final_&lt;name&gt;</code>/<code>final_stop</code>.</td><td>Per-iteration taps drawn off the pivot — those belong on body nodes.</td></tr>
+<tr><td><strong>Scope topology</strong> (<code>analyze_scopes</code>) — cross-scope wires that bypass graphIn/graphOut, duplicate <code>pairedWith</code>, unpaired pivots.</td><td>Nested loops with ambiguous ownership of nodes.</td></tr>
+<tr><td><strong>After-loop band purity</strong> — the band (downstream closure of the root iterOut's <code>final_*</code> edges) must be graph-scope, and band nodes may take inputs only from the final side or other band nodes. Anything the verdict needs must <em>ride the pivot</em>: expose it as a carry port, wire from <code>final_&lt;name&gt;</code>.</td><td>A band node fireable mid-loop — the last-write-wins metric bug class.</td></tr>
+<tr><td><strong>Verdict source</strong> — in an eval graph, <code>graphOut</code> nodes with <code>portName</code> <code>metrics</code>/<code>success</code> must be fed from the band. Streaming graphOuts (per-step frames for the nav UI) and composite-archive latches (<code>kind="node"</code>) are exempt.</td><td>A verdict reflecting whichever iteration wrote last instead of the terminal one (the TODO&nbsp;#64 bug class).</td></tr>
+<tr><td><strong>Eval graphs declare output</strong> — <code>eval_graph: true</code> (the default) requires ≥1 <code>graphOut</code>.</td><td>An eval run that completes with nothing to harvest.</td></tr>
+</tbody>
+</table>
+
+<p>The after-loop rules are structural guarantees, not style: they make the “verdict lags the terminal step” bug <em>unwritable</em> rather than merely discouraged — the why is in <a href="../../core/decisions/dataflow/adr-dataflow-009-two-sided-iterout.html">ADR-dataflow-009</a>, the runtime counterpart in <a href="graph-executor.html#51-post-loop-pass">Graph Executor §5.1</a>.</p>
+
+<h3 id="43-conventions"><span class="num">4.3</span> Conventions the validator does not enforce</h3>
+
+<p><strong>LLM profiles are user-level config, never graph-level.</strong> Profile-bearing nodes (currently <code>llmCall</code>) must save with <code>config.profile = ""</code>, which resolves to the user's active profile at run time. A profile binds a name to <code>(provider, model, api_key, base_url)</code> and lives in <code>/api/profiles/</code> — per-deployment state, not portable topology. Hardcoding a name breaks portability (the graph fails for anyone without that exact profile; <code>get_llm_config("missing")</code> short-circuits to an empty response) and invites silent miscredit — a named profile can point at an exhausted or wrong-org key whose quota error surfaces only in the backend log. If a graph genuinely needs different LLMs in different roles, document it in a <code>note</code> node beside the <code>llmCall</code> and let the user pick per node in the UI.</p>
+
+<h2 id="5-composition"><span class="num">5.</span> Composition</h2>
+
+<p>A <code>NodeDef</code> may carry <code>subgraph: GraphDefinition</code> — itself a full graph, recursively. The executor never sees nesting: at execution time <code>flatten_graph()</code> (<code>app/agent_loop/flatten.py</code>) expands every composite into the parent namespace.</p>
+
+<svg class="rxsvg" viewBox="0 0 740 210" role="img" aria-label="Flatten: a compositeNode shell containing graphIn, two inner nodes, and graphOut is expanded into the parent graph — inner ids gain the composite-id prefix, parent edges are rewired straight onto the inner nodes, and the shell disappears.">
+  <rect x="8" y="28" width="306" height="140" rx="9" class="ghost"/>
+  <text x="22" y="20" class="dim">compositeNode · id = plan</text>
+  <rect x="24" y="78" width="78" height="32" rx="6" class="box"/><text x="63" y="98" text-anchor="middle" class="mono">graphIn</text>
+  <rect x="128" y="78" width="66" height="32" rx="6" class="box"/><text x="161" y="98" text-anchor="middle" class="mono">vlm</text>
+  <rect x="220" y="78" width="80" height="32" rx="6" class="box"/><text x="260" y="98" text-anchor="middle" class="mono">graphOut</text>
+  <path class="edge" d="M102,94 H128"/><path class="edge" d="M194,94 H220"/>
+  <path class="edge" d="M-2,94 H24"/><path class="edge" d="M300,94 H326"/>
+  <text x="160" y="152" text-anchor="middle" class="dim">parent edges land on the boundary nodes</text>
+
+  <path class="edgeA" d="M338,60 C370,60 370,60 400,60"/>
+  <text x="369" y="46" text-anchor="middle" class="dim at">flatten_graph()</text>
+
+  <rect x="412" y="28" width="320" height="140" rx="9" class="box" style="fill:none"/>
+  <text x="426" y="20" class="dim">flat result — what the executor receives</text>
+  <rect x="500" y="78" width="140" height="32" rx="6" class="box"/><text x="570" y="98" text-anchor="middle" class="mono">plan__vlm</text>
+  <path class="edge" d="M430,94 H500"/><path class="edge" d="M640,94 H712"/>
+  <text x="570" y="138" text-anchor="middle" class="dim">ids prefixed · boundaries rewired · shell removed</text>
+</svg>
+
+<p>Concretely, <code>flatten_graph()</code> performs five renames and rewires:</p>
+<ol>
+  <li>Inner node ids are prefixed <code>${composite_id}__${inner_id}</code>.</li>
+  <li>Inner container ids are prefixed the same way.</li>
+  <li>Inner <code>AccessGrantDef</code>s get <code>node_id</code> remapped through the same id map; <code>container_id</code> is prefixed.</li>
+  <li><code>graphIn</code>/<code>graphOut</code> boundary nodes are rewired — parent edges connect to the prefixed inner source/target (composites without an iterIn erase the boundary nodes entirely; loop-bearing composites keep <code>graphOut</code> as a latch).</li>
+  <li>The composite shell node is removed.</li>
+</ol>
+
+<p>A <code>FlattenMap</code> records flat-id → origin-composite-path so execution errors can be traced back to the drawing the author actually made.</p>
+
+<div class="callout warning"><p><strong>Hooks are not propagated.</strong> <code>flatten_graph</code> carries <em>no</em> <code>hooks</code> into the flat result at all. The executor captures graph-level and global hooks <em>before</em> flattening — <code>merge_hooks(global_hooks, graph.hooks, node_hooks)</code> in <code>graph_executor.py</code> reads only the top-level graph's <code>hooks</code>, so shell hooks on inner composites are silently dropped. Define all hooks at the top level.</p></div>
+
+<h2 id="6-storage"><span class="num">6.</span> Storage and the two kinds</h2>
+
+<h3 id="61-two-kinds"><span class="num">6.1</span> Graph vs Graph Node</h3>
+
+<p>One schema, two UX surfaces, routed by the <code>kind</code> field (ADR-canvas-003):</p>
+
+<table>
+<thead><tr><th>Aspect</th><th>Graph (<code>kind="graph"</code>)</th><th>Graph Node (<code>kind="node"</code>)</th></tr></thead>
+<tbody>
+<tr><td><strong>Purpose</strong></td><td>Editable canvas template</td><td>Frozen reusable composite</td></tr>
+<tr><td><strong>Storage root</strong></td><td><code>workspace/graphs/</code></td><td><code>workspace/graph_nodes/</code></td></tr>
+<tr><td><strong>Explorer section</strong></td><td><strong>Graphs</strong> (amber) — double-click opens in a tab</td><td><strong>Graph Nodes</strong> (indigo) — grouped by <code>group</code>; drag onto any canvas drops a <code>compositeNode</code></td></tr>
+<tr><td><strong>Save path</strong></td><td>Ctrl+S / “Save” → <code>POST /api/graphs</code> with <code>kind: "graph"</code></td><td>“Save as Node” → <code>kind: "node"</code> + a <code>group</code> picked from pill suggestions</td></tr>
+</tbody>
+</table>
+
+<p>Both kinds appear in the Explorer, expand into their internal node tree (recursively for nested composites), and are served by the same API (§9.1) — <code>kind</code> alone decides the root directory and the UX affordances.</p>
+
+<h3 id="62-on-disk"><span class="num">6.2</span> On disk</h3>
+
+<pre class="hl">
+workspace/
+├── graphs/                          ← editable templates (kind="graph")
+│   ├── demo/                        ← subfolders are free-form; the API scans
+│   │   └── tutorial_demo.json          recursively. Current convention:
+│   ├── examples/                       &lt;domain&gt;/&lt;verified|unverified&gt;/
+│   ├── vln/
+│   │   ├── verified/
+│   │   │   └── straightforward.json
+│   │   └── unverified/
+│   │       ├── navgpt_ce.json
+│   │       └── mapgpt_mp3d.json  …
+│   ├── eqa/
+│   │   ├── verified/                ← openeqa_em_*.json
+│   │   └── unverified/              ← explore_eqa_hmeqa.json …
+│   └── vla/
+│       └── unverified/              ← voxposer_libero_decomposed.json …
+└── graph_nodes/                     ← archived composites (kind="node")
+    └── voxposer/  …
+</pre>
+
+<p>A graph's id is its root-relative path. Folders are plain directories — list/create them via <code>GET/POST /api/graphs/folders</code>, and <code>POST /api/graphs</code> accepts an optional <code>folder</code> to save into one.</p>
+
+<h3 id="63-save-instantiate"><span class="num">6.3</span> Instantiation and snapshot semantics</h3>
+
+<p>Dragging a graph node onto a canvas runs through four stages: the drag payload carries the <em>entire</em> <code>GraphDefinition</code>; the drop creates a React Flow node of type <code>compositeNode</code> with <code>data.subgraph</code> set to a full deep copy; <code>CompositeCanvasNode</code> renders its handles from the <code>graphIn</code>/<code>graphOut</code> nodes inside; and at run time <code>getGraphForExecution()</code> serializes the composite with <code>.subgraph</code> intact for the backend to flatten (§5).</p>
+
+<svg class="rxsvg" viewBox="0 0 740 130" role="img" aria-label="Snapshot semantics: the stored graph-node file is deep-copied on drag into the canvas composite, and deep-copied again when the parent graph is saved — three independent copies; editing the source later affects neither.">
+  <rect x="8" y="30" width="200" height="50" rx="7" class="box"/>
+  <text x="108" y="51" text-anchor="middle" class="mono">graph_nodes/planning.json</text>
+  <text x="108" y="68" text-anchor="middle" class="dim">edited later</text>
+  <path class="edge" d="M208,55 H268"/><text x="238" y="44" text-anchor="middle" class="dim">drag · copy</text>
+  <rect x="268" y="30" width="200" height="50" rx="7" class="box"/>
+  <text x="368" y="51" text-anchor="middle" class="mono">canvas data.subgraph</text>
+  <text x="368" y="68" text-anchor="middle" class="dim">untouched</text>
+  <path class="edge" d="M468,55 H528"/><text x="498" y="44" text-anchor="middle" class="dim">save · copy</text>
+  <rect x="528" y="30" width="204" height="50" rx="7" class="box"/>
+  <text x="630" y="51" text-anchor="middle" class="mono">parent nodes[i].subgraph</text>
+  <text x="630" y="68" text-anchor="middle" class="dim">untouched</text>
+  <text x="370" y="112" text-anchor="middle" class="dim">archive semantics — every use is frozen at drag time; three independent copies</text>
+</svg>
+
+<p>This is <strong>copy, not reference</strong> — deliberately. A graph node is an archive: editing the source file later does not reach into canvases or parent graphs that already embedded it.</p>
+
+<h3 id="64-auto-load"><span class="num">6.4</span> Opening a graph: nodeset auto-load</h3>
+
+<p>Opening a saved graph must produce a working canvas even on a fresh backend. <code>nodesetLoader.ts</code> parses the node types, extracts nodeset names from the <code>__</code> prefixes (<code>env_habitat</code>, <code>policy_vlnce</code>, …), diffs them against <code>GET /api/components/nodesets</code>, auto-loads the missing ones, then fetches fresh schemas (<code>GET /api/components/node-schemas</code>) and injects <code>_schema</code> into each node's data — which is what lets the renderer derive ports and <code>ui_config</code> without hardcoding any node type.</p>
+
+<h2 id="7-worked-example"><span class="num">7.</span> A complete artifact: Straightforward (VLN-CE)</h2>
+
+<p>The simplest complete agent graph in the repo — a neural-policy loop driven by the 5-stage <code>policy_vlnce</code> adapter pipeline, with the policy's hidden state riding the loop-carry (ADR-eval-002). Full JSON at <code>workspace/graphs/vln/verified/straightforward.json</code>. It exercises every structure this page defined: init edges, the pivot pair, the <code>stop</code> halt input, and an after-loop band feeding the eval latch.</p>
+
+<svg class="rxsvg" viewBox="0 0 740 470" role="img" aria-label="The Straightforward VLN-CE graph: an entry observe node feeds init edges into IterIn; IterIn feeds the policy_vlnce adapter chain; the chain's action goes to env step; env step triggers a re-observe whose outputs, with action and hidden state, are collected by IterOut; terminated wires into IterOut's stop input; the loop-carry returns to IterIn by pairing; IterOut's final_stop edge feeds evaluate, whose metrics feed graphOut and the metrics viewer. Legend: gray solid edges are EdgeDef entries; the blue dashed arc is the pairedWith linkage, not an edge.">
+  <!-- entry -->
+  <rect x="8" y="14" width="150" height="38" rx="7" class="box"/><text x="83" y="38" text-anchor="middle">observe (entry)</text>
+  <text x="83" y="66" text-anchor="middle" class="mono">env_habitat__observe_egocentric</text>
+  <!-- iterIn -->
+  <rect x="252" y="8" width="150" height="56" rx="7" class="accent"/><text x="327" y="30" text-anchor="middle" class="at">IterIn</text>
+  <text x="327" y="48" text-anchor="middle" class="dim">initPorts: rgb depth raw_obs hidden</text>
+  <path class="edge" d="M158,30 H252"/>
+  <text x="205" y="20" text-anchor="middle" class="dim">init_* — run-start</text>
+  <!-- adapter chain -->
+  <rect x="448" y="8" width="284" height="64" rx="7" class="box"/>
+  <text x="590" y="28" text-anchor="middle">policy_vlnce adapter chain</text>
+  <text x="590" y="46" text-anchor="middle" class="dim">env→canonical → →model → predict</text>
+  <text x="590" y="61" text-anchor="middle" class="dim">→ model→canonical → canonical→env</text>
+  <path class="edge" d="M402,36 H448"/>
+  <text x="425" y="86" text-anchor="middle" class="dim">raw_obs · hidden</text>
+  <!-- env step -->
+  <rect x="490" y="130" width="200" height="38" rx="7" class="box"/><text x="590" y="154" text-anchor="middle" class="mono">env_habitat__step_discrete</text>
+  <path class="edge" d="M590,72 V130"/><text x="604" y="106" class="dim">action</text>
+  <!-- observe_loop -->
+  <rect x="490" y="228" width="200" height="38" rx="7" class="box"/><text x="590" y="252" text-anchor="middle" class="mono">observe_loop · re-observe</text>
+  <path class="edge" d="M590,168 V228"/><text x="604" y="202" class="dim">info · trigger</text>
+  <text x="590" y="290" text-anchor="middle" class="dim">also → imageViewer; action → actionLog</text>
+  <!-- iterOut -->
+  <rect x="120" y="210" width="280" height="64" rx="7" class="accent"/>
+  <text x="260" y="234" text-anchor="middle" class="at">IterOut</text>
+  <text x="260" y="252" text-anchor="middle" class="dim">ports: rgb depth pose action raw_obs hidden</text>
+  <text x="260" y="266" text-anchor="middle" class="dim">halt input: stop</text>
+  <path class="edge" d="M490,247 H400"/>
+  <text x="445" y="238" text-anchor="middle" class="dim">rgb depth pose raw_obs</text>
+  <path class="edge" d="M448,52 C330,52 330,150 330,210"/>
+  <text x="318" y="140" text-anchor="end" class="dim">action · hidden_out</text>
+  <path class="edge" d="M490,150 C420,150 380,200 380,214"/>
+  <text x="430" y="180" text-anchor="middle" class="dim">terminated → stop</text>
+  <!-- pairing -->
+  <path class="edgeAd" d="M180,210 C110,130 170,46 252,40"/>
+  <text x="120" y="120" text-anchor="middle" class="dim at">loop-carry —</text>
+  <text x="120" y="135" text-anchor="middle" class="dim at">pairing, not an edge</text>
+  <!-- final band -->
+  <path class="edge" d="M230,274 V330"/>
+  <text x="244" y="306" class="dim">final_stop — delivers once, at termination</text>
+  <rect x="160" y="330" width="140" height="34" rx="7" class="box"/><text x="230" y="352" text-anchor="middle" class="mono">evaluate</text>
+  <path class="edge" d="M300,347 H392"/><text x="346" y="338" text-anchor="middle" class="dim">metrics</text>
+  <rect x="392" y="330" width="180" height="34" rx="7" class="box"/><text x="482" y="352" text-anchor="middle" class="mono">graphOut · metrics</text>
+  <path class="edge" d="M300,357 C340,357 350,388 392,388"/>
+  <rect x="392" y="372" width="180" height="30" rx="7" class="box"/><text x="482" y="391" text-anchor="middle" class="mono">metrics viewer</text>
+  <text x="160" y="394" text-anchor="end" class="dim">after-loop band — runs once (§4.2)</text>
+  <!-- legend -->
+  <path class="edge" style="marker-end:none" d="M20,442 H56"/><text x="62" y="446" class="dim">edge — an EdgeDef in edges[]</text>
+  <path class="edgeAd" style="marker-end:none" d="M300,442 H336"/><text x="342" y="446" class="dim">pairedWith linkage — no EdgeDef exists</text>
+</svg>
+
+<h3 id="71-nodes"><span class="num">7.1</span> Node breakdown</h3>
+
+<table>
+<thead><tr><th>Node id</th><th>Type</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>env_habitat__observe_*</code></td><td><code>env_habitat__observe_egocentric</code></td><td>Entry node — step-0 observation, feeds the init edges</td></tr>
+<tr><td><code>iterIn_*</code></td><td><code>iterIn</code></td><td>Loop pivot — opens each iteration</td></tr>
+<tr><td><code>adapt_env_to_canonical</code> … <code>adapt_canonical_to_env</code></td><td><code>policy_vlnce__*</code></td><td>5-stage adapter pipeline: env→canonical → canonical→model → <code>predict</code> (neural policy, batched inference) → model→canonical → canonical→env</td></tr>
+<tr><td><code>env_habitat__step_*</code></td><td><code>env_habitat__step_discrete</code></td><td>Execute action; <code>terminated → iterOut.stop</code>, <code>info</code> triggers the re-observe</td></tr>
+<tr><td><code>observe_loop</code></td><td><code>env_habitat__observe_egocentric</code></td><td>Re-observe after the step — feeds the loop-carry and the viewers</td></tr>
+<tr><td><code>iterOut_*</code></td><td><code>iterOut</code></td><td>Loop pivot — closes each iteration; <code>final_*</code> side feeds the verdict</td></tr>
+<tr><td><code>evaluate</code></td><td><code>env_habitat__evaluate</code></td><td>After-loop band — reads episode metrics from the env manager, triggered by <code>final_stop</code></td></tr>
+<tr><td><code>output_port__metrics</code></td><td><code>graphOut</code></td><td>Eval metric latch (<code>portName: "metrics"</code>) — harvested by <code>BatchEvalRunner</code></td></tr>
+<tr><td><code>observationViewer_*</code> / <code>actionLog_*</code> / <code>metrics_*</code></td><td><code>imageViewer</code> / <code>actionLog</code> / <code>metrics</code></td><td>Viewer sinks — RGB+depth grid, action history, SR / SPL / nDTW</td></tr>
+</tbody>
+</table>
+
+<h3 id="72-iterin-config"><span class="num">7.2</span> The iterIn config, and the dual-wire pattern</h3>
+
+<pre class="hl">
+<span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterIn_e5f6a7b8&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterIn&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;pairedWith&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;iterOut_c9d0e1f2&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;initPorts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rgb&quot;</span><span class="p">,</span><span class="w">     </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;IMAGE&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;persist&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">},</span>
+<span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;depth&quot;</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;DEPTH&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;persist&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">},</span>
+<span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;raw_obs&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TEXT&quot;</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;persist&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">},</span>
+<span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;hidden&quot;</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ANY&quot;</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;persist&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre>
+
+<p>The init edges target the prefixed handles (<code>env_habitat__observe.rgb → iterIn.init_rgb</code>, …). The <code>iterout_*</code> half of the handle set comes from the paired iterOut's <code>config.ports</code> (rgb, depth, pose, action, raw_obs, hidden) — synthesised at load, never hand-written (§4.1). All four initPorts are one-shot (<code>persist: false</code>) because the same names are loop-carried from iter 1 onward.</p>
+
+<p>The graph also carries the canonical <strong>dual-wire</strong> pattern: both <code>init_raw_obs</code> and <code>iterout_raw_obs</code> are wired into <code>adapt_env_to_canonical.raw_obs</code> — legal exactly because the init entry is one-shot, so the two writers never compete after iter 0.</p>
+
+<h3 id="73-how-it-runs"><span class="num">7.3</span> How it runs</h3>
+
+<p>This page stops at the artifact. The run itself — how <code>observe</code> is discovered as an entry, how an iteration turns, how <code>terminated → stop</code> ends the loop, and how the <code>final_stop</code> edge delivers exactly once into <code>evaluate</code> — is the executor's story: <a href="graph-executor.html#46-a-concrete-trace">Graph Executor §4.6</a> walks a loop of exactly this shape turn by turn, ready-queue and all.</p>
+
+<h2 id="8-handoff"><span class="num">8.</span> The handoff</h2>
+
+<h3 id="81-run-request"><span class="num">8.1</span> Run request</h3>
+
+<pre class="hl">
+POST /api/navigate/run
+<span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;loop_definition&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;...&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;GraphDefinition JSON&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exec_abc123&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;step_delay_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span>
+<span class="p">}</span>
+</pre>
+
+<p>This endpoint is where the artifact leaves this page's jurisdiction. <code>app/api/execution/run.py</code> parses it (<code>GraphDefinition.from_dict()</code>), judges it (<code>validate_graph_connectivity()</code> — the full §4.2 rule set, HTTP 400 on violation), and hands the validated graph to <code>LoopRunner</code> → <code>GraphExecutor.run()</code>, which flattens it (<code>flatten_graph()</code>, §5) during build, before any node fires. Everything from that call onward — flattening, scheduling, guards, phases, how the run ends — is <a href="graph-executor.html#2-where-it-sits">Graph Executor §2</a>'s territory.</p>
+
+<p>Sibling lifecycle endpoints on the same prefix: <code>POST /api/navigate/run/pause</code>, <code>/run/stop</code>, <code>GET /api/navigate/run/status</code>, <code>GET /api/navigate/run/checkpoints</code>, <code>POST /api/navigate/run/restore/{step}</code>.</p>
+
+<h3 id="82-websocket-events"><span class="num">8.2</span> WebSocket events</h3>
+
+<p>What comes back during a run is also a data contract this page owns. The executor emits <strong>per-node</strong> events — there is no single consolidated <code>nav_step</code> dump; each viewer sink serializes its own wired inputs and broadcasts on its own node id (ADR-observability-003 / ADR-components-007 / ADR-components-008):</p>
+
+<table>
+<thead><tr><th>Event type</th><th>Source</th><th>Payload</th></tr></thead>
+<tbody>
+<tr><td><code>nav_status</code></td><td>executor</td><td><code>{status, step}</code> on run-start / -stop</td></tr>
+<tr><td><code>step_start</code>, <code>step_end</code></td><td>signal bus</td><td>broadcast at iteration boundaries (drive state-container lifetimes)</td></tr>
+<tr><td><code>viewer_data</code></td><td>each viewer sink (<code>imageViewer</code>, <code>actionLog</code>, <code>metrics</code>, <code>textViewer</code>, <code>textScroll</code>)</td><td><code>{node_id, step, fields: {...}}</code> — per-firing serialized slice</td></tr>
+<tr><td><code>exec_log</code></td><td>executor exterior</td><td>per-node firing summary (suppressed in eval mode)</td></tr>
+<tr><td><code>eval_progress</code>, <code>eval_episode_done</code></td><td>batch eval</td><td>per-episode updates (tagged with <code>worker_id</code> when <code>worker_count&gt;1</code>)</td></tr>
+</tbody>
+</table>
+
+<p>Every event carries <code>execution_id</code> for multi-run routing on the frontend.</p>
+
+<h2 id="9-api-serialization"><span class="num">9.</span> API and serialization</h2>
+
+<h3 id="91-endpoints"><span class="num">9.1</span> Storage endpoints</h3>
+
+<p>All graph storage lives behind <code>/api/graphs</code> (<code>app/api/canvas/graphs.py</code>); every payload crosses the boundary through <code>GraphDefinition.from_dict()</code> / <code>to_dict()</code>, so malformed JSON fails fast:</p>
+
+<table>
+<thead><tr><th>Endpoint</th><th>Method</th><th>Behaviour</th></tr></thead>
+<tbody>
+<tr><td><code>/api/graphs</code></td><td>GET</td><td>List all — both roots scanned recursively, merged into one list</td></tr>
+<tr><td><code>/api/graphs/{id}</code></td><td>GET</td><td>Load — <code>id</code> is the root-relative path; searches both roots</td></tr>
+<tr><td><code>/api/graphs</code></td><td>POST</td><td>Save — routes to <code>graphs/</code> or <code>graph_nodes/</code> by <code>kind</code>; optional <code>folder</code> places it in a subfolder</td></tr>
+<tr><td><code>/api/graphs/folders</code></td><td>GET / POST</td><td>List / create subfolders under a kind root (hierarchical Explorer folders)</td></tr>
+<tr><td><code>/api/graphs/{id}</code></td><td>PUT</td><td>Overwrite — searches both roots</td></tr>
+<tr><td><code>/api/graphs/{id}</code></td><td>DELETE</td><td>Delete — searches both roots</td></tr>
+<tr><td><code>/api/graphs/layout</code></td><td>POST</td><td>Auto-layout (<code>layout.py</code>) — updates positions only</td></tr>
+</tbody>
+</table>
+
+<h3 id="92-serialization"><span class="num">9.2</span> Serialization in code</h3>
+
+<pre class="hl">
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">graph_def</span><span class="w"> </span><span class="kn">import</span> <span class="n">GraphDefinition</span>
+
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">workspace/graphs/vln/verified/straightforward.json</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+    <span class="n">gd</span> <span class="o">=</span> <span class="n">GraphDefinition</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span><span class="p">)</span>
+
+<span class="n">gd</span><span class="o">.</span><span class="n">name</span>                <span class="c1"># &quot;Straightforward (VLN-CE)&quot;</span>
+<span class="nb">len</span><span class="p">(</span><span class="n">gd</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span>          <span class="c1"># 15</span>
+<span class="n">gd</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">type</span>       <span class="c1"># &quot;env_habitat__observe_egocentric&quot;</span>
+<span class="n">gd</span><span class="o">.</span><span class="n">kind</span>                <span class="c1"># &quot;graph&quot;</span>
+
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">workspace/graphs/copy.json</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">w</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+    <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">gd</span><span class="o">.</span><span class="n">to_dict</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">f</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+</pre>
+
+<p><code>to_dict()</code> drops empty lists and defaults for readability — <code>kind="graph"</code> and empty <code>containers</code>/<code>access_grants</code>/<code>hooks</code> simply don't appear in saved files. The models are plain dataclasses rather than pydantic by choice: the recursive self-reference (<code>NodeDef.subgraph</code> contains <code>NodeDef</code>) works cleanly with <code>from __future__ import annotations</code>, the explicit <code>from_dict</code>/<code>to_dict</code> pair gives full control over backward-compat aliases (the old <code>graph_state</code> field, the <code>state_edges → access_grants</code> rename), and the dependency count stays at zero.</p>
+
+<h2 id="10-file-reference"><span class="num">10.</span> File reference</h2>
+
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>agentcanvas/backend/app/graph_def.py</code></td><td><code>GraphDefinition</code>, <code>NodeDef</code>, <code>EdgeDef</code>, <code>ContainerDef</code>, <code>StateDef</code>, <code>AccessGrantDef</code>, <code>HookDef</code> + <code>validate_edge_wire_type</code> + <code>validate_graph_connectivity</code></td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/flatten.py</code></td><td><code>flatten_graph()</code> — recursive composite expansion, container/grant remapping, graphIn/graphOut rewiring, <code>FlattenMap</code> for error tracing</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/scope_analysis.py</code></td><td><code>analyze_scopes()</code> — scope forest + topology errors consumed by validation (§4.2)</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td><td><code>GraphExecutor</code> — consumes the flat artifact at the handoff; everything inside it is <a href="graph-executor.html">Graph Executor</a>'s page</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td><td><code>NODE_HANDLERS</code> registry + 14 built-in node classes (iterIn, iterOut, llmCall, textParse, historyLog, nullSource, note, graphIn/graphOut, 5 viewer sinks)</td></tr>
+<tr><td><code>agentcanvas/backend/app/agent_loop/loop_runner.py</code></td><td><code>LoopRunner</code> — lifecycle wrapper (pause/stop/resume)</td></tr>
+<tr><td><code>agentcanvas/backend/app/api/canvas/graphs.py</code></td><td>CRUD + <code>/layout</code> + <code>/folders</code> — dual-root recursive storage, routing by <code>kind</code></td></tr>
+<tr><td><code>agentcanvas/backend/app/api/execution/run.py</code></td><td><code>POST /api/navigate/run</code> + pause/stop/status — validates at the boundary</td></tr>
+<tr><td><code>agentcanvas/backend/app/layout.py</code></td><td>Swim-lane auto-layout algorithm (init band + loop band + viewer row)</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/types.ts</code></td><td>Frontend mirrors of every dataclass in <code>graph_def.py</code></td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/graphConversion.ts</code></td><td><code>fromFlowNodes</code> / <code>toFlowNodes</code> — React Flow ⇄ NodeDef</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/useFlowStore.ts</code></td><td>Tab-aware Zustand store — <code>addNode()</code>, <code>loadGraph()</code>, <code>openGraphInTab()</code>, <code>getGraphForExecution()</code></td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/nodesetLoader.ts</code></td><td><code>ensureNodesetsLoaded()</code> — auto-load on graph open (§6.4)</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/portResolution.ts</code></td><td><code>resolveInstancePorts()</code> — applies <code>ports_mode</code> + <code>_resolve_ports</code> semantics on the client</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/panels/ExplorerPanel.tsx</code></td><td>Explorer sidebar — category blocks, folder tree, drag/delete</td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/panels/SaveGraphDialog.tsx</code></td><td>Save dialog — accepts <code>kind</code> + <code>group</code> + <code>folder</code></td></tr>
+<tr><td><code>agentcanvas/frontend/src/canvas/nodes/composite/CompositeCanvasNode.tsx</code></td><td>Composite rendering — port derivation, preview, drill-in</td></tr>
+<tr><td><code>workspace/graphs/*</code> · <code>workspace/graph_nodes/*</code></td><td>Editable templates · archived composite snapshots (§6.2)</td></tr>
+</tbody>
+</table>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: <strong>Flatten attribution corrected (code-faithfulness pass).</strong> The lifecycle map, the boundary callout, and §8.1 previously placed <code>flatten_graph()</code> as a pre-handoff step / a <code>run.py</code> action; in code it runs inside <code>GraphExecutor.run()</code> as BUILD step 2 (<code>graph_executor.py</code>:295-297), so the artifact enters the executor <em>un</em>-flattened. §5 (what flatten does) is unchanged. §5 hooks callout corrected: <code>flatten_graph</code> carries no <code>hooks</code> into the flat result at all — graph-level + global hooks are captured before flatten via <code>merge_hooks</code>, which reads only the top-level graph's hooks (inner composite hooks still dropped). §1 snippet: <code>NODE_HANDLERS[node.type]</code> → <code>.get(node.type)</code> to match the silent-None-on-unknown path.</li>
+<li>2026-06-12 15:09: <strong>Complete HTML-first rewrite.</strong> Page rebuilt in the graph-executor visual language: lede + lifecycle-map SVG (author → artifact → validate → flatten → handoff), schema ASCII trees replaced by field tables, flatten/snapshot/worked-example ASCII art replaced by three SVG figures, all code blocks regenerated through the Pygments pipeline (<code>docs/_lib/_hl.py</code>). Content reorganised along the artifact lifecycle: §1 artifact principle, §2 schema, §3 vocabulary, §4 legality (pivot data side + full validator catalogue + unenforced conventions), §5 composition, §6 storage/kinds/UX, §7 worked example (Straightforward VLN-CE), §8 handoff + WS events, §9 API/serialization, §10 file reference. Facts unchanged from the 14:44 boundary pass.</li>
+<li>2026-06-12 14:44: <strong>Boundary rewrite vs graph-executor</strong> — this page now owns the graph as <em>data at rest</em>, the executor page owns the run. Added the boundary callout and the load-time validation catalogue (full <code>validate_graph_connectivity</code> rule set incl. the ADR-dataflow-009 after-loop rules); pivot section trimmed to data-side declarations with runtime semantics linked out; execution trace replaced by a pointer to Graph Executor §4.6; run endpoint reframed as the run handoff; redundant save/load flow removed. Staleness sweep in the same pass: <code>terminationCondition</code> field and <code>termination</code> node removed, <code>eval_graph</code> field added; builtin table regenerated to the 14 registered classes; graphIn/graphOut replace portIn/portOut; example redrawn against the migrated <code>vln/unverified/straightforward.json</code> (policy_vlnce 5-stage chain, <code>terminated → stop</code>, <code>final_stop → evaluate</code>, dual-wire raw_obs example); storage tree + API updated for hierarchical folders and recursive scan.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-06-11 13:35: &ldquo;seed&rdquo; → <strong>entry node</strong> in the example (diagram label, node table, trace) and key-files row; init-side wiring now &ldquo;init edges / run-start values&rdquo;.</li>
+<li>2026-06-11 12:08: Two-pivot follow-through (ADR-dataflow-008; <code>initialize</code> node removed 2026-06-10) — pivot section rewritten as "iterIn's init side for run-start state" (two-sided iterIn, <code>config.initPorts</code> + <code>init_&lt;name&gt;</code> seed edges, persist semantics, dual-wire freeze warning); builtin-node table and explorer tree drop the initialize entry; Straightforward example re-drawn without the initialize box, config snippet migrated from legacy <code>init_ports</code>/<code>loop_ports</code> to v3 <code>initPorts</code>, trace rewired (seed edges → <code>port_slots</code>, one-shot emit, dual-wired consumer); key-files rows updated.</li>
+<li>2026-04-20: Audit against current codebase — added ADR-dataflow-003 <code>config.ports</code> per-instance port override to NodeDef schema and <code>_resolve_ports</code> lookup note in <code>validate_graph_connectivity</code> description; documented that hooks are silently dropped from inner composites during flattening; fixed wrong ADR-observability-003 tag on <code>viewer_data</code> events in execution trace (correct: ADR-components-007/032).</li>
+<li>2026-04-19 18:11: style compliance retrofit — added ToC + numbered sections</li>
+<li>2026-04-19: Merged <code>graph-node-system.md</code> into this doc. Refreshed against current code: <code>StateEdgeDef</code>→<code>AccessGrantDef</code>, <code>state_edges</code>→<code>access_grants</code>, removed dead <code>graph_state</code> top-level field (now a well-known container id per ADR-dataflow-004); Initialize + iterIn (<code>ports_mode="source"</code>, <code>init_ports</code>/<code>loop_ports</code> auto-prefix) + iterOut three-pivot example per ADR-dataflow-006; <code>imageViewer</code> with <code>rows</code>/<code>cols</code>/<code>ports</code> grid per ADR-components-007; hidden-state feedback loop per ADR-eval-002; <code>textScroll</code> / <code>textViewer</code> per ADR-components-008; validation: <code>validate_graph_connectivity</code> covers required ports, iterIn init/loop sourcing, and downstream handle-id prefixes; API paths corrected (<code>app/api/canvas/graphs.py</code> and <code>app/api/execution/run.py</code>); WebSocket broadcast rewritten (per-node <code>viewer_data</code> + <code>exec_log</code>, no more single-blob <code>nav_step</code>); dropped "Python 3.8" dataclass rationale (ADR-platform-004, now 3.10+).</li>
+<li>2026-04-18 10:38: ADR-dataflow-006 — Added "Graph Design Principles" section (required-port rule + Initialize/iterIn separation).</li>
+<li>2026-03-31 19:19: Added state container schema (StateDef, ContainerDef, StateEdgeDef), graph_state field, flatten container remapping (ADR-dataflow-002).</li>
+<li>2026-03-31 14:26: Graph node system (ADR-canvas-003) — initially split into a separate <code>graph-node-system.md</code> (now merged back).</li>
+<li>2026-03-29 13:46: Node type convention (nodeset__node), Straightforward example with full trace, auto-load flow (ADR-components-003).</li>
+<li>2026-03-28 15:08: Updated for unified canvas (ADR-canvas-002): tab system, save dialog, execution flow.</li>
+<li>2026-03-27 23:00: Initial content — GraphDefinition model, file management, API, serialization.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-the-artifact">1. The artifact</a>
+      <a class="toc-h2" href="#2-the-schema">2. The schema</a>
+      <a class="toc-h3" href="#21-graphdefinition">2.1 GraphDefinition, NodeDef, EdgeDef</a>
+      <a class="toc-h3" href="#22-state-containers">2.2 State containers and access grants</a>
+      <a class="toc-h3" href="#23-hooks">2.3 Hooks</a>
+      <a class="toc-h2" href="#3-vocabulary">3. The node-type vocabulary</a>
+      <a class="toc-h2" href="#4-legality">4. What makes a graph legal</a>
+      <a class="toc-h3" href="#41-pivot-pair">4.1 The pivot pair, data side</a>
+      <a class="toc-h3" href="#42-validation-rules">4.2 Load-time validation — the rule set</a>
+      <a class="toc-h3" href="#43-conventions">4.3 Conventions the validator does not enforce</a>
+      <a class="toc-h2" href="#5-composition">5. Composition</a>
+      <a class="toc-h2" href="#6-storage">6. Storage and the two kinds</a>
+      <a class="toc-h3" href="#61-two-kinds">6.1 Graph vs Graph Node</a>
+      <a class="toc-h3" href="#62-on-disk">6.2 On disk</a>
+      <a class="toc-h3" href="#63-save-instantiate">6.3 Instantiation and snapshot semantics</a>
+      <a class="toc-h3" href="#64-auto-load">6.4 Opening a graph: nodeset auto-load</a>
+      <a class="toc-h2" href="#7-worked-example">7. A complete artifact: Straightforward (VLN-CE)</a>
+      <a class="toc-h3" href="#71-nodes">7.1 Node breakdown</a>
+      <a class="toc-h3" href="#72-iterin-config">7.2 The iterIn config, and the dual-wire pattern</a>
+      <a class="toc-h3" href="#73-how-it-runs">7.3 How it runs</a>
+      <a class="toc-h2" href="#8-handoff">8. The handoff</a>
+      <a class="toc-h3" href="#81-run-request">8.1 Run request</a>
+      <a class="toc-h3" href="#82-websocket-events">8.2 WebSocket events</a>
+      <a class="toc-h2" href="#9-api-serialization">9. API and serialization</a>
+      <a class="toc-h3" href="#91-endpoints">9.1 Storage endpoints</a>
+      <a class="toc-h3" href="#92-serialization">9.2 Serialization in code</a>
+      <a class="toc-h2" href="#10-file-reference">10. File reference</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

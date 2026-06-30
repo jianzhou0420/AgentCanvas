@@ -1,0 +1,1633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AFlow-faithful architect loop — algorithm</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1a1a1a; --muted: #6b6b6b;
+    --accent: #b34700; --accent-bg: #fff3eb;
+    --frame: #d4d4d0; --frame-strong: #1a1a1a;
+    --box: #ffffff; --warn: #a52a00;
+    --code-bg: #f0efe9;
+  }
+  [data-theme="dark"] { --accent: #e8896c; --warn: #e8896c; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+    max-width: 920px; margin: 2.5rem auto; padding: 0 1.5rem;
+    line-height: 1.55;
+  }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid var(--frame-strong); padding-bottom: .35rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2.2rem; border-bottom: 1px solid var(--frame); padding-bottom: .2rem; }
+  h3 { font-size: 1.0rem; margin-top: 1.4rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; font-size: .95rem; }
+  .badge {
+    display: inline-block;
+    background: var(--accent-bg); color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: .05rem .5rem; border-radius: 3px; font-size: .8rem;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  table { border-collapse: collapse; width: 100%; margin-top: .6rem; font-size: .9rem; }
+  th, td { border: 1px solid var(--frame); padding: .4rem .55rem; text-align: left; vertical-align: top; }
+  th { background: #f0efe9; font-weight: 600; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .05rem .35rem; border-radius: 2px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); padding: .7rem .9rem; border-radius: 3px;
+    overflow-x: auto; font-size: .85rem; border-left: 3px solid var(--accent);
+  }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin-bottom: .25rem; }
+  .diagram { background: var(--box); border: 1px solid var(--frame); border-radius: 4px; padding: 1rem; margin: 1rem 0; }
+  .legend { font-size: .82rem; color: var(--muted); margin-top: .6rem; }
+  .legend span { display: inline-block; margin-right: 1rem; }
+  .legend .sw {
+    display: inline-block; width: 11px; height: 11px;
+    vertical-align: middle; margin-right: .3rem; border: 1px solid #999;
+  }
+  .key { color: var(--accent); font-weight: 600; }
+  .warn { color: var(--warn); }
+  .callout {
+    background: var(--accent-bg); border-left: 3px solid var(--accent);
+    padding: .6rem .9rem; margin: 1rem 0; font-size: .92rem;
+  }
+</style>
+</head>
+<body>
+<!-- aas-cross-nav: v1 -->
+<script>
+  // Match the site-wide theme choice (shared 'site-theme' key) before first
+  // paint, so an AAS page opened from a dark main-site session renders dark.
+  (function() {
+    var t;
+    try { t = localStorage.getItem('site-theme'); } catch (e) {}
+    if (!t) { t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<nav class="aas-xnav" aria-label="Site sections">
+  <a class="aas-xnav-brand" href="../../../../index.html">AgentCanvas</a>
+  <div class="aas-xnav-tabs">
+    <a href="../../../../pages/developer-guide/capabilities/index.html">Developer Guide</a>
+    <a class="active" href="../../../../pages/aas/index.html">AAS</a>
+  </div>
+  <button class="aas-xnav-theme" type="button" aria-label="Toggle light / dark theme"
+    onclick="(function(){var d=document.documentElement;var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('site-theme',n);}catch(e){}})()">&#9680;</button>
+</nav>
+<style>
+.aas-xnav {
+  background: #1a1a1a; color: #fafaf7;
+  padding: .55rem 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: .88rem;
+  display: flex; align-items: center; gap: 1.6rem;
+  position: sticky; top: 0; z-index: 1000;
+  margin: 0; box-shadow: 0 1px 0 rgba(0,0,0,.15);
+}
+.aas-xnav .aas-xnav-brand {
+  color: #fafaf7; text-decoration: none; font-weight: 700;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: .92rem;
+}
+.aas-xnav .aas-xnav-tabs { display: flex; gap: .4rem; }
+.aas-xnav .aas-xnav-tabs a {
+  color: #fafaf7; text-decoration: none; opacity: .65;
+  padding: .25rem .65rem; border-radius: 3px;
+  transition: opacity .12s, background .12s;
+}
+.aas-xnav .aas-xnav-tabs a:hover { opacity: 1; background: rgba(255,255,255,.06); }
+.aas-xnav .aas-xnav-tabs a.active {
+  opacity: 1; font-weight: 600; background: rgba(255,255,255,.12);
+}
+.aas-xnav-theme {
+  margin-left: auto;
+  background: transparent; border: 1px solid rgba(255,255,255,.28);
+  color: #fafaf7; cursor: pointer; border-radius: 3px;
+  padding: .15rem .55rem; font-size: .95rem; line-height: 1;
+}
+.aas-xnav-theme:hover { background: rgba(255,255,255,.1); }
+
+/* Dark theme for the AAS subsite. These pages are self-contained (own
+   <head>/<style>, no shared style.css) but all share the same CSS var
+   names + boilerplate classes, so one override block covers the whole
+   subtree. It lives in <body> (injected after <head>), so it wins on
+   source order for equal-specificity rules. Per-page saturated --accent
+   text is left as-is; only the light --accent-bg tint is neutralised. */
+[data-theme="dark"] {
+  --bg: #1a1a1c; --fg: #e8e8e6; --muted: #8a8a86;
+  --frame: #3a3a3e; --frame-strong: #cfcfcc;
+  --box: #232328; --code-bg: #2a2a2e;
+  --accent-bg: #2b2b32; --link: #6ba6dc;
+}
+[data-theme="dark"] th { background: #26262b; }
+[data-theme="dark"] .frontmatter { background: #232328; }
+[data-theme="dark"] details.toc { background: #232328; }
+[data-theme="dark"] .group { background: #232328; }
+[data-theme="dark"] blockquote { color: #c0c0bc; }
+</style>
+<!-- /aas-cross-nav -->
+
+<h1>AFlow on AgentCanvas &mdash; paper analysis + <code>aflow</code> port</h1>
+<p class="subtitle">
+  A two-part document. <strong>Section 1</strong> dissects Zhang et al. 2024
+  <em>&ldquo;AFlow: Automating Agentic Workflow Generation&rdquo;</em>
+  (ICLR&nbsp;2025 Oral) &mdash; how <code>optimizer.py</code>'s outer round
+  loop, score-softmax parent sampling, per-parent experience filtering, and
+  validation-rounds averaging actually work, with the original source annotated.
+  <strong>Section 2</strong> documents the <code>aflow</code> AgentCanvas port
+  (namespace <code>.claude/commands/architect/aflow/</code>) &mdash; 5-skill
+  layout reusing most of adas-subagent's substrate plus the 4 algorithmic deltas
+  AFlow's MCTS-flavoured search demands.
+</p>
+
+<p>
+  <span class="badge">section 1</span> upstream paper / code analysis
+  &nbsp;
+  <span class="badge">section 2</span> <code>aflow</code> port
+  &nbsp;
+  <span class="badge">scope</span> AFlow-style &mdash; search policy ported, search space is free-form (no operator set)
+</p>
+
+<div class="callout">
+  <strong>One framing correction up front.</strong> The paper sells AFlow as
+  &ldquo;MCTS over workflows&rdquo; and most secondary summaries (including
+  ours, earlier) carry that label. The <em>implementation</em> in
+  <code>optimizer.py</code> is something narrower and worth naming
+  precisely: <strong>score-softmax + uniform-mix sampling over a flat
+  round list, with per-parent anti-replay filtering on modification
+  descriptions</strong>. There is no tree traversal, no UCB statistic, no
+  visit count, no backprop. The &ldquo;tree&rdquo; lives only in each
+  round's <code>experience.json</code> as a <code>father_node</code> field
+  the optimizer writes but never reads as a tree. Treat the MCTS framing as
+  rhetorical; treat the rest of this Section 1 as what AFlow really runs.
+</div>
+
+<h2>Section 1 &mdash; Upstream paper analysis (Zhang et al. 2024)</h2>
+
+<p>
+  How the original AFlow paper's <code>optimize()</code> and
+  <code>_optimize_graph()</code> functions drive one round (source:
+  <code>third_party/AFlow/scripts/optimizer.py:71&ndash;198</code>
+  and the parent-sampling helper at
+  <code>scripts/optimizer_utils/data_utils.py:61&ndash;109</code>). The
+  orange parent-selection block + single LLM call is the load-bearing piece
+  &mdash; everything else is bookkeeping. Annotations below the SVG link
+  each diagram region to the exact upstream line.
+</p>
+
+<p style="font-size: .88rem;"><strong>Diagram &harr; code map</strong>:</p>
+<ul style="font-size: .88rem;">
+  <li><b>Top row</b> &harr; <code>optimizer.py:125&ndash;129</code> &mdash; first-round init: load
+  <code>round_1/graph.py</code> + <code>prompt.py</code>, evaluate (<code>initial=True</code>) so
+  the baseline has a score before any optimisation.</li>
+  <li><b>Outer dashed for-loop box</b> &harr; <code>optimizer.py:80</code>
+  (<code>for opt_round in range(self.max_rounds)</code>; default
+  <code>max_rounds=20</code>).</li>
+  <li><b>Outer red &ldquo;exception&rdquo; skip</b> &harr;
+  <code>optimizer.py:87&ndash;103</code> &mdash;
+  <code>max_retries=1</code>, the <code>while retry_count &lt; max_retries</code>
+  loop runs at most once before <code>score=None</code>; this round produces no
+  child workflow.</li>
+  <li><b>Inner orange &ldquo;while True&rdquo; sampling loop</b> &harr;
+  <code>optimizer.py:132&ndash;183</code> &mdash; resample parent and re-call
+  LLM until the proposed modification is not a duplicate.</li>
+  <li><b>get_top_rounds box</b> &harr; <code>optimizer.py:135</code> +
+  <code>data_utils.py:40&ndash;59</code> &mdash; top-<code>sample</code> rounds by
+  mean score, with round 1 unconditionally included.</li>
+  <li><b>Orange softmax-mix box</b> &harr; <code>data_utils.py:61&ndash;109</code>
+  &mdash; <code>p = &lambda;&sdot;uniform + (1&minus;&lambda;)&sdot;softmax(&alpha;&sdot;score)</code>,
+  <code>&alpha;=0.2</code>, <code>&lambda;=0.3</code>.</li>
+  <li><b>build optimize_prompt box</b> &harr;
+  <code>optimizer.py:138&ndash;149</code> &mdash; reads parent's
+  <code>graph.py</code> + <code>prompt.py</code> + <code>log.json</code>
+  (3 random failure samples), plus the parent's
+  <code>processed_experience.json</code>.</li>
+  <li><b>Orange LLM box</b> &harr; <code>optimizer.py:156&ndash;160</code>
+  &mdash; single <code>optimize_llm.call_with_format(prompt,
+  XmlFormatter.from_model(GraphOptimize))</code>.</li>
+  <li><b>Red FormatError fallback</b> &harr;
+  <code>optimizer.py:164&ndash;174</code> + <code>_extract_fields_from_response</code>
+  &mdash; on schema-validation failure, raw response is regex-parsed for
+  <code>&lt;modification&gt; / &lt;graph&gt; / &lt;prompt&gt;</code> tags.</li>
+  <li><b>check_modification decision diamond</b> &harr;
+  <code>optimizer.py:177&ndash;183</code> +
+  <code>experience_utils.py:69&ndash;80</code> &mdash; if this exact
+  <code>modification</code> string already appears in the parent's success
+  OR failure history, regenerate.</li>
+  <li><b>write_graph_files + load_graph</b> &harr;
+  <code>optimizer.py:186&ndash;190</code> &mdash; new
+  <code>round_{N+1}/graph.py</code> + <code>prompt.py</code> persisted; loaded
+  for the validation eval.</li>
+  <li><b>evaluate_graph box (5&times;)</b> &harr;
+  <code>optimizer.py:194</code> &mdash;
+  <code>validation_rounds=5</code> separate evaluations are averaged into
+  <code>avg_score</code>.</li>
+  <li><b>update_experience box</b> &harr;
+  <code>optimizer.py:196</code> +
+  <code>experience_utils.py:91&ndash;95</code> &mdash;
+  <code>experience.json = {father_node, modification, before, after, succeed=bool(after&gt;before)}</code>
+  written into the child round dir; the parent's anti-replay list grows by one entry.</li>
+  <li><b>check_convergence decision diamond</b> &harr;
+  <code>optimizer.py:108</code> +
+  <code>convergence_utils.py:68&ndash;113</code> &mdash; top-3 average's
+  z&sdot;&sigma; stability over <code>consecutive_rounds=5</code>; with
+  <code>z=0</code> (the default), this fires only on exact equality and is
+  essentially advisory.</li>
+</ul>
+
+<div class="diagram">
+<svg viewBox="0 0 900 660" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr-af" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr-af-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b34700"/>
+    </marker>
+    <marker id="arr-af-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a52a00"/>
+    </marker>
+  </defs>
+
+  <!-- ROW 1: round_1 baseline init -->
+  <rect x="20" y="15" width="200" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="120" y="38" text-anchor="middle" font-weight="600">round_1 baseline</text>
+  <text x="120" y="56" text-anchor="middle" font-size="11">graph.py + prompt.py</text>
+
+  <line x1="220" y1="42" x2="245" y2="42" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <rect x="245" y="15" width="240" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="365" y="34" text-anchor="middle" font-weight="600">evaluate_graph (initial=True)</text>
+  <text x="365" y="50" text-anchor="middle" font-size="11">validation_rounds = 5</text>
+  <text x="365" y="64" text-anchor="middle" font-size="11">avg_score &rarr; results.json append</text>
+
+  <line x1="485" y1="42" x2="510" y2="42" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <rect x="510" y="15" width="180" height="55" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="600" y="38" text-anchor="middle" font-weight="600">results.json</text>
+  <text x="600" y="56" text-anchor="middle" font-size="11">[ {round:1, score: x} ]</text>
+
+  <line x1="600" y1="70" x2="600" y2="100" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- for-loop outer dashed bounding box -->
+  <rect x="10" y="85" width="880" height="560" fill="none" stroke="#999" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="22" y="103" font-size="12" fill="#6b6b6b" font-style="italic">for opt_round in range(max_rounds = 20):</text>
+
+  <!-- max_retries=1 exception annotation along right side of outer for-loop -->
+  <text x="878" y="103" text-anchor="end" font-size="11" fill="#a52a00">on Exception: max_retries=1, score=None, round skipped</text>
+
+  <!-- inner orange dashed "while True" sampling loop bounding box -->
+  <rect x="25" y="115" width="850" height="285" fill="none" stroke="#b34700" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="38" y="133" font-size="12" fill="#b34700" font-style="italic">while True &mdash; resample parent until modification is novel (per-parent anti-replay)</text>
+
+  <!-- get_top_rounds -->
+  <rect x="40" y="145" width="160" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="120" y="166" text-anchor="middle" font-weight="600">get_top_rounds</text>
+  <text x="120" y="184" text-anchor="middle" font-size="11">top-K rounds by score</text>
+
+  <line x1="200" y1="172" x2="225" y2="172" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- select_round (softmax+uniform mix) -->
+  <rect x="225" y="145" width="190" height="55" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="320" y="162" text-anchor="middle" font-weight="600" fill="#b34700">select_round</text>
+  <text x="320" y="178" text-anchor="middle" font-size="11">&lambda;&sdot;uniform + (1&minus;&lambda;)&sdot;softmax</text>
+  <text x="320" y="193" text-anchor="middle" font-size="11">&alpha;=0.2, &lambda;=0.3</text>
+
+  <line x1="415" y1="172" x2="440" y2="172" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- build optimize_prompt -->
+  <rect x="440" y="145" width="195" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="538" y="160" text-anchor="middle" font-weight="600">build optimize_prompt</text>
+  <text x="538" y="176" text-anchor="middle" font-size="10">{experience, score, graph,</text>
+  <text x="538" y="190" text-anchor="middle" font-size="10">prompt, operators, log&times;3}</text>
+
+  <line x1="635" y1="172" x2="660" y2="172" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- LLM call (single) -->
+  <rect x="660" y="145" width="200" height="55" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="760" y="162" text-anchor="middle" font-weight="600" fill="#b34700">LLM (single call)</text>
+  <text x="760" y="178" text-anchor="middle" font-size="10">call_with_format(GraphOptimize)</text>
+  <text x="760" y="193" text-anchor="middle" font-size="10">&rarr; {modification, graph, prompt}</text>
+
+  <!-- annotation under LLM row -->
+  <text x="450" y="215" text-anchor="middle" font-size="11" fill="#6b6b6b">single-turn prompt, no shared msg_list across rounds &mdash; cf. ADAS's 3-call Reflexion thread</text>
+
+  <!-- FormatError red fallback box -->
+  <rect x="660" y="222" width="200" height="40" fill="#fff" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="760" y="238" text-anchor="middle" font-size="11" fill="#a52a00">on FormatError &rarr; regex-extract</text>
+  <text x="760" y="253" text-anchor="middle" font-size="10" fill="#a52a00">&lt;modification&gt; / &lt;graph&gt; / &lt;prompt&gt;</text>
+
+  <path d="M 760 222 L 760 200" stroke="#a52a00" stroke-width="1.2" stroke-dasharray="3 3" fill="none" marker-end="url(#arr-af-red)"/>
+
+  <!-- arrow from LLM box down to check_modification diamond -->
+  <line x1="760" y1="260" x2="760" y2="290" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+  <line x1="760" y1="290" x2="450" y2="290" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="450" y1="290" x2="450" y2="310" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- check_modification decision diamond -->
+  <polygon points="450,310 555,345 450,380 345,345" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="450" y="338" text-anchor="middle" font-size="11" font-weight="600">check_modification:</text>
+  <text x="450" y="354" text-anchor="middle" font-size="11">already on parent's</text>
+  <text x="450" y="370" text-anchor="middle" font-size="11">success/failure list?</text>
+
+  <!-- YES branch — resample (loop back to top of inner box) -->
+  <path d="M 345 345 L 100 345 L 100 200" fill="none" stroke="#b34700" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arr-af-orange)"/>
+  <text x="320" y="338" text-anchor="middle" font-size="10" fill="#b34700">yes &mdash; regenerate</text>
+  <text x="220" y="270" font-size="10" fill="#b34700">re-sample parent and re-call LLM</text>
+
+  <!-- NO branch — exit inner orange box -->
+  <line x1="555" y1="345" x2="600" y2="345" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="580" y="338" text-anchor="middle" font-size="10" fill="#6b6b6b">no</text>
+  <line x1="600" y1="345" x2="600" y2="395" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- write_graph_files -->
+  <rect x="60" y="415" width="220" height="50" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="170" y="435" text-anchor="middle" font-weight="600">write_graph_files</text>
+  <text x="170" y="453" text-anchor="middle" font-size="11">round_{N+1}: graph.py + prompt.py</text>
+
+  <line x1="280" y1="440" x2="320" y2="440" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- evaluate_graph (validation_n=5) -->
+  <rect x="320" y="415" width="240" height="50" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="440" y="432" text-anchor="middle" font-weight="600">evaluate_graph (initial=False)</text>
+  <text x="440" y="450" text-anchor="middle" font-size="11">validation_rounds=5 &rarr; avg_score</text>
+
+  <line x1="560" y1="440" x2="600" y2="440" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- update_experience -->
+  <rect x="600" y="415" width="260" height="50" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="730" y="432" text-anchor="middle" font-weight="600">update_experience</text>
+  <text x="730" y="450" text-anchor="middle" font-size="10">{father_node, modification, before, after, succeed}</text>
+
+  <!-- arrow from update_experience down to convergence -->
+  <line x1="600" y1="395" x2="600" y2="395" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="730" y1="465" x2="730" y2="490" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="730" y1="490" x2="450" y2="490" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="450" y1="490" x2="450" y2="510" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+
+  <!-- convergence check diamond -->
+  <polygon points="450,510 575,545 450,580 325,545" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="450" y="538" text-anchor="middle" font-size="11" font-weight="600">check_convergence:</text>
+  <text x="450" y="554" text-anchor="middle" font-size="11">top-3 avg stable for</text>
+  <text x="450" y="570" text-anchor="middle" font-size="11">5 consecutive rounds?</text>
+
+  <!-- YES → break -->
+  <line x1="575" y1="545" x2="640" y2="545" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+  <text x="605" y="540" text-anchor="middle" font-size="10" fill="#6b6b6b">yes</text>
+  <rect x="640" y="525" width="170" height="40" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="725" y="540" text-anchor="middle" font-weight="600" font-size="12">break outer loop</text>
+  <text x="725" y="556" text-anchor="middle" font-size="10">(converged)</text>
+
+  <!-- NO → next opt_round (arrow loops back up to inner-orange-box top via right side of outer for-loop) -->
+  <path d="M 325 545 L 290 545 L 290 615 L 25 615" fill="none" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af)"/>
+  <text x="200" y="608" text-anchor="middle" font-size="10" fill="#6b6b6b">no &mdash; next opt_round (self.round += 1; results.json append)</text>
+
+  <!-- legend hint -->
+  <text x="35" y="640" font-size="10" fill="#6b6b6b">orange box = LLM call site / parent-sampling decision &mdash; the load-bearing pieces of AFlow's algorithm</text>
+</svg>
+<div class="legend">
+  <span><span class="sw" style="background:#fff3eb;border-color:#b34700"></span>LLM call / softmax-mix parent sampling (orange)</span>
+  <span><span class="sw" style="background:#fff"></span>computation</span>
+  <span><span class="sw" style="background:#f0efe9"></span>archive / decision / persistent state</span>
+  <span><span class="sw" style="background:#fff;border-color:#a52a00;border-style:dashed"></span>failure / fallback</span>
+</div>
+</div>
+
+<h3>Annotated source &mdash; <code>_optimize_graph()</code></h3>
+
+<p>
+  Below is the verbatim <code>_optimize_graph()</code> function from
+  <code>third_party/AFlow/scripts/optimizer.py:120&ndash;198</code>,
+  plus the outer-loop frame from <code>:71&ndash;118</code>, with right-side
+  annotations tying each region back to a box / arrow in the diagram above.
+  <strong>Yes &mdash; the diagram is a faithful structural translation; every diagram
+  element has a corresponding code region marked here.</strong>
+</p>
+
+<pre style="font-size: .78rem; line-height: 1.42;">
+ 71  def optimize(self, mode: OptimizerType = "Graph"):
+ 72      if mode == "Test":
+ 73          ...
+ 80      for opt_round in range(self.max_rounds):                       <span class="key">&blacktriangleleft;&mdash; OUTER DASHED BOX (for opt_round in range(max_rounds))</span>
+ 81          loop = asyncio.new_event_loop()
+ 82          asyncio.set_event_loop(loop)
+ 83
+ 84          retry_count = 0
+ 85          max_retries = 1                                            <span class="warn">&blacktriangleleft;&mdash; only 1 attempt; not a retry budget despite the variable name</span>
+ 86
+ 87          while retry_count &lt; max_retries:
+ 88              try:
+ 89                  score = loop.run_until_complete(self._optimize_graph())
+ 90                  break
+ 91              except Exception as e:                                 <span class="warn">&blacktriangleleft;&mdash; ANY Python exception during the round</span>
+ 92                  retry_count += 1
+ 93                  logger.info(f"Error occurred: {e}. Retrying... ...")
+ 94                  if retry_count == max_retries:
+ 95                      logger.info("Max retries reached. Moving to next round.")
+ 96                      score = None                                   <span class="warn">             score=None, round produces no child workflow</span>
+ 97                  wait_time = 5 * retry_count
+ 98                  time.sleep(wait_time)
+ 99              ...
+105          self.round += 1
+106          logger.info(f"Score for round {self.round}: {score}")
+107
+108          converged, convergence_round, final_round = self.convergence_utils.check_convergence(top_k=3)
+                                                                       <span class="key">&blacktriangleleft;&mdash; DIAMOND: check_convergence (top_k=3, z=0, consecutive_rounds=5)</span>
+109
+110          if converged and self.check_convergence:
+111              ...                                                    <span class="key">&blacktriangleleft;&mdash; BOX: break outer loop (converged)</span>
+116              break
+117
+118          time.sleep(5)
+</pre>
+
+<pre style="font-size: .78rem; line-height: 1.42;">
+120  async def _optimize_graph(self):
+121      validation_n = self.validation_rounds                          <span style="color:#6b6b6b"># default 5</span>
+122      graph_path = f"{self.root_path}/workflows"
+123      data = self.data_utils.load_results(graph_path)
+124
+125      if self.round == 1:                                            <span class="key">&blacktriangleleft;&mdash; TOP ROW: first-round init</span>
+126          directory = self.graph_utils.create_round_directory(graph_path, self.round)
+127          self.graph = self.graph_utils.load_graph(self.round, graph_path)
+128          avg_score = await self.evaluation_utils.evaluate_graph(    <span class="key">     baseline scored with validation_rounds=5</span>
+129              self, directory, validation_n, data, initial=True)
+130
+131      # Create a loop until the generated graph meets the check conditions
+132      while True:                                                    <span class="key">&blacktriangleleft;&mdash; INNER ORANGE DASHED BOX (anti-replay sampling loop)</span>
+133          directory = self.graph_utils.create_round_directory(graph_path, self.round + 1)
+134
+135          top_rounds = self.data_utils.get_top_rounds(self.sample)   <span class="key">&blacktriangleleft;&mdash; BOX: get_top_rounds (top-K by score)</span>
+136          sample = self.data_utils.select_round(top_rounds)          <span class="key">&blacktriangleleft;&mdash; BOX (orange): select_round</span>
+                                                                       <span class="key">    softmax(&alpha;=0.2)+uniform(&lambda;=0.3) mix; np.random.choice on top-K</span>
+137
+138          prompt, graph_load = self.graph_utils.read_graph_files(    <span class="key">&blacktriangleleft;&mdash; BOX: build optimize_prompt (read parent files)</span>
+139              sample["round"], graph_path)
+140          graph = self.graph_utils.extract_solve_graph(graph_load)
+141
+142          processed_experience = self.experience_utils.load_experience()
+143          experience = self.experience_utils.format_experience(      <span class="key">     parent's success+failure history injected as natural language</span>
+144              processed_experience, sample["round"])
+145
+146          operator_description = self.graph_utils.load_operators_description(self.operators)
+147          log_data = self.data_utils.load_log(sample["round"])       <span class="key">     3 random failure samples from parent's log.json</span>
+148
+149          graph_optimize_prompt = self.graph_utils.create_graph_optimize_prompt(
+150              experience, sample["score"], graph[0], prompt, operator_description, self.type, log_data
+151          )
+152
+153          try:
+154              graph_formatter = XmlFormatter.from_model(GraphOptimize)
+155
+156              response = await self.optimize_llm.call_with_format(   <span class="key">&blacktriangleleft;&mdash; BOX (orange): LLM single call</span>
+157                  graph_optimize_prompt,                              <span class="key">    XmlFormatter parses &lt;modification&gt; &lt;graph&gt; &lt;prompt&gt; tags</span>
+158                  graph_formatter)
+159              ...
+163              logger.info(f"Graph optimization response received successfully")
+164          except FormatError as e:                                   <span class="warn">&blacktriangleleft;&mdash; RED FALLBACK: schema validation failed</span>
+165              logger.error(f"Format error in graph optimization: {str(e)}")
+166              raw_response = await self.optimize_llm(graph_optimize_prompt)
+167
+168              response = self._extract_fields_from_response(raw_response)
+                                                                       <span class="warn">     regex-extract &lt;modification&gt; &lt;graph&gt; &lt;prompt&gt; from raw text</span>
+172              if not response:
+173                  logger.error("Failed to extract fields from raw response, retrying...")
+174                  continue                                           <span class="warn">     extraction failed → resample parent + re-call LLM</span>
+175
+176          # Check if the modification meets the conditions
+177          check = self.experience_utils.check_modification(          <span class="key">&blacktriangleleft;&mdash; DIAMOND: check_modification</span>
+178              processed_experience, response["modification"],        <span class="key">    duplicate of parent's success OR failure list? → False = regenerate</span>
+179              sample["round"]
+180          )
+181
+182          if check:                                                  <span class="key">&blacktriangleleft;&mdash; DIAMOND NO branch: exit inner orange box</span>
+183              break
+184                                                                     <span class="key">     (DIAMOND YES branch: implicit `continue` &mdash; re-sample parent + re-call LLM)</span>
+185
+186      # Save the graph and evaluate
+187      self.graph_utils.write_graph_files(directory, response, self.round + 1, self.dataset)
+                                                                       <span class="key">&blacktriangleleft;&mdash; BOX: write_graph_files (round_{N+1} dir)</span>
+188
+189      experience = self.experience_utils.create_experience_data(sample, response["modification"])
+190
+191      self.graph = self.graph_utils.load_graph(self.round + 1, graph_path)
+192
+193      logger.info(directory)
+194
+195      avg_score = await self.evaluation_utils.evaluate_graph(        <span class="key">&blacktriangleleft;&mdash; BOX: evaluate_graph (validation_rounds=5, initial=False)</span>
+196          self, directory, validation_n, data, initial=False)
+197
+198      self.experience_utils.update_experience(directory, experience, avg_score)
+                                                                       <span class="key">&blacktriangleleft;&mdash; BOX: update_experience (experience.json: succeed=bool(after&gt;before))</span>
+199
+200      return avg_score
+</pre>
+
+<h3>The parent-sampling helper &mdash; <code>_compute_probabilities</code></h3>
+
+<p>
+  This is the algorithmic heart of AFlow's <em>&ldquo;tree&rdquo; search</em> and
+  worth quoting in full. The function decides which prior round is the
+  parent of the next child workflow.
+</p>
+
+<pre style="font-size: .78rem; line-height: 1.42;">
+ 14  class DataUtils:
+ 15
+ 16      DEFAULT_ALPHA = 0.2                                            <span style="color:#6b6b6b"># very flat softmax over scores</span>
+ 17      DEFAULT_LAMBDA = 0.3                                           <span style="color:#6b6b6b"># 30% pure uniform mix → forced exploration</span>
+ 18      DEFAULT_LOG_SAMPLES = 3                                        <span style="color:#6b6b6b"># 3 failure samples injected as context</span>
+ ...
+ 61      def select_round(self, items: List[Dict]) -> Dict:
+ ...
+ 66          sorted_items = sorted(items, key=lambda x: x["score"], reverse=True)
+ 67          scores = [item["score"] * 100 for item in sorted_items]
+ 68
+ 69          probabilities = self._compute_probabilities(scores)
+ ...
+ 73          selected_index = np.random.choice(len(sorted_items), p=probabilities)
+ ...
+ 78      def _compute_probabilities(self, scores, alpha=0.2, lambda_=0.3):
+ ...
+ 85          scores = np.array(scores, dtype=np.float64)
+ 86          n = len(scores)
+ ...
+ 91          uniform_prob = np.full(n, 1.0 / n, dtype=np.float64)       <span class="key">&blacktriangleleft;&mdash; uniform component</span>
+ 92
+ 93          max_score = np.max(scores)
+ 94          shifted_scores = scores - max_score
+ 95          exp_weights = np.exp(alpha * shifted_scores)               <span class="key">&blacktriangleleft;&mdash; softmax(&alpha;&sdot;score) numerator</span>
+ 96
+ 97          sum_exp_weights = np.sum(exp_weights)
+ ...
+101          score_prob = exp_weights / sum_exp_weights                 <span class="key">&blacktriangleleft;&mdash; score-weighted component</span>
+102
+103          mixed_prob = lambda_ * uniform_prob + (1 - lambda_) * score_prob
+                                                                       <span class="key">&blacktriangleleft;&mdash; final mix: 30% uniform + 70% softmax</span>
+104
+ ...
+109          return mixed_prob
+</pre>
+
+<p>
+  Compare this against UCB1
+  (<code>argmax_c [Q&#770;(c) + C&sdot;&radic;(ln N(parent) / n(c))]</code>):
+  no visit count, no exploration bonus that decays with visits, no parent
+  child statistic. <strong>AFlow's exploration term is a flat
+  <code>&lambda;&sdot;uniform</code> baseline that does not shrink</strong>
+  &mdash; even after 100 rounds, every top-K round still has a 30/K floor on
+  selection probability. This is qualitatively different behaviour from
+  UCB, and the paper's MCTS framing should be read as analogical rather
+  than literal.
+</p>
+
+<h3>Upstream invariants worth marking</h3>
+
+<p>
+  These are the fidelity anchors any AgentCanvas port would need to preserve.
+</p>
+
+<ul>
+  <li><b>Parent selection is score-softmax + uniform mix, not UCB and not
+  &ldquo;best so far&rdquo;.</b> <code>p = &lambda;&sdot;uniform + (1&minus;&lambda;)&sdot;softmax(&alpha;&sdot;score)</code>
+  with <code>&alpha;=0.2</code> (flat) and <code>&lambda;=0.3</code> (30% pure
+  uniform). Top-K candidate set defaults to <code>self.sample</code> from
+  the experiment config. <code>round_1</code> is unconditionally included
+  in the top-K to keep the baseline reachable
+  (<code>data_utils.py:53&ndash;55</code>).</li>
+
+  <li><b>Per-parent experience-based anti-replay</b> is enforced inside
+  an unbounded <code>while True</code> loop. Each child round writes
+  <code>experience.json = {father_node, modification, before, after, succeed}</code>
+  into its own dir; on the next round, <code>load_experience</code>
+  aggregates these into a parent &rarr; <code>{success: [...], failure: [...]}</code>
+  map. The LLM is shown the parent's failure list (formatted as
+  &ldquo;Absolutely prohibit X (Score: y)&rdquo;) and the success list (also
+  prohibited &mdash; success means &ldquo;already tried, don't repeat&rdquo;).
+  If the LLM still returns a duplicate <code>modification</code> string,
+  the inner loop regenerates with a re-sampled parent
+  (<code>experience_utils.py:69&ndash;80</code>,
+  <code>optimizer.py:177&ndash;183</code>).</li>
+
+  <li><b>One LLM call per (parent, attempt)</b> &mdash; no 3-call Reflexion,
+  no shared <code>msg_list</code> across rounds. The prompt is single-turn
+  and stuffs everything (experience, parent's graph, parent's prompt, 3
+  random failure samples from parent's log, operator descriptions) into
+  one <code>WORKFLOW_INPUT</code> template. Output is parsed by
+  <code>XmlFormatter.from_model(GraphOptimize)</code> against
+  the pydantic schema <code>{modification: str, graph: str, prompt: str}</code>
+  &mdash; <code>graph</code> and <code>prompt</code> are full Python source
+  strings, not patches.</li>
+
+  <li><b>FormatError has a regex-based fallback, not a debug retry.</b>
+  When <code>XmlFormatter</code> rejects the response, the optimizer
+  re-calls the LLM <em>without</em> the formatter and regex-extracts
+  <code>&lt;modification&gt; / &lt;graph&gt; / &lt;prompt&gt;</code> tags
+  from the raw text. If extraction also fails, the inner loop
+  <code>continue</code>s &mdash; same loop body, different LLM sample
+  (<code>optimizer.py:164&ndash;174</code>). No err-pushed-to-msg-list,
+  no debug_thought field. This is qualitatively weaker failure handling
+  than ADAS's 3-retry reflection chain.</li>
+
+  <li><b>Outer-loop exception swallow.</b> Any Python exception inside
+  <code>_optimize_graph()</code> is caught at the outer
+  <code>optimize()</code> level; <code>max_retries=1</code> means the
+  <code>while retry_count &lt; max_retries</code> loop runs at most
+  once before <code>score=None</code> and the round is abandoned. The
+  flat <code>results.json</code> doesn't get a new entry, but
+  <code>self.round += 1</code> still fires, so the round number
+  increments without a child workflow being persisted
+  (<code>optimizer.py:87&ndash;105</code>).</li>
+
+  <li><b>Validation is <code>validation_rounds = 5</code> separate evaluations
+  averaged</b> into <code>avg_score</code>. There is no bootstrap-CI
+  or fitness-string equivalent &mdash; the score that lands in
+  <code>results.json</code> is a single float
+  (<code>evaluation_utils.evaluate_graph</code>; default
+  <code>validation_rounds=5</code> on <code>optimizer.py:45</code>).</li>
+
+  <li><b>Convergence check is advisory and weakly tuned.</b>
+  <code>ConvergenceUtils.check_convergence(top_k=3, z=0, consecutive_rounds=5)</code>
+  watches the top-3 average's stability across 5 consecutive rounds, with
+  <code>z=0</code> hard-coded on <code>optimizer.py:108</code>. With
+  <code>z=0</code>, the stop predicate fires only when
+  <code>|y_current &minus; y_previous| &le; 0</code> &mdash; i.e. exact
+  equality of top-3 means for 5 rounds in a row, which is almost never
+  satisfied on continuous-score benchmarks. In practice the loop runs
+  for the full <code>max_rounds</code> (default 20) and convergence
+  detection is a no-op. Stronger still: <code>Optimizer.__init__</code>
+  defaults <code>check_convergence=False</code>, and
+  <code>optimizer.py:110</code> gates the early-break on
+  <code>converged <strong>and</strong> self.check_convergence</code> &mdash;
+  so by default the convergence branch never fires regardless of
+  <code>z</code>. The port's <code>loop.md</code> runs the check as an
+  always-on advisory, a mild divergence from this upstream default.</li>
+
+  <li><b>Operators are workflow-internal node types, not optimizer
+  mutations.</b> The <code>operators</code> list in
+  <code>run.py:21&ndash;58</code> (e.g.
+  <code>Custom / AnswerGenerate / ScEnsemble / Programmer / CustomCodeGenerate / Test</code>)
+  names the LLM-callable building blocks the workflow itself can compose.
+  The optimizer's action set is the <em>set of all syntactically valid
+  Python programs over these operators</em> &mdash; effectively unbounded.
+  The optimize prompt nudges the LLM toward <code>review / revise /
+  ensemble / selfAsk</code> as patterns to consider but doesn't gate on
+  any of them (<code>prompts/optimize_prompt.py:WORKFLOW_OPTIMIZE_PROMPT</code>).
+  This is the most important faithfulness anchor for AgentCanvas: the
+  port's mutation surface needs to be free-form
+  (graph + prompts in one shot), not constrained to a typed action
+  enum.</li>
+
+  <li><b>Initial archive is one baseline workflow, not a 7-seed palette.</b>
+  AFlow's <code>round_1</code> is whatever workflow lives at
+  <code>workspace/{dataset}/workflows/template/</code> when
+  <code>self.round == 1</code> &mdash; typically a vanilla
+  &ldquo;Custom + AnswerGenerate&rdquo; chain. Unlike ADAS, there is no
+  pre-seeded design palette injected into the LLM context.</li>
+</ul>
+
+<p>
+  Section 2 below documents how the <code>aflow</code> AgentCanvas port
+  preserves each of these invariants. Three design forks raised in the
+  planning discussion are resolved inline: <strong>F1 mutation surface</strong>
+  = free-form change (graph + prompt in one shot, no typed action enum) &mdash;
+  realized 2026-05-20 by the implementer sub-agent editing the
+  <code>active_workspace/</code> overlay natively; the proposer hands over a
+  prose <code>{intent, targets}</code> change spec (the earlier typed op DSL
+  was the compromise of routing edits through a deterministic replayer);
+  <strong>F2 parent-selection</strong> = faithful
+  score-softmax + uniform-mix with <code>&alpha;=0.2 / &lambda;=0.3</code>
+  against <code>archive.jsonl</code>; <strong>F3 validation-rounds budget</strong>
+  = single-pass 100-ep eval with bootstrap-CI &mdash; the only forced adaptation,
+  since 5&times;100&nbsp;ep at our cost would be ~5&ndash;10&nbsp;h per round.
+  The bootstrap resampling captures the <em>episode-sampling</em> variance of
+  the mean &mdash; it does NOT capture the <em>run-to-run</em> stochasticity
+  (LLM temperature, nondeterministic agent behaviour across passes) that
+  upstream's 5 independent passes average out. These are different variance
+  components; the bootstrap is a cost-forced approximation, not a statistical
+  equivalent of the 5-repeat mean. <strong>This is not localized to
+  evaluation cost</strong>: the single-pass <code>score</code> feeds
+  <code>select_round</code>'s softmax and <code>check_convergence</code>'s
+  stability test, both of which assume <code>score</code> is comparable
+  across iters &mdash; so the unmodeled run-to-run variance can mis-rank a
+  parent into the top-K, and (because per-round &sigma; is 0 under one
+  pass) collapses the convergence predicate to exact equality. F3 is
+  therefore a soundness caveat on parent selection, not merely an eval
+  shortcut &mdash; see Section&nbsp;2 &sect; &ldquo;Two-tier evaluation&rdquo;.
+</p>
+
+
+<h2>Section 2 &mdash; Our <code>aflow</code> implementation</h2>
+
+<p>
+  A new namespace at <code>.claude/commands/architect/aflow/</code> that
+  ports AFlow's <code>optimize()</code> + <code>_optimize_graph()</code>
+  control flow onto the AgentCanvas substrate. The cross-variant file/iter
+  contract (run-dir layout, resolve protocol, <code>{graph}.yaml</code>
+  schema, edit whitelist, eval-API endpoints) is shared with
+  <code>adas-subagent</code>, <code>adas</code> v1 and <code>myloop</code> via
+  <code><a href="../_common/files-contract.md">../_common/files-contract.md</a></code>;
+  <code>aflow</code> only declares what diverges from <code>adas-subagent</code>.
+</p>
+
+<p>
+  Five algorithmic changes vs adas-subagent &mdash; AFlow's per-parent-experience
+  MCTS-flavoured search differs from ADAS's archive-injection meta-LLM in
+  ways that affect the proposer's call shape, the loop's per-iter
+  bookkeeping, the archive entry schema, and the evaluation tiering:
+</p>
+<ol>
+  <li><strong>Single LLM call per attempt, not 3-call Reflexion.</strong>
+  adas-subagent's proposer threads three calls (propose / R1 / R2) through one
+  <code>msg_list</code>. <code>aflow</code>'s proposer makes one
+  <code>call_with_format(GraphOptimize)</code> call per attempt; the
+  conversation thread is the <em>anti-replay retry loop</em> &mdash; if
+  <code>check_modification</code> rejects, the thread re-samples a parent
+  and re-calls the LLM with a fresh <code>optimize_prompt</code>. Verbatim
+  upstream <code>optimizer.py:132&ndash;183</code>.</li>
+
+  <li><strong>Parent selection at the head of each iter, not implicit
+  &ldquo;archive head&rdquo;.</strong> adas-subagent always proposes from the
+  archive head. <code>aflow</code> runs <code>select_round(top_K)</code>
+  with <code>p = &lambda;&sdot;uniform + (1&minus;&lambda;)&sdot;softmax(&alpha;&sdot;score)</code>
+  against <code>archive.jsonl</code> &mdash; <em>any</em> prior round can be
+  the parent, including <code>iter_0</code>. The chosen
+  <code>parent_iter_id</code> is recorded in <code>proposal.md</code>
+  frontmatter so loop can restore the parent's <code>active_workspace/</code>
+  into <code>.staging/iter_n/</code> before invoking implementer.</li>
+
+  <li><strong>Archive entry carries <code>parent_iter_id</code> +
+  <code>modification</code> for per-parent anti-replay.</strong> adas-subagent's
+  archive entry is <code>{generation, iter_id, name, thought, graph_summary,
+  diff_narrative, fitness}</code>. <code>aflow</code> adds
+  <code>parent_iter_id</code> (which round was the parent) and
+  <code>modification</code> (the verbatim natural-language description of
+  the change the LLM proposed) so the next iter can build a parent &rarr;
+  <code>{success: [...], failure: [...]}</code> lookup table for the
+  optimize_prompt's "Absolutely prohibit X (Score: y)" experience block.</li>
+
+  <li><strong>No 7-seed palette.</strong> adas-subagent pre-seeds
+  <code>archive.jsonl</code> with 7 ADAS reference patterns (text-only,
+  <code>fitness:null</code>) so the meta-LLM has a starting design palette.
+  <code>aflow</code> follows upstream &mdash; the only initial entry is
+  <code>iter_0</code> (baseline workflow scored on the
+  <code>perf_</code> tier + bootstrap_CI). The optimize_prompt has no
+  slot for ungrounded patterns.</li>
+
+  <li><strong>Two-tier evaluation (smoke / perf).</strong>
+  Same shape as adas-subagent &mdash; a smoke gate inside the
+  implementer's debug-retry loop + a per-iter <code>perf_&lt;graph&gt;</code>
+  eval whose <code>acc_list</code> the Atomic Writer turns into the
+  archive's <code>score</code>. (The 2026-05-20 three-tier
+  <code>smoke / search / perf</code> design was reverted on 2026-05-25
+  after the v0 <code>mapgpt_mp3d</code> run showed its small frozen
+  <code>search_</code> subset noise floor &asymp; 9pp was larger than
+  the &sim;5&ndash;10pp gains the search could detect; iter_6 won the
+  search by +13pp and lost <code>perf</code> by &minus;4.2pp.) Every
+  <code>archive.jsonl</code> <code>score</code> is now a single-pass
+  <code>perf_&lt;graph&gt;</code> value; step 8 adds verification reruns
+  on top-1, top-2, and baseline to calibrate residual LLM run-to-run
+  stochasticity. See &sect; &ldquo;Two-tier evaluation&rdquo; below.</li>
+</ol>
+
+<p>
+  Failed iters remain atomic per the shared files-contract:
+  <strong>no iter dir, no archive append</strong>. The
+  per-vN <code>archive.jsonl</code>, <code>fitness_str</code> in
+  <code>metrics.json</code>, and the <code>.staging/iter_n/</code>
+  pre-commit dir all carry over from adas-subagent unchanged.
+</p>
+
+<h3>At-a-glance &mdash; cycle + working memory</h3>
+
+<p>
+  Same shape as the myloop reference diagram: per-iter phases run
+  top-to-bottom on the left, the persistent archive lives on the right,
+  dashed lines show what each phase reads from or writes to it. The
+  large flow diagram immediately below preserves the per-skill mechanics
+  (anti-replay <code>while True</code> inside <code>proposer</code>,
+  parent-checkout inside <code>implementer</code>, Atomic Writer); this
+  view is the 10-second summary. The defining shape difference vs ADAS:
+  the proposer picks a <em>parent</em> from the archive each attempt
+  (any prior iter is eligible, weighted by score) and feeds that
+  parent's experience block into a single LLM call &mdash; no 3-call
+  Reflexion.
+</p>
+
+<div class="diagram">
+<svg viewBox="0 0 940 600" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr-aflow-glance" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr-aflow-glance-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b34700"/>
+    </marker>
+  </defs>
+
+  <!-- Pre-loop init -->
+  <rect x="50" y="20" width="260" height="55" fill="#fafaf7" stroke="#6b6b6b" stroke-width="1.5" stroke-dasharray="4 2"/>
+  <text x="180" y="40" text-anchor="middle" font-weight="600" fill="#6b6b6b">P0 understand + iter_0 baseline</text>
+  <text x="180" y="56" text-anchor="middle" font-size="11" fill="#6b6b6b">load context &middot; run baseline (perf_, full set)</text>
+  <text x="180" y="70" text-anchor="middle" font-size="11" fill="#6b6b6b">&rarr; archive (iter_0 only &mdash; no 7-seed)</text>
+
+  <line x1="180" y1="75" x2="180" y2="105" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-aflow-glance)"/>
+  <text x="195" y="92" font-size="11" fill="#6b6b6b">for opt_round (max 20):</text>
+
+  <!-- Proposer -->
+  <rect x="50" y="108" width="260" height="90" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="180" y="130" text-anchor="middle" font-weight="600" fill="#b34700">proposer (anti-replay)</text>
+  <text x="180" y="148" text-anchor="middle" font-size="11">while True:</text>
+  <text x="180" y="162" text-anchor="middle" font-size="11">  select_round (&lambda;&middot;U + softmax)</text>
+  <text x="180" y="176" text-anchor="middle" font-size="11">  one LLM call &middot; check_modification</text>
+  <text x="180" y="190" text-anchor="middle" font-size="11">&rarr; proposal.md {parent_iter_id, modification}</text>
+
+  <line x1="180" y1="198" x2="180" y2="228" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-aflow-glance)"/>
+
+  <!-- Implementer -->
+  <rect x="50" y="230" width="260" height="80" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="180" y="254" text-anchor="middle" font-weight="600">implementer</text>
+  <text x="180" y="272" text-anchor="middle" font-size="11">cp parent's active_workspace</text>
+  <text x="180" y="288" text-anchor="middle" font-size="11">apply patch &rarr; smoke &rarr; debug retry &le;3</text>
+  <text x="180" y="302" text-anchor="middle" font-size="11">3-exhausted &rarr; SKIP</text>
+
+  <line x1="180" y1="310" x2="180" y2="340" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-aflow-glance)"/>
+
+  <!-- Evaluator -->
+  <rect x="50" y="342" width="260" height="80" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="180" y="366" text-anchor="middle" font-weight="600">evaluator</text>
+  <text x="180" y="384" text-anchor="middle" font-size="11">perf eval (perf_&lt;graph&gt;, full set)</text>
+  <text x="180" y="400" text-anchor="middle" font-size="11">validation_rounds=1  [F3]</text>
+  <text x="180" y="414" text-anchor="middle" font-size="11">writes neutral metrics.json</text>
+
+  <line x1="180" y1="422" x2="180" y2="452" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-aflow-glance)"/>
+
+  <!-- Atomic writer + convergence -->
+  <rect x="50" y="452" width="260" height="55" fill="#fafaf7" stroke="#b34700" stroke-width="1.5"/>
+  <text x="180" y="472" text-anchor="middle" font-weight="600" fill="#b34700">Atomic writer + convergence check</text>
+  <text x="180" y="488" text-anchor="middle" font-size="11" fill="#b34700">bootstrap_CI &rarr; fitness_str + score; mv staging</text>
+  <text x="180" y="502" text-anchor="middle" font-size="11" fill="#b34700">+ archive.append + check_convergence</text>
+
+  <!-- Loop-back -->
+  <path d="M 50 480 L 25 480 L 25 153 L 48 153" fill="none" stroke="#b34700" stroke-width="1.5" stroke-dasharray="4 2" stroke-linejoin="round" marker-end="url(#arr-aflow-glance-orange)"/>
+  <text x="32" y="315" font-size="11" fill="#b34700">next opt_round</text>
+
+  <!-- WM box -->
+  <rect x="500" y="108" width="410" height="400" fill="#fafaf7" stroke="#1a1a1a" stroke-width="1.5"/>
+
+  <text x="705" y="130" text-anchor="middle" font-weight="600">Working memory (persistent per vN)</text>
+  <line x1="520" y1="138" x2="890" y2="138" stroke="#d4d4d0" stroke-width="1"/>
+
+  <!-- Central archive -->
+  <text x="520" y="158" font-size="11" font-weight="600" fill="#b34700">Central archive (parent-aware)</text>
+  <text x="535" y="176" font-size="11" fill="#b34700">&bull; archive.jsonl</text>
+  <text x="555" y="191" font-size="10" fill="#6b6b6b">&mdash; iter_0 baseline (parent_iter_id:null)</text>
+  <text x="555" y="205" font-size="10" fill="#6b6b6b">&mdash; each iter: {generation, iter_id,</text>
+  <text x="555" y="219" font-size="10" fill="#6b6b6b">  <tspan font-weight="600">parent_iter_id</tspan>, name, thought,</text>
+  <text x="555" y="233" font-size="10" fill="#6b6b6b">  <tspan font-weight="600">modification</tspan>, fitness, score}</text>
+  <text x="555" y="248" font-size="10" fill="#6b6b6b">  &uarr; the two new fields drive anti-replay</text>
+
+  <!-- Per-iter forensics -->
+  <text x="520" y="274" font-size="11" font-weight="600" fill="#1a1a1a">Per-iter forensics</text>
+  <text x="535" y="292" font-size="11" fill="#1a1a1a">&bull; iter_M/active_workspace/ (parent-checkout-based)</text>
+  <text x="535" y="307" font-size="11" fill="#1a1a1a">&bull; iter_M/debug_log.md</text>
+  <text x="535" y="322" font-size="11" fill="#1a1a1a">&bull; iter_M/{metrics.json, summary.csv, export.json}</text>
+  <text x="535" y="337" font-size="11" fill="#1a1a1a">&bull; iter_M/proposal.md</text>
+
+  <!-- Roll-ups -->
+  <text x="520" y="363" font-size="11" font-weight="600" fill="#6b6b6b">Roll-ups</text>
+  <text x="535" y="381" font-size="11" fill="#6b6b6b">&bull; trace.md (one row per iter)</text>
+  <text x="535" y="396" font-size="11" fill="#6b6b6b">&bull; lineage.md (narrative per iter)</text>
+
+  <!-- Note -->
+  <text x="520" y="427" font-size="10" font-style="italic" fill="#a52a00">SKIP path: rm -rf .staging/iter_n/</text>
+  <text x="520" y="442" font-size="10" font-style="italic" fill="#a52a00">&mdash; no iter dir, no archive append, no anti-replay update</text>
+  <text x="520" y="466" font-size="10" font-style="italic" fill="#6b6b6b">Convergence: top-3 stability check (advisory; mostly no-op)</text>
+
+  <!-- Dashed connectors -->
+  <line x1="310" y1="153" x2="500" y2="153" stroke="#b34700" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="148" font-size="10" fill="#b34700">reads archive (top-K parents) + parent log.jsonl &times; 3</text>
+
+  <line x1="310" y1="270" x2="500" y2="270" stroke="#1a1a1a" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="265" font-size="10" fill="#1a1a1a">reads parent's active_workspace; writes staging</text>
+
+  <line x1="310" y1="382" x2="500" y2="382" stroke="#1a1a1a" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="377" font-size="10" fill="#1a1a1a">writes metrics.json to staging</text>
+
+  <line x1="310" y1="480" x2="500" y2="480" stroke="#b34700" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="475" font-size="10" fill="#b34700">promote staging &rarr; iter_M &middot; append archive entry</text>
+</svg>
+</div>
+
+<h3>Detailed per-iter flow</h3>
+
+<div class="diagram">
+<svg viewBox="0 0 900 590" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr-af2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr-af2-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b34700"/>
+    </marker>
+    <marker id="arr-af2-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a52a00"/>
+    </marker>
+  </defs>
+
+  <!-- understand (P0, off-loop) -->
+  <rect x="20" y="20" width="860" height="50" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="450" y="42" text-anchor="middle" font-weight="600">understand <tspan font-weight="400" font-size="11" fill="#6b6b6b">(P0 skill — runs once before loop starts)</tspan></text>
+  <text x="450" y="60" text-anchor="middle" font-size="11">read-only: load files-contract + AgentCanvas concept/contract docs + AFlow Section&nbsp;1 invariants + graph state</text>
+
+  <line x1="450" y1="70" x2="450" y2="92" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af2)"/>
+
+  <!-- loop (orchestrator) outer box -->
+  <rect x="20" y="95" width="860" height="475" fill="none" stroke="#1a1a1a" stroke-width="2"/>
+  <text x="32" y="115" font-weight="600">loop skill <tspan font-weight="400" font-size="11" fill="#6b6b6b">(orchestrator — owns the conversation, drives the 3 worker skills per iter, runs convergence check)</tspan></text>
+
+  <!-- iter_0 baseline -->
+  <text x="40" y="138" font-style="italic" font-size="12" fill="#6b6b6b">// iter_0 (pre-seed: baseline only — no 7-seed palette in aflow)</text>
+  <rect x="40" y="145" width="250" height="46" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="165" y="165" text-anchor="middle" font-weight="600">iter_0 baseline</text>
+  <text x="165" y="183" text-anchor="middle" font-size="11">loop → evaluator (perf_&lt;graph&gt;, full set)</text>
+
+  <line x1="290" y1="168" x2="320" y2="168" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af2)"/>
+
+  <rect x="320" y="145" width="540" height="46" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="590" y="165" text-anchor="middle" font-weight="600">v{N}/archive.jsonl head</text>
+  <text x="590" y="183" text-anchor="middle" font-size="11">[iter_0 entry: parent_iter_id=null, modification="(baseline)", fitness=&hellip;]</text>
+
+  <!-- for-n header -->
+  <text x="40" y="215" font-style="italic" font-size="12" fill="#6b6b6b">for opt_round in range(max_rounds = 20):</text>
+
+  <!-- one-Claude-conversation envelope (dashed orange) -->
+  <rect x="40" y="222" width="820" height="218" fill="none" stroke="#b34700" stroke-width="1.8" stroke-dasharray="5 3"/>
+  <text x="52" y="242" font-size="12" fill="#b34700" font-style="italic">ONE Claude conversation per iter — proposer's anti-replay retry thread + implementer's debug retry thread share msg_list</text>
+
+  <!-- proposer skill (taller — contains the inner anti-replay loop) -->
+  <rect x="60" y="258" width="240" height="166" fill="#fff3eb" stroke="#b34700" stroke-width="1.8"/>
+  <text x="180" y="278" text-anchor="middle" font-weight="600" fill="#b34700">proposer skill</text>
+  <text x="180" y="296" text-anchor="middle" font-size="10" fill="#6b6b6b" font-style="italic">while True (anti-replay):</text>
+  <text x="180" y="312" text-anchor="middle" font-size="11">  select_round (&lambda;&sdot;U + softmax)</text>
+  <text x="180" y="326" text-anchor="middle" font-size="11">  load parent experience + log&times;3</text>
+  <text x="180" y="340" text-anchor="middle" font-size="11">  build optimize_prompt</text>
+  <text x="180" y="354" text-anchor="middle" font-size="11">  → LLM single call</text>
+  <text x="180" y="368" text-anchor="middle" font-size="11">  check_modification → resample?</text>
+  <text x="180" y="395" text-anchor="middle" font-size="10" fill="#6b6b6b">out: proposal.md (staging)</text>
+  <text x="180" y="408" text-anchor="middle" font-size="10" fill="#6b6b6b">{parent_iter_id, modification,</text>
+  <text x="180" y="420" text-anchor="middle" font-size="10" fill="#6b6b6b">graph_patch, prompt_patch, thought}</text>
+
+  <line x1="300" y1="341" x2="330" y2="341" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af2)"/>
+
+  <!-- implementer skill -->
+  <rect x="330" y="258" width="250" height="166" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="455" y="278" text-anchor="middle" font-weight="600">implementer skill</text>
+  <text x="455" y="296" text-anchor="middle" font-size="11">cp parent's active_workspace</text>
+  <text x="455" y="310" text-anchor="middle" font-size="11">→ .staging/iter_n/active_workspace</text>
+  <text x="455" y="326" text-anchor="middle" font-size="11">apply patch → workspace</text>
+  <text x="455" y="342" text-anchor="middle" font-size="11">Smoke eval (5 ep, ~10 min)</text>
+  <text x="455" y="358" text-anchor="middle" font-size="11">classify {crash, step=0, all-zero, ok}</text>
+  <text x="455" y="372" text-anchor="middle" font-size="11">debug retry (LLM, ≤3) <tspan font-size="9" fill="#6b6b6b">[adas-subagent add-on]</tspan></text>
+  <text x="455" y="395" text-anchor="middle" font-size="10" fill="#6b6b6b">out: smoke-pass workspace</text>
+  <text x="455" y="408" text-anchor="middle" font-size="10" fill="#6b6b6b">+ debug_log.md (staging)</text>
+
+  <line x1="580" y1="341" x2="610" y2="341" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af2)"/>
+
+  <!-- evaluator skill -->
+  <rect x="610" y="258" width="230" height="166" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="725" y="278" text-anchor="middle" font-weight="600">evaluator skill</text>
+  <text x="725" y="296" text-anchor="middle" font-size="11">perf eval — perf_&lt;graph&gt;</text>
+  <text x="725" y="310" text-anchor="middle" font-size="11">(full paper-comparable set)</text>
+  <text x="725" y="326" text-anchor="middle" font-size="10" fill="#a52a00">validation_rounds=1 [F3: upstream 5]</text>
+  <text x="725" y="344" text-anchor="middle" font-size="11">writes neutral metrics.json</text>
+  <text x="725" y="358" text-anchor="middle" font-size="10" fill="#6b6b6b">(method-free — no bootstrap here)</text>
+  <text x="725" y="385" text-anchor="middle" font-size="10" fill="#6b6b6b">out: staging metrics.json</text>
+  <text x="725" y="398" text-anchor="middle" font-size="10" fill="#6b6b6b">summary.csv, export.json</text>
+  <text x="725" y="411" text-anchor="middle" font-size="10" fill="#6b6b6b">(no retry on low value)</text>
+
+  <!-- SKIP path from implementer south -->
+  <path d="M 455 424 L 455 460" fill="none" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arr-af2-red)"/>
+  <text x="540" y="448" font-size="10" fill="#a52a00">3 retries exhausted → SKIP</text>
+
+  <!-- Proposer SKIP path (anti-replay stuck — bounded retry, e.g. 5) -->
+  <path d="M 180 424 L 180 460" fill="none" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arr-af2-red)"/>
+  <text x="100" y="448" font-size="10" fill="#a52a00">all-duplicate after K → SKIP</text>
+
+  <!-- evaluator → atomic write -->
+  <path d="M 725 424 L 725 460 L 590 460 L 590 487" fill="none" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af2)"/>
+  <text x="735" y="448" font-size="10" fill="#6b6b6b">success</text>
+
+  <!-- atomic write row -->
+  <rect x="80" y="490" width="430" height="44" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="295" y="508" text-anchor="middle" font-weight="600" font-size="12">loop: Atomic Writer</text>
+  <text x="295" y="523" text-anchor="middle" font-size="10">bootstrap_CI → fitness_str + score; mv staging → iter_n/ + trace/lineage</text>
+
+  <line x1="510" y1="512" x2="540" y2="512" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-af2)"/>
+
+  <rect x="540" y="490" width="320" height="44" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="700" y="503" text-anchor="middle" font-weight="600" font-size="11">v{N}/archive.jsonl &lt;&lt; entry</text>
+  <text x="700" y="517" text-anchor="middle" font-size="9">{generation, iter_id, parent_iter_id, name, thought,</text>
+  <text x="700" y="529" text-anchor="middle" font-size="9">modification, graph_summary, diff_narrative, fitness, score}</text>
+
+  <!-- SKIP destination -->
+  <rect x="80" y="544" width="430" height="20" fill="#fff" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <text x="295" y="558" text-anchor="middle" font-size="10" fill="#a52a00">SKIP path: rm -rf .staging/iter_n/ — no iter dir, no archive append</text>
+
+  <!-- terminate footnote -->
+  <text x="40" y="580" font-size="11" fill="#6b6b6b">loop terminates when: max_rounds (20) reached · STOP file · convergence (top-3 stability) · consecutive SKIPs ≥ K</text>
+</svg>
+<div class="legend">
+  <span><span class="sw" style="background:#fff3eb;border-color:#b34700"></span>proposer (orange fill = LLM caller; contains anti-replay loop)</span>
+  <span><span class="sw" style="background:#fff;border-color:#b34700;border-style:dashed"></span>per-iter Claude conversation envelope</span>
+  <span><span class="sw" style="background:#f0efe9"></span>persistent state (archive, atomic-write artifacts)</span>
+  <span><span class="sw" style="background:#fff;border-color:#a52a00;border-style:dashed"></span>SKIP path (no commit, no archive append)</span>
+</div>
+</div>
+
+<h3>Skill structure (5 skills)</h3>
+
+<p>
+  <code>aflow</code> reuses adas-subagent's 5-skill skeleton 1-for-1 &mdash;
+  <code>understand</code> / <code>loop</code> / <code>proposer</code> /
+  <code>implementer</code> / <code>evaluator</code>. The split is the same,
+  the conversation contract (one iter = one Claude conversation) is the
+  same, the staging-then-atomic-commit is the same. What differs is what
+  happens <em>inside</em> each skill, especially proposer (single-call +
+  anti-replay) and loop (parent selection + convergence check).
+</p>
+
+<table>
+  <tr><th>Skill</th><th>Role in <code>aflow</code></th><th>SVG region</th><th>Reads</th><th>Writes</th></tr>
+  <tr>
+    <td><code>understand</code></td>
+    <td>P0 bootstrap &mdash; loads files-contract + AgentCanvas
+    concept/contract docs + Section&nbsp;1 invariants + graph state. Same
+    shape as <code>adas-subagent:understand</code>; forked only for namespace
+    isolation and to point at <code>aflow</code>-specific contract notes.</td>
+    <td>(off-diagram; runs once before the loop starts)</td>
+    <td>files-contract, Section&nbsp;1 invariants, <code>{graph}.json</code>,
+    <code>{graph}.yaml</code>, <code>trace.md</code>, latest iter</td>
+    <td>(read-only)</td>
+  </tr>
+  <tr>
+    <td><code>loop</code></td>
+    <td><strong>Orchestrator.</strong> Owns the conversation for an entire
+    iter. Drives the pre-seed <code>perf_&lt;graph&gt;</code> eval on
+    iter_0 (baseline only &mdash; no 7-seed palette), then for each
+    iter_n: invokes proposer &rarr; implementer &rarr; evaluator, decides
+    SKIP vs commit, calls Atomic Writer, appends to archive / trace /
+    lineage. Runs the <code>check_convergence</code> top-3-stability check
+    after each commit (advisory: under F3 every per-round &sigma; is 0,
+    so the predicate fires only on exact top-3-mean equality regardless
+    of <code>z</code> &mdash; mostly a no-op, kept for upstream
+    faithfulness). Step 8 runs three verification reruns of
+    <code>perf_&lt;graph&gt;</code> (top-1, top-2, baseline) to calibrate
+    in-loop single-pass scores against LLM run-to-run stochasticity.
+    Terminates on <code>max_rounds</code>, STOP file, convergence, or
+    consecutive-SKIP &ge; K.</td>
+    <td>Outer <code>for opt_round</code> dashed frame; iter_0 row; atomic
+    WRITE + archive.append row</td>
+    <td>archive.jsonl, trace.md, prior iters' <code>active_workspace/</code>
+    (for parent checkout)</td>
+    <td>iter dir (via Atomic Writer), archive.jsonl append, trace.md row,
+    lineage.md section, <code>.staging/iter_n/active_workspace/</code>
+    (parent checkout step)</td>
+  </tr>
+  <tr>
+    <td><code>proposer</code></td>
+    <td><strong>Single-call + anti-replay.</strong> One LLM call per
+    attempt via <code>call_with_format(GraphOptimize)</code>; on
+    <code>FormatError</code>, regex-extract fallback (verbatim
+    <code>optimizer.py:164&ndash;174</code>); on duplicate
+    <code>modification</code>, re-sample parent and re-call LLM in the same
+    conversation. The anti-replay <code>while True</code> is bounded by a
+    soft cap K (e.g. 5) to avoid infinite resampling on near-converged
+    archives. Output: <code>proposal.md</code> = <code>{parent_iter_id,
+    modification, graph_patch, prompt_patch, thought, name}</code>. Folds
+    the old <code>analyze</code> step inside its prompt-assembly Python
+    helper.</td>
+    <td>Orange proposer box (the entire anti-replay <code>while True</code>
+    loop)</td>
+    <td>archive.jsonl (full read for top-K + experience aggregation), prior
+    iters' <code>log.jsonl</code> (3 random failure samples from chosen
+    parent), <code>{graph}.yaml</code></td>
+    <td>staging <code>proposal.md</code> (only committed by Atomic Writer
+    on success)</td>
+  </tr>
+  <tr>
+    <td><code>implementer</code></td>
+    <td>Reuses adas-subagent's implementer with one preamble: copy parent's
+    <code>active_workspace/</code> into <code>.staging/iter_n/active_workspace/</code>
+    before applying patch. Then: apply patch &rarr; Smoke (5 eps) &rarr;
+    classify (crash / step=0 / mean&lt;0.01 / ok) &rarr; on failure:
+    revert to parent's checkpoint, push (err, run_summary) to msg_list,
+    ask LLM for a new patch with <code>debug_thought</code>, retry. Max 3
+    retries (<code>debug_max=3</code>). On 3-exhausted &rarr; SKIP iter.
+    <strong>Debug retry is an adas-subagent add-on, not in upstream AFlow</strong>
+    &mdash; AgentCanvas substrate forces it (see Open Q1 below).</td>
+    <td>Implementer box (white) inside the orange envelope</td>
+    <td>proposal.md (from proposer's conversation state), parent's
+    <code>active_workspace/</code></td>
+    <td>edits <code>.staging/iter_n/active_workspace/{graphs,nodesets}/</code>;
+    <code>debug_log.md</code> in staging; SKIP signal to loop on exhaustion</td>
+  </tr>
+  <tr>
+    <td><code>evaluator</code></td>
+    <td><strong>Method-free</strong> per-iter perf eval: runs the
+    <code>perf_&lt;graph&gt;</code> profile (full paper-comparable set)
+    via <code>experiment:run</code> &rarr; writes a neutral
+    <code>metrics.json</code> (<code>acc_list</code> +
+    <code>primary_metric_value</code> + <code>secondary_metrics</code>).
+    It does <em>not</em> compute <code>bootstrap_CI</code> /
+    <code>fitness_str</code> / <code>score</code> &mdash; that enrichment
+    lives in loop's Atomic Writer. Invoked once per iter, after
+    implementer succeeds; also invoked by loop's step-8 verification
+    reruns (top-1, top-2, baseline). <strong>No retry on low value</strong>.
+    Every <code>archive.jsonl</code> <code>score</code> is a single-pass
+    <code>perf_&lt;graph&gt;</code> value (post 2026-05-25; see
+    &sect; &ldquo;Two-tier evaluation&rdquo;).</td>
+    <td>Evaluator box (white) inside the orange envelope</td>
+    <td><code>.staging/iter_n/active_workspace/</code> (frozen by
+    implementer's success), exp.yaml</td>
+    <td>staging <code>metrics.json</code> (neutral),
+    <code>summary.csv</code>, <code>export.json</code>;
+    <code>fitness_str</code> + <code>score</code> + iter dir + archive
+    append committed by loop's Atomic Writer</td>
+  </tr>
+</table>
+
+<p style="font-size:.88rem;color:var(--muted);margin-top:.6rem">
+  <em>Why no <code>parent_selector</code> as a separate skill?</em>
+  Upstream's <code>select_round</code> is a 30-line numpy helper, not an
+  iter-level stage. It runs inside the proposer's <code>while True</code>
+  body (re-sampled on each anti-replay attempt). Promoting it to a skill
+  would force the anti-replay loop to cross skill boundaries, which would
+  break the &ldquo;one iter = one Claude conversation&rdquo; contract.
+  Decision: keep it as a Python helper inside <code>proposer</code>, mirror
+  upstream's <code>data_utils.select_round</code> structurally.
+</p>
+
+<h3 id="two-tier-evaluation">Two-tier evaluation (smoke / perf)</h3>
+
+<p>
+  Same shape as adas-subagent &mdash; a cheap Smoke gate inside the
+  implementer's debug-retry loop + a per-iter Performance eval whose
+  <code>acc_list</code> the Atomic Writer turns into the archive's
+  <code>score</code>. Two <code>{graph}.yaml</code> blocks:
+</p>
+
+<table>
+  <tr><th>Tier</th><th>Profile</th><th>When</th><th>Role</th></tr>
+  <tr>
+    <td><strong>Smoke</strong></td>
+    <td><code>smoke_&lt;graph&gt;</code> (~5 ep)</td>
+    <td>inside implementer's debug-retry loop</td>
+    <td>Cheap gate: &ldquo;does the patched graph even run?&rdquo;
+    Runtime correctness only.</td>
+  </tr>
+  <tr>
+    <td><strong>Perf</strong></td>
+    <td><code>perf_&lt;graph&gt;</code> (full paper-comparable set)</td>
+    <td><strong>every iter</strong> (the evaluator's
+    <code>profile_key</code>); plus step-8 verification reruns on top-1,
+    top-2, baseline</td>
+    <td>The per-iter ranking eval AND the source of headline numbers.
+    <code>loop</code>'s Atomic Writer turns its <code>acc_list</code>
+    into <code>fitness_str</code> + the bare <code>score</code> that
+    <code>select_round</code>'s softmax consumes. <strong>Every
+    <code>archive.jsonl</code> score is a single-pass
+    <code>perf_</code> value.</strong> Verification reruns live in
+    <code>final_report.md</code>, not <code>archive.jsonl</code>.</td>
+  </tr>
+</table>
+
+<p>
+  <strong>Why two tiers (revert from 2026-05-20 three-tier &rarr;
+  2026-05-25):</strong> the 2026-05-20 design inserted a
+  <code>search_&lt;graph&gt;</code> middle tier &mdash; a small frozen
+  stratified subset (~30 ep) &mdash; for per-iter ranking, with
+  <code>perf_</code> paid once post-loop. The
+  <code>aflow/mapgpt_mp3d/v0</code> run exposed why this didn't work:
+  N=30 + <code>validation_rounds=1</code> gives binomial SE &asymp;
+  9pp at p=0.5, while genuine gains in this regime are &sim;5&ndash;10pp.
+  The loop ranked iters on a signal smaller than its noise floor.
+  iter_6 won the search at +13pp over baseline; on <code>perf</code>
+  it was &minus;4.2pp. The whole archive was a noise gradient. Running
+  <code>perf_&lt;graph&gt;</code> every iter at full N (e.g. 216 for
+  <code>mapgpt_mp3d</code>) drops binomial SE to &asymp; 3.4pp,
+  restoring SNR&nbsp;&gt;&nbsp;1 against the gains aflow tries to
+  detect. Cost goes up &sim;5&times; <code>$</code> per iter; wall is
+  similar (perf was paid 2&times; post-loop in the old design, plus
+  20 search runs at &sim;the same wall as perf runs at the right
+  <code>worker_count</code>). See
+  <code>outputs/design_runs/aflow/mapgpt_mp3d/v0/final_report.md</code>
+  for the full v0 postmortem.
+</p>
+
+<p>
+  <strong>F3 deviation.</strong> Upstream averages
+  <code>validation_rounds=5</code> separate passes per round;
+  <code>aflow</code> still runs 1 pass per iter. The two-tier revert
+  fixes <em>episode-sampling</em> noise (small-N &rarr; full-N) but not
+  <em>LLM run-to-run</em> stochasticity (temperature=1 nondeterminism
+  across passes). The bootstrap CI in <code>fitness_str</code>
+  resamples <em>within</em> the one pass &mdash; it captures the first
+  kind, not the second. <strong>This propagates into the search
+  policy</strong>: the single-pass <code>score</code> drives
+  <code>select_round</code>'s softmax and
+  <code>check_convergence</code>'s stability test, both of which
+  assume <code>score</code> is comparable across iters. A lucky single
+  pass can mis-rank a mediocre iter into the top-K; and because every
+  per-round &sigma; is 0 under <code>validation_rounds=1</code>,
+  <code>check_convergence</code>'s <code>z&middot;&sigma;</code>
+  tolerance collapses to 0 &mdash; the <code>convergence_z</code>
+  tunable is inert and convergence fires only on exact top-3-mean
+  equality. Mitigations in this port:
+</p>
+<ol>
+  <li><strong>N=full perf</strong> removes the dominant noise component
+  (episode sampling) &mdash; see two-tier rationale above.</li>
+  <li><strong>Step-8 verification reruns</strong> (top-1, top-2,
+  baseline each get one additional pass) calibrate the residual LLM
+  stochasticity and flag when an in-loop top iter was a lucky pass.</li>
+  <li>Raise <code>aflow.lambda_uniform</code> if
+  <code>select_round</code> collapses onto one parent.</li>
+  <li>Future option (not enabled): run baseline 3&times; before
+  launching a new run to set an empirical noise floor / minimum
+  credible &Delta; threshold.</li>
+</ol>
+
+<h3>What's different from adas-subagent</h3>
+
+<table>
+  <tr><th>Aspect</th><th>adas-subagent</th><th>aflow</th></tr>
+  <tr>
+    <td>Per-attempt LLM calls</td>
+    <td>3 (propose / Reflexion_1 / Reflexion_2)</td>
+    <td>1 (single <code>call_with_format(GraphOptimize)</code>) &mdash;
+    verbatim <code>optimizer.py:156&ndash;160</code></td>
+  </tr>
+  <tr>
+    <td>Conversation thread role</td>
+    <td>Reflection chain (the LLM critiques + revises its own prior
+    proposal)</td>
+    <td>Anti-replay retry chain (the LLM gets a fresh parent + fresh
+    optimize_prompt on each retry; no cross-attempt reflection)</td>
+  </tr>
+  <tr>
+    <td>Parent selection</td>
+    <td>Implicit &mdash; always archive head</td>
+    <td><code>p = &lambda;&sdot;uniform + (1&minus;&lambda;)&sdot;softmax(&alpha;&sdot;score)</code>
+    over top-K of <code>archive.jsonl</code>; <code>&alpha;=0.2</code>,
+    <code>&lambda;=0.3</code>; iter_0 unconditionally in top-K</td>
+  </tr>
+  <tr>
+    <td>Anti-replay</td>
+    <td>None &mdash; meta-LLM may propose duplicates; archive injection is
+    expected to discourage them</td>
+    <td><strong>Per-parent</strong>: LLM is shown parent's previous
+    {success, failure} <code>modification</code> strings as &ldquo;Absolutely
+    prohibit X (Score: y)&rdquo;; if response duplicates anyway, regenerate
+    (resample parent + re-call LLM)</td>
+  </tr>
+  <tr>
+    <td>FormatError handling</td>
+    <td>3-call Reflexion chain mostly avoids it; on JSON parse failure,
+    SKIP the iter</td>
+    <td>Regex-extract fallback for <code>&lt;modification&gt; / &lt;graph&gt;
+    / &lt;prompt&gt;</code> tags from raw text; on extraction failure,
+    <code>continue</code> the anti-replay loop &mdash; verbatim
+    <code>optimizer.py:164&ndash;174</code></td>
+  </tr>
+  <tr>
+    <td>Per-iter eval</td>
+    <td>1 pass &times; 100 eps (<code>perf_&lt;graph&gt;</code>) +
+    bootstrap_CI, every iter</td>
+    <td>1 pass &times; full <code>perf_&lt;graph&gt;</code> every iter
+    + bootstrap_CI <strong>[two-tier post 2026-05-25; F3 deviation
+    remains]</strong>. Step 8 adds verification reruns on top-1,
+    top-2, and baseline. Upstream averages
+    <code>validation_rounds=5</code> passes; aflow runs 1 + bootstrap
+    resample-within-set</td>
+  </tr>
+  <tr>
+    <td>Initial archive</td>
+    <td>Baseline (scored) + 7 reference pattern descriptors (text only,
+    <code>fitness:null</code>)</td>
+    <td>Baseline only &mdash; verbatim upstream
+    (<code>round_1 = template/</code> workflow); no design-palette
+    pre-injection</td>
+  </tr>
+  <tr>
+    <td>Convergence detection</td>
+    <td>None &mdash; runs to <code>max_iters</code> or STOP or SKIP-cap</td>
+    <td>Top-3-mean stability over 5 consecutive rounds &mdash; verbatim
+    <code>convergence_utils.py:68&ndash;113</code>. Under F3
+    (<code>validation_rounds=1</code>) per-round &sigma;=0, so the
+    <code>z&middot;&sigma;</code> tolerance is 0 and it fires only on
+    exact equality regardless of <code>z</code>; advisory only</td>
+  </tr>
+  <tr>
+    <td>Workspace state model</td>
+    <td>Live <code>workspace/</code> tracks archive head; implementer
+    edits in place</td>
+    <td>Per-parent checkout: loop copies parent's
+    <code>iter_X/active_workspace/</code> into
+    <code>.staging/iter_n/active_workspace/</code> before implementer
+    applies patch. Live <code>workspace/</code> stays at the user's
+    pre-loop state (advisory)</td>
+  </tr>
+  <tr>
+    <td>Archive entry shape</td>
+    <td><code>{generation, iter_id, name, thought, graph_summary,
+    diff_narrative, fitness}</code></td>
+    <td>Adds <code>parent_iter_id</code> + <code>modification</code> +
+    bare numeric <code>score</code> (alongside the human-readable
+    <code>fitness</code>) so next iter can compute parent &rarr;
+    {success, failure} lookup + softmax weights</td>
+  </tr>
+  <tr>
+    <td>Meta-LLM params</td>
+    <td>Pinned: <code>temperature=0.8</code>,
+    <code>response_format=json_object</code>, <code>max_tokens=4096</code>,
+    <code>model=gpt-4o-2024-05-13</code></td>
+    <td>Pinned upstream defaults from <code>config2.yaml</code>:
+    <code>temperature=0.7</code>, <code>response_format=XmlFormatter</code>
+    (against <code>GraphOptimize</code> pydantic schema),
+    <code>max_tokens</code> per provider, <code>model=claude-3-5-sonnet</code>
+    or <code>gpt-4o</code> per the run config</td>
+  </tr>
+</table>
+
+<h3>Core components (10 modules) and skill ownership</h3>
+
+<p>
+  Each component lives inside one of the 5 skills. &ldquo;Owner&rdquo; =
+  which skill's code path instantiates the component. Components in the
+  same skill share that skill's conversation context. The numbering follows
+  adas-subagent's table for cross-doc comparability (some adas-subagent components are
+  merged or absent here).
+</p>
+
+<table>
+  <tr><th>#</th><th>Component</th><th>Owner skill</th><th>Role</th><th>Upstream anchor</th><th>Reused from adas-subagent?</th></tr>
+  <tr><td>1</td><td><b>Parent Selector</b></td><td><code>proposer</code></td>
+    <td><code>get_top_rounds</code> + <code>select_round</code>: top-K by
+    score (round_1 unconditionally included), then softmax-mix sample;
+    runs inside the anti-replay loop</td>
+    <td><code>data_utils.py:40&ndash;109</code></td>
+    <td><strong>New</strong> &mdash; adas-subagent has no parent selection</td></tr>
+  <tr><td>2</td><td><b>Experience Loader</b></td><td><code>proposer</code></td>
+    <td><code>load_experience</code> + <code>format_experience</code>:
+    aggregate per-parent <code>{success, failure}</code> from prior
+    archive entries' <code>modification</code> field; format as
+    &ldquo;Absolutely prohibit X (Score: y)&rdquo;</td>
+    <td><code>experience_utils.py</code> + <code>optimizer.py:141&ndash;142</code></td>
+    <td><strong>New</strong></td></tr>
+  <tr><td>3</td><td><b>Optimize Prompt Builder</b></td><td><code>proposer</code></td>
+    <td><code>create_graph_optimize_prompt</code>: assemble {experience,
+    parent's score, parent's graph, parent's prompt, operator descriptions,
+    3 random failure samples from parent's <code>log.jsonl</code>} into
+    one <code>WORKFLOW_INPUT</code> template</td>
+    <td><code>optimizer.py:149&ndash;151</code> +
+    <code>prompts/optimize_prompt.py</code></td>
+    <td>Replaces adas-subagent's <code>get_prompt(archive)</code> + analyze helper
+    (different prompt shape, no <code>[ARCHIVE]</code> dump)</td></tr>
+  <tr><td>4</td><td><b>Single-Call LLM + Format Fallback</b></td><td><code>proposer</code></td>
+    <td>One <code>call_with_format(GraphOptimize)</code>; on
+    <code>FormatError</code>, raw call + regex-extract
+    <code>&lt;modification&gt; / &lt;graph&gt; / &lt;prompt&gt;</code>; on
+    extraction failure, <code>continue</code> the anti-replay loop</td>
+    <td><code>optimizer.py:153&ndash;174</code></td>
+    <td><strong>New</strong> &mdash; adas-subagent has 3-call Reflexion + JSON
+    schema, no regex fallback</td></tr>
+  <tr><td>5</td><td><b>Modification Anti-Replay</b></td><td><code>proposer</code></td>
+    <td><code>check_modification</code>: reject if response's
+    <code>modification</code> string is in parent's success OR failure
+    list (success means &ldquo;already tried, don't repeat&rdquo;); on
+    reject, <code>continue</code> the inner loop with re-sampled parent</td>
+    <td><code>optimizer.py:177&ndash;183</code> +
+    <code>experience_utils.py:69&ndash;80</code></td>
+    <td><strong>New</strong></td></tr>
+  <tr><td>6</td><td><b>Workspace Checkout</b></td><td><code>loop</code></td>
+    <td><code>cp -r outputs/.../iter_{parent}/active_workspace/ → .staging/iter_n/active_workspace/</code>
+    after reading <code>parent_iter_id</code> from <code>proposal.md</code>
+    frontmatter; runs once per iter, before invoking implementer</td>
+    <td>(upstream is stateless &mdash;
+    <code>write_graph_files</code> writes a fresh <code>round_{N+1}</code>
+    dir from the LLM's full source dump)</td>
+    <td><strong>New</strong> &mdash; adas-subagent has no parent checkout (live
+    workspace = archive head)</td></tr>
+  <tr><td>7</td><td><b>Native-edit implementer</b></td><td><code>implementer</code></td>
+    <td>Spawns an editing sub-agent that realizes the proposer's
+    <code>{intent, targets}</code> change spec by editing
+    <code>.staging/iter_n/active_workspace/{graphs,nodesets}/</code> with
+    native Edit/Write; JSON + Python validated after the edit</td>
+    <td>upstream is wholesale rewrite via
+    <code>write_graph_files</code></td>
+    <td><strong>Shared <code>_common/implementer.md</code></strong>; seeding via
+    <code>_common/lib/overlay.py</code> (typed op DSL retired 2026-05-20)</td></tr>
+  <tr><td>8</td><td><b>Smoke Evaluator + Debug Retry</b></td><td><code>implementer</code></td>
+    <td>5-ep smoke + outcome classification + ≤3 debug retries pushing
+    <code>(err, run_summary)</code> to msg_list; on exhaustion SKIP</td>
+    <td>(upstream has no debug retry &mdash; FormatError fallback is
+    proposer-side only)</td>
+    <td><strong>Reused from adas-subagent</strong> &mdash; AgentCanvas-substrate
+    add-on, not in upstream AFlow</td></tr>
+  <tr><td>9</td><td><b>Perf Evaluator (method-free) + Bootstrap-CI</b></td><td><code>evaluator</code> / <code>loop</code></td>
+    <td><code>evaluator</code> runs the <code>perf_&lt;graph&gt;</code>
+    full-set eval and writes neutral metrics; <code>loop</code>'s Atomic
+    Writer does <code>acc_list &rarr; bootstrap_CI &rarr; fitness_str</code>
+    + bare-numeric <code>score</code> (for parent-selection softmax).
+    <code>validation_rounds=1</code> per F3. Step 8 adds verification
+    reruns of <code>perf_&lt;graph&gt;</code> on top-1, top-2, baseline</td>
+    <td><code>evaluation_utils.evaluate_graph</code> with
+    <code>validation_rounds=5</code></td>
+    <td><strong>Reused from adas-subagent</strong> &mdash; reps reduced 5&rarr;1
+    (F3); per-iter tier is <code>perf_</code> (two-tier post 2026-05-25;
+    pre-revert this was <code>search_</code>)</td></tr>
+  <tr><td>10</td><td><b>Atomic Writer + Convergence Check</b></td><td><code>loop</code></td>
+    <td><code>mv .staging/iter_n/ → iter_n/</code> + archive.jsonl append
+    + trace.md row + lineage.md section, in one transaction. Then
+    <code>check_convergence(top_k=3, z=0, consecutive_rounds=5)</code>
+    decides whether to early-exit (advisory, rarely fires)</td>
+    <td><code>convergence_utils.py:68&ndash;113</code> +
+    <code>optimizer.py:108&ndash;116</code></td>
+    <td>Atomic Writer reused from adas-subagent; convergence check
+    <strong>new</strong></td></tr>
+</table>
+
+<h3>Archive contract</h3>
+
+<p>
+  Same role as adas-subagent's <code>archive.jsonl</code> (per-vN, JSONL,
+  append-only, atomic write paired with iter-dir <code>mv</code>) but with
+  <strong>two extra fields</strong> that the parent-selection algorithm
+  reads on every iter: <code>parent_iter_id</code> (so the experience
+  loader can group entries by parent) and <code>modification</code> (so
+  <code>check_modification</code> can detect duplicates). A bare numeric
+  <code>score</code> is also stored alongside the human-readable
+  <code>fitness</code> string, because <code>select_round</code>'s softmax
+  needs a float, not the &ldquo;95% Bootstrap CI: (lo%, hi%), Median: x%&rdquo;
+  rendering.
+</p>
+
+<table>
+  <tr><th>Aspect</th><th>Decision</th><th>Rationale</th></tr>
+  <tr><td>Path</td><td><code>outputs/design_runs/{graph}/v{N}/archive.jsonl</code></td><td>Per-vN. Major pivots (new vN) start a fresh archive; meta-LLM is not anchored to a dead-end design family.</td></tr>
+  <tr><td>Format</td><td><strong>JSON Lines</strong>, append-only.</td><td>Crash-safe; each line independently parseable; identical to adas-subagent.</td></tr>
+  <tr><td>Writer</td><td><code>loop</code> (Atomic Writer), in the same transaction as <code>mv .staging/iter_n/ → iter_n/</code></td><td>SKIP path does neither &mdash; archive only sees successful generations.</td></tr>
+  <tr><td>Reader (parent selection)</td><td><code>proposer</code> reads the full file each attempt; runs <code>get_top_rounds(K) + select_round(softmax-mix)</code>.</td><td>Cost is trivial up to ~hundreds of entries; deferred sliding-window pruning to when archive grows beyond that.</td></tr>
+  <tr><td>Reader (experience aggregation)</td><td><code>proposer</code> aggregates entries by <code>parent_iter_id</code> into a <code>{parent: {success: [modifications], failure: [modifications]}}</code> dict; injects formatted &ldquo;Absolutely prohibit&rdquo; strings into the optimize_prompt.</td><td>Mirrors upstream <code>load_experience</code> + <code>format_experience</code>; the parent_iter_id field is what makes per-parent grouping possible at all.</td></tr>
+  <tr><td>Failure handling</td><td>Failed iters (proposer SKIP / implementer SKIP / evaluator infra fail) <strong>do not append</strong>.</td><td>Verbatim upstream semantics (the <code>self.round += 1</code> orphan-round case from <code>optimizer.py:96, 105</code>).</td></tr>
+  <tr><td>Pre-append cleanup</td><td>Strip <code>debug_thought</code> field before append (kept in <code>debug_log.md</code> for forensics).</td><td>adas-subagent strips <code>reflection</code> + <code>debug_thought</code>; aflow only has the latter (no Reflexion chain).</td></tr>
+  <tr><td>Resume</td><td><code>wc -l archive.jsonl</code> &rarr; current generation; full-file scan for parent selection.</td><td>Filesystem is the source of truth, no separate state file.</td></tr>
+</table>
+
+<h4>Per-entry schema (evolved entry)</h4>
+
+<pre><code>{
+  "generation": 3,                                       // int (1+ for evolved) | "initial" (baseline)
+  "iter_id": "iter_3",                                   // soft pointer to evidence; stripped from optimize_prompt injection
+  "parent_iter_id": "iter_1",                            // chosen parent for this iter (NEW vs adas-subagent)
+  "name": "Self-Audit Chain-of-Thought via History Tracker",
+  "thought": "**Insights:** ... **Overall Idea:** ... **Implementation:** ...",   // verbatim from LLM output
+  "modification": "Add a HistoryTrackerNode upstream of NavGPTReason; wire history.summary into navgpt.context; bump max_steps from 5 to 15.",   // NEW vs adas-subagent — load-bearing for anti-replay
+  "graph_summary": {
+    "nodes": [
+      {"id": "env_mp3d__step",     "type": "env_mp3d.step",       "key_config": {"action_space": "discrete_4"}},
+      {"id": "navgpt__think",      "type": "navgpt.think",        "key_config": {"llm_model": "gpt-4", "system_prompt_first_200": "You are a navigation agent..."}},
+      {"id": "history__update",    "type": "history.update",      "key_config": {"max_steps": 15}}
+    ],
+    "wires": [
+      ["env_mp3d__step.observation",  "history__update.obs"],
+      ["history__update.summary",     "navgpt__think.context"]
+    ],
+    "loop": {"iter_in": ["controller__step_gate"], "iter_out": ["navgpt__think"]}
+  },
+  "diff_narrative": "Added history__update node before navgpt__think; wired its summary output into navgpt__think.context; bumped max_steps from 5 to 15.",
+  "fitness": "95% Bootstrap CI: (66.8%, 76.2%), Median: 71.5%",  // human-readable, for archive viewing
+  "score": 0.715                                          // bootstrap median, fraction in [0,1], for select_round softmax (NEW vs adas-subagent)
+}</code></pre>
+
+<h4>Per-entry schema (initial baseline)</h4>
+
+<pre><code>{
+  "generation": "initial",
+  "iter_id": "iter_0",
+  "parent_iter_id": null,
+  "name": "<user-provided baseline name or graph filename>",
+  "thought": "Baseline graph as provided by the user — design starting point.",
+  "modification": "(baseline)",                          // sentinel; never matched by check_modification
+  "graph_summary": <rendered from workspace/graphs/{graph}.json at pre-seed time>,
+  "diff_narrative": "Baseline (no parent).",
+  "fitness": "95% Bootstrap CI: (lo%, hi%), Median: x%",
+  "score": <float>
+}</code></pre>
+
+<h4>Why <code>parent_iter_id</code> instead of an ancestor chain?</h4>
+
+<p>
+  Upstream's <code>experience.json</code> only stores <code>father_node</code>
+  &mdash; the immediate parent. There is no grandparent traversal, no
+  visit-count backprop, no sibling statistic. AFlow's
+  &ldquo;tree&rdquo; lives only as a flat list of (parent, child) edges
+  written into <code>experience.json</code> files; the optimizer reads them
+  back as a <code>{parent: {success: [...], failure: [...]}}</code> dict
+  and never reconstructs the tree topology
+  (<code>experience_utils.py:12&ndash;53</code>). <code>aflow</code>
+  preserves this &mdash; one field <code>parent_iter_id</code> in each
+  archive entry is sufficient to rebuild the experience map; no recursion
+  needed.
+</p>
+
+<p>
+  This is also <em>why</em> the Section&nbsp;1 callout warns against the
+  &ldquo;MCTS&rdquo; framing: a real MCTS implementation would maintain
+  per-node visit counts and backprop reward up the ancestor chain on each
+  evaluation. AFlow has neither &mdash; the anti-replay surface and
+  softmax-mix selection are the only mechanisms by which exploration
+  history feeds back into selection. The flat <code>parent_iter_id</code>
+  field is faithful to that.
+</p>
+
+<h3>Open questions for discussion</h3>
+
+<ul>
+  <li><b>Q1 &mdash; Workspace root for implementer (live vs staging).</b>
+  Section&nbsp;2 above commits to <em>per-parent checkout into staging</em>
+  (loop copies <code>iter_{parent}/active_workspace/</code> into
+  <code>.staging/iter_n/active_workspace/</code> before implementer runs).
+  This requires implementer to take a <code>--workspace-root</code> arg
+  (small adas-subagent generalisation) and <code>experiment:run</code> to honour
+  the override (already supported via env var).
+  <strong>Alternative</strong>: keep live <code>workspace/</code> mutable,
+  loop runs <code>git stash</code>-style snapshots before each iter and
+  restores parent's state into live before implementer. Live-workspace
+  approach minimises adas-subagent deltas but couples concurrent canvas use to
+  the search loop, which we want to avoid. <strong>Default: staging
+  approach.</strong></li>
+
+  <li><b>Q2 &mdash; Top-K size.</b> Upstream uses <code>self.sample</code>
+  from the experiment config &mdash; not a fixed default. For our
+  archive sizes (typically 20&ndash;30 evolved entries), what's the
+  reasonable K? <code>K=5</code> matches AFlow's typical setting on small
+  benchmarks; <code>K=10</code> would reduce the floor probability per
+  candidate from <code>0.3/5=6%</code> to <code>0.3/10=3%</code> &mdash;
+  more concentrated on top performers. Suggest declaring it in
+  <code>{graph}.yaml</code> alongside <code>perf_&lt;graph&gt;</code>.</li>
+
+  <li><b>Q3 &mdash; Convergence check: keep advisory or strip?</b>
+  Upstream's <code>z=0</code> convergence detector almost never fires (top-3
+  means rarely match exactly across 5 rounds on continuous-score
+  benchmarks). Three options: (a) keep verbatim &mdash; faithful but
+  no-op; (b) raise <code>z=0.005</code> (within-CI stability) &mdash; fires
+  when top-3 plateau; not in upstream so it's a deviation; (c) drop
+  entirely and rely on <code>max_iters</code>. <strong>Default: option
+  (a)</strong>, document the <code>z</code> tunable in exp.yaml so users
+  can opt into (b) without code change.</li>
+
+  <li><b>Q4 &mdash; <code>modification</code> string format.</b> Upstream
+  is free-form natural language from the LLM; <code>check_modification</code>
+  uses string equality on it (<code>experience_utils.py:69&ndash;80</code>).
+  This is fragile &mdash; a one-character whitespace change defeats the
+  anti-replay. Three options: (a) verbatim string equality &mdash;
+  faithful but fragile; (b) normalize whitespace + lowercase before
+  comparison &mdash; mild deviation, robust against trivial paraphrase
+  drift; (c) embedding-similarity threshold (cosine &gt; 0.95) &mdash;
+  robust but introduces an extra LLM call per check. <strong>Default:
+  option (b)</strong> &mdash; cheap, near-faithful, addresses the
+  obvious failure mode.</li>
+
+  <li><b>Q5 &mdash; Anti-replay retry cap.</b> Upstream's
+  <code>while True</code> is unbounded &mdash; if every parent in the
+  top-K has been exhausted, the loop spins forever (in practice the LLM
+  generates novel modifications eventually). For us this is a hang risk.
+  Suggest a soft cap K (e.g., 5 attempts) before SKIP-ing the iter.
+  Document the cap in <code>aflow/README.md</code>'s deltas table.</li>
+
+  <li><b>Q6 &mdash; Pre-append archive cleanup.</b> Strip
+  <code>debug_thought</code> field (from implementer's debug retries)
+  before append, mirroring adas-subagent's <code>reflection</code> +
+  <code>debug_thought</code> strip. AFlow upstream has no equivalent
+  field (no debug retry) &mdash; the strip is purely an AgentCanvas-substrate
+  adapter. Confirm in implementation review.</li>
+
+  <li><b>Q7 &mdash; Operator descriptions in optimize_prompt.</b>
+  Upstream's <code>load_operators_description(self.operators)</code>
+  enumerates the workflow-internal building blocks the LLM can compose
+  (<code>Custom / AnswerGenerate / ScEnsemble / Programmer / etc.</code>)
+  and stuffs their descriptions into the prompt. The AgentCanvas analogue
+  is the loaded NodeSets' canvas-node catalog, exposed via
+  <code>GET /api/components/node-schemas</code>. Decision needed: inject
+  the full schema (verbose), or filter to nodes actually used in the
+  parent's graph + a curated &ldquo;commonly proposed&rdquo; list?
+  Defer until we see prompt-budget pressure on a real run.</li>
+</ul>
+
+</body>
+</html>

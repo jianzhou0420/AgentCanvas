@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas Play — AgentCanvas</title>
+<meta name="description" content="POST /api/navigate/run · ExecutionGuard · the singleton LoopRunner · live WS (nav_step / viewer_data) · pause / checkpoint / restore">
+<meta property="og:title" content="Canvas Play — AgentCanvas">
+<meta property="og:description" content="POST /api/navigate/run · ExecutionGuard · the singleton LoopRunner · live WS (nav_step / viewer_data) · pause / checkpoint / restore">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/canvas-play.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="cp-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#cpa); }
+  .rxsvg .dedge { stroke: var(--muted); stroke-width:1.3; fill:none; stroke-dasharray:4 3; marker-end:url(#cpa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/canvas-play.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Canvas Play</span>
+  </div>
+  <div class="last-updated">2026-06-16</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Canvas Play</h1>
+  <p class="tagline">POST /api/navigate/run · ExecutionGuard · the singleton LoopRunner · live WS (nav_step / viewer_data) · pause / checkpoint / restore</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="cpa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+
+
+<p class="lede">Canvas Play is what happens when you click <strong>▶ Play</strong> on the canvas: one interactive run, watched live. It runs <strong>in the backend process itself</strong> — no subprocess — and is <strong>single-tenant</strong>: <code>ExecutionGuard</code> allows exactly one canvas run at a time, and the run is driven by a process-global <strong>singleton <code>LoopRunner</code></strong>. The HTTP call is fire-and-forget (it returns the moment the run starts), with every step streamed over WebSocket and pause / stop / checkpoint / restore hitting that same singleton. Its hard promise: it fires nodes through the <em>very same</em> <code>GraphExecutor</code> as batch eval, so what you watch on the canvas is bit-for-bit what an eval episode runs. For the eval path see <a href="batch-eval.html">batch-eval</a>; for the two paths side by side see <a href="execution-paths.html">execution-paths</a>; for the firing engine itself see <a href="graph-executor.html">graph-executor</a>.</p>
+<p class="diagram-label"><strong>One Play click, all in the backend process.</strong> The request acquires the canvas lock, grabs the singleton runner, and launches a fire-and-forget task; the engine drives the ready-queue with a throttle and live WS broadcasts back to the browser; the interactive controls (pause / stop / restore) re-enter the same singleton.</p>
+<svg class="rxsvg" viewBox="0 0 720 560" role="img" aria-label="Canvas Play runs entirely inside the backend process. A browser holding one open WebSocket clicks Play, which POSTs to /api/navigate/run (run.py run_loop). The handler acquires ExecutionGuard in canvas mode (409 if canvas or eval is already active; the holder is the literal string canvas), calls get_loop_runner() to get the process-global singleton LoopRunner (principles None, no per-worker overrides), and launches a fire-and-forget asyncio task (_run_and_release) so the HTTP call returns ok immediately while the run continues in the background. Inside, LoopRunner.run builds a fresh GraphExecutor that drives the ready-queue: a step_delay_ms throttle of 200 ms between root steps for live watchability, a pause_event wait and stop_event check between steps, and a state-container checkpoint per root step kept in memory up to 100. The engine broadcasts nav_status, nav_step, exec_log, and viewer_data events live over the WebSocket back to the browser canvas; because the run is in-process these reach the UI directly. The interactive controls pause, stop, and restore re-enter the same singleton runner. Tool nodes call the registry-owned AutoServerApp servers over HTTP with no per-worker tagging, the same servers canvas and eval share. The promise: node firing is identical to a batch-eval episode.">
+  <!-- Browser / client -->
+  <rect class="ghost" x="486" y="16" width="216" height="74" rx="8"/>
+  <text x="594" y="40" text-anchor="middle" font-size="12">Browser — Canvas UI</text>
+  <text class="dim" x="594" y="58" text-anchor="middle">▶ Play   ⏸   ⏹   ⟲ Restore</text>
+  <text class="dim" x="594" y="76" text-anchor="middle">holds one WebSocket open</text>
+
+  <!-- Backend process frame -->
+  <rect class="accent" x="14" y="110" width="690" height="436" rx="8" fill="none"/>
+  <text class="at" x="30" y="134" font-size="13">Backend process — in-process · single-tenant (ExecutionGuard)</text>
+
+  <!-- spine -->
+  <rect class="box" x="40" y="150" width="300" height="44" rx="6"/>
+  <text x="190" y="170" text-anchor="middle" font-size="12">POST /api/navigate/run</text>
+  <text class="mono" x="190" y="186" text-anchor="middle">run.py · run_loop</text>
+
+  <rect class="box" x="40" y="206" width="300" height="44" rx="6"/>
+  <text x="190" y="226" text-anchor="middle" font-size="12">ExecutionGuard.acquire(canvas)</text>
+  <text class="dim" x="190" y="242" text-anchor="middle">409 if busy · holder = "canvas"</text>
+
+  <rect class="box" x="40" y="262" width="300" height="44" rx="6"/>
+  <text x="190" y="282" text-anchor="middle" font-size="12">get_loop_runner() → singleton LoopRunner</text>
+  <text class="dim" x="190" y="298" text-anchor="middle">principles=None · no overrides</text>
+
+  <rect class="box" x="40" y="318" width="300" height="40" rx="6"/>
+  <text x="190" y="338" text-anchor="middle" font-size="12">asyncio task: _run_and_release (fire-and-forget)</text>
+
+  <rect class="accent" x="40" y="370" width="300" height="106" rx="6"/>
+  <text class="at" x="190" y="392" text-anchor="middle">GraphExecutor.run() — ready queue</text>
+  <text class="dim" x="190" y="412" text-anchor="middle">step_delay_ms throttle (200 ms)</text>
+  <text class="dim" x="190" y="430" text-anchor="middle">pause_event.wait() / stop_event each step</text>
+  <text class="dim" x="190" y="448" text-anchor="middle">checkpoint per root step (in-memory, ≤100)</text>
+
+  <!-- spine arrows -->
+  <path class="edge" d="M190,194 L190,206"/>
+  <path class="edge" d="M190,250 L190,262"/>
+  <path class="edge" d="M190,306 L190,318"/>
+  <path class="edge" d="M190,358 L190,370"/>
+
+  <!-- Play → POST -->
+  <path class="edge" d="M540,90 L300,150"/>
+  <text class="mono" x="430" y="118" text-anchor="middle">▶ Play</text>
+
+  <!-- live WS engine → browser -->
+  <path class="edge" d="M340,388 L520,92"/>
+  <text class="mono" x="372" y="210" text-anchor="start">live WS ▸ nav_status ·</text>
+  <text class="mono" x="372" y="226" text-anchor="start">nav_step · exec_log · viewer_data</text>
+
+  <!-- controls browser → singleton -->
+  <path class="dedge" d="M560,90 L342,278"/>
+  <text class="mono" x="468" y="150" text-anchor="start">pause / stop / restore</text>
+
+  <!-- tool → AutoServerApp -->
+  <rect class="box" x="404" y="392" width="286" height="78" rx="8"/>
+  <text x="547" y="414" text-anchor="middle" font-size="12">AutoServerApp · registry-owned</text>
+  <text class="dim" x="547" y="432" text-anchor="middle">HTTP /call — no per-worker tagging</text>
+  <text class="dim" x="547" y="450" text-anchor="middle">same servers canvas &amp; eval share</text>
+  <path class="edge" d="M340,430 L404,430"/>
+  <text class="mono" x="350" y="424" text-anchor="start">tool → HTTP</text>
+
+  <text class="dim" x="360" y="528" text-anchor="middle">Node firing is identical to a batch-eval episode — only the wrapping (singleton, in-process, live, pausable) differs.</text>
+</svg>
+<hr>
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>Canvas Play is the interactive sibling of batch eval. You draw a graph, click ▶ Play, and watch the agent step through one run live — frames, log lines, and node outputs streaming into the canvas as they happen. Three properties define the path, and the rest of the page traces each through code:</p>
+<ol>
+<li><strong>In-process.</strong> Unlike eval, there is no subprocess and no scheduler — the run executes as an <code>asyncio</code> task inside the backend itself (§ 2–§ 3). That's what makes it cheap to start and live to watch, and why it is single-tenant.</li>
+<li><strong>Single-tenant, one singleton.</strong> <code>ExecutionGuard</code> permits exactly one canvas (or eval) run at a time, and the run is driven by the one process-global <code>LoopRunner</code> from <code>get_loop_runner()</code>. Starting a new Play stops the current one (§ 2).</li>
+<li><strong>Same engine as eval.</strong> Below <code>LoopRunner.run()</code> the firing is identical to a batch-eval episode — the only differences are the wrapping (singleton vs fresh-per-episode, in-process vs subprocess, live vs suppressed). This is the page's hard promise (§ 4).</li>
+</ol>
+<p>The smallest run is a single POST carrying the whole graph; it returns immediately, and the run continues in the background:</p>
+<pre class="hl">
+POST<span class="w"> </span>/api/navigate/run
+<span class="o">{</span><span class="w"> </span><span class="s2">&quot;loop_definition&quot;</span>:<span class="w"> </span><span class="o">{</span><span class="w"> </span>...full<span class="w"> </span>GraphDefinition<span class="w"> </span>JSON...<span class="w"> </span><span class="o">}</span>,
+<span class="w">  </span><span class="s2">&quot;execution_id&quot;</span>:<span class="w"> </span><span class="s2">&quot;uuid&quot;</span>,<span class="w"> </span><span class="s2">&quot;step_delay_ms&quot;</span>:<span class="w"> </span><span class="m">200</span><span class="w"> </span><span class="o">}</span>
+<span class="c1"># → { &quot;ok&quot;: true, &quot;execution_id&quot;: &quot;uuid&quot; }   returns NOW; the run continues in the background</span>
+</pre>
+<p>Note the contrast with eval's contract: canvas posts the <em>whole graph</em> inline (<code>loop_definition</code>) and gets back <code>ok</code> the instant the task is scheduled; eval posts a <em>graph name</em> and gets back <code>queued</code> while a scheduler decides when to run it.</p>
+<h2 id="2-single-tenant"><span class="num">2.</span> One process, single-tenant</h2>
+<p><strong>There is exactly one canvas run, driven by one runner, gated by one lock — all process-local.</strong></p>
+<ul>
+<li><strong><code>ExecutionGuard</code></strong> (<code>state.py · ExecutionGuard</code>) is a class-level lock with three modes (<code>idle</code> / <code>canvas</code> / <code>eval</code>). <code>run_loop</code> acquires it in <code>canvas</code> mode with the literal holder string <code>"canvas"</code> (eval uses a run_id); if it's already held — by another canvas run or an in-process eval — the request returns <strong>409</strong>. Canvas and eval are mutually exclusive by construction.</li>
+<li><strong>The <code>LoopRunner</code> is a process-global singleton</strong> (<code>loop_runner.py · get_loop_runner()</code>). Every canvas endpoint — run, pause, stop, status, checkpoints, restore — operates on the same object. There is no per-run <code>LoopRunner</code> on this path (that's eval).</li>
+<li><strong>A new Play preempts the running one.</strong> <code>run_loop</code> checks <code>runner._status in ("running", "paused")</code> and <code>await runner.stop()</code>s it before starting the new run (<code>run.py · run_loop</code>) — the single slot is taken over, not refused (the 409 is only for a held <em>guard</em>, e.g. an eval holds it).</li>
+</ul>
+<p>This is the whole reason eval exists as a separate path: you cannot run two graphs at once on the canvas, and a long headless sweep would monopolize the one slot. The default subprocess eval sidesteps the guard entirely; only the legacy in-process eval contends for it. See <a href="execution-paths.html">execution-paths</a> for the side-by-side.</p>
+<h2 id="3-request-path"><span class="num">3.</span> The request path — <code>run_loop</code></h2>
+<p><strong>The handler does five things, then hands off to a background task.</strong> <code>run.py · run_loop</code> (<code>POST /api/navigate/run</code>, router mounted at <code>/api/navigate</code>):</p>
+<ol>
+<li><strong>Acquire the guard.</strong> <code>ExecutionGuard.acquire(ExecutionMode.canvas, "canvas")</code> → 409 on failure. Then <code>get_loop_runner()</code>, and if the singleton is mid-run, <code>await runner.stop()</code> it.</li>
+<li><strong>Parse + validate.</strong> <code>GraphDefinition.from_dict(req.loop_definition)</code> + <code>validate_graph_connectivity</code>; on a bad graph it releases the guard and returns 400.</li>
+<li><strong>Auto-load nodesets.</strong> <code>registry.ensure_nodesets_for_graph(graph)</code> (<code>worker_count=1</code>) makes sure every node type is in <code>NODE_HANDLERS</code> — idempotent, covers a cold start or a <code>--reload</code>-wiped registry. A load failure releases the guard and returns 500.</li>
+<li><strong>Wire-type check + hooks.</strong> <code>validate_edge_wire_types</code> (warn-only, ADR-027 staged) now that proxy classes are registered; <code>registry.get_global_hooks()</code>.</li>
+<li><strong>Fire-and-forget.</strong> Set <code>runner._execution_id</code>, clear the stop event, and launch the task — the HTTP call returns immediately while the run proceeds in the background:</li>
+</ol>
+<pre class="hl">
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_run_and_release</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">await</span> <span class="n">runner</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">req</span><span class="o">.</span><span class="n">step_delay_ms</span><span class="p">,</span> <span class="n">global_hooks</span><span class="o">=</span><span class="n">global_hooks</span><span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">ExecutionGuard</span><span class="o">.</span><span class="n">release</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">canvas</span><span class="s2">&quot;</span><span class="p">)</span>   <span class="c1"># released when run() returns</span>
+
+<span class="n">runner</span><span class="o">.</span><span class="n">_execution_id</span> <span class="o">=</span> <span class="n">req</span><span class="o">.</span><span class="n">execution_id</span>
+<span class="n">runner</span><span class="o">.</span><span class="n">_task</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span><span class="n">_run_and_release</span><span class="p">(</span><span class="p">)</span><span class="p">)</span>   <span class="c1"># fire-and-forget</span>
+<span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">ok</span><span class="s2">&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">execution_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">req</span><span class="o">.</span><span class="n">execution_id</span><span class="p">}</span>
+</pre>
+<p>The guard is released in the task's <code>finally</code> — i.e. when <code>run()</code> returns — <em>or</em> explicitly by <code>POST /run/stop</code>. The one case where neither fires is a run paused while the browser closes; a liveness backstop handles it (§ 7).</p>
+<h2 id="4-inside-the-run"><span class="num">4.</span> Inside the run — <code>LoopRunner → GraphExecutor</code></h2>
+<p><strong>The singleton <code>LoopRunner</code> is a thin control shell; the run is the executor.</strong> With <code>principles=None</code> (canvas mode), <code>LoopRunner.run</code> (<code>loop_runner.py · LoopRunner.run</code>):</p>
+<ul>
+<li><strong>Self-creates a logger.</strong> Eval injects a per-episode <code>ExecutionLogger</code>; canvas has none, so the runner builds one at <code>outputs/runs/&lt;execution_id&gt;/</code> and writes <code>graph.json</code> for replay.</li>
+<li><strong>Keeps the pause event live.</strong> Canvas does <em>not</em> set <code>no_pause</code>, so the runner's own <code>_pause_event</code> is used — the executor blocks on it between steps when you hit Pause.</li>
+<li><strong>Builds a fresh <code>GraphExecutor</code></strong> carrying empty overrides (no per-worker routing) and <code>await</code>s <code>executor.run(graph, session=self, step_delay_ms, stop_event, pause_event, global_hooks)</code>.</li>
+</ul>
+<p>The executor (<code>graph_executor.py · GraphExecutor.run</code>) drives the ready-queue exactly as in eval, with two canvas-visible behaviours that eval turns off:</p>
+<ul>
+<li><strong>Step throttle.</strong> Between root-scope steps the executor sleeps <code>step_delay_ms</code> (<code>graph_executor.py</code>: <code>if step_delay_ms &gt; 0 and _is_root_scope: await asyncio.sleep(step_delay_ms / 1000)</code>). Canvas defaults to 200 ms so a human can watch; eval passes 0.</li>
+<li><strong>Checkpoints.</strong> On each root-scope <code>iterOut</code> boundary the executor snapshots every state container into an in-memory dict (<code>graph_executor.py</code>: <code>self._checkpoints[self.step_counter] = {cid: c.checkpoint() …}</code>), capped at <code>max_checkpoints = 100</code> (oldest evicted). This is what backs <code>restore</code> (§ 6).</li>
+</ul>
+<p>Pause and stop are polled at the top of each step: <code>await pause.wait()</code> blocks a paused run, and a set <code>stop_event</code> breaks the loop (<code>graph_executor.py · GraphExecutor.run</code>). Node firing, iteration, termination, and the after-loop verdict are identical to eval — see <a href="graph-executor.html">graph-executor</a>.</p>
+<h2 id="5-live-observability"><span class="num">5.</span> Live observability</h2>
+<p><strong>Because the run is in-process, its WS events reach the browser directly — the opposite of eval.</strong> <code>state.broadcast</code> fans every event to the backend's connected WebSocket clients (<code>state.py · broadcast</code>), and the canvas holds one open. With <code>principles=None</code>, none of the nav events are suppressed:</p>
+<table>
+<thead><tr><th>Event</th><th>Emitted by</th><th>When</th></tr></thead>
+<tbody>
+<tr><td><code>nav_status</code></td><td><code>LoopRunner</code> / executor</td><td>running / paused / idle / complete transitions</td></tr>
+<tr><td><code>nav_step</code></td><td><code>GraphExecutor._broadcast_step</code></td><td>once per root step — the consolidated per-step view</td></tr>
+<tr><td><code>exec_log</code></td><td><code>GraphExecutor._fire_node</code></td><td>per node fire — the Report-tab firing log</td></tr>
+<tr><td><code>viewer_data</code></td><td>viewer sink nodes (<code>builtin_nodes.py</code>)</td><td>per fire — each viewer node emits its own payload (frames, text)</td></tr>
+</tbody>
+</table>
+<p>Eval flips the same switch the other way: <code>ExecutionPrinciples(suppress_nav_events=True)</code> gates <code>nav_status</code> / <code>nav_step</code> / <code>exec_log</code> off, and the eval subprocess has no WS clients anyway (<a href="batch-eval.html">batch-eval</a> § 6.3). On canvas all four stream live. <code>GET /run/status</code> additionally exposes a pull snapshot (<code>{status, step, metrics, execution_id}</code>) for clients that reconnect mid-run.</p>
+<h2 id="6-controls"><span class="num">6.</span> Pause / stop / checkpoint / restore</h2>
+<p><strong>The interactive controls are four more endpoints on the same singleton</strong> (all under <code>/api/navigate</code>, <code>run.py</code>):</p>
+<table>
+<thead><tr><th>Endpoint</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>POST /run/pause</code></td><td>If running, <code>runner.pause()</code> → clears <code>_pause_event</code>; the executor blocks at the next step's <code>pause.wait()</code>.</td></tr>
+<tr><td><code>POST /run/stop</code></td><td><code>runner.stop()</code> (sets stop event, awaits the task with a 5 s timeout, then cancels) and releases the guard.</td></tr>
+<tr><td><code>GET /run/status</code></td><td><code>runner.get_status()</code> — <code>{status, step, metrics, execution_id}</code>.</td></tr>
+<tr><td><code>GET /run/checkpoints</code></td><td>The step numbers currently snapshotted in memory.</td></tr>
+<tr><td><code>POST /run/restore/{step}</code></td><td>Rewinds container state to a checkpoint. <strong>Requires the runner be <code>paused</code> or <code>done</code></strong> (400 otherwise); 404 if no checkpoint at that step.</td></tr>
+</tbody>
+</table>
+<p>Resume is implicit: <code>POST /run</code> after a pause is handled by the runner's pause/resume events; <code>restore</code> only mutates the executor's container snapshots, it does not itself resume. Checkpoints live only in the running executor's memory (§ 4) — they are a within-session rewind, not a persisted history.</p>
+<h2 id="7-deviations"><span class="num">7.</span> Where the code deviates from the mental model</h2>
+<div class="callout warn">
+<p><strong><code>LoopRunner</code> has no loop.</strong> The name says "runner of a loop," but the iteration lives entirely in <code>GraphExecutor.run()</code>'s ready-queue; <code>LoopRunner.run()</code> is setup plus a single <code>await self._executor.run(...)</code>. "Loop" names the agent loop it executes, not its own control flow.</p>
+</div>
+<div class="callout warn">
+<p><strong>A new Play silently stops the running one.</strong> <code>run_loop</code> only returns 409 when the <em>guard</em> is held by something else (e.g. an in-process eval). A second canvas Play while one is running does not 409 — it <code>await runner.stop()</code>s the in-flight run and takes the slot. There is one canvas slot, and the latest Play wins it.</p>
+</div>
+<div class="callout warn">
+<p><strong><code>_task</code> is assigned by the API, not the runner.</strong> <code>LoopRunner.stop()</code> awaits <code>self._task</code>, but the runner never sets it — <code>run.py · run_loop</code> does (<code>runner._task = asyncio.create_task(...)</code>). Eval's per-episode runners never populate <code>_task</code>, so there <code>stop()</code>'s task-await is a no-op and cancellation rides the stop event / <code>wait_for</code> timeout instead.</p>
+</div>
+<div class="callout warn">
+<p><strong>A paused run that loses its browser leaks the guard — until a backstop reaps it.</strong> The guard is released only on <code>/run/stop</code> or when <code>run()</code> returns; a run paused while the frontend closes does neither, so <code>JobScheduler</code> would starve every eval job forever. The WS-liveness backstop (<code>state.py · canvas_guard_orphan_decision</code>, grace <code>CANVAS_ORPHAN_GRACE_SEC = 30 s</code>) reaps a canvas guard held with zero connected clients past the grace window.</p>
+</div>
+<div class="callout warn">
+<p><strong>Checkpoints are in-memory and capped.</strong> <code>self._checkpoints</code> holds at most 100 root steps and is discarded when the executor object is — restore is a live-session rewind, not a persisted trajectory. For after-the-fact replay use the <code>outputs/runs/&lt;execution_id&gt;/</code> log + frozen <code>graph.json</code> the runner self-created, not the checkpoint dict.</p>
+</div>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: Initial design doc. Synthesised from live source — <code>run.py · run_loop</code> (the <code>/api/navigate/run</code> family), <code>loop_runner.py</code>, <code>graph_executor.py</code> (<code>step_delay_ms</code> throttle, checkpoints), <code>state.py</code> (<code>ExecutionGuard</code>, <code>canvas_guard_orphan_decision</code>). Sibling to <a href="batch-eval.html">batch-eval</a>; the two paths are compared in <a href="execution-paths.html">execution-paths</a>.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="execution-paths.html">↑ Execution Paths</a> · <a href="batch-eval.html">Batch Eval System →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-single-tenant">2. One process, single-tenant</a>
+      <a class="toc-h2" href="#3-request-path">3. The request path — run_loop</a>
+      <a class="toc-h2" href="#4-inside-the-run">4. Inside the run — LoopRunner → GraphExecutor</a>
+      <a class="toc-h2" href="#5-live-observability">5. Live observability</a>
+      <a class="toc-h2" href="#6-controls">6. Pause / stop / checkpoint / restore</a>
+      <a class="toc-h2" href="#7-deviations">7. Where the code deviates from the mental model</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

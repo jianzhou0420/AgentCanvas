@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM/VLM Configuration System — AgentCanvas</title>
+<meta name="description" content="Multi-provider profiles, env vars, CLI, per-node selection">
+<meta property="og:title" content="LLM/VLM Configuration System — AgentCanvas">
+<meta property="og:description" content="Multi-provider profiles, env vars, CLI, per-node selection">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/llm-config-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="lc-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#lca); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/llm-config-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">LLM/VLM Configuration System</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>LLM/VLM Configuration System</h1>
+  <p class="tagline">Multi-provider profiles, env vars, CLI, per-node selection</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="lca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+
+
+<p class="lede">The LLM/VLM configuration system lets any canvas node call any of 24 providers — OpenAI, Anthropic, Google, Ollama, and 20+ more — through one <code>litellm</code>-backed async API. A <strong>profile</strong> names a provider + model; API keys never live in the profile, they're read from the provider's standard env var at call time. Each node can pick its own profile, so a single graph can reason with GPT-4o, caption with Claude, and run cheap inference on local Ollama. Designed in ADR-platform-003, hardened in ADR-platform-006.</p>
+<p class="diagram-label"><strong>How a node gets its model — the whole call path.</strong> (§3 zooms into the <em>resolve config</em> step; §12 into the usage hook.)</p>
+<svg class="rxsvg" viewBox="0 0 720 300" role="img" aria-label="How a node gets its model. LLMCallNode.forward calls get_llm_config(profile) in call.py, which loads the profile via ProfileStore.get from profiles.json (no keys), merges provider defaults via resolve_provider_config from PROVIDER_REGISTRY, and reads the API key via get_provider_api_key from os.environ — producing an LLMConfig. The node then calls llm_complete or vlm_complete in call.py, which calls litellm.acompletion to the provider. The response token usage flows back through _accumulate_usage into the _current_node_usage ContextVar and is merged into the per-node log by _fire_node. If no profile is active or the env key is unset, get_llm_config returns None and the node returns a mock reply without calling litellm.">
+  <rect class="box" x="10" y="96" width="132" height="110" rx="6"/>
+  <text x="76" y="128" text-anchor="middle">LLMCallNode</text>
+  <text class="mono" x="76" y="144" text-anchor="middle">.forward()</text>
+  <text class="mono" x="76" y="160" text-anchor="middle">builtin_nodes.py</text>
+  <text class="dim" x="76" y="180" text-anchor="middle">the caller</text>
+  <rect class="box" x="190" y="40" width="146" height="46" rx="6"/>
+  <text x="263" y="62" text-anchor="middle">get_llm_config</text>
+  <text class="mono" x="263" y="78" text-anchor="middle">call.py</text>
+  <rect class="box" x="372" y="18" width="338" height="28" rx="5"/>
+  <text class="dim" x="541" y="36" text-anchor="middle">ProfileStore.get ← profiles.json (no keys)</text>
+  <rect class="box" x="372" y="52" width="338" height="28" rx="5"/>
+  <text class="dim" x="541" y="70" text-anchor="middle">resolve_provider_config ← PROVIDER_REGISTRY defaults</text>
+  <rect class="box" x="372" y="86" width="338" height="28" rx="5"/>
+  <text class="dim" x="541" y="104" text-anchor="middle">get_provider_api_key ← os.environ[env_var]</text>
+  <path class="edge" d="M336,58 L372,32"/>
+  <path class="edge" d="M336,63 L372,66"/>
+  <path class="edge" d="M336,68 L372,100"/>
+  <rect class="accent" x="190" y="104" width="146" height="46" rx="6"/>
+  <text class="at" x="263" y="126" text-anchor="middle">LLMConfig</text>
+  <text class="dim" x="263" y="142" text-anchor="middle">key·model·base_url·type</text>
+  <path class="edge" d="M263,86 L263,104"/>
+  <path class="edge" d="M142,124 C 165,80 172,63 190,63"/>
+  <text class="dim" x="168" y="104" text-anchor="middle">get_llm_config(profile)</text>
+  <rect class="box" x="190" y="172" width="158" height="46" rx="6"/>
+  <text x="269" y="192" text-anchor="middle">llm_complete /</text>
+  <text class="mono" x="269" y="209" text-anchor="middle">vlm_complete · call.py</text>
+  <rect class="box" x="400" y="172" width="160" height="46" rx="6"/>
+  <text x="480" y="194" text-anchor="middle">litellm.acompletion</text>
+  <text class="dim" x="480" y="210" text-anchor="middle">→ provider HTTP</text>
+  <path class="edge" d="M142,172 C 165,193 172,195 190,195"/>
+  <path class="edge" d="M263,150 L263,172"/>
+  <text class="dim" x="304" y="166" text-anchor="middle">resolved config</text>
+  <path class="edge" d="M348,195 L400,195"/>
+  <rect class="box" x="150" y="244" width="170" height="30" rx="5"/>
+  <text class="dim" x="235" y="263" text-anchor="middle">per-node log (_fire_node)</text>
+  <path class="edge" d="M400,212 C 360,250 330,259 322,259"/>
+  <text class="dim" x="476" y="250" text-anchor="middle">usage: _accumulate_usage → _current_node_usage</text>
+  <text class="dim" x="430" y="290" text-anchor="middle">fallback: no profile / unset key → get_llm_config()=None → mock reply, litellm skipped</text>
+</svg>
+<hr>
+<h2 id="1-what-it-is"><span class="num">1.</span> What it is, and the one rule</h2>
+<p>Canvas nodes — chiefly <code>LLMCallNode</code> — need to reach an LLM/VLM without hard-coding a provider SDK. This system is that indirection: <code>litellm</code> is the single abstraction layer (no per-provider SDKs; <code>httpx</code> appears only in <code>key_validator.py</code> for the Ollama health check). Four design choices shape it:</p>
+<ul>
+<li><strong>The one rule — no secrets on disk.</strong> <code>profiles.json</code> carries only <code>provider</code> / <code>model</code> / <code>base_url</code> / <code>api_type</code> and is git-safe; keys live in per-provider env vars (<code>OPENAI_API_KEY</code>, …) read at call time (ADR-platform-006).</li>
+<li><strong>Field-level fallback</strong> — each config field (key, model, base_url, api_type) resolves independently: the profile's value, else the provider registry default.</li>
+<li><strong>Hot reload</strong> — mtime-based cache invalidation, so a CLI edit is picked up by a running server within ~2 s.</li>
+<li><strong>Graceful degradation</strong> — no active profile, or the provider env var unset, drops to mock mode (<code>get_llm_config()</code> returns <code>None</code>, the node renders a placeholder) — unless <code>AGENTCANVAS_STRICT_ERRORS</code> is set (§11.5).</li>
+</ul>
+
+
+<h2 id="2-smallest-setup"><span class="num">2.</span> The smallest setup</h2>
+<p>Two steps put a live model behind every <code>llmCall</code> node — set the provider's env var, then create and activate a profile:</p>
+<pre class="hl">
+<span class="c1"># 1. the key lives in the environment, never in a file</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span>sk-...
+
+<span class="c1"># 2. create a profile (provider + model) and make it the active default</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span><span class="nb">set</span><span class="w"> </span>openai<span class="w"> </span>--provider<span class="w"> </span>openai<span class="w"> </span>--model<span class="w"> </span>gpt-4o
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span>activate<span class="w"> </span>openai
+</pre>
+<p>Now an <code>llmCall</code> node with a blank <code>profile</code> field resolves to the active <code>openai</code> profile; a node that sets <code>profile = "anthropic"</code> uses that one instead (§9). No key ever touches <code>profiles.json</code>.</p>
+<h2 id="3-resolution-chain"><span class="num">3.</span> The resolution chain at a glance</h2>
+<p>Every LLM call resolves its config in two stages: (1) load the named (or active) profile from <code>profiles.json</code>, (2) read the API key from the provider's standard env var. ADR-platform-006 removed the previous <code>AGENTCANVAS_*</code> / <code>VLM_*</code> global env-var fallback chain — keys are now <strong>per provider</strong>, never on disk.</p>
+<svg class="rxsvg" viewBox="0 0 700 150" role="img" aria-label="Two-stage resolution. get_llm_config(name) first calls ProfileStore.get to load the named or active profile, returning an LLMProfile. It then calls get_provider_api_key, reading os.environ for the provider's env var. The result is an LLMConfig, or None (mock mode) when the key is empty and the provider is not Ollama.">
+  <text class="mono" x="10" y="84">get_llm_config(name)</text>
+  <path class="edge" d="M150,80 L174,80"/>
+  <rect class="accent" x="174" y="46" width="208" height="68" rx="7"/>
+  <text class="at" x="278" y="70" text-anchor="middle">① ProfileStore.get</text>
+  <text class="dim" x="278" y="88" text-anchor="middle">named, else the active profile</text>
+  <text class="mono" x="278" y="105" text-anchor="middle">→ LLMProfile</text>
+  <path class="edge" d="M382,80 L406,80"/>
+  <rect class="box" x="406" y="46" width="232" height="68" rx="7"/>
+  <text x="522" y="70" text-anchor="middle">② get_provider_api_key</text>
+  <text class="mono" x="522" y="88" text-anchor="middle">os.environ[ProviderDef.env_var]</text>
+  <text class="dim" x="522" y="105" text-anchor="middle">empty → mock-mode fall-through</text>
+  <text class="dim" x="350" y="140" text-anchor="middle">result: LLMConfig(key, base_url, model, api_type) — or None (mock) when the key is empty and the provider isn't Ollama</text>
+</svg>
+<p>The merge of profile fields + registry defaults happens inside <code>resolve_provider_config()</code> in <code>providers.py</code>: empty <code>base_url</code> / <code>api_type</code> / <code>model</code> on the profile inherit from <code>PROVIDER_REGISTRY[provider]</code>. <code>litellm_prefix</code> always comes from the registry (not user-overridable). If <code>api_key</code> ends up empty <em>and</em> the provider is not Ollama, <code>get_llm_config()</code> returns <code>None</code> (mock mode).</p>
+<p><strong>Special cases:</strong></p>
+<ul>
+<li><strong>Ollama</strong> has <code>env_var=""</code> in the registry and skips the key check (local server)</li>
+<li><strong>Custom provider</strong> is the only entry whose env var is <code>AGENTCANVAS_API_KEY</code> (general-purpose self-hosted endpoints)</li>
+<li><strong>No active profile + no explicit <code>profile_name</code></strong> returns <code>None</code> immediately (no env-only mode)</li>
+<li><strong>Explicit <code>profile_name</code></strong> (from per-node selection) skips the active-profile lookup</li>
+</ul>
+<h3 id="31-resolution-code-path"><span class="num">3.1</span> Resolution Code Path</h3>
+<p>Inside a node's <code>forward()</code>, one call resolves everything — <code>get_llm_config(profile_name)</code> (<code>call.py · get_llm_config</code>):</p>
+<ol>
+<li><code>ProfileStore.get(name)</code> — disk read with an mtime cache (TTL 2 s).</li>
+<li><code>resolve_provider_config(profile)</code> — merge profile + registry defaults, calling <code>get_provider_api_key(provider)</code> = <code>os.environ[ProviderDef.env_var]</code>.</li>
+<li>If <code>api_key == "" and api_type != "ollama"</code> → return <code>None</code> (mock mode).</li>
+<li>Otherwise → <code>LLMConfig(api_key, base_url, model, api_type, litellm_prefix)</code>.</li>
+</ol>
+<p>Source: <code>call.py · get_llm_config</code>, <code>providers.py · get_provider_api_key</code>, <code>providers.py · resolve_provider_config</code>.</p>
+<h2 id="4-provider-registry"><span class="num">4.</span> Provider Registry</h2>
+<p><code>providers.py</code> defines 24 pre-configured providers. Each entry supplies default <code>base_url</code>, <code>api_type</code>, and <code>default_model</code>, so users only need to provide an API key.</p>
+<h3 id="41-supported-providers"><span class="num">4.1</span> Supported Providers</h3>
+<table>
+<thead>
+<tr>
+<th>Protocol</th>
+<th>Providers</th>
+<th>API Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OpenAI-compatible</strong></td>
+<td>OpenAI, OpenRouter, Together AI, Moonshot, Mistral, xAI (Grok), NVIDIA NIM, Hugging Face, DeepSeek, Baidu Qianfan, Alibaba ModelStudio, Volcengine (ByteDance), BytePlus, Venice AI, MiniMax, vLLM, SGLang</td>
+<td><code>openai</code></td>
+</tr>
+<tr>
+<td><strong>Anthropic</strong></td>
+<td>Anthropic, Kimi Coding, Xiaomi MiMo, Synthetic</td>
+<td><code>anthropic</code></td>
+</tr>
+<tr>
+<td><strong>Google</strong></td>
+<td>Google Gemini</td>
+<td><code>google</code></td>
+</tr>
+<tr>
+<td><strong>Ollama</strong></td>
+<td>Ollama (local)</td>
+<td><code>ollama</code></td>
+</tr>
+<tr>
+<td><strong>Custom</strong></td>
+<td>User-defined (any base URL + API type)</td>
+<td>configurable</td>
+</tr>
+</tbody>
+</table>
+<p>Total: 24 providers (count confirmed in <code>PROVIDER_REGISTRY</code> in <code>app/llm/providers.py</code>).</p>
+<h3 id="42-registry-entry-structure"><span class="num">4.2</span> Registry Entry Structure</h3>
+<pre class="hl"><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ProviderDef</span><span class="p">:</span>
+    <span class="n">label</span><span class="p">:</span> <span class="nb">str</span>            <span class="c1"># Human-readable name (e.g. &quot;OpenAI&quot;)</span>
+    <span class="n">base_url</span><span class="p">:</span> <span class="nb">str</span>         <span class="c1"># Default API endpoint</span>
+    <span class="n">api_type</span><span class="p">:</span> <span class="nb">str</span>         <span class="c1"># Protocol: &quot;openai&quot; | &quot;anthropic&quot; | &quot;google&quot; | &quot;ollama&quot;</span>
+    <span class="n">default_model</span><span class="p">:</span> <span class="nb">str</span>    <span class="c1"># Suggested model (e.g. &quot;gpt-4o&quot;)</span>
+    <span class="n">litellm_prefix</span><span class="p">:</span> <span class="nb">str</span>   <span class="c1"># litellm model prefix (e.g. &quot;openai&quot;, &quot;gemini&quot;, &quot;anthropic&quot;)</span>
+    <span class="n">env_var</span><span class="p">:</span> <span class="nb">str</span>          <span class="c1"># Standard env-var name for the API key (e.g. &quot;OPENAI_API_KEY&quot;)</span>
+                          <span class="c1"># Empty (&quot;&quot;) for Ollama — local server, no key needed</span>
+</pre>
+<p>When creating a profile with <code>provider="openai"</code>, the registry fills in <code>https://api.openai.com/v1</code>, <code>openai</code>, and <code>gpt-4o</code> automatically. The profile can override <code>base_url</code> / <code>api_type</code> / <code>model</code>; <code>litellm_prefix</code> and <code>env_var</code> always come from the registry. The runtime reads <code>os.environ[env_var]</code> at call time (ADR-platform-006) — there is no on-disk slot for the key.</p>
+<p>Source: <code>app/llm/providers.py</code></p>
+<h2 id="5-profile-store"><span class="num">5.</span> Profile Store</h2>
+<p>Profiles are persisted in <code>agentcanvas/backend/profiles.json</code> (checked in alongside <code>requirements.txt</code>; override location via <code>AGENTCANVAS_PROFILES_FILE=&lt;absolute-path&gt;</code>). The <code>ProfileStore</code> class manages CRUD with thread-safe locking and mtime-based cache invalidation. The file is git-safe by construction (no secrets) — see <a href="../../core/decisions/platform/adr-platform-006-env-only-credentials.html">ADR-platform-006</a>.</p>
+<h3 id="51-file-format"><span class="num">5.1</span> File Format</h3>
+<pre class="hl"><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;profiles&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;openai&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4o&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;api_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;anthropic&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;anthropic&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-sonnet-4-6&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;api_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre>
+<ul>
+<li><strong>No <code>api_key</code> field</strong> — keys live in env vars (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, …). Legacy <code>api_key</code> fields in older files are silently dropped on load and never written back (<code>llm/profiles.py · ProfileStore.load</code>)</li>
+<li><strong><code>active</code></strong>: name of the default profile used when no profile is specified</li>
+<li>Empty <code>base_url</code> / <code>api_type</code> fields fall back to registry defaults; empty <code>model</code> falls back to <code>ProviderDef.default_model</code></li>
+<li>File written with default umask permissions — no <code>chmod 0o600</code>, since the file carries no secrets (safe for shared checkouts and git)</li>
+</ul>
+<h3 id="52-cache-invalidation"><span class="num">5.2</span> Cache Invalidation</h3>
+<p><code>ProfileStore</code> avoids re-reading the file on every request:</p>
+<ol>
+<li>In-memory cache of <code>ProfileData</code></li>
+<li>mtime check gated to at most <strong>once every 2 seconds</strong> (<code>_mtime_check_interval</code>)</li>
+<li>If file mtime changed, cache is invalidated and re-read on next access</li>
+</ol>
+<p>This means CLI changes or manual file edits are picked up by the running server within ~2 seconds, with no restart required.</p>
+<h3 id="53-profile-data-model"><span class="num">5.3</span> Profile Data Model</h3>
+<pre class="hl"><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LLMProfile</span><span class="p">:</span>
+    <span class="sd">&quot;&quot;&quot;Non-secret per-profile configuration. API keys are NEVER stored here.&quot;&quot;&quot;</span>
+    <span class="n">provider</span><span class="p">:</span> <span class="nb">str</span>      <span class="c1"># Key into PROVIDER_REGISTRY (e.g. &quot;openai&quot;)</span>
+    <span class="n">model</span><span class="p">:</span> <span class="nb">str</span>         <span class="c1"># Model name (e.g. &quot;gpt-4o&quot;)</span>
+    <span class="n">base_url</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span> <span class="c1"># &quot;&quot; = use registry default</span>
+    <span class="n">api_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span> <span class="c1"># &quot;&quot; = use registry default</span>
+</pre>
+<p><code>LLMProfile</code> is the on-disk shape (no <code>api_key</code> field — ADR-platform-006). At call time, <code>resolve_provider_config()</code> merges it with registry defaults, looks up the env-var key via <code>get_provider_api_key(provider)</code>, and resolves <code>litellm_prefix</code>, producing an <code>LLMConfig</code>:</p>
+<pre class="hl"><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LLMConfig</span><span class="p">:</span>
+    <span class="n">api_key</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">base_url</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">model</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">api_type</span><span class="p">:</span> <span class="nb">str</span>         <span class="c1"># &quot;openai&quot; | &quot;anthropic&quot; | &quot;google&quot; | &quot;ollama&quot;</span>
+    <span class="n">litellm_prefix</span><span class="p">:</span> <span class="nb">str</span>   <span class="c1"># litellm model prefix (e.g. &quot;openai&quot;, &quot;gemini&quot;, &quot;ollama_chat&quot;)</span>
+</pre>
+<p>Source: <code>app/llm/profiles.py</code>, <code>app/llm/call.py</code></p>
+<h2 id="6-environment-variables"><span class="num">6.</span> Environment Variables</h2>
+<p>API keys are the <strong>only</strong> piece of config that comes from env vars — and they are <strong>per provider</strong>, named after each vendor's de-facto SDK convention. Profile metadata (provider / model / base_url / api_type) lives in <code>profiles.json</code>; there is no global <code>AGENTCANVAS_*</code> or <code>VLM_*</code> env-var fallback for those fields any more (removed in ADR-platform-006).</p>
+<h3 id="61-variable-names"><span class="num">6.1</span> Per-Provider Env Vars</h3>
+<p>Each entry in <code>PROVIDER_REGISTRY</code> declares an <code>env_var</code> field — the env var the runtime reads for that provider's key. Common ones:</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Env var</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>OpenAI</td><td><code>OPENAI_API_KEY</code></td></tr>
+<tr><td>Anthropic / Kimi Coding / Xiaomi MiMo / Synthetic</td><td><code>ANTHROPIC_API_KEY</code> / <code>MOONSHOT_API_KEY</code> / <code>XIAOMI_API_KEY</code> / <code>SYNTHETIC_API_KEY</code></td></tr>
+<tr><td>Google Gemini</td><td><code>GEMINI_API_KEY</code></td></tr>
+<tr><td>DeepSeek</td><td><code>DEEPSEEK_API_KEY</code></td></tr>
+<tr><td>OpenRouter</td><td><code>OPENROUTER_API_KEY</code></td></tr>
+<tr><td>Together AI</td><td><code>TOGETHERAI_API_KEY</code></td></tr>
+<tr><td>Moonshot AI</td><td><code>MOONSHOT_API_KEY</code></td></tr>
+<tr><td>Mistral AI</td><td><code>MISTRAL_API_KEY</code></td></tr>
+<tr><td>xAI (Grok)</td><td><code>XAI_API_KEY</code></td></tr>
+<tr><td>NVIDIA NIM</td><td><code>NVIDIA_NIM_API_KEY</code></td></tr>
+<tr><td>Hugging Face</td><td><code>HF_TOKEN</code></td></tr>
+<tr><td>Baidu Qianfan / Alibaba ModelStudio / Volcengine / BytePlus / Venice / MiniMax</td><td><code>QIANFAN_API_KEY</code> / <code>DASHSCOPE_API_KEY</code> / <code>ARK_API_KEY</code> / <code>BYTEPLUS_API_KEY</code> / <code>VENICE_API_KEY</code> / <code>MINIMAX_API_KEY</code></td></tr>
+<tr><td>vLLM / SGLang (self-hosted)</td><td><code>VLLM_API_KEY</code> / <code>SGLANG_API_KEY</code></td></tr>
+<tr><td>Ollama (local server)</td><td>— (no key needed; <code>env_var=""</code>)</td></tr>
+<tr><td>Custom</td><td><code>AGENTCANVAS_API_KEY</code> (the only catch-all)</td></tr>
+</tbody>
+</table>
+<p>Full mapping in <code>providers.py · PROVIDER_REGISTRY</code>. To see what's set on a given machine: <code>python -m agentcanvas.backend.app config env</code>.</p>
+<h3 id="62-envexample"><span class="num">6.2</span> Configuring a Provider</h3>
+<p>One-liner for a typical setup:</p>
+<pre class="hl"><span class="c1"># 1. Create the profile (no key, just metadata)</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span><span class="nb">set</span><span class="w"> </span>openai<span class="w"> </span>--provider<span class="w"> </span>openai<span class="w"> </span>--model<span class="w"> </span>gpt-4o
+
+<span class="c1"># 2. Export the key in your shell (e.g. ~/.bashrc)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span>sk-...
+
+<span class="c1"># 3. Activate the profile</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span>activate<span class="w"> </span>openai
+</pre>
+<p><strong>Note:</strong> <code>agentcanvas/backend/.env.example</code> in the repo still shows the legacy <code>AGENTCANVAS_API_KEY/MODEL/BASE_URL/API_TYPE</code> and <code>VLM_*</code> envs. Those <em>credential/model</em> names are dead — never read by <code>call.py</code> — so use the per-provider names above instead. (Two unrelated <code>AGENTCANVAS_*</code> vars <em>are</em> still live and are <strong>not</strong> credentials: <code>AGENTCANVAS_STRICT_ERRORS</code> (§11.5) and <code>AGENTCANVAS_PROFILES_FILE</code> (profile-store path override). File is queued for cleanup.)</p>
+<h3 id="63-mock-mode"><span class="num">6.3</span> Mock Mode</h3>
+<p><code>get_llm_config()</code> returns <code>None</code> whenever it can't resolve a usable config: no active profile, profile name unknown, or the provider's env var is unset (Ollama excepted). Calling nodes treat <code>None</code> as a mock — they emit a placeholder string and continue, so a graph won't crash for missing keys; it will just produce mock outputs visibly in the canvas.</p>
+<h2 id="7-cli-tool"><span class="num">7.</span> CLI Tool</h2>
+<p>A standalone CLI for profile management that works <strong>without the FastAPI server running</strong>. Changes are picked up by the running server via mtime invalidation.</p>
+<h3 id="71-commands"><span class="num">7.1</span> Commands</h3>
+<p>8 commands total. All accept <code>--json</code> for machine-readable output; <code>show</code> and <code>env</code> also accept <code>--show-keys</code> to unmask values pulled from env vars.</p>
+<pre class="hl"><span class="c1"># Entry point (two forms, both work)</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app.cli<span class="w"> </span>config<span class="w"> </span>&lt;command&gt;
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span>&lt;command&gt;
+
+<span class="c1"># List all profiles</span>
+config<span class="w"> </span>list<span class="w"> </span><span class="o">[</span>--json<span class="o">]</span>
+
+<span class="c1"># Show a single profile (resolved against env)</span>
+config<span class="w"> </span>show<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--show-keys<span class="o">]</span><span class="w"> </span><span class="o">[</span>--json<span class="o">]</span>
+
+<span class="c1"># Create or update a profile (metadata only — no --api-key flag)</span>
+config<span class="w"> </span><span class="nb">set</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--provider<span class="w"> </span>&lt;id&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--model<span class="w"> </span>&lt;model&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--base-url<span class="w"> </span>&lt;url&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--api-type<span class="w"> </span>&lt;type&gt;<span class="o">]</span>
+<span class="c1"># On create, prints: &quot;Set the API key via env: export OPENAI_API_KEY=&lt;your-key&gt;&quot;</span>
+
+<span class="c1"># Delete a profile</span>
+config<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;
+
+<span class="c1"># Set the active (default) profile; omit name to clear</span>
+config<span class="w"> </span>activate<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span>
+
+<span class="c1"># Test API key connectivity (reads key from env var, calls litellm validate)</span>
+config<span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span>
+
+<span class="c1"># List all 24 supported providers (with their env_var names)</span>
+config<span class="w"> </span>providers<span class="w"> </span><span class="o">[</span>--json<span class="o">]</span>
+
+<span class="c1"># Show which provider env vars are set on this machine + active profile</span>
+config<span class="w"> </span>env<span class="w"> </span><span class="o">[</span>--show-keys<span class="o">]</span><span class="w"> </span><span class="o">[</span>--json<span class="o">]</span>
+</pre>
+<p>API-key entry is intentionally <strong>not</strong> a CLI step (no <code>--api-key</code> flag, no <code>getpass</code> prompt). The key is read from the provider's env var (<code>OPENAI_API_KEY</code>, …) at call time — set it in your shell profile or via your secret manager, then run any command above. ADR-platform-006 keeps the CLI write path entirely free of secrets.</p>
+<h3 id="72-example-workflow"><span class="num">7.2</span> Example Workflow</h3>
+<pre class="hl"><span class="c1"># 1. Export keys in your shell (~/.bashrc / ~/.zshrc / .envrc)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span>sk-...
+<span class="nb">export</span><span class="w"> </span><span class="nv">ANTHROPIC_API_KEY</span><span class="o">=</span>sk-ant-...
+
+<span class="c1"># 2. Create profile metadata (one per provider/model pair you want to pick from)</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span><span class="nb">set</span><span class="w"> </span>openai<span class="w"> </span>--provider<span class="w"> </span>openai<span class="w"> </span>--model<span class="w"> </span>gpt-4o
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span><span class="nb">set</span><span class="w"> </span>anthropic<span class="w"> </span>--provider<span class="w"> </span>anthropic<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ollama<span class="w"> </span>--provider<span class="w"> </span>ollama<span class="w"> </span>--model<span class="w"> </span>llama3.2
+
+<span class="c1"># 3. Activate OpenAI as default for nodes that don&#39;t specify a profile</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span>activate<span class="w"> </span>openai
+
+<span class="c1"># 4. Verify the key actually works (round-trips to the provider)</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span><span class="nb">test</span>
+
+<span class="c1"># 5. Sanity check which env vars are picked up</span>
+python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<span class="w"> </span>config<span class="w"> </span>env
+</pre>
+<p>Source: <code>app/llm/cli.py</code></p>
+<h2 id="8-rest-api"><span class="num">8.</span> REST API</h2>
+<p>Profile management is exposed via FastAPI endpoints under <code>/api/profiles</code>.</p>
+<h3 id="81-endpoints"><span class="num">8.1</span> Endpoints</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/profiles/</code></td>
+<td>List all profiles + active + provider registry</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/profiles/</code></td>
+<td>Create a new profile</td>
+</tr>
+<tr>
+<td><code>PUT</code></td>
+<td><code>/api/profiles/{name}</code></td>
+<td>Update an existing profile</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/profiles/{name}</code></td>
+<td>Delete a profile</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/profiles/activate</code></td>
+<td>Set the active profile</td>
+</tr>
+<tr>
+<td><code>PUT</code></td>
+<td><code>/api/profiles/batch</code></td>
+<td>Batch upsert (used by frontend Settings Modal)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/profiles/{name}/models</code></td>
+<td>Fetch the provider's available models (calls the provider API)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82-batch-upsert"><span class="num">8.2</span> Batch Upsert</h3>
+<p>The frontend sends a single <code>PUT /api/profiles/batch</code> call with all changes:</p>
+<pre class="hl"><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;openai&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sk-...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;anthropic&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sk-ant-...&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;active_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4o&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;overrides&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;ollama&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://localhost:11434&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llama3.2&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;custom&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://my-api.com/v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;my-model&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;api_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre>
+<p><strong><code>keys</code> is accepted but ignored</strong> (kept in the request shape only for backward compat with older frontends — see <code>BatchUpsertBody</code> docstring in <code>api/profiles.py · BatchUpsertBody</code>). Real API keys live in env vars. The endpoint <em>does</em> create empty profile metadata for each provider listed in <code>keys</code> so the UI's per-provider config slot exists, applies <code>overrides</code> to base_url/model/api_type, and sets the active profile — all atomically.</p>
+<h3 id="83-security"><span class="num">8.3</span> Security</h3>
+<ul>
+<li>API keys are <strong>never in <code>profiles.json</code></strong> — they live in per-provider env vars (ADR-platform-006). GET responses expose only <code>api_key_set: true/false</code>, derived from <code>os.environ[env_var]</code> presence at request time</li>
+<li><code>profiles.json</code> is written with default umask permissions and is git-safe</li>
+<li>Frontend Settings Modal still <em>renders</em> a key input field (for legacy frontends), but the value is dropped server-side; the right place to set keys is the shell env, not the modal</li>
+</ul>
+<p>Source: <code>app/api/platform/profiles.py</code></p>
+<h2 id="9-per-node-model-selection"><span class="num">9.</span> Per-Node Model Selection</h2>
+<p>Individual canvas nodes can override the default profile. <code>LLMCallNode</code> is the only node that carries a <code>profile</code> config field (<code>builtin_nodes.py · LLMCallNode</code>):</p>
+<pre class="hl">
+<span class="n">ConfigField</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">profile</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">select</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Model</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="n">options</span><span class="o">=</span><span class="p">[</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">__DYNAMIC_PROFILES__</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">label</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">}</span><span class="p">]</span><span class="p">)</span>
+</pre>
+<p>The <code>__DYNAMIC_PROFILES__</code> sentinel in <code>options</code> is the load-bearing part: the frontend swaps it for the live list of configured profiles when it renders the dropdown. There is no static option list and no <code>description</code> kwarg.</p>
+<p>At execution time:</p>
+<pre class="hl"><span class="n">profile_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;profile&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
+<span class="n">llm_config</span> <span class="o">=</span> <span class="n">get_llm_config</span><span class="p">(</span><span class="n">profile_name</span><span class="p">)</span>
+<span class="c1"># &quot;&quot; → active profile → env fallback → None (mock)</span>
+<span class="c1"># &quot;anthropic&quot; → that specific profile</span>
+</pre>
+<p>This enables mixed-model graphs: one node reasons with GPT-4o, another captions with Claude, a third does cheap inference with local Ollama.</p>
+<p>The frontend renders this as a dropdown in the node's config panel. The dropdown is populated from the list of configured profiles (providers with saved keys + Ollama). A <code>profiles-changed</code> window event refreshes the dropdown when settings are saved.</p>
+<p>Source: <code>app/agent_loop/builtin_nodes.py</code> (search for <code>profile</code> ConfigField). The legacy <code>app/agent_loop/graph_executor.py</code> referenced in older docs has been removed; node handlers live in <code>builtin_nodes.py</code> and the executor in <code>graph_executor.py</code>.</p>
+<h2 id="10-frontend-settings-modal"><span class="num">10.</span> Frontend Settings Modal</h2>
+<p><code>SettingsModal.tsx</code> provides the GUI configuration surface.</p>
+<h3 id="101-layout"><span class="num">10.1</span> Layout</h3>
+<svg class="rxsvg" viewBox="0 0 440 300" style="max-width:440px" role="img" aria-label="Settings modal layout. A title bar, then three stacked sections: Configured Models (star marks the default, each has a per-model override field), API Keys (5 top providers shown with a 'more providers' expander, plus a Custom Provider sub-form for key, base URL, model, and API type), and App Settings (max steps, SLAM). A footer has Cancel and Save buttons.">
+  <rect class="box" x="20" y="8" width="400" height="284" rx="10"/>
+  <text class="at" x="40" y="33">Settings</text>
+  <text class="dim" x="400" y="33" text-anchor="end">[×]</text>
+  <line x1="20" y1="46" x2="420" y2="46" stroke="var(--muted)" stroke-width="1"/>
+
+  <rect class="ghost" x="40" y="60" width="360" height="50" rx="6"/>
+  <text class="at" x="54" y="80">Configured Models</text>
+  <text class="dim" x="54" y="100">★ marks the default · each row has a per-model override field</text>
+
+  <rect class="ghost" x="40" y="122" width="360" height="74" rx="6"/>
+  <text class="at" x="54" y="142">API Keys</text>
+  <text class="dim" x="54" y="161">5 top providers (OpenAI ●●●● saved …) · ▸ 19 more</text>
+  <text class="dim" x="54" y="181">+ Custom Provider: key · base-url · model · api-type</text>
+
+  <rect class="ghost" x="40" y="208" width="360" height="44" rx="6"/>
+  <text class="at" x="54" y="228">App Settings</text>
+  <text class="dim" x="54" y="246">Max Steps · SLAM mode</text>
+
+  <line x1="20" y1="264" x2="420" y2="264" stroke="var(--muted)" stroke-width="1"/>
+  <rect class="box" x="246" y="270" width="74" height="20" rx="5"/>
+  <text class="dim" x="283" y="284" text-anchor="middle">Cancel</text>
+  <rect class="accent" x="330" y="270" width="74" height="20" rx="5"/>
+  <text class="at" x="367" y="284" text-anchor="middle">💾 Save</text>
+</svg>
+<h3 id="102-behavior"><span class="num">10.2</span> Behavior</h3>
+<ul>
+<li><strong>Top 5 providers</strong> always visible: OpenAI, Anthropic, Google, DeepSeek, Ollama</li>
+<li><strong>More providers</strong> collapsible section with 19 additional providers</li>
+<li><strong>Custom provider</strong> section for arbitrary endpoints</li>
+<li><strong>Star button</strong> sets the default model (active profile)</li>
+<li><strong>Per-provider model override</strong> inline text field next to each configured model</li>
+<li>On save: <code>PUT /api/profiles/batch</code> with all changes, then <code>window.dispatchEvent(new Event('profiles-changed'))</code> to refresh node dropdowns</li>
+</ul>
+<p>Source: <code>agentcanvas/frontend/src/components/SettingsModal.tsx</code></p>
+<h2 id="11-api-call-protocols"><span class="num">11.</span> API Call Protocols</h2>
+<p><code>app/llm/call.py</code> uses <code>litellm.acompletion</code> (no individual provider SDKs). Both text-only (<code>llm_complete</code>) and multimodal (<code>vlm_complete</code>) variants are supported, each with a multi-sample <code>*_n</code> counterpart (<code>llm_complete_n</code> / <code>vlm_complete_n</code>) for the OpenAI <code>n</code> parameter. litellm translates the unified OpenAI-format message structure to provider-native wire formats internally.</p>
+<h3 id="111-protocol-dispatch"><span class="num">11.1</span> Protocol Dispatch</h3>
+<p><code>api_type</code> (from <code>LLMConfig</code>) selects the litellm model prefix via <code>API_TYPE_TO_LITELLM_PREFIX</code>:</p>
+<table>
+<thead>
+<tr>
+<th><code>api_type</code></th>
+<th>litellm prefix</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>openai</code></td>
+<td><code>openai</code></td>
+<td><code>openai/gpt-4o</code>, <code>openai/gpt-4.1</code></td>
+</tr>
+<tr>
+<td><code>anthropic</code></td>
+<td><code>anthropic</code></td>
+<td><code>anthropic/claude-sonnet-4-6</code></td>
+</tr>
+<tr>
+<td><code>google</code></td>
+<td><code>gemini</code></td>
+<td><code>gemini/gemini-2.5-flash</code></td>
+</tr>
+<tr>
+<td><code>ollama</code></td>
+<td><code>ollama_chat</code></td>
+<td><code>ollama_chat/llama3.2</code></td>
+</tr>
+</tbody>
+</table>
+<p>The litellm model string is built as <code>{prefix}/{model}</code> and passed to <code>litellm.acompletion()</code>. litellm handles auth headers, endpoint routing, and protocol translation.</p>
+<h3 id="112-image-handling-vlm_complete"><span class="num">11.2</span> Image Handling (vlm_complete)</h3>
+<p><code>vlm_complete</code> takes a list of base64-encoded PNG/JPEG strings and builds an OpenAI-format multimodal content array (<code>image_url</code> blocks). litellm translates these to provider-native formats (Anthropic <code>source.type:base64</code>, Google <code>inline_data</code>, Ollama <code>images</code> array) automatically.</p>
+<p>An optional <code>image_labels</code> list can interleave per-image text captions before each image (used by MapGPT's <code>gpt_infer</code> interleave shape).</p>
+<p>An optional <code>detail</code> argument (<code>"low"</code> / <code>"high"</code> / <code>"auto"</code>, default <code>"low"</code>) is forwarded into each <code>image_url</code> block as OpenAI's resolution hint: <code>"low"</code> caps every image at a single 512px tile (token-cheap), <code>"high"</code> enables multi-tile high-resolution analysis for fine spatial grounding. <code>vlm_complete_n</code> threads the same hint to every candidate. The builtin <code>llmCall</code> node surfaces this as a second config field — <code>image_detail</code> (<code>select</code>: <code>low</code> / <code>high</code> / <code>auto</code>, default <code>low</code>, <code>builtin_nodes.py · LLMCallNode</code>) — so a node whose vision task needs fine grounding (e.g. a viewpoint-picking navigator) can be set to <code>high</code> without touching code.</p>
+<p>If <code>images</code> is empty, <code>vlm_complete</code> falls back to <code>llm_complete</code> (text-only path).</p>
+<p><strong>Multi-sampling.</strong> <code>vlm_complete_n(..., n)</code> returns up to <code>n</code> candidate completions — the vision counterpart to <code>llm_complete_n</code>, used for self-consistency / multi-candidate planning. It first attempts provider-native <code>n</code> (the image prompt is then billed once for all samples); providers that ignore <code>n</code> for vision requests — notably Anthropic — collapse the response to a single choice, which is detected and the shortfall is filled with concurrent single-sample <code>vlm_complete</code> calls. The builtin <code>llmCall</code> node routes its image path through <code>vlm_complete_n</code> whenever <code>config.n &gt; 1</code> and exposes the candidates on the <code>responses</code> port.</p>
+<h3 id="113-timeouts"><span class="num">11.3</span> Timeouts</h3>
+<table>
+<thead>
+<tr>
+<th>Call type</th>
+<th>Timeout</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Text-only (non-Ollama)</td>
+<td>60s</td>
+</tr>
+<tr>
+<td>Text-only (Ollama)</td>
+<td>120s</td>
+</tr>
+<tr>
+<td>Multimodal (non-Ollama)</td>
+<td>90s</td>
+</tr>
+<tr>
+<td>Multimodal (Ollama)</td>
+<td>120s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="114-public-api"><span class="num">11.4</span> Public API</h3>
+<pre class="hl"><span class="kn">from</span><span class="w"> </span><span class="nn">app.llm</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_llm_config</span><span class="p">,</span> <span class="n">llm_complete</span><span class="p">,</span> <span class="n">vlm_complete</span>
+
+<span class="n">config</span> <span class="o">=</span> <span class="n">get_llm_config</span><span class="p">(</span><span class="s2">&quot;openai&quot;</span><span class="p">)</span>  <span class="c1"># or &quot;&quot; for active profile</span>
+
+<span class="c1"># Text-only</span>
+<span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">llm_complete</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">messages</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="p">,</span> <span class="n">max_tokens</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
+
+<span class="c1"># Multimodal (text + list of base64 images, optional per-image labels)</span>
+<span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">vlm_complete</span><span class="p">(</span>
+    <span class="n">config</span><span class="p">,</span>
+    <span class="n">prompt</span><span class="o">=</span><span class="s2">&quot;Describe these images&quot;</span><span class="p">,</span>
+    <span class="n">images</span><span class="o">=</span><span class="p">[</span><span class="n">base64_png_1</span><span class="p">,</span> <span class="n">base64_png_2</span><span class="p">],</span>
+    <span class="n">image_labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Front view&quot;</span><span class="p">,</span> <span class="s2">&quot;Side view&quot;</span><span class="p">],</span>  <span class="c1"># optional</span>
+<span class="p">)</span>
+</pre>
+<p><strong>Temperature defaults are asymmetric and unstated at the call site.</strong> <code>llm_complete</code> / <code>llm_complete_n</code> default <code>temperature=0.7</code>; <code>vlm_complete</code> / <code>vlm_complete_n</code> default <code>temperature=0.3</code> (vision is run cooler). <code>max_tokens</code> has no default — pass it explicitly. Both are forwarded verbatim to <code>litellm.acompletion</code> with no per-model adjustment (see §11.5).</p>
+<p>Source: <code>app/llm/call.py</code></p>
+<h3 id="115-strict-errors-and-the-gpt-5-sharp-edge"><span class="num">11.5</span> Strict errors &amp; the gpt-5 sharp edge</h3>
+<p>By default every helper <strong>degrades gracefully</strong>: a litellm exception, timeout, or unparseable response makes <code>llm_complete</code> return <code>None</code> and the <code>*_n</code> variants return <code>[]</code>, so a misconfigured node renders a placeholder rather than crashing the run. Setting the env var <code>AGENTCANVAS_STRICT_ERRORS</code> (to <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>, read <strong>fresh on every call</strong> via <code>call.py · _strict_errors_enabled</code> — deliberately uncached, so env-worker subprocesses inherit the backend's launch-time setting) flips this: every helper <strong>re-raises</strong> instead. Eval and smoke runs set it so a silent empty response can't masquerade as a completed episode.</p>
+<div class="callout warn">
+<p><strong>Sharp edge — no gpt-5 / reasoning-model special-casing exists.</strong> <code>call.py</code> sends <code>temperature</code> unconditionally (default <code>0.7</code>). OpenAI reasoning models (the <code>gpt-5</code> family) reject any <code>temperature</code> other than <code>1.0</code> and return an empty / errored response. The shipped <code>profiles.json</code> currently ships <code>active: "gpt-5-nano"</code> — so out of the box, a default <code>llmCall</code> hits this and silently produces nothing (or raises under strict errors). Until the code grows a reasoning-model branch, the workaround is to either point the active profile at a non-reasoning model (<code>gpt-4o</code>, <code>gpt-4.1</code>) or override the model on the node. Tracked alongside memory <code>project_gpt5_llmcall_params</code>.</p>
+</div>
+<h2 id="12-per-node-usage-hook"><span class="num">12.</span> Per-Node Usage Hook (ADR-observability-005)</h2>
+<p>Token usage and dollar cost are tracked <strong>per node firing</strong>, not per nodeset and not globally. Nodesets never need to plumb usage manually — the wiring is one ContextVar in <code>call.py</code> and one <code>set</code>/<code>reset</code> pair around <code>forward()</code> in the executor.</p>
+<pre class="hl"><span class="c1"># call.py · _current_node_usage</span>
+<span class="n">_current_node_usage</span><span class="p">:</span> <span class="n">contextvars</span><span class="o">.</span><span class="n">ContextVar</span><span class="p">[</span><span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="n">contextvars</span><span class="o">.</span><span class="n">ContextVar</span><span class="p">(</span>
+    <span class="s2">&quot;_current_node_usage&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="kc">None</span>
+<span class="p">)</span>
+
+<span class="c1"># Every llm_complete / llm_complete_n / vlm_complete call inside a forward()</span>
+<span class="c1"># adds its response usage into this bucket via _accumulate_usage():</span>
+<span class="c1">#   bucket[&quot;calls&quot;]              += 1</span>
+<span class="c1">#   bucket[&quot;prompt_tokens&quot;]      += response.usage.prompt_tokens</span>
+<span class="c1">#   bucket[&quot;completion_tokens&quot;]  += response.usage.completion_tokens</span>
+<span class="c1">#   bucket[&quot;total_tokens&quot;]       += response.usage.total_tokens</span>
+<span class="c1">#   bucket[&quot;cached_tokens&quot;]      += response.usage.prompt_tokens_details.cached_tokens</span>
+<span class="c1">#   bucket[&quot;usd_cost&quot;]           += litellm.completion_cost(response)</span>
+<span class="c1">#   bucket[&quot;model&quot;]               = first non-empty response.model</span>
+</pre>
+<pre class="hl"><span class="c1"># graph_executor.py · _fire_node</span>
+<span class="n">usage_bucket</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="n">usage_token</span> <span class="o">=</span> <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">usage_bucket</span><span class="p">)</span>
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">node</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span>
+<span class="k">finally</span><span class="p">:</span>
+    <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">usage_token</span><span class="p">)</span>
+<span class="c1"># bucket now holds aggregate usage for this firing; executor emits one</span>
+<span class="c1"># log entry per node with the bucket attached.</span>
+</pre>
+<p>Properties of this design:</p>
+<ul>
+<li><strong>Voluntary, not invasive</strong> — nodes that don't call <code>llm_complete</code> get an empty bucket; nodes that call N times get one aggregated entry, not N events</li>
+<li><strong>Per firing, not per node lifetime</strong> — multi-scope graphs and iterated nodes accumulate per call site, exactly what you want for cost reports</li>
+<li><strong>Works inside subprocesses</strong> — ContextVars propagate into asyncio tasks; the bucket survives any internal <code>await</code> chain. Server-mode nodesets (AutoServerApp) capture usage in the subprocess and surface it on the response, so the framework can still attribute it to the proxy node</li>
+<li><strong>Cost may be zero</strong> for models litellm doesn't recognise (local Ollama, custom vLLM endpoints) — usage tokens still counted, <code>usd_cost</code> stays 0.0</li>
+</ul>
+<p>Source: <code>call.py · _current_node_usage</code> + <code>call.py · _accumulate_usage</code> (bucket + accumulator), <code>graph_executor.py · _fire_node</code> (set/reset around <code>forward()</code>), <code>call.py · _extract_usage</code> (response → usage dict).</p>
+<h2 id="13-key-files"><span class="num">13.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>app/llm/call.py</code></td>
+<td><code>LLMConfig</code>, <code>get_llm_config()</code>, <code>llm_complete()</code>/<code>vlm_complete()</code> + <code>_n</code> multi-sample variants, <code>_current_node_usage</code> ContextVar, litellm dispatch</td>
+</tr>
+<tr>
+<td><code>app/llm/providers.py</code></td>
+<td><code>PROVIDER_REGISTRY</code> (24 providers, each with an <code>env_var</code>), <code>ProviderDef</code>, <code>get_provider_api_key()</code>, <code>resolve_provider_config()</code></td>
+</tr>
+<tr>
+<td><code>app/llm/profiles.py</code></td>
+<td><code>ProfileStore</code>, <code>LLMProfile</code> (no <code>api_key</code> field), <code>ProfileData</code>, mtime cache; legacy <code>api_key</code> entries dropped on load</td>
+</tr>
+<tr>
+<td><code>app/llm/cli.py</code></td>
+<td>Standalone CLI (8 commands, no server required); no <code>--api-key</code> flag (ADR-platform-006)</td>
+</tr>
+<tr>
+<td><code>app/llm/key_validator.py</code></td>
+<td>API key validation for <code>config test</code> (litellm + Ollama health check)</td>
+</tr>
+<tr>
+<td><code>app/llm/__init__.py</code></td>
+<td>Re-exports: <code>get_llm_config</code>, <code>llm_complete</code>, <code>llm_complete_n</code>, <code>vlm_complete</code>, <code>vlm_complete_n</code>, <code>LLMConfig</code>, <code>LLMProfile</code>, <code>PROVIDER_REGISTRY</code>, <code>resolve_provider_config</code>, <code>get_profile_store</code></td>
+</tr>
+<tr>
+<td><code>app/api/platform/profiles.py</code></td>
+<td>REST endpoints (<code>/api/profiles/</code>); <code>BatchUpsertBody.keys</code> accepted-but-ignored</td>
+</tr>
+<tr>
+<td><code>app/agent_loop/graph_executor.py</code></td>
+<td>Per-node usage bucket set/reset around <code>forward()</code> (<code>_fire_node</code>); emits one usage log entry per node firing (ADR-observability-005)</td>
+</tr>
+<tr>
+<td><code>frontend/src/components/SettingsModal.tsx</code></td>
+<td>GUI settings modal — calls <code>PUT /api/profiles/batch</code>; <code>keys</code> field in payload is silently ignored server-side</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/profiles.json</code></td>
+<td>Default profile store location (git-safe; override via <code>AGENTCANVAS_PROFILES_FILE</code>)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/.env.example</code></td>
+<td>Env template — the <code>AGENTCANVAS_*</code> credential / <code>VLM_*</code> envs it lists are dead; use per-provider env vars instead. (<code>AGENTCANVAS_STRICT_ERRORS</code> and <code>AGENTCANVAS_PROFILES_FILE</code> remain live, non-credential.)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-23: §11.2 — documented the <code>detail</code> image-resolution hint on <code>vlm_complete</code> / <code>vlm_complete_n</code> (<code>"low"</code> / <code>"high"</code> / <code>"auto"</code>, default <code>"low"</code>, forwarded into each <code>image_url</code> block) and the matching <code>image_detail</code> config field added to the builtin <code>llmCall</code> node. Surfaced by the Three-Step Nav port, whose navigator + judge need <code>high</code>-detail viewpoint images.</li>
+<li>2026-06-17: §11.5 — corrected <code>AGENTCANVAS_STRICT_ERRORS</code> from "read once at import" to <strong>read fresh on every call</strong> (<code>_strict_errors_enabled()</code> is deliberately uncached so env-worker subprocesses inherit the launch-time setting). Code-faithfulness pass; the 24-provider registry, the 2-stage resolution, timeouts (60/120/90/120), temperature defaults (0.7/0.3), <code>API_TYPE_TO_LITELLM_PREFIX</code>, the 8 CLI commands / 7 REST routes, and the shipped <code>active: gpt-5-nano</code> sharp edge all re-verified accurate.</li>
+<li>2026-06-13 16:20: HTML-first visual pass — the §3 resolution chain and the §10 Settings-modal mockup are now <code>&lt;svg class="rxsvg"&gt;</code> figures; all <code>&lt;div class="highlight"&gt;</code> code blocks (incl. the two ascii-art ones) became <code>&lt;pre class="hl"&gt;</code>; the §3.1 resolution call-trace is now a nested <code>&lt;ol&gt;</code>.</li>
+<li>2026-06-13 15:58: inverted-pyramid restructure to match the <code>components/</code> pages — added a <code>lede</code>, a §1 "What it is, and the one rule" (folded the old Overview + Design Principles table into prose + bullets), and a §2 "The smallest setup" (export key → <code>config set</code> → <code>config activate</code>); retitled old §2 Resolution Chain → §3 "The resolution chain at a glance". All sections from old §2 onward renumbered +1 (Per-Node Usage Hook §11 → §12, Key Files §12 → §13); in-body <code>§10.5</code> refs and the external <code>surfaces</code> deep link (<code>#11-</code> → <code>#12-per-node-usage-hook</code>) updated. The 15:23 entry below references the pre-restructure numbering.</li>
+<li>2026-06-13 15:23: code-alignment audit — removed all <code>NavGPTReasonNode</code> mentions (the node does not exist; <code>LLMCallNode</code> is the sole profile-bearing node); corrected the §8 <code>profile</code> ConfigField to its real signature (<code>__DYNAMIC_PROFILES__</code> options sentinel, no <code>description</code>); added §10.5 documenting <code>AGENTCANVAS_STRICT_ERRORS</code> and the gpt-5 / reasoning-model sharp edge (no special-casing in code; shipped <code>active: gpt-5-nano</code> + unconditional <code>temperature=0.7</code> silently fails); noted the asymmetric temperature defaults (text 0.7 / vision 0.3); tightened the <code>.env.example</code> staleness wording (credential <code>AGENTCANVAS_*</code> dead, but <code>STRICT_ERRORS</code> / <code>PROFILES_FILE</code> still live); fixed usage-hook line cites (<code>call.py:47, 52-65, 149-189</code>; <code>graph_executor.py:1062-1083</code>) and an <code>execute()</code>→<code>forward()</code> slip.</li>
+<li>2026-05-22 22:46: §10 — documented multi-sample <code>*_n</code> call variants; added <code>vlm_complete_n</code> to §10.2 (provider-native <code>n</code> with concurrent single-sample fallback for vision providers that ignore <code>n</code>, e.g. Anthropic); updated <code>call.py</code> + <code>__init__.py</code> rows in Key Files to list the multi-sample variants.</li>
+<li>2026-05-18: ADR-platform-006 sync — removed <code>api_key</code> from <code>LLMProfile</code> + file format; replaced 4-stage resolution chain (Profile → <code>AGENTCANVAS_*</code> → <code>VLM_*</code> → registry) with 2-stage env-var-lookup; rewrote §5 around per-provider env vars (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, …); fixed default store path (<code>agentcanvas/backend/profiles.json</code>, was <code>~/.agentcanvas/profiles.json</code>); dropped <code>chmod 0o600</code> claim; updated <code>config set</code> CLI (no <code>--api-key</code> flag) and example workflow; clarified <code>BatchUpsertBody.keys</code> accepted-but-ignored; added <code>GET /{name}/models</code>; added new §11 Per-Node Usage Hook (ADR-observability-005 — <code>_current_node_usage</code> ContextVar, executor set/reset, accumulator semantics); renumbered Key Files to §12 with updated descriptions; fixed §8 source path (<code>graph_executor.py</code> → <code>builtin_nodes.py</code>); flagged <code>.env.example</code> staleness as a follow-up.</li>
+<li>2026-04-20: Audit against codebase -- corrected backend from raw-httpx to litellm; added <code>litellm_prefix</code> to <code>LLMConfig</code> and <code>ProviderDef</code>; fixed all file paths to <code>app/llm/</code> subpackage; added missing <code>config env</code> CLI command (8th command); fixed MiniMax protocol (OpenAI, not Anthropic); added <code>image_labels</code> param to <code>vlm_complete</code> public API example; updated section 10 to reflect litellm dispatch and unified image format</li>
+<li>2026-04-07 15:00: Initial document -- full system description covering resolution chain, provider registry, profile store, CLI, REST API, per-node selection, frontend, and 4 API protocols</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What it is, and the one rule</a>
+      <a class="toc-h2" href="#2-smallest-setup">2. The smallest setup</a>
+      <a class="toc-h2" href="#3-resolution-chain">3. The resolution chain at a glance</a>
+      <a class="toc-h3" href="#31-resolution-code-path">3.1 Resolution Code Path</a>
+      <a class="toc-h2" href="#4-provider-registry">4. Provider Registry</a>
+      <a class="toc-h3" href="#41-supported-providers">4.1 Supported Providers</a>
+      <a class="toc-h3" href="#42-registry-entry-structure">4.2 Registry Entry Structure</a>
+      <a class="toc-h2" href="#5-profile-store">5. Profile Store</a>
+      <a class="toc-h3" href="#51-file-format">5.1 File Format</a>
+      <a class="toc-h3" href="#52-cache-invalidation">5.2 Cache Invalidation</a>
+      <a class="toc-h3" href="#53-profile-data-model">5.3 Profile Data Model</a>
+      <a class="toc-h2" href="#6-environment-variables">6. Environment Variables</a>
+      <a class="toc-h3" href="#61-variable-names">6.1 Per-Provider Env Vars</a>
+      <a class="toc-h3" href="#62-envexample">6.2 Configuring a Provider</a>
+      <a class="toc-h3" href="#63-mock-mode">6.3 Mock Mode</a>
+      <a class="toc-h2" href="#7-cli-tool">7. CLI Tool</a>
+      <a class="toc-h3" href="#71-commands">7.1 Commands</a>
+      <a class="toc-h3" href="#72-example-workflow">7.2 Example Workflow</a>
+      <a class="toc-h2" href="#8-rest-api">8. REST API</a>
+      <a class="toc-h3" href="#81-endpoints">8.1 Endpoints</a>
+      <a class="toc-h3" href="#82-batch-upsert">8.2 Batch Upsert</a>
+      <a class="toc-h3" href="#83-security">8.3 Security</a>
+      <a class="toc-h2" href="#9-per-node-model-selection">9. Per-Node Model Selection</a>
+      <a class="toc-h2" href="#10-frontend-settings-modal">10. Frontend Settings Modal</a>
+      <a class="toc-h3" href="#101-layout">10.1 Layout</a>
+      <a class="toc-h3" href="#102-behavior">10.2 Behavior</a>
+      <a class="toc-h2" href="#11-api-call-protocols">11. API Call Protocols</a>
+      <a class="toc-h3" href="#111-protocol-dispatch">11.1 Protocol Dispatch</a>
+      <a class="toc-h3" href="#112-image-handling-vlm_complete">11.2 Image Handling (vlm_complete)</a>
+      <a class="toc-h3" href="#113-timeouts">11.3 Timeouts</a>
+      <a class="toc-h3" href="#114-public-api">11.4 Public API</a>
+      <a class="toc-h3" href="#115-strict-errors-and-the-gpt-5-sharp-edge">11.5 Strict errors &amp; the gpt-5 sharp edge</a>
+      <a class="toc-h2" href="#12-per-node-usage-hook">12. Per-Node Usage Hook (ADR-observability-005)</a>
+      <a class="toc-h2" href="#13-key-files">13. Key Files</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

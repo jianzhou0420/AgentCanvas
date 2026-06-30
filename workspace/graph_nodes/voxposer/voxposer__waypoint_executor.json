@@ -1,0 +1,245 @@
+{
+  "kind": "node",
+  "name": "VoxPoser: Waypoint Executor",
+  "description": "Per-waypoint execution loop for VoxPoser-class agents. Cursor over a cached trajectory; for each waypoint convert→step_pose→check; terminates when trajectory is exhausted OR episode_success (read from step_pose's gym control signals). Inner three-pivot is wrapped in a composite — drag onto the canvas as ONE node, double-click to inspect. graphIn=trajectory; graphOuts={episode_success, step_index, waypoints_completed, inner_status}.",
+  "group": "voxposer",
+  "nodes": [
+    {
+      "id": "graph_in__trajectory",
+      "type": "graphIn",
+      "label": "trajectory (in)",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {
+        "portName": "trajectory",
+        "wireType": "ANY"
+      }
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iter In",
+      "position": {
+        "x": 220,
+        "y": 160
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "step_budget": 80,
+        "terminationCondition": "done",
+        "initPorts": [
+          {
+            "name": "trajectory",
+            "wire_type": "LIST[ANY]",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "dispense_waypoint",
+      "type": "voxposer__dispense_waypoint",
+      "label": "Dispense Waypoint",
+      "position": {
+        "x": 500,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "vp_plan_executor",
+      "type": "voxposer__plan_executor",
+      "label": "Plan Executor",
+      "position": {
+        "x": 780,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "step_pose",
+      "type": "env_libero__step_pose",
+      "label": "Step (pose)",
+      "position": {
+        "x": 1060,
+        "y": 160
+      },
+      "config": {
+        "max_steps": 200,
+        "pos_tol_m": 0.005,
+        "rot_tol_rad": 0.1
+      }
+    },
+    {
+      "id": "check_waypoint_done",
+      "type": "voxposer__check_waypoint_done",
+      "label": "Check Done",
+      "position": {
+        "x": 1620,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iter Out",
+      "position": {
+        "x": 1900,
+        "y": 280
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "tick",
+            "wire_type": "ANY",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "graph_out__episode_success",
+      "type": "graphOut",
+      "label": "episode_success (out)",
+      "position": {
+        "x": 2200,
+        "y": 0
+      },
+      "config": {
+        "portName": "episode_success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "graph_out__step_index",
+      "type": "graphOut",
+      "label": "step_index (out)",
+      "position": {
+        "x": 2200,
+        "y": 80
+      },
+      "config": {
+        "portName": "step_index",
+        "wireType": "ANY"
+      }
+    },
+    {
+      "id": "graph_out__waypoints_completed",
+      "type": "graphOut",
+      "label": "waypoints_completed (out)",
+      "position": {
+        "x": 2200,
+        "y": 160
+      },
+      "config": {
+        "portName": "waypoints_completed",
+        "wireType": "ANY"
+      }
+    },
+    {
+      "id": "graph_out__inner_status",
+      "type": "graphOut",
+      "label": "inner_status (out)",
+      "position": {
+        "x": 2200,
+        "y": 240
+      },
+      "config": {
+        "portName": "inner_status",
+        "wireType": "TEXT"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_graphin_to_init",
+      "source": "graph_in__trajectory",
+      "target": "iter_in",
+      "sourceHandle": "value",
+      "targetHandle": "init_trajectory"
+    },
+    {
+      "id": "e_iterin_traj_to_dispense",
+      "source": "iter_in",
+      "target": "dispense_waypoint",
+      "sourceHandle": "init_trajectory",
+      "targetHandle": "trajectory"
+    },
+    {
+      "id": "e_dispense_to_executor",
+      "source": "dispense_waypoint",
+      "target": "vp_plan_executor",
+      "sourceHandle": "waypoint",
+      "targetHandle": "waypoint"
+    },
+    {
+      "id": "e_executor_to_move",
+      "source": "vp_plan_executor",
+      "target": "step_pose",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_dispense_done_to_check",
+      "source": "dispense_waypoint",
+      "target": "check_waypoint_done",
+      "sourceHandle": "done",
+      "targetHandle": "cursor_done"
+    },
+    {
+      "id": "e_epinfo_succ_to_check",
+      "source": "step_pose",
+      "target": "check_waypoint_done",
+      "sourceHandle": "success",
+      "targetHandle": "episode_success"
+    },
+    {
+      "id": "e_check_to_term__stop",
+      "source": "check_waypoint_done",
+      "target": "iter_out",
+      "sourceHandle": "done",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_check_to_iterout",
+      "source": "check_waypoint_done",
+      "target": "iter_out",
+      "sourceHandle": "done",
+      "targetHandle": "tick"
+    },
+    {
+      "id": "e_episucc_to_portout",
+      "source": "step_pose",
+      "target": "graph_out__episode_success",
+      "sourceHandle": "success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_epstep_to_portout",
+      "source": "step_pose",
+      "target": "graph_out__step_index",
+      "sourceHandle": "step_index",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_dispense_to_portout",
+      "source": "dispense_waypoint",
+      "target": "graph_out__waypoints_completed",
+      "sourceHandle": "cursor",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_check_reason_to_portout",
+      "source": "check_waypoint_done",
+      "target": "graph_out__inner_status",
+      "sourceHandle": "reason",
+      "targetHandle": "value"
+    }
+  ]
+}

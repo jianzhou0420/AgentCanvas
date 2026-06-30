@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-eval-001 — AgentCanvas</title>
+<meta name="description" content="Eval page redesign — graph-driven batch evaluation via LoopRunner">
+<meta property="og:title" content="ADR-eval-001 — AgentCanvas">
+<meta property="og:description" content="Eval page redesign — graph-driven batch evaluation via LoopRunner">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Eval</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-eval-001</span>
+  </div>
+  <div class="last-updated">2026-04-07</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-eval);">ADR-eval-001</h1>
+  <p class="tagline">Eval page redesign — graph-driven batch evaluation via LoopRunner</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-07</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>eval</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-021</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>The eval page had its own execution pipeline (<code>eval_orchestrator.py</code> with <code>VLNCERunner</code> in a background thread), separate from the canvas execution system. It only supported neural policy checkpoints, had no graph support, no output viewers, no run history, and used <code>os.chdir()</code> to resolve VLN-CE paths. Any improvement to the canvas execution engine (state containers, hooks, parallel nodes) had to be separately ported to eval.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) Replace the standalone eval pipeline with a <strong>BatchEvalOrchestrator</strong> that wraps <code>LoopRunner</code> + <code>GraphExecutor</code> — the same engine the canvas uses. Each episode gets a <strong>fresh LoopRunner instance</strong> for clean state. (2) Add <strong>ExecutionPrinciples</strong> dataclass to configure batch mode (no_pause, suppress_nav_events, source_tag) without changing LoopRunner's default canvas behavior. (3) Add <strong>ExecutionGuard</strong> with <code>ExecutionMode</code> enum — exclusive lock preventing canvas and eval from running simultaneously (HTTP 409). (4) Add <strong>env metadata interface</strong> (<code>BaseNodeSet.get_eval_metadata()</code>) so env nodesets expose splits, episode counts, and metrics. (5) Add <strong>registry-backed graph introspection</strong> (<code>detect_env_nodesets_for_graph()</code>) with prefix fallback for nodesets that fail to import. (6) Consolidate nodeset auto-loading into <strong><code>WorkspaceComponentRegistry.ensure_nodesets_for_graph()</code></strong> — shared by both canvas and eval. (7) New eval API at <code>/api/eval/v2</code> with run persistence to <code>outputs/eval_runs/</code>. (8) New frontend eval page with graph selector, env introspection, live progress, sortable episodes table, metric cards, and run history.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Eval mode flag inside GraphExecutor — rejected: violates SRP, risks destabilizing canvas, entangles episode/iteration boundaries. (b) Enhance existing eval_orchestrator.py with graph support — rejected: still maintains separate execution engine, no viewer reuse, no canvas improvement sharing. (c) Subprocess-based eval isolation — rejected: adds IPC complexity, the ExclusionGuard is simpler for a single-user research tool.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Batch eval is fundamentally "run a graph N times for N episodes." The LoopRunner already knows how to run graphs. Wrapping it in an episode loop (BatchEvalOrchestrator) reuses all existing infrastructure — graph execution, state containers, hooks, node handlers — without duplication. ExecutionPrinciples keeps the coupling minimal (4 fields, all optional). ExecutionGuard prevents the only real concurrency hazard (shared env singleton). Fresh LoopRunner per episode guarantees clean state.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>roadmap.md, architecture.md, glossary.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

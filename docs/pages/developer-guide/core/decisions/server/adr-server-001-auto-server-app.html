@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-server-001 — AgentCanvas</title>
+<meta name="description" content="AutoServerApp — write once, deploy anywhere">
+<meta property="og:title" content="ADR-server-001 — AgentCanvas">
+<meta property="og:description" content="AutoServerApp — write once, deploy anywhere">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/server/adr-server-001-auto-server-app.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/server/adr-server-001-auto-server-app.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Server</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-server-001</span>
+  </div>
+  <div class="last-updated">2026-03-28</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-server);">ADR-server-001</h1>
+  <p class="tagline">AutoServerApp — write once, deploy anywhere</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-28</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>server</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-009</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Running a nodeset as a server requires writing three artifacts: a <code>BaseNodeSet</code> subclass, a separate <code>ServerApp</code> subclass (re-declaring all port schemas as <code>PortSchema</code>), and a <code>ServerNodeSet</code> config class. Port definitions are duplicated between <code>PortDef</code> (tool side) and <code>PortSchema</code> (server side). Adding a server-mode deployment to an existing local nodeset is disproportionately expensive — 2 extra files and ~100 lines for what is a deployment concern, not a logic change.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong>AutoServerApp</strong>: A <code>ServerApp</code> subclass that introspects any <code>BaseNodeSet</code>'s tools' <code>input_ports</code>/<code>output_ports</code> and auto-generates <code>ServerFunction</code> entries. Handles both <code>BaseTool</code> (via <code>execute_as_node</code>) and raw <code>BaseCanvasNode</code> tools (via <code>execute</code>). (2) <strong>auto_host CLI</strong>: <code>python -m app.server.auto_host --file path/to/nodeset.py --class NodeSetClass --port 9200</code> — launches any nodeset as a plugin server. (3) <strong>Registry <code>mode</code> parameter</strong>: <code>load_nodeset(name, mode="server")</code> spawns an auto_host subprocess, fetches the manifest, generates proxy nodes — identical to YAML-based servers. (4) <strong><code>server_python</code> attribute</strong>: Optional <code>ClassVar</code> on <code>BaseNodeSet</code> to specify a different Python interpreter for server mode. (5) <strong>API <code>mode</code> parameter</strong>: <code>POST /api/components/nodesets/{name}/load?mode=server</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Code generation from BaseNodeSet to ServerApp source files. (b) RPC framework (gRPC, msgpack) instead of REST. (c) Automatic environment detection to choose mode.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Introspection at runtime is simpler than codegen and avoids generated files. REST stays consistent with the existing <code>ServerApp</code> manifest protocol — no new transport needed. The existing <code>ServerNodeSet</code> + manual <code>ServerApp</code> pattern is preserved for non-Python servers (C++, Rust) or custom protocols. Users write ONE <code>BaseNodeSet</code> class; deployment topology becomes a config decision, not a code decision.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>nodesets.md, plugin-servers.md, tutorials/habitat-nodeset.md, architecture.md, glossary.md, roadmap.md, capabilities/isolated-runtime-environments.md, blueprint.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

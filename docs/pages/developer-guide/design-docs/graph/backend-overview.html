@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backend Overview — AgentCanvas</title>
+<meta name="description" content="ProcessServices, WorkspaceComponentRegistry, JobScheduler, LoopRunner, GraphExecutor, NODE_HANDLERS — the backend as a running system">
+<meta property="og:title" content="Backend Overview — AgentCanvas">
+<meta property="og:description" content="ProcessServices, WorkspaceComponentRegistry, JobScheduler, LoopRunner, GraphExecutor, NODE_HANDLERS — the backend as a running system">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/backend-overview.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="bo-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:760px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#boa); }
+  .rxsvg .redge { stroke: var(--muted); stroke-width:1.3; fill:none; stroke-dasharray:4 3; marker-end:url(#boa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/backend-overview.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Backend Overview</span>
+  </div>
+  <div class="last-updated">2026-06-16</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Backend Overview</h1>
+  <p class="tagline">ProcessServices, WorkspaceComponentRegistry, JobScheduler, LoopRunner, GraphExecutor, NODE_HANDLERS — the backend as a running system</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="boa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">This is the <strong>"you are here"</strong> map of the backend: not what every file holds (that's <a href="../../core/codebase-map.html">codebase-map</a>) and not the platform's structure (that's <a href="../../core/architecture.html">architecture</a>), but <strong>the backend as a set of running objects — who owns whom, what's a singleton vs per-run, and how a graph actually gets executed</strong>. The hard fact that ties it together: <strong>almost everything is per-process and reached through one <code>ProcessServices</code> singleton</strong>; the only cross-object rendezvous is a single global table, <code>NODE_HANDLERS</code>. Read this first, then follow the links into the deep dives.</p>
+
+<p class="diagram-label"><strong>Read top to bottom — one spine.</strong> Both entry paths, <strong>Canvas Play</strong> and <strong>Batch Eval</strong>, converge on the <em>same</em> <code>LoopRunner → GraphExecutor</code> engine; only the wrapping above it differs. The engine fires nodes by querying <code>NODE_HANDLERS</code> — the one table the <code>WorkspaceComponentRegistry</code> fills and <code>ProcessServices</code> holds — and there is one such stack <em>per process</em> (the backend, and every eval subprocess).</p>
+<svg class="rxsvg" viewBox="0 0 720 540" role="img" aria-label="A top-to-bottom funnel, one spine. At the top, two entry paths — Canvas Play (in this process, a singleton LoopRunner) and Batch Eval (its own subprocess, a LoopRunner per episode) — converge with two arrows onto one engine box: LoopRunner to GraphExecutor, labelled one engine, node firing identical on both paths. A downward arrow labelled fires NODE_HANDLERS.get(type) runs from the engine to the NODE_HANDLERS table (node_type to class, the one rendezvous table). Below the table, an upward arrow labelled writes register_node runs from WorkspaceComponentRegistry (scans workspace, owns the env servers) up into the table; and an upward arrow labelled holds runs from ProcessServices (get_services, one per process — the backend and every eval subprocess has its own) up into the registry. The spine reads: two paths, one engine, querying one per-process table that the registry writes and ProcessServices holds.">
+  <!-- two entry paths -->
+  <rect class="box" x="90" y="18" width="230" height="54" rx="6"/>
+  <text x="205" y="42" text-anchor="middle" font-size="12">Canvas Play</text>
+  <text class="dim" x="205" y="60" text-anchor="middle">in this process · singleton</text>
+  <rect class="box" x="400" y="18" width="230" height="54" rx="6"/>
+  <text x="515" y="42" text-anchor="middle" font-size="12">Batch Eval</text>
+  <text class="dim" x="515" y="60" text-anchor="middle">own subprocess · per episode</text>
+
+  <!-- converge on ONE engine -->
+  <path class="edge" d="M205,72 L322,112"/>
+  <path class="edge" d="M515,72 L398,112"/>
+  <rect class="accent" x="180" y="114" width="360" height="62" rx="7"/>
+  <text class="at" x="360" y="140" text-anchor="middle">LoopRunner → GraphExecutor</text>
+  <text class="dim" x="360" y="160" text-anchor="middle">ONE engine — node firing identical on both paths</text>
+
+  <!-- engine fires by querying the table (down) -->
+  <path class="edge" d="M360,176 L360,214"/>
+  <text class="mono" x="372" y="199" text-anchor="start">fires: NODE_HANDLERS.get(type)</text>
+  <rect class="box" x="200" y="216" width="320" height="60" rx="6"/>
+  <text class="mono" x="360" y="240" text-anchor="middle">NODE_HANDLERS</text>
+  <text class="dim" x="360" y="258" text-anchor="middle">node_type → class — the one rendezvous table</text>
+
+  <!-- registry writes the table (arrow points UP into it) -->
+  <path class="edge" d="M360,338 L360,278"/>
+  <text class="mono" x="372" y="310" text-anchor="start">writes: register_node()</text>
+  <rect class="box" x="200" y="340" width="320" height="58" rx="6"/>
+  <text x="360" y="364" text-anchor="middle" font-size="12">WorkspaceComponentRegistry</text>
+  <text class="dim" x="360" y="382" text-anchor="middle">scans workspace/ · owns the env servers</text>
+
+  <!-- ProcessServices holds the registry (arrow points UP into it) -->
+  <path class="edge" d="M360,460 L360,400"/>
+  <text class="dim" x="372" y="432" text-anchor="start">holds</text>
+  <rect class="accent" x="170" y="462" width="380" height="66" rx="7"/>
+  <text class="at" x="360" y="487" text-anchor="middle">ProcessServices · get_services()</text>
+  <text class="dim" x="360" y="507" text-anchor="middle">ONE per process — backend + every eval subprocess has its own</text>
+</svg>
+<hr>
+
+<h2 id="1-what-it-is"><span class="num">1.</span> What the backend is</h2>
+<p>The backend (<code>agentcanvas/backend/app/</code>) is a <strong>pure execution engine with zero domain knowledge</strong> (<a href="../../core/decisions/platform/adr-platform-001-framework-zero-domain-knowledge.html">ADR-platform-001</a>): it discovers domain code from <code>workspace/</code> at runtime and runs graphs against it. As a <em>running system</em> it is a handful of <strong>per-process singletons</strong> hung off one <code>ProcessServices</code>, plus <strong>short-lived per-run objects</strong> that the API spins up on demand. Three things explain almost everything:</p>
+<ul>
+<li><strong>One <code>ProcessServices</code> per process.</strong> Reached via <code>get_services()</code> — a module singleton. It holds the <code>WorkspaceComponentRegistry</code> and (after startup) the <code>JobScheduler</code>. There is <em>no</em> single global state across the system: the backend process has one, and every eval subprocess has <em>its own</em>.</li>
+<li><strong>One global handler table, <code>NODE_HANDLERS</code>.</strong> The registry <em>writes</em> it; every <code>GraphExecutor</code> <em>reads</em> it. That table is the only rendezvous between "what's installed" and "what runs" — see <a href="#4-seam">§4</a>.</li>
+<li><strong>One engine, spun up per run.</strong> A <code>LoopRunner</code> (canvas singleton, or fresh per eval episode) builds a <code>GraphExecutor</code> that fires the graph's nodes. Details: <a href="execution-paths.html">execution-paths</a>.</li>
+</ul>
+
+<h3 id="one-click">Follow one Play click</h3>
+<p>The smallest end-to-end trace — what one <code>POST /api/navigate/run</code> touches, in order:</p>
+<ol>
+<li><code>run.py · run_loop</code> grabs <code>ExecutionGuard</code> (canvas), validates the graph, and asks <code>get_services().workspace_component_registry.ensure_nodesets_for_graph()</code> to make sure every node type is in <code>NODE_HANDLERS</code>.</li>
+<li><code>get_loop_runner()</code> returns the singleton <code>LoopRunner</code>; a fire-and-forget <code>asyncio</code> task calls <code>runner.run(graph)</code>.</li>
+<li><code>LoopRunner.run()</code> builds a fresh <code>GraphExecutor</code> and <code>await</code>s it.</li>
+<li><code>GraphExecutor.run()</code> drives the ready-queue: for each node, <code>NODE_HANDLERS[type].forward()</code>. Server-mode nodes call out over HTTP to a registry-owned <code>auto_host</code> subprocess.</li>
+<li>Outputs stream over WebSocket (<code>broadcast()</code>); the guard releases when <code>run()</code> returns.</li>
+</ol>
+<p>That's the canvas path in brief — the full request path, interactive controls, and live streaming are in <a href="canvas-play.html">canvas-play</a>; the headless eval path is <a href="batch-eval.html">batch-eval</a>.</p>
+
+<h2 id="2-per-process"><span class="num">2.</span> The per-process model</h2>
+<p>This is the single most load-bearing fact, and the one that surprises people: <strong><code>get_services()</code> is a module global, so "singleton" means <em>per Python process</em>, not per system.</strong></p>
+<ul>
+<li>The <strong>backend</strong> (uvicorn) process has one <code>ProcessServices</code> → one <code>WorkspaceComponentRegistry</code> → one <code>NODE_HANDLERS</code> → the canvas <code>LoopRunner</code> singleton.</li>
+<li>Each <strong>eval subprocess</strong> (<code>eval_subprocess_main</code>) is a <em>separate process</em> with a <strong>fresh</strong> <code>ProcessServices</code>/registry of its own (<code>eval_subprocess_main.py</code> notes "Subprocess starts with a fresh ProcessServices"). Rather than reload models, it <strong>attaches</strong> to the parent's already-running <code>auto_host</code> servers via <code>register_remote_nodeset</code> (a <code>_RemoteAutoServerShim</code> whose <code>stop()</code> is a no-op — it doesn't own them).</li>
+</ul>
+<p>So "who owns the registry / who owns ProcessServices" has the same answer in every process — <em>that process's</em> <code>get_services()</code> — and the chain tops out at the OS process (uvicorn for the backend, <code>eval_subprocess_main</code> for an eval run). There is no class above <code>ProcessServices</code>.</p>
+
+<h2 id="3-singletons"><span class="num">3.</span> Process-global singletons</h2>
+<p>Everything in this table is created once per process and lives for the whole process. "Reached via" is how any code gets a handle.</p>
+<table>
+<thead><tr><th>Object</th><th>Role</th><th>Reached via / built</th></tr></thead>
+<tbody>
+<tr><td><code>ProcessServices</code></td><td>The per-process state container. Holds the registry + scheduler.</td><td><code>state.py · get_services()</code> (module singleton, lazy)</td></tr>
+<tr><td><code>WorkspaceComponentRegistry</code></td><td>Discovers nodesets/nodes in <code>workspace/</code>, <strong>writes <code>NODE_HANDLERS</code></strong>, owns server-mode subprocesses (via <code>BaseServer</code>), handles load/unload + hot-reload.</td><td><code>ProcessServices.workspace_component_registry</code> — built in <code>ProcessServices.__init__</code></td></tr>
+<tr><td><code>JobScheduler</code></td><td>Eval admission (gates on <code>Σ marginal_vram_mb ≤ budget</code> + canvas lock free) + FIFO queue; spawns each eval run as a subprocess.</td><td><code>ProcessServices.job_scheduler</code> — built later in <code>main.py · lifespan</code> (needs VRAM); <code>None</code> until then</td></tr>
+<tr><td><code>LoopRunner</code> (canvas)</td><td>The canvas Play runner — lifecycle shell (pause/stop/resume) that builds a <code>GraphExecutor</code> per run.</td><td><code>loop_runner.py · get_loop_runner()</code> (module singleton)</td></tr>
+<tr><td><code>NODE_HANDLERS</code></td><td>Global table <code>node_type → BaseCanvasNode</code> class. The seam between "installed" (registry) and "running" (executor).</td><td><code>builtin_nodes.py</code> module global; <code>register_node()</code> mutates it</td></tr>
+<tr><td><code>ExecutionGuard</code></td><td>Single-tenant lock — only one of <code>canvas</code>/<code>eval</code> active at a time (in-process).</td><td><code>state.py · ExecutionGuard</code> (class-level statics)</td></tr>
+<tr><td><code>ErrorBus</code></td><td>In-process pub/sub; every exception/log/HTTP-error becomes an <code>error_event</code> WS frame + Report-tab entry.</td><td><code>errors.py · get_bus()</code></td></tr>
+<tr><td>WS broadcast set</td><td>The connected WebSocket clients; <code>broadcast()</code> fans messages to all.</td><td><code>state.py · _ws_connections</code> + <code>broadcast()</code></td></tr>
+<tr><td>Watchers</td><td>Background tasks: graph-dir watcher (push <code>graphs_changed</code>) + nodeset-source watcher (hot-reload <code>.py</code> edits).</td><td><code>services/graph_watcher</code>, <code>nodeset_watcher</code> — <code>lifespan</code> tasks</td></tr>
+</tbody>
+</table>
+
+<h2 id="4-seam"><span class="num">4.</span> Per-run objects &amp; the one seam</h2>
+<p>Per-run objects are created by the API/orchestrator and discarded at end-of-run. They are <strong>not</strong> owned by the registry — they only ever <em>read</em> its output table.</p>
+<table>
+<thead><tr><th>Object</th><th>Lifetime</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><code>LoopRunner</code> (per run)</td><td>Canvas: the singleton, reused. Eval: <strong>fresh per episode</strong>.</td><td><code>eval_batch.py · _run_one_episode</code> (eval) / the singleton (canvas)</td></tr>
+<tr><td><code>GraphExecutor</code></td><td>One per <code>LoopRunner.run()</code> — built fresh, discarded at end.</td><td><code>graph_executor.py · GraphExecutor.run</code></td></tr>
+<tr><td><code>ExecutionLogger</code></td><td>One per run/episode (JSONL + assets).</td><td><code>logging/logger.py</code></td></tr>
+<tr><td><code>BatchEvalRunner</code> / <code>EnvWorkerPool</code></td><td>One per eval run (eval-only).</td><td><code>eval_batch.py</code> / <code>env_worker_pool.py</code></td></tr>
+</tbody>
+</table>
+
+<p class="diagram-label"><strong>The seam.</strong> The registry and the executor never call each other — they meet at <code>NODE_HANDLERS</code>. The <code>LoopRunner</code> doesn't touch the table at all.</p>
+<svg class="rxsvg" viewBox="0 0 700 150" role="img" aria-label="The decoupling seam. WorkspaceComponentRegistry writes the NODE_HANDLERS table via register_node at startup and hot-reload. GraphExecutor reads it at fire time via NODE_HANDLERS.get(type).forward(). The two never call each other directly. LoopRunner does not touch the table.">
+  <rect class="box" x="20" y="50" width="180" height="48" rx="7"/>
+  <text x="110" y="71" text-anchor="middle" font-size="12">WorkspaceComponentRegistry</text>
+  <text class="dim" x="110" y="88" text-anchor="middle">startup + hot-reload</text>
+  <rect class="accent" x="270" y="50" width="160" height="48" rx="7"/>
+  <text class="mono" x="350" y="72" text-anchor="middle">NODE_HANDLERS</text>
+  <text class="dim" x="350" y="88" text-anchor="middle">node_type → class</text>
+  <rect class="box" x="500" y="50" width="180" height="48" rx="7"/>
+  <text x="590" y="71" text-anchor="middle" font-size="12">GraphExecutor</text>
+  <text class="dim" x="590" y="88" text-anchor="middle">per run · fire time</text>
+  <path class="edge" d="M200,74 L268,74"/>
+  <text class="dim" x="234" y="44" text-anchor="middle">writes</text>
+  <text class="mono" x="234" y="112" text-anchor="middle">register_node()</text>
+  <path class="edge" d="M500,74 L432,74"/>
+  <text class="dim" x="466" y="44" text-anchor="middle">reads</text>
+  <text class="mono" x="466" y="112" text-anchor="middle">.get(type).forward()</text>
+</svg>
+<p>Concretely: <code>register_node()</code> + the <code>register</code> path in <code>registry.py</code> populate <code>NODE_HANDLERS</code> (last-write-wins; unload evicts); <code>GraphExecutor</code> does <code>NODE_HANDLERS.get(node.type)</code> then <code>.forward()</code> (<code>graph_executor.py</code>). The executor reaches the registry directly in exactly one narrow place — to wire up a <code>RemoteContainerProxy</code> when a node is granted a state container that lives in another process (the cross-nodeset container-access path, via <code>get_services().workspace_component_registry</code>); otherwise the table is the whole contract. This is why the registry is <strong>1</strong> and <code>GraphExecutor</code>s are <strong>N</strong>: N executors all read the one table the one registry filled. For the firing engine itself, see <a href="graph-executor.html">graph-executor</a>.</p>
+
+<h3 id="two-paths">The two run paths</h3>
+<p>A graph reaches <code>GraphExecutor</code> by one of two routes — each now its own code-grounded deep doc, so this hub only names them:</p>
+<ul>
+<li><strong>Canvas Play</strong> — interactive, <em>in-process</em>, single-tenant (<code>ExecutionGuard</code>), driven by the singleton <code>LoopRunner</code>, streamed live: <a href="canvas-play.html">canvas-play</a>.</li>
+<li><strong>Batch eval</strong> — headless, spawned in its <em>own subprocess</em> by <code>JobScheduler</code> (the backend loads only the shared singletons, then hands the run their borrowed URLs), a fresh <code>LoopRunner</code> per episode across N workers: <a href="batch-eval.html">batch-eval</a>.</li>
+</ul>
+<p>Both converge on the same <code>LoopRunner → GraphExecutor</code> engine and fire against the same <code>NODE_HANDLERS</code> table (§4 above) — the divergence is entirely in the <em>wrapping</em>. The class-by-class comparison of the two paths is <a href="execution-paths.html">execution-paths</a>.</p>
+
+<h2 id="5-lifespan"><span class="num">5.</span> Startup &amp; shutdown (lifespan)</h2>
+<p>The whole runtime is wired in <code>main.py · lifespan</code> (the FastAPI startup/shutdown hook). Order matters:</p>
+<ol>
+<li><strong>ErrorBus</strong> first — attach the event loop, subscribe the WS fan-out, install the log bridge (so every later subsystem's logs surface).</li>
+<li><code>state = get_services()</code> → constructs <code>ProcessServices</code> → constructs <code>WorkspaceComponentRegistry</code> (empty so far).</li>
+<li><code>workspace_component_registry.scan_all()</code> — discover <code>workspace/</code> components → <strong>fills <code>NODE_HANDLERS</code></strong>.</li>
+<li><code>await workspace_component_registry.initialize_all()</code> — initialize nodesets (the slow part).</li>
+<li>Build <code>JobScheduler</code> (query VRAM, resolve <code>outputs/eval_runs/</code>), wire the canvas-lock callback + registry, reconcile aborted runs.</li>
+<li>Launch background tasks: the <strong>scheduler loop</strong> (1 s tick — eval admit/reap + orphaned-canvas-guard reaper), the <strong>graph watcher</strong>, the <strong>nodeset-source watcher</strong>.</li>
+<li><code>yield</code> — serve requests.</li>
+<li>On shutdown: cancel the tasks, <code>job_scheduler.shutdown()</code>, then <code>workspace_component_registry.shutdown_all()</code> (stops all server subprocesses).</li>
+</ol>
+
+<h2 id="6-deeper"><span class="num">6.</span> Where to go deeper</h2>
+<table>
+<thead><tr><th>You want…</th><th>Read</th></tr></thead>
+<tbody>
+<tr><td>How a run is driven, both paths, class-by-class</td><td><a href="execution-paths.html">execution-paths</a></td></tr>
+<tr><td>The interactive canvas run — in-process, live, pausable</td><td><a href="canvas-play.html">canvas-play</a></td></tr>
+<tr><td>The firing engine — ready-queue, iteration, termination</td><td><a href="graph-executor.html">graph-executor</a> · <a href="loop-control-system.html">loop-control-system</a></td></tr>
+<tr><td>Batch eval internals — workers, parallelism, persistence</td><td><a href="batch-eval.html">batch-eval</a></td></tr>
+<tr><td>Server-mode subprocesses — auto_host, manifest, lifecycle</td><td><a href="../operations/server-mode.html">server-mode</a></td></tr>
+<tr><td>How a node author plugs into <code>NODE_HANDLERS</code></td><td><a href="../components/base-canvas-node.html">base-canvas-node</a> · <a href="../components/nodesets.html">nodesets</a></td></tr>
+<tr><td>Where every file lives (per-package)</td><td><a href="../../core/codebase-map.html">codebase-map</a></td></tr>
+<tr><td>Platform structure (incl. frontend) + tech stack</td><td><a href="../../core/architecture.html">architecture</a></td></tr>
+</tbody>
+</table>
+
+<h2 id="7-deviations"><span class="num">7.</span> Gotchas (where the clean model bites)</h2>
+
+<div class="callout warn">
+<strong>"Singleton" is per-process, not global.</strong> N processes = N <code>ProcessServices</code>s = N registries = N <code>NODE_HANDLERS</code> tables. An eval subprocess cannot see the backend's in-memory objects; it re-scans from disk and attaches to shared servers over HTTP (<code>register_remote_nodeset</code>). Reasoning that assumes "one global registry" is wrong the moment eval forks.
+</div>
+
+<div class="callout warn">
+<strong><code>JobScheduler</code> is built late.</strong> <code>ProcessServices.__init__</code> sets <code>job_scheduler = None</code>; it only becomes real inside <code>lifespan</code> (after VRAM detection). Code that reaches <code>get_services().job_scheduler</code> before startup completes gets <code>None</code>.
+</div>
+
+<div class="callout warn">
+<strong><code>NODE_HANDLERS</code> is mutable global state.</strong> Hot-reload and unload mutate it in place (last-write-wins; evict-on-unload). A node deleted from disk can linger in the table until a reload or restart (<code>registry.py</code> notes this). It is process-local, so the table the eval subprocess fires against is the one <em>it</em> scanned, not the backend's.
+</div>
+
+<div class="callout warn">
+<strong>Canvas is single-tenant.</strong> The canvas <code>LoopRunner</code> is a process singleton behind <code>ExecutionGuard</code> — you cannot run two canvas graphs at once. Eval avoids the contention by running in its own subprocess (default); the legacy in-process eval shares the very same guard.
+</div>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-16: Trimmed the redundant "Batch eval, end to end" cascade (the two run paths now have their own code-grounded deep docs — <a href="canvas-play.html">canvas-play</a> + <a href="batch-eval.html">batch-eval</a>) down to a §4 pointer; added canvas-play to the one-click trace and the "where to go deeper" table. Fixed stale symbol names — <code>get_services</code> in the opening diagram's aria-label, and <code>_RemoteAutoServerShim</code> (the actual remote-attach shim class) in §2.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="index.html">↑ Graph &amp; Execution</a> · <a href="execution-paths.html">Execution Paths →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What the backend is</a>
+      <a class="toc-h3" href="#one-click">Follow one Play click</a>
+      <a class="toc-h2" href="#2-per-process">2. The per-process model</a>
+      <a class="toc-h2" href="#3-singletons">3. Process-global singletons</a>
+      <a class="toc-h2" href="#4-seam">4. Per-run objects &amp; the one seam</a>
+      <a class="toc-h3" href="#two-paths">The two run paths</a>
+      <a class="toc-h2" href="#5-lifespan">5. Startup &amp; shutdown (lifespan)</a>
+      <a class="toc-h2" href="#6-deeper">6. Where to go deeper</a>
+      <a class="toc-h2" href="#7-deviations">7. Gotchas (where the clean model bites)</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

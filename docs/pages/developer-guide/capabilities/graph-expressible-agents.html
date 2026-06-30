@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1Graph-Expressible Agents — AgentCanvas</title>
+<meta name="description" content="DAG workflows, cyclic agent loops, and compositions of both run on the same canvas and executor.">
+<meta property="og:title" content="1Graph-Expressible Agents — AgentCanvas">
+<meta property="og:description" content="DAG workflows, cyclic agent loops, and compositions of both run on the same canvas and executor.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/graph-expressible-agents.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/graph-expressible-agents.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">1Graph-Expressible Agents</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">1</span>Graph-Expressible Agents</h1>
+  <p class="tagline">DAG workflows, cyclic agent loops, and compositions of both run on the same canvas and executor.</p>
+</header>
+
+
+
+<p>AgentCanvas supports workflow DAGs, cyclic agent loops, and compositions of both on the same canvas. This page explains how each form works and how the executor handles them uniformly.</p>
+<p><em>Design docs: <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · <a href="../design-docs/graph/loop-control-system.html">Loop Control</a></em></p>
+<hr>
+<h2 id="1-three-forms"><span class="num">1.</span> Three Forms</h2>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Pattern</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DAG Workflow</strong></td>
+<td>Linear or branching, no cycles</td>
+<td>One-shot pipelines (caption → summarize → output)</td>
+</tr>
+<tr>
+<td><strong>Agent Loop</strong></td>
+<td>Cyclic via IterIn/IterOut</td>
+<td>Iterative agents (observe → reason → act → repeat)</td>
+</tr>
+<tr>
+<td><strong>Mixed</strong></td>
+<td>DAG containing loops, or loops containing DAGs</td>
+<td>Hierarchical agents with sub-loops or post-processing</td>
+</tr>
+</tbody>
+</table>
+<p>All three are expressed as the same <code>GraphDefinition</code> JSON and executed by the same <code>GraphExecutor</code>. The executor doesn't distinguish between forms — it simply fires nodes when their inputs arrive.</p>
+<h2 id="2-dag-workflow"><span class="num">2.</span> DAG Workflow</h2>
+<p>A DAG workflow is a graph with no cycles. Nodes fire in topological order (inputs before outputs), and execution ends when all reachable nodes have fired.</p>
+<div class="highlight"><pre><span></span><code>  [VLMCaption] → [Summarize] → [GraphOut]
+</code></pre></div>
+<p><strong>Executor behavior</strong>: Entry nodes (no required inputs, no incoming edges) fire first. Outputs propagate forward. No IterIn/IterOut needed — the graph runs once and completes.</p>
+<h3 id="21-example-json"><span class="num">2.1</span> Example JSON</h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Caption Pipeline&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cap&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;vlmCall&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;VLM Call&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sum&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llmCall&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Summarize&quot;</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;out&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graphOut&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Output&quot;</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;edges&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;e1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cap&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;target&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sum&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;sourceHandle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;targetHandle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;text&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;e2&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sum&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;target&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;out&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;sourceHandle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;targetHandle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;text&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;step_budget&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="3-agent-loop"><span class="num">3.</span> Agent Loop</h2>
+<div class="highlight"><p><strong><a href="../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a> + full removal (2026-06-10):</strong> the <code>Initialize</code> pivot is folded into a <strong>two-sided <code>iterIn</code></strong> (left = run-start init inputs via <code>initPorts</code>, right = loop-carry) and the <code>initialize</code> node type has been deleted outright — <code>validate_graph_connectivity</code> rejects graphs that still carry one, with a migration hint.</p></div>
+<p>An agent loop is a cyclic graph using <strong>two pivot nodes</strong>: a two-sided <strong>IterIn</strong> whose left/input side receives run-start seeds (declared in <code>config.initPorts</code>, wired as ordinary canvas edges into <code>init_&lt;name&gt;</code> handles) and whose right/output side broadcasts the per-iteration loop-carry bundle, and <strong>IterOut</strong>, which collects end-of-step data and feeds it back. The loop transfer uses a single <code>pairedWith</code> config field linking IterOut → IterIn; no canvas wire joins the pivots.</p>
+<div class="highlight"><pre><span></span><code>  [entry nodes] ──init_*──→ [IterIn] → [EnvObserve] → [LLMCall] → [Decision] → [EnvStep] → [IterOut]
+                               ▲                                                              │
+                               └────────────────── pairedWith (loop transfer) ────────────────┘
+</code></pre></div>
+<h3 id="31-two-pivots"><span class="num">3.1</span> Two Pivots</h3>
+<p>The <code>GraphExecutor</code> handles the cycle explicitly:</p>
+<ol>
+<li><strong>IterIn</strong> (<code>ports_mode="source"</code>) is <em>not</em> seed-eligible — the executor explicitly excludes <code>type == "iterIn"</code> from the seed rule (<code>graph_executor.py</code>). Run-start seed edges land in its <code>init_&lt;name&gt;</code> port slots; it fires once any slot is populated (iter 1) and again on each IterOut transfer (iter 2+). Slots with <code>persist=true</code> re-emit every iteration; <code>persist=false</code> slots clear after the fire (one-shot).</li>
+<li>Downstream body nodes fire as data flows forward.</li>
+<li><strong>IterOut</strong> fires once per iteration, at the end:
+   - Increments the per-scope <code>step_counter</code> (mirrored to <code>self.step_counter</code> on the outermost scope for backward compat);
+   - Broadcasts <code>step_end</code> signal so <code>lifetime="step"</code> state containers clear;
+   - Checkpoints state containers at root-scope iter boundaries;
+   - Flushes the execution log to JSONL;
+   - Calls <code>_broadcast_step()</code> to consolidate output-viewer data into the <code>nav_step</code> WebSocket event;
+   - Transfers its outputs into the paired IterIn's <code>iterout_&lt;name&gt;</code> port slots and pushes IterIn back onto the ready queue.</li>
+<li>The loop repeats until the paired IterOut's <code>stop</code> input is truthy (checked once per iteration at the boundary) or <code>step_budget</code> is reached; node code may also raise <code>StopExecution</code> as an escape hatch.</li>
+</ol>
+<p>Current IterOut handling (abridged from <code>agent_loop/graph_executor.py</code>):</p>
+<div class="highlight"><pre><span></span><code><span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterOut&quot;</span><span class="p">:</span>
+    <span class="n">_io_scope_id</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;pairedWith&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_outermost_scope_id</span>
+    <span class="n">_io_scope</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope_state</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">_io_scope_id</span><span class="p">)</span>
+    <span class="n">_io_scope</span><span class="o">.</span><span class="n">step_counter</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;step_end&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="n">_io_scope</span><span class="o">.</span><span class="n">step_counter</span><span class="p">,</span> <span class="s2">&quot;scope_id&quot;</span><span class="p">:</span> <span class="n">_io_scope_id</span><span class="p">})</span>
+    <span class="c1"># ... checkpoint, log flush, _broadcast_step, multi-scope settle ...</span>
+    <span class="n">paired</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">nodes</span><span class="p">[</span><span class="n">_io_scope_id</span><span class="p">]</span>   <span class="c1"># the iterIn</span>
+    <span class="n">paired</span><span class="o">.</span><span class="n">pending_inputs</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+    <span class="n">ready_queue</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">paired</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="32-multi-scope"><span class="num">3.2</span> Multi-Scope Loops</h3>
+<p>A single flat graph can contain N coexisting <code>(IterIn, IterOut)</code> pairs — each defines a <strong>scope</strong> with its own iteration cadence (<a href="../core/decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a>, <a href="../core/decisions/executor/adr-executor-003-multi-scope-execution.html">ADR-executor-003</a>). The executor computes a scope forest at run-start via <code>analyze_scopes()</code>; each scope keeps its own <code>step_counter</code>; <code>graphOut</code> nodes inside inner scopes buffer their value into <code>state["latched_value"]</code> and flush on scope termination (<code>_propagate_graphout_latches</code>). The outermost scope's termination ends the run.</p>
+<h3 id="33-termination"><span class="num">3.3</span> Termination</h3>
+<p>A loop ends when the paired <code>iterOut</code>'s <code>stop</code> BOOL input is truthy — the executor reads it once per iteration at the boundary, ends that scope, and fires the terminal iteration's values out on the iterOut's <code>final_*</code> handles (the after-loop verdict stage). The standalone <code>Termination</code> node type was <strong>removed 2026-06-11</strong>; node code may still raise <code>StopExecution</code> as an escape hatch to abort mid-iteration. In multi-scope graphs the <code>stop</code> is per-scope — an inner scope's stop ends only that scope; only the root scope's stop ends the run.</p>
+<h2 id="4-mixed-composition"><span class="num">4.</span> Mixed Composition</h2>
+<p>Because the executor is form-agnostic, DAGs and loops can be freely mixed:</p>
+<ul>
+<li><strong>Loop inside DAG</strong>: A graph node containing an agent loop can be placed in a larger workflow DAG. The flattener expands it, and the executor handles the inner IterIn/IterOut cycle while the outer DAG nodes fire normally.</li>
+<li><strong>DAG inside loop</strong>: A composite node containing a linear pipeline (caption → summarize) can be placed inside an agent loop. Each iteration expands and runs the inner DAG.</li>
+</ul>
+<p>This composability comes from two mechanisms:
+1. <strong>Nested graph system</strong> — composite nodes with subgraphs (see <a href="nested-graph-system.html">Nested Graph System</a>)
+2. <strong>Flatten before execute</strong> — <code>flatten.py</code> recursively expands all composites, so the executor always sees a flat graph</p>
+<h2 id="5-key-files"><span class="num">5.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+<td>Dataflow scheduler, IterOut→IterIn transfer + init-edge slot routing, per-scope step counting, multi-scope settle isolation</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
+<td>Pivot node classes — <code>IterInNode</code>, <code>IterOutNode</code>, plus other framework-shipped nodes</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/scope_analysis.py</code></td>
+<td><code>analyze_scopes()</code> — builds the scope forest from <code>pairedWith</code> wiring before run-start</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/flatten.py</code></td>
+<td><code>flatten_graph()</code> — recursively expands composite nodes so the executor sees a flat graph</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/standard/node_io.py</code></td>
+<td><code>get_required_inputs()</code> — class-level required-port registry + node IO schema (no node classes live here; the <code>Termination</code> node type was removed)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_def.py</code></td>
+<td><code>validate_graph_connectivity()</code> — rejects required-but-unwired ports at API boundary, no silent never-fires</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DAG workflow execution</td>
+<td>Done</td>
+<td>GraphExecutor runs single forward pass when no IterIn/IterOut present</td>
+</tr>
+<tr>
+<td>Agent loop — two-pivot model (two-sided IterIn + IterOut)</td>
+<td>Done</td>
+<td>Per <a href="../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a>. Run-start seeds as ordinary edges into iterIn init slots; IterOut transfer per iteration via <code>pairedWith</code></td>
+</tr>
+<tr>
+<td>Seed-node discovery rule</td>
+<td>Done</td>
+<td>A node is queued at run-start iff its type is <em>not</em> <code>iterIn</code> AND it has no incoming edges AND it has no required input ports</td>
+</tr>
+<tr>
+<td>Loop termination via <code>iterOut.stop</code></td>
+<td>Done</td>
+<td>Truthy <code>stop</code> BOOL input on iterOut, read once per iteration at the boundary; ends the scope + emits the final side. The <code>Termination</code> node type was removed 2026-06-11; <code>StopExecution</code> survives only as a node-code escape hatch. Multi-scope: stop is per-scope, only the root scope ends the run</td>
+</tr>
+<tr>
+<td>Mixed composition (loop inside DAG / DAG inside loop)</td>
+<td>Done</td>
+<td><code>flatten_graph()</code> expands composites before run-start; executor handles mixed patterns uniformly</td>
+</tr>
+<tr>
+<td>Multi-scope iteration</td>
+<td>Done</td>
+<td>N coexisting (IterIn, IterOut) pairs per graph, per-scope step counter, scope forest from <code>analyze_scopes()</code>, portOut latch propagation (<a href="../core/decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a> + <a href="../core/decisions/executor/adr-executor-003-multi-scope-execution.html">ADR-executor-003</a>)</td>
+</tr>
+<tr>
+<td><code>validate_graph_connectivity()</code> guard</td>
+<td>Done</td>
+<td>Required-but-unwired ports rejected at API boundary, no silent never-fires (HTTP 400 from <code>graph_def.py</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>All items fully implemented.</p>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Follow-up (B3) — §2 DAG example used the removed <code>outputPort</code> node type; the live sink type is <code>graphOut</code> (diagram <code>[OutputPort]</code> → <code>[GraphOut]</code>, example JSON <code>"type": "outputPort"</code> → <code>"graphOut"</code>).</li>
+<li>2026-06-17: Code-faithfulness pass (B1). This page had missed the 2026-06-11 15:38 termination-node removal — rewrote §3.1 step 4, §3.3, the §5 <code>node_io.py</code> role, and the Status row off the dead "Termination node raises <code>StopExecution</code>" model onto the real <code>iterOut.stop</code> mechanism (verified: no <code>termination</code> node type registered in NODE_HANDLERS; <code>graph_def.py</code> rejects it; <code>StopExecution</code> survives only as a node-code escape hatch). §3.2 <code>portOut</code> → <code>graphOut</code> (the correct latch node type). Stale §3.1 anchor slug <code>three-pivots</code> → <code>two-pivots</code>.</li>
+<li>2026-06-11 13:35: &ldquo;seed node&rdquo; → &ldquo;entry node&rdquo; (executor-behavior note + loop diagram label).</li>
+<li>2026-06-10 10:45: <code>initialize</code> removed entirely (no legacy load path) — §3 rewritten to the two-pivot model, diagram/key-files/status updated; graphs carrying <code>initialize</code> now rejected at validation.</li>
+<li>2026-06-09: ADR-dataflow-008 — folded <code>initialize</code> into a two-sided <code>iterIn</code> (init inputs via <code>initPorts</code>); added supersession note to §3. 3 pivots → 2; runtime unchanged.</li>
+<li>2026-05-18: Rewrite agent-loop section for the three-pivot model — add Initialize, correct "IterIn is a seed" claim, add multi-scope subsection, replace stale IterOut snippet with current scope-aware code, fix dead <code>graph_executor.py</code> path in §5</li>
+<li>2026-04-02 14:21: Added Status section, fixed example node type (vlmCaption → vlmCall)</li>
+<li>2026-04-02 13:58: Initial content — three forms, IterIn/IterOut mechanics, mixed composition</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="index.html">↑ Capabilities index</a> · <a href="customizable-node-system.html">2. Customizable Node System →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-three-forms">1. Three Forms</a>
+      <a class="toc-h2" href="#2-dag-workflow">2. DAG Workflow</a>
+      <a class="toc-h3" href="#21-example-json">2.1 Example JSON</a>
+      <a class="toc-h2" href="#3-agent-loop">3. Agent Loop</a>
+      <a class="toc-h3" href="#31-two-pivots">3.1 Two Pivots</a>
+      <a class="toc-h3" href="#32-multi-scope">3.2 Multi-Scope Loops</a>
+      <a class="toc-h3" href="#33-termination">3.3 Termination</a>
+      <a class="toc-h2" href="#4-mixed-composition">4. Mixed Composition</a>
+      <a class="toc-h2" href="#5-key-files">5. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

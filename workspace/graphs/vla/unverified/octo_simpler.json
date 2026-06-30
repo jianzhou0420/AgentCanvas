@@ -1,0 +1,255 @@
+{
+  "name": "Octo on SIMPLER",
+  "description": "Octo-Small (RAIL Berkeley, multi-embodiment, JAX/Flax) running on SimplerEnv via the single-node policy_octo__predict node. Bypasses the canonical adapter pipeline because the vendored OctoInference handles image resize, T5 task tokenization, action ensembling, and per-embodiment sticky-gripper internally. Pick split/task/episode in the SIMPLER env panel; pick model_type and policy_setup on the predict node. Default checkpoint path is data/vla_policy/checkpoints/octo-small-1.5 — when missing, the policy falls back to hf://rail-berkeley/octo-small (downloads on first use into the HF cache).",
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_simpler__reset",
+      "label": "SIMPLER: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "predict",
+      "type": "policy_octo__predict",
+      "label": "Octo: Predict",
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "config": {
+        "checkpoint_path": "",
+        "model_type": "octo-small",
+        "policy_setup": "widowx_bridge",
+        "horizon": 2,
+        "pred_action_horizon": 4,
+        "exec_horizon": 1,
+        "image_size": 256,
+        "action_scale": 1.0,
+        "init_rng": 0
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_simpler__step_continuous",
+      "label": "SIMPLER: Step",
+      "position": {
+        "x": 1120,
+        "y": 0
+      },
+      "config": {
+        "max_chunk_steps": 1
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 1400,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "agentview_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "note_policy_setup",
+      "type": "note",
+      "label": "policy_setup must match split",
+      "position": {
+        "x": 840,
+        "y": -260
+      },
+      "config": {
+        "markdown": "**Octo is multi-embodiment** but the per-step branch is selected explicitly via `policy_setup` on the predict node:\n\n- `widowx_bridge` → action stats from `bridge_dataset`, binary gripper\n- `google_robot` → action stats from `fractal20220817_data`, sticky gripper\n\nMust match the SIMPLER split chosen in the controller, otherwise the action mean/std will be wrong and the gripper logic mis-applies."
+      }
+    },
+    {
+      "id": "note_checkpoint",
+      "type": "note",
+      "label": "Checkpoint location",
+      "position": {
+        "x": 840,
+        "y": 260
+      },
+      "config": {
+        "markdown": "**Default checkpoint path** (when `checkpoint_path` is empty):\n\n`$VLA_CHECKPOINTS_ROOT/<model_type>-1.5`\n\n…where `VLA_CHECKPOINTS_ROOT` defaults to `<repo>/data/vla_policy/checkpoints`.\n\nIf the local snapshot is missing, the policy falls back to `hf://rail-berkeley/<model_type>` and downloads into the HF cache on first use.\n\nPre-snapshot via:\n`bash scripts/install/install_ac_octo.sh --ckpt-only`\n`bash scripts/install/install_ac_octo.sh --ckpt-only --model octo-base`"
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_simpler__evaluate",
+      "label": "SIMPLER: Evaluate",
+      "position": {
+        "x": 1520,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__success",
+      "type": "graphOut",
+      "label": "success",
+      "position": {
+        "x": 1520,
+        "y": 200
+      },
+      "config": {
+        "portName": "success",
+        "wireType": "BOOL"
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 1520,
+        "y": 290
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_simpler__observe_egocentric",
+      "label": "SIMPLER: Observe (egocentric)",
+      "position": {
+        "x": -180,
+        "y": 140
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_simpler__observe_egocentric",
+      "label": "SIMPLER: Observe (egocentric)",
+      "position": {
+        "x": 1300,
+        "y": 140
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_instruction_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_reset_agentview_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "iterout_agentview_image"
+    },
+    {
+      "id": "e_iterin_instruction_to_predict",
+      "source": "iter_in",
+      "target": "predict",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "instruction"
+    },
+    {
+      "id": "e_iterin_agentview_to_predict",
+      "source": "iter_in",
+      "target": "predict",
+      "sourceHandle": "iterout_agentview_image",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_predict_to_step",
+      "source": "predict",
+      "target": "env_step",
+      "sourceHandle": "action_chunk",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_agentview_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "agentview_image"
+    },
+    {
+      "id": "e_step_done_to_termination__stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_octo_out_success__po",
+      "source": "evaluate",
+      "sourceHandle": "success",
+      "target": "output_port__success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_octo_out_metrics__po",
+      "source": "evaluate",
+      "sourceHandle": "metrics",
+      "target": "output_port__metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_simmig_1",
+      "source": "env_reset",
+      "sourceHandle": "episode_id",
+      "target": "seed_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_simmig_2",
+      "source": "env_step",
+      "sourceHandle": "info",
+      "target": "loop_obs",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "sourceHandle": "final_stop",
+      "target": "evaluate",
+      "targetHandle": "trigger"
+    }
+  ],
+  "step_budget": 80
+}

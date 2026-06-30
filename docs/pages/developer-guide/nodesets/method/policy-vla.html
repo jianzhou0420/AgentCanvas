@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLA Policy NodeSet — AgentCanvas</title>
+<meta name="description" content="The VLA Policy NodeSet ( policy_vla ) is a generic VLA inference framework for running any vision-language-action policy on any robot environment. The framework is implemented via the adapter system…">
+<meta property="og:title" content="VLA Policy NodeSet — AgentCanvas">
+<meta property="og:description" content="The VLA Policy NodeSet ( policy_vla ) is a generic VLA inference framework for running any vision-language-action policy on any robot environment. The framework is implemented via the adapter system…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-vla.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="VLA Policy">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/method/policy-vla.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Method</a>
+    <span class="sep">/</span>
+    <span class="here">VLA Policy</span>
+  </div>
+  <div class="last-updated">2026-06-11 15:37</div>
+</div>
+  <header class="page-header guide">
+  <h1>VLA Policy NodeSet</h1>
+</header>
+
+<p>The <strong>VLA Policy NodeSet</strong> (<code>policy_vla</code>) is a <strong>generic VLA inference framework</strong> for running any vision-language-action policy on any robot environment. The framework is implemented via the <strong>adapter system</strong>: each forward pass is decomposed into four atomic translation stages (env → canonical → model → action canonical → env action), and the four canvas nodes are 1:1 with those stages.</p>
+<blockquote>
+<p><strong>Single nodeset, single pipeline, every VLA.</strong> Every VLA shipped or planned for AgentCanvas — Pi0, SmolVLA, Diffusion Policy, DROID-DP, <strong>RT-1-X</strong>, and the next ones (Octo, OpenVLA, RT-2, π₀-FAST, …) — lives inside this one nodeset and runs through this one 5-node graph. There are no special-case nodes, no bypass paths, no per-policy nodesets. A new VLA is <em>always</em> an <code>adapter + policy + adapter</code> triple dropped into the existing folders; selecting it is <em>always</em> picking three filenames in three dropdowns. That uniformity is the load-bearing rule of <code>policy_vla</code> — see §3 for why, §9.1 for the recipe, §9.1.1 for RT-1-X as the worked example.</p>
+</blockquote>
+<p>Robots follow the same rule: LiberoRobot and SimplerRobot are the two shipped instances; new robots (Franka, Droid, …) are first-class extensions, not exceptions.</p>
+<p>The adapter system itself is vendored verbatim from the upstream <strong>vlaworkspace</strong> training repo (<code>vlaworkspace/src/vlaworkspace/adaptors/</code>) — per AgentCanvas's no-upstream-import policy, source is copied with rewritten imports. This nodeset is therefore both <em>runtime-coupled</em> with vlaworkspace (same <code>CanonicalDict</code>, same Adaptor classes) and <em>deployment-decoupled</em> (no live import — bug-for-bug parity with the snapshot taken at vendoring time).</p>
+<blockquote>
+<p>⚠️ <strong>This page is a code-derived snapshot, not the design spec.</strong> It captures what <code>workspace/nodesets/policy/policy_vla/</code> <em>currently does</em>. Design principles for "how a new VLA gets onboarded" are pending the maintainer's annotations — sections marked <strong>TBD by maintainer</strong> are placeholders.</p>
+</blockquote>
+<hr>
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p><code>policy_vla</code> is the canvas-side runtime for <strong>any</strong> VLA policy. Inference is decomposed into four atomic translation stages, each exposed as one canvas node, hosted in a single subprocess on the <code>ac-vla-policy</code> conda env (server mode per ADR-server-001):</p>
+<div class="highlight"><pre><span></span><code>env_obs ──[1]── canonical ──[2]── model_batch ──── predict ──── model_output ──[3]── canonical_action ──[4]── env_action
+        env→canonical      canonical→model     (BasePolicy.        model→canonical                     canonical→env
+        (RobotAdaptor)     (ModelAdaptor)       predict_action)    (ModelAdaptor)                      (RobotAdaptor)
+            ↓                  ↓                      ↓                  ↓                                  ↓
+   adapt_env_to_canonical  adapt_canonical_        predict        adapt_model_to_canonical          adapt_canonical_to_env
+                           to_model
+</code></pre></div>
+<p><strong>5 canvas nodes, 1:1 with the 4 atomic adapter stages + 1 model forward.</strong> Each adapter stage is one canvas node — perfect symmetry between obs side (stages 1↔2) and action side (stages 3↔4). The <code>canonical_action</code> CanonicalDict is a real wire on the canvas, not an internal value, so it can be inspected, intercepted, or fed into future "action filter" nodes.</p>
+<p><strong>Why decompose at all:</strong></p>
+<ul>
+<li>Each config-owning node owns one <strong>slice of config</strong> (robot kwargs / model kwargs / policy kwargs); the two action-side nodes carry no config. Per <code>feedback_env_panel_scope</code>: env panels manage env knobs (suite/episode), not graph artefacts.</li>
+<li>Each stage corresponds to <strong>one abstract method</strong> on RobotAdaptor or ModelAdaptor, so swapping any one stage in the canvas is symmetric to swapping its underlying class. New robot ⇒ new RobotAdaptor (stages 1+4); new model ⇒ new (ModelAdaptor + BasePolicy) pair (stages 2+3 + GPU).</li>
+<li>Canvas-level abstraction mirrors the framework abstraction (vlaworkspace's 4 atomic methods). No fused boundaries — the canvas does not hide an intermediate that exists at the Python level.</li>
+<li>Heavy GPU load happens in <code>predict</code>; the four adapter nodes are pure-CPU dict shape transforms, fast to re-run when only config changes.</li>
+</ul>
+<h3 id="11-where-it-fits"><span class="num">1.1</span> Where it fits</h3>
+<table>
+<thead>
+<tr>
+<th>Upstream (obs)</th>
+<th>RobotAdaptor</th>
+<th>Downstream (action)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_libero__reset</code> / <code>env_libero__step</code></td>
+<td><code>LiberoRobot</code> (delta or absolute variant)</td>
+<td><code>env_libero__step</code></td>
+</tr>
+<tr>
+<td><code>env_simpler__reset</code> / <code>env_simpler__step</code></td>
+<td><code>SimplerRobot</code> (WidowX + Google Robot)</td>
+<td><code>env_simpler__step</code></td>
+</tr>
+<tr>
+<td>Future: <code>env_franka</code>, <code>env_droid</code>, …</td>
+<td>new <code>RobotAdaptor</code> subclass under <code>adapters/robots/</code></td>
+<td>same</td>
+</tr>
+</tbody>
+</table>
+<p>The adapter nodes are pure functions of their inputs + config; they don't talk to the env directly. Coupling with the env is via wire shape (obs ports), not API.</p>
+<hr>
+<h2 id="2-architecture-the-adaptor-system"><span class="num">2.</span> Architecture: the Adaptor system</h2>
+<p>The framework is a <strong>4-stage translation pipeline</strong> mediated by the <code>CanonicalDict</code> lingua franca. Each stage is one abstract method, packed into one of two adapter classes:</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Direction</th>
+<th>Owner class</th>
+<th>Method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>env_obs → canonical</td>
+<td><code>RobotAdaptor</code></td>
+<td><code>env_to_canonical(env_obs)</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>canonical → model_batch</td>
+<td><code>ModelAdaptor</code></td>
+<td><code>canonical_to_model(canonical)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>model_output → action_canonical</td>
+<td><code>ModelAdaptor</code></td>
+<td><code>model_to_canonical(model_output, info)</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>action_canonical → env_action</td>
+<td><code>RobotAdaptor</code></td>
+<td><code>canonical_to_env(canonical_action, state)</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>RobotAdaptor   ×   ModelAdaptor   →   Adaptor (composed)   +   BasePolicy
+   (stages 1+4)     (stages 2+3)      (bridge per pair)         (per model — stage 3&#39;s nn.Module)
+</code></pre></div>
+<p>Any robot × any model is a valid pair. <code>RobotAdaptor</code> knows nothing about which model it'll be fed into; <code>ModelAdaptor</code> knows nothing about which robot produced its inputs. They communicate only through <code>CanonicalDict</code> + <code>CanonicalInfo</code>. The composed <code>Adaptor</code> exposes both single-stage methods (<code>output_transforms = stage 3 then stage 4</code>) and pre-fused convenience methods (<code>env_input_transforms = stages 1+2</code>) — but the canvas calls each atomic stage individually via dedicated manager methods (<code>model_to_canonical_action</code>, <code>canonical_action_to_env</code>), keeping each canvas node 1:1 with one abstract method.</p>
+<p><strong>Source:</strong> all four method signatures, <code>CanonicalDict</code>, <code>CanonicalInfo</code>, and the composed <code>Adaptor</code> are vendored verbatim from <code>vlaworkspace/src/vlaworkspace/adaptors/</code>. AgentCanvas does not import vlaworkspace at runtime — it owns a snapshot.</p>
+<h3 id="21-canonicaldict-the-lingua-franca"><span class="num">2.1</span> CanonicalDict — the lingua franca</h3>
+<p>Every robot maps <strong>to</strong> this format; every model maps <strong>from</strong> it. Defined in <code>adapters/canonical.py</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="n">CanonicalDict</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;images&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;front&quot;</span><span class="p">:</span> <span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;wrist&quot;</span><span class="p">:</span> <span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span><span class="p">},</span>
+        <span class="s2">&quot;state&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;pos&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">,</span> <span class="s2">&quot;rot&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">,</span> <span class="s2">&quot;gripper&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">,</span> <span class="s2">&quot;joint_position&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">},</span>  <span class="c1"># all optional</span>
+        <span class="s2">&quot;actions&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;pos&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">,</span> <span class="s2">&quot;rot&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">,</span> <span class="s2">&quot;gripper&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">,</span> <span class="s2">&quot;joint_position&quot;</span><span class="p">:</span> <span class="err">…</span><span class="p">},</span>  <span class="c1"># output side</span>
+        <span class="s2">&quot;prompt&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;info&quot;</span><span class="p">:</span> <span class="n">CanonicalInfo</span><span class="p">(</span><span class="n">state_type</span><span class="p">,</span> <span class="n">state_rot_repr</span><span class="p">,</span> <span class="n">action_type</span><span class="p">,</span> <span class="n">action_rot_repr</span><span class="p">,</span>
+                         <span class="n">state_dims</span><span class="p">,</span> <span class="n">action_dims</span><span class="p">),</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The <code>info</code> block is metadata that lets a <code>ModelAdaptor</code> know <em>what kind of rotation</em> (axis-angle vs quaternion vs euler), <em>what keys are populated</em>, etc., so it can normalise correctly without having to know which robot it's paired with.</p>
+<h3 id="22-robotadaptor-abstract"><span class="num">2.2</span> RobotAdaptor (abstract)</h3>
+<p><code>adapters/base_robot.py</code>. Translates between an env's native obs/action format and <code>CanonicalDict</code>. Abstract methods:</p>
+<div class="highlight"><pre><span></span><code><span class="n">get_canonical_info</span><span class="p">()</span>           <span class="err">→</span> <span class="n">CanonicalInfo</span>
+<span class="n">dataset_to_canonical</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>     <span class="err">→</span> <span class="n">CanonicalDict</span>   <span class="c1"># for training</span>
+<span class="n">env_to_canonical</span><span class="p">(</span><span class="n">env_obs</span><span class="p">)</span>      <span class="err">→</span> <span class="n">CanonicalDict</span>   <span class="c1"># for inference (no actions)</span>
+<span class="n">canonical_to_env</span><span class="p">(</span><span class="n">canonical_action</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="err">→</span> <span class="nb">dict</span>   <span class="c1"># action chunk for env</span>
+<span class="n">get_state_dim</span><span class="p">()</span> <span class="o">/</span> <span class="n">get_action_dim</span><span class="p">()</span> <span class="o">/</span> <span class="n">get_norm_stats_keys</span><span class="p">()</span> <span class="o">/</span> <span class="n">env_obs</span><span class="p">()</span> <span class="o">/</span> <span class="n">env_action</span><span class="p">()</span> <span class="o">/</span> <span class="n">datasets</span><span class="p">()</span>
+</code></pre></div>
+<p><strong>Currently shipped subclass</strong>: <code>LiberoRobot</code> only.</p>
+<h3 id="23-modeladaptor-abstract"><span class="num">2.3</span> ModelAdaptor (abstract)</h3>
+<p><code>adapters/base_model.py</code>. Translates between <code>CanonicalDict</code> and model-specific input/output dicts, <strong>and owns normalisation</strong> (<code>norm_stats</code>, loaded from a JSON file at construction). Abstract methods:</p>
+<div class="highlight"><pre><span></span><code><span class="n">canonical_to_model</span><span class="p">(</span><span class="n">canonical</span><span class="p">)</span> <span class="err">→</span> <span class="nb">dict</span>     <span class="c1"># produces the batch fed into BasePolicy</span>
+<span class="n">model_to_canonical</span><span class="p">(</span><span class="n">model_output</span><span class="p">,</span> <span class="n">info</span><span class="p">)</span> <span class="err">→</span> <span class="n">CanonicalDict</span>
+<span class="n">canonical_to_norm_stats_format</span><span class="p">(</span><span class="n">canonical</span><span class="p">)</span> <span class="err">→</span> <span class="nb">dict</span>   <span class="c1"># for fitting/loading norm stats</span>
+<span class="n">get_norm_stats_mode</span><span class="p">()</span> <span class="err">→</span> <span class="nb">str</span>
+<span class="n">get_norm_stats_keys</span><span class="p">()</span> <span class="err">→</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+<span class="n">model_input</span><span class="p">()</span> <span class="o">/</span> <span class="n">model_output</span><span class="p">()</span> <span class="err">→</span> <span class="nb">dict</span>   <span class="c1"># shape descriptors</span>
+</code></pre></div>
+<p>The base class handles <code>norm_stats_path</code> JSON loading uniformly (<code>mean/std/q01/q99/min/max</code> per key), so subclasses just declare which keys they normalise and how.</p>
+<p><strong>Currently shipped subclasses</strong>: <code>Pi0Model</code>, <code>SmolVLAModel</code>, <code>DPModel</code> (used by both <code>dp</code> and <code>droid_dp</code>).</p>
+<h3 id="24-composed-adaptor"><span class="num">2.4</span> Composed Adaptor</h3>
+<p><code>adapters/adaptor.py</code>. Constructed inside <code>VlaPolicyManager</code> once a robot + model_adaptor pair is built. Provides:</p>
+<div class="highlight"><pre><span></span><code><span class="n">Adaptor</span><span class="p">(</span><span class="n">robot</span><span class="o">=</span><span class="err">…</span><span class="p">,</span> <span class="n">model</span><span class="o">=</span><span class="err">…</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">env_input_transforms</span><span class="p">(</span><span class="n">env_obs</span><span class="p">)</span>   <span class="c1"># robot.env_to_canonical → model.canonical_to_model</span>
+    <span class="o">.</span><span class="n">output_transforms</span><span class="p">(</span><span class="n">model_output</span><span class="p">)</span> <span class="c1"># model.model_to_canonical → robot.canonical_to_env</span>
+    <span class="o">.</span><span class="n">get_state_dim</span><span class="p">()</span> <span class="o">/</span> <span class="o">.</span><span class="n">get_action_dim</span><span class="p">()</span> <span class="o">/</span> <span class="o">.</span><span class="n">get_norm_stats</span><span class="p">()</span> <span class="o">/</span> <span class="err">…</span>
+</code></pre></div>
+<p>The 5 canvas nodes do <strong>not</strong> go through the composed Adaptor at all — each calls one atomic method on the manager (<code>env_to_canonical</code>, <code>canonical_to_model</code>, <code>predict</code>, <code>model_to_canonical_action</code>, <code>canonical_action_to_env</code>), keeping every canvas node 1:1 with one abstract method on RobotAdaptor / ModelAdaptor / BasePolicy. The composed <code>Adaptor</code> lives on the manager but is no longer the canvas's runtime path; it stays around for the <code>model_to_env</code> backwards-compat alias used by direct manager callers.</p>
+<h3 id="25-basepolicy-abstract-separate-from-modeladaptor"><span class="num">2.5</span> BasePolicy (abstract, separate from ModelAdaptor)</h3>
+<p><code>policies/base_policy.py</code>. The actual GPU model. Distinct from <code>ModelAdaptor</code>: a <code>ModelAdaptor</code> is pure-CPU shape-shifting + normalisation, a <code>BasePolicy</code> is the trained nn.Module. They're paired but not merged because:</p>
+<ul>
+<li>Two policies can share one ModelAdaptor (<code>DiffusionUnetHybridImagePolicy</code> and <code>DroidDiffusionPolicy</code> both use <code>DPModel</code> — confirmed via hydra configs <code>diffusion_policy_libero.yaml</code> + <code>droid_dp_mlp_libero.yaml</code>).</li>
+<li>A policy class owns weights + <code>predict_action()</code> + <code>load_checkpoint()</code> + dtype/device — no canonical-format knowledge.</li>
+</ul>
+<p><strong>Currently shipped subclasses</strong>: <code>Pi0Policy</code>, <code>SmolVLAPolicy</code>, <code>DiffusionUnetHybridImagePolicy</code>, <code>DroidDiffusionPolicy</code>.</p>
+<hr>
+<h2 id="3-design-principle-env-side-vs-policy-side-adapter-coupling"><span class="num">3.</span> Design principle: env-side vs policy-side adapter coupling</h2>
+<p>The four adapter stages split into two halves with very different ownership rules. <strong>This split is the load-bearing principle of <code>policy_vla</code> — it dictates what the user can change in the canvas and what is locked.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Half</th>
+<th>Stages</th>
+<th>Owner class</th>
+<th>Bound to</th>
+<th>User-changeable?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Env-side</strong></td>
+<td>1 (env→canonical) + 4 (canonical→env)</td>
+<td><code>RobotAdaptor</code></td>
+<td>The graph's environment (simulator / benchmark)</td>
+<td><strong>No — hardwired to the graph's env nodes</strong></td>
+</tr>
+<tr>
+<td><strong>Policy-side</strong></td>
+<td>2 (canonical→model) + 3 (model→canonical)</td>
+<td><code>ModelAdaptor</code></td>
+<td>The chosen policy (Pi0, SmolVLA, OpenVLA, …)</td>
+<td><strong>Yes — selecting a policy picks both adapters as a triple</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="31-env-side-locked-to-the-graphs-environment"><span class="num">3.1</span> Env-side: locked to the graph's environment</h3>
+<p>A graph's env nodes (<code>env_libero__*</code>, or <code>env_simpler__*</code>, or <code>env_franka__*</code>, …) determine which <code>RobotAdaptor</code> is in play. The two env-side adapter nodes (<code>adapt_env_to_canonical</code> + <code>adapt_canonical_to_env</code>) <strong>consume</strong> that robot — they do not choose it. It is illegal to mix env-side adapters from different robots in the same graph: a LIBERO graph cannot use a SIMPLER robot adapter, and vice-versa, because the <code>CanonicalDict[obs]</code> produced by the env-side stage 1 must match what the env-side stage 4 expects to invert.</p>
+<p><strong>UI contract.</strong> Today the env-side adapter nodes expose a <code>robot</code> select dropdown populated by file discovery in <code>adapters/robots/</code> — see §4.1. Per this principle the <em>robot identity itself</em> should be locked to whatever the graph's env nodes imply, and the dropdown is a temporary state on the way there: any robot file that's incompatible with the current env (e.g. picking a <code>franka_robot</code> on a LIBERO graph) is structurally invalid even though the dropdown will let you do it. The end-state UI is to either (a) hide robot files that don't match the graph's env, or (b) prompt a confirmation modal when the user swaps the env nodeset, explaining that env nodes and env-side adapters are joined at the hip — different <code>CanonicalInfo</code>, different state schema, different action contract. Per-robot kwargs (e.g. <code>use_delta_actions</code>, <code>delta_action_mask</code>) are no longer free-form fields on the canvas — they live as <code>DEFAULT_KWARGS</code> module constants in each robot file (e.g. <code>adapters/robots/libero_robot.py</code>); selecting a different file = selecting a different defaults preset.</p>
+<h3 id="32-policy-side-policy-2-adapters-as-a-linked-triple"><span class="num">3.2</span> Policy-side: policy + 2 adapters as a linked triple</h3>
+<p>A single VLA is fully specified by <strong>three artefacts that move together as one unit</strong>:</p>
+<ol>
+<li>The <code>BasePolicy</code> subclass (e.g. <code>Pi0Policy</code>) — owns weights, <code>predict_action</code>, checkpoint loading.</li>
+<li>The <code>ModelAdaptor.canonical_to_model</code> direction (e.g. <code>Pi0Model.canonical_to_model</code>) — packs canonical obs into the model's input batch (stage 2).</li>
+<li>The <code>ModelAdaptor.model_to_canonical</code> direction (same <code>Pi0Model</code>) — unpacks raw model output into <code>CanonicalDict[action]</code> (stage 3).</li>
+</ol>
+<p><strong>One linked dropdown drives all three.</strong> On the canvas, the <code>model</code> select on <code>adapt_canonical_to_model</code> is the single source of truth. Changing it from <code>pi0</code> → <code>openvla</code> simultaneously:</p>
+<ul>
+<li>swaps the policy class loaded inside <code>predict</code>,</li>
+<li>swaps the <code>canonical_to_model</code> packing on this node,</li>
+<li>swaps the <code>model_to_canonical</code> unpacking on <code>adapt_model_to_canonical</code>.</li>
+</ul>
+<p>The user does <strong>not</strong> pick the two policy-side adapters separately — they are a triple, not three independent choices. The downstream <code>predict</code> and <code>adapt_model_to_canonical</code> nodes don't carry their own model selector — <code>adapt_model_to_canonical</code> is a stateless reader that calls into the same <code>_model_adaptor</code> slot the manager singleton owns, so it auto-follows whatever was last selected on <code>adapt_canonical_to_model</code>. Today the canvas has two coupled selects: <code>model</code> on <code>adapt_canonical_to_model</code> (picks the <code>ModelAdaptor</code> file from <code>adapters/models/</code>) and <code>policy</code> on <code>predict</code> (picks the <code>BasePolicy</code> file from <code>policies/</code>); per the principle these will eventually collapse to one selector that drives both, but pairing is still the user's responsibility (the <code>_resolve_classes()</code> legacy table documents the canonical pairings for now). Per-policy kwargs are no longer free-form JSON on the canvas — each policy file owns a <code>DEFAULT_KWARGS</code> module constant (transcribed from the upstream Hydra YAMLs); only <code>checkpoint_path</code> and <code>num_inference_steps</code> remain as free-form fields on the <code>predict</code> node.</p>
+<h3 id="33-adding-a-new-policy-the-minimal-contract"><span class="num">3.3</span> Adding a new policy: the minimal contract</h3>
+<p>This split makes onboarding a new VLA (OpenVLA, Octo, RT-2, π₀-FAST, …) a fixed three-step recipe:</p>
+<ol>
+<li><strong>Implement the policy</strong> — a <code>BasePolicy</code> subclass under <code>policies/&lt;name&gt;_policy.py</code> (weights + <code>predict_action</code> + <code>load_checkpoint</code>).</li>
+<li><strong>Implement the two policy-side adapters</strong> as a single <code>ModelAdaptor</code> subclass under <code>adapters/&lt;name&gt;_model.py</code>:<ul>
+<li><code>canonical_to_model(canonical) → model_batch</code> (stage 2)</li>
+<li><code>model_to_canonical(model_output, info) → canonical_action</code> (stage 3)</li>
+</ul>
+</li>
+<li><strong>Register the triple</strong> in <code>_resolve_classes()</code> so the policy dropdown wires the policy class to its two adapters as one atomic unit.</li>
+</ol>
+<p><strong>You do not write env-side adapters when adding a new policy</strong> — those are owned by whichever robot is in the graph. The new policy must consume the existing <code>CanonicalDict[obs]</code> shape produced by the env's <code>RobotAdaptor</code> and emit a <code>CanonicalDict[action]</code> that the env's <code>RobotAdaptor.canonical_to_env</code> can invert. That is the entire interface contract: no robot-specific code in the policy, no policy-specific code in the robot. (Cross-cutting concerns — e.g. a model's image preprocessing being incompatible with an env's image format — are handled by the canonical layer's <code>info</code> block, not by smuggling env knowledge into the model.)</p>
+<h3 id="34-ui-rules-summary"><span class="num">3.4</span> UI rules summary</h3>
+<table>
+<thead>
+<tr>
+<th>Selector</th>
+<th>Linked targets</th>
+<th>User-changeable on canvas?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Robot identity (<code>robot</code> select on <code>adapt_env_to_canonical</code>)</td>
+<td><code>adapt_canonical_to_env</code> (auto-follows via singleton)</td>
+<td><strong>Today: yes — file-discovery dropdown.</strong> End-state per §3.1: locked to graph's env identity, dropdown filtered or prompt-modal on swap.</td>
+</tr>
+<tr>
+<td>Model identity (<code>model</code> select on <code>adapt_canonical_to_model</code>)</td>
+<td><code>adapt_model_to_canonical</code> unpacking (auto-follows via singleton)</td>
+<td><strong>Yes</strong> — change one, the mirror reader follows on next tick</td>
+</tr>
+<tr>
+<td>Policy identity (<code>policy</code> select on <code>predict</code>)</td>
+<td>The <code>BasePolicy</code> class loaded onto GPU</td>
+<td><strong>Yes</strong> — paired with <code>model</code> per the canonical pairings; future end-state collapses both into one select</td>
+</tr>
+<tr>
+<td>Per-robot / per-model / per-policy kwargs</td>
+<td>The selected file's <code>DEFAULT_KWARGS</code> module constant</td>
+<td><strong>No on canvas</strong> — edit the <code>.py</code> file (sourced from upstream Hydra YAMLs); reload to pick up</td>
+</tr>
+<tr>
+<td><code>checkpoint_path</code>, <code>num_inference_steps</code></td>
+<td><code>predict</code> node</td>
+<td>Yes — free-form fields, ckpt path is per-graph</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Mental model.</strong> A <code>policy_vla</code> graph is a sandwich: the bread (env-side adapters) is fixed by which kitchen you're in (the env nodeset), and the filling (policy + 2 policy-side adapters) is the one thing the user picks — and they pick it as one item from the menu, not three independent ingredients.</p>
+<hr>
+<h2 id="4-the-five-canvas-nodes"><span class="num">4.</span> The five canvas nodes</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Node type</th>
+<th>Backing method</th>
+<th>Owned config</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>policy_vla__adapt_env_to_canonical</code></td>
+<td><code>RobotAdaptor.env_to_canonical</code> (via <code>ensure_robot</code>)</td>
+<td><code>robot</code> (select — files in <code>adapters/robots/</code>); kwargs come from selected file's <code>DEFAULT_KWARGS</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>policy_vla__adapt_canonical_to_model</code></td>
+<td><code>ModelAdaptor.canonical_to_model</code> (via <code>ensure_model_adaptor</code>)</td>
+<td><code>model</code> (select — files in <code>adapters/models/</code>); kwargs come from selected file's <code>DEFAULT_KWARGS</code></td>
+</tr>
+<tr>
+<td>–</td>
+<td><code>policy_vla__predict</code></td>
+<td><code>BasePolicy.predict_action</code> (via <code>ensure_policy</code>)</td>
+<td><code>policy</code> (select — files in <code>policies/</code>), <code>checkpoint_path</code>, <code>num_inference_steps</code>; rest of policy kwargs come from selected file's <code>DEFAULT_KWARGS</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>policy_vla__adapt_model_to_canonical</code></td>
+<td><code>ModelAdaptor.model_to_canonical</code> (via <code>model_to_canonical_action</code>)</td>
+<td><em>(none — reads <code>_model_adaptor</code> from manager singleton)</em></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>policy_vla__adapt_canonical_to_env</code></td>
+<td><code>RobotAdaptor.canonical_to_env</code> (via <code>canonical_action_to_env</code>)</td>
+<td><em>(none — reads <code>_robot</code> from manager singleton)</em></td>
+</tr>
+</tbody>
+</table>
+<h3 id="41-policy_vla__adapt_env_to_canonical"><span class="num">4.1</span> <code>policy_vla__adapt_env_to_canonical</code></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image</code> (IMAGE), <code>wrist_image</code> (IMAGE), <code>state</code> (ANY, 8-D float32), <code>prompt</code> (TEXT, optional)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>canonical</code> (ANY = <code>CanonicalDict</code>)</td>
+</tr>
+<tr>
+<td>Behaviour</td>
+<td>Drops <code>None</code> values from <code>env_obs</code> before calling <code>RobotAdaptor.env_to_canonical</code> (line 718) — so envs without wrist (e.g. SIMPLER) can pass through <code>None</code> for that slot</td>
+</tr>
+</tbody>
+</table>
+<p>Calls <code>ensure_robot(robot_module)</code> first — idempotent rebuild of the selected <code>RobotAdaptor</code> subclass if <code>(module_name, kwargs)</code> cache key changed; cached otherwise. The robot dropdown options are computed at import time by <code>_discover_modules("adapters/robots")</code> — every <code>.py</code> file in that folder (excluding <code>__init__</code>, files starting with <code>_</code> or <code>base_</code>) becomes a dropdown entry. Kwargs are pulled from the selected file's <code>DEFAULT_KWARGS</code> module constant; Hydra-style <code>_target_:</code> dicts inside <code>DEFAULT_KWARGS</code> are recursively materialized by <code>_instantiate()</code>.</p>
+<h3 id="42-policy_vla__adapt_canonical_to_model"><span class="num">4.2</span> <code>policy_vla__adapt_canonical_to_model</code></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>canonical</code> (ANY)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>model_batch</code> (ANY — model-specific numpy dict)</td>
+</tr>
+<tr>
+<td>Behaviour</td>
+<td>If <code>model</code> selection changes, <strong>drops the loaded policy</strong> (Pi0Policy ≠ SmolVLAPolicy) so <code>predict</code> reloads weights</td>
+</tr>
+</tbody>
+</table>
+<p>Owns the <code>model</code> select dropdown (today: <code>dp_model</code> / <code>pi0_model</code> / <code>smolvla_model</code> — every file in <code>adapters/models/</code> except <code>base_model.py</code> and <code>dp_defaults.py</code>). Calls <code>ensure_model_adaptor(model_module)</code>. Switching <code>model</code> invalidates the loaded <code>_policy</code> (since checkpoint shape is bound to the model class) so <code>predict</code> will reload weights on next tick.</p>
+<h3 id="43-policy_vla__predict"><span class="num">4.3</span> <code>policy_vla__predict</code></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>model_batch</code> (ANY)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>model_output</code> (ANY — typically <code>{"action": ndarray[K, action_dim]}</code>)</td>
+</tr>
+<tr>
+<td>Behaviour</td>
+<td><strong>Heavy node</strong>. Builds <code>BasePolicy</code> instance, loads checkpoint, moves to GPU, recomposes <code>Adaptor</code>. First call is the expensive one (Pi0 also does JAX→PT conversion + <code>torch.compile</code> — <code>default_per_step_budget_sec = 60s</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Owns the <code>policy</code> select dropdown (today: <code>dp_policy</code> / <code>droid_dp_policy</code> / <code>pi0_policy</code> / <code>smolvla_policy</code> — every file in <code>policies/</code> except <code>base_policy.py</code>), the checkpoint path, and <code>num_inference_steps</code>. Calls <code>ensure_policy(policy_module, checkpoint_path=…, num_inference_steps=…, device=…)</code>. Per-policy kwargs come from the selected file's <code>DEFAULT_KWARGS</code> module constant. Requires <code>adapt_canonical_to_model</code> to have executed first so the <code>_model_adaptor</code> is built on the manager.</p>
+<h3 id="44-policy_vla__adapt_model_to_canonical"><span class="num">4.4</span> <code>policy_vla__adapt_model_to_canonical</code></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>model_output</code> (ANY)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>canonical_action</code> (ANY = <code>CanonicalDict[action]</code>)</td>
+</tr>
+<tr>
+<td>Behaviour</td>
+<td>No config. Calls <code>ModelAdaptor.model_to_canonical(model_output, info)</code> via the manager's <code>model_to_canonical_action</code>; <code>info</code> comes from the loaded RobotAdaptor's <code>get_canonical_info()</code>. Pure-CPU shape transform, no GPU</td>
+</tr>
+</tbody>
+</table>
+<p>Stage 3 of the adapter pipeline. Symmetric to stage 2 (canonical→model), just on the action side. Producing <code>canonical_action</code> as a real wire (instead of fusing with stage 4) means action-side processing nodes — filters, value-trackers, debugging viewers — can sit between this node and <code>adapt_canonical_to_env</code>.</p>
+<h3 id="45-policy_vla__adapt_canonical_to_env"><span class="num">4.5</span> <code>policy_vla__adapt_canonical_to_env</code></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>canonical_action</code> (ANY), <code>current_state</code> (ANY, optional — needed for delta-action robots to anchor against)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>action_chunk</code> (TEXT — JSON <code>[[ax,ay,az,arx,ary,arz,grip], …]</code>)</td>
+</tr>
+<tr>
+<td>Behaviour</td>
+<td>No config. Calls <code>RobotAdaptor.canonical_to_env(canonical_action, state)</code> via the manager's <code>canonical_action_to_env</code>. JSON-encodes the resulting <code>(K, 7)</code> ndarray as a list-of-lists for the env wire</td>
+</tr>
+</tbody>
+</table>
+<p>Stage 4 of the adapter pipeline. The output goes into <code>env_libero__step.action</code> (or <code>env_simpler__step.action</code>), which decodes the JSON list-of-lists into a <code>(K, 7)</code> action chunk and steps the env once per row. <code>current_state</code> comes from <code>iter_in.iterout_state</code> so each iteration anchors deltas on the freshest eef pose.</p>
+<h3 id="46-wire-formats-opaque-between-nodes"><span class="num">4.6</span> Wire formats (opaque between nodes)</h3>
+<p>The four intermediate wires (<code>canonical</code>, <code>model_batch</code>, <code>model_output</code>, <code>canonical_action</code>) are typed <code>ANY</code> in the canvas — the contract is enforced by Python dict shape, not by <code>wire_type</code>:</p>
+<ul>
+<li><code>canonical</code>: <code>CanonicalDict[obs]</code> per §2.1 (<code>make_canonical_obs</code> factory).</li>
+<li><code>model_batch</code>: model-specific numpy dict (see each <code>ModelAdaptor.model_input()</code>).</li>
+<li><code>model_output</code>: model-specific dict, normalised by the manager to at least contain <code>"action"</code> of shape <code>[K, action_dim]</code> (B=1 batch dim is squeezed).</li>
+<li><code>canonical_action</code>: <code>CanonicalDict[action]</code> — <code>{"data": {"actions": {"pos": …, "rot": …, "gripper": …, "joint_position": …}}, "info": CanonicalInfo}</code> (<code>make_canonical_action</code> factory in <code>adapters/canonical.py:75</code>). Same <code>CanonicalInfo</code> schema as obs side, but <code>data</code> only contains <code>actions</code>.</li>
+</ul>
+<p>Only the final <code>action_chunk</code> is a typed (<code>TEXT</code>) wire because it crosses the env boundary.</p>
+<hr>
+<h2 id="5-vlapolicymanager-runtime-singleton"><span class="num">5.</span> VlaPolicyManager — runtime singleton</h2>
+<p><code>VlaPolicyManager</code> (<code>__init__.py:113-624</code>) owns the entire pipeline state in this subprocess:</p>
+<ul>
+<li><strong>Threading</strong>: a single-thread <code>ThreadPoolExecutor</code> (<code>max_workers=1</code>) pinned to one CUDA-affine thread; all <code>_run_sync</code> calls funnel onto it.</li>
+<li><strong>Lock</strong>: <code>threading.Lock</code> guarding every public method.</li>
+<li><strong>State</strong> (instance attrs):</li>
+<li><code>_robot: LiberoRobot | None</code> — the <code>RobotAdaptor</code> instance.</li>
+<li><code>_model_type: str</code> — <code>"pi0" | "smolvla" | "dp" | "droid_dp" | ""</code>.</li>
+<li><code>_model_adaptor: ModelAdaptor | None</code>.</li>
+<li><code>_policy: BasePolicy | None</code> — on GPU.</li>
+<li><code>_adaptor: Adaptor | None</code> — composed pair, recomposed when robot or model_adaptor changes.</li>
+<li><code>_loaded_meta: dict</code> — surfaced to logs.</li>
+<li>Three config caches: <code>_robot_cfg_cache</code>, <code>_model_adaptor_cfg_cache</code>, <code>_policy_cfg_cache</code> — drive idempotency.</li>
+</ul>
+<h3 id="51-the-three-ensure_-methods"><span class="num">5.1</span> The three <code>ensure_*</code> methods</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Caller node</th>
+<th>What it rebuilds</th>
+<th>What it invalidates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ensure_robot(robot_module)</code></td>
+<td><code>adapt_env_to_canonical</code></td>
+<td>The <code>RobotAdaptor</code> subclass picked from <code>adapters/robots/&lt;robot_module&gt;.py</code>, kwargs from its <code>DEFAULT_KWARGS</code></td>
+<td>composed <code>_adaptor</code> (forces recompose on next <code>ensure_policy</code>)</td>
+</tr>
+<tr>
+<td><code>ensure_model_adaptor(model_module)</code></td>
+<td><code>adapt_canonical_to_model</code></td>
+<td>The <code>ModelAdaptor</code> subclass picked from <code>adapters/models/&lt;model_module&gt;.py</code>, kwargs from its <code>DEFAULT_KWARGS</code>; on module change, <strong>also drops <code>_policy</code></strong></td>
+<td>composed <code>_adaptor</code></td>
+</tr>
+<tr>
+<td><code>ensure_policy(policy_module, checkpoint_path, num_inference_steps, device)</code></td>
+<td><code>predict</code></td>
+<td>The <code>BasePolicy</code> subclass picked from <code>policies/&lt;policy_module&gt;.py</code>, kwargs from its <code>DEFAULT_KWARGS</code>; calls <code>load_checkpoint(...).to(device).eval()</code>; recomposes <code>_adaptor</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Cache keys are <code>(module_name, json.dumps(kwargs, sort_keys=True))</code>; identical key → no rebuild. The mirror nodes on the action side (<code>adapt_model_to_canonical</code>, <code>adapt_canonical_to_env</code>) carry no own dropdowns — they read <code>_robot</code> / <code>_model_adaptor</code> straight off the singleton, so flipping a dropdown on stage 1 / stage 2 automatically changes stage 4 / stage 3 behavior on the next tick.</p>
+<h3 id="52-inference-path-per-step"><span class="num">5.2</span> Inference path (per step)</h3>
+<p>Every iteration of the canvas loop:</p>
+<ol>
+<li><code>adapt_env_to_canonical</code> → <code>_robot.env_to_canonical(env_obs)</code> → <code>CanonicalDict[obs]</code></li>
+<li><code>adapt_canonical_to_model</code> → <code>_model_adaptor.canonical_to_model(canonical)</code> → numpy batch</li>
+<li><code>predict</code> → <code>_batch_to_torch</code> (adds B=1) → <code>_policy.predict_action()</code> → numpy out (B=1 squeezed)</li>
+<li><code>adapt_model_to_canonical</code> → <code>manager.model_to_canonical_action(model_output)</code> → <code>_model_adaptor.model_to_canonical(model_output, info)</code> → <code>CanonicalDict[action]</code></li>
+<li><code>adapt_canonical_to_env</code> → <code>manager.canonical_action_to_env(canonical_action, current_state)</code> → <code>_robot.canonical_to_env(canonical_action, state={...})</code> → <code>{"actions": (K, 7)}</code> → JSON</li>
+</ol>
+<p><code>current_state</code> is wired into stage 4 only (not stage 3) so <code>RobotAdaptor.canonical_to_env</code> can convert delta actions → absolute by anchoring on the current eef pose. Stage 3 is stateless.</p>
+<hr>
+<h2 id="6-currently-supported-model-robot-matrix"><span class="num">6.</span> Currently supported model × robot matrix</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>libero_robot</code> (delta)</th>
+<th><code>libero_robot_absolute</code></th>
+<th><code>simpler_robot</code> (WidowX + Google Robot)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pi0_model</code> + <code>pi0_policy</code></td>
+<td>✅ shipped LIBERO finetune</td>
+<td>—</td>
+<td>⚠ requires SIMPLER finetune ckpt (none official)</td>
+</tr>
+<tr>
+<td><code>smolvla_model</code> + <code>smolvla_policy</code></td>
+<td>—</td>
+<td>✅ absolute action</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>dp_model</code> + <code>dp_policy</code></td>
+<td>✅ delta</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>dp_model</code> + <code>droid_dp_policy</code></td>
+<td>✅ delta</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>rt1_model</code> + <code>rt1_policy</code> (widowx_bridge)</td>
+<td>—</td>
+<td>—</td>
+<td>✅ Bridge tasks</td>
+</tr>
+<tr>
+<td><code>rt1_model</code> + <code>rt1_policy_google_robot</code></td>
+<td>—</td>
+<td>—</td>
+<td>✅ Google Robot tasks</td>
+</tr>
+<tr>
+<td>(planned: <code>octo_model</code>, <code>openvla_model</code>, <code>rt2_model</code>, …)</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Two robot columns are filled today (<code>LiberoRobot</code> for LIBERO, <code>SimplerRobot</code> for SimplerEnv); new robots are added by dropping a file under <code>adapters/robots/</code> (see §9.2). The Cartesian product is the long-term shape — every cell that has both a robot and a model file becomes a valid graph configuration. Cells marked ⚠ are <em>structurally</em> valid (the pipeline runs) but <em>empirically</em> fail because the checkpoint trained on robot A doesn't transfer to robot B's distribution.</p>
+<hr>
+<h2 id="7-file-layout"><span class="num">7.</span> File layout</h2>
+<div class="highlight"><pre><span></span><code>workspace/nodesets/policy/policy_vla/
+├── __init__.py                    # NodeSet registration + 5 canvas nodes + VlaPolicyManager
+│                                  # + folder-discovery helpers (_discover_modules,
+│                                  #   _load_module, _instantiate)
+├── rt1_inference.py               # vendored RT1Inference (verbatim from SimplerEnv) — TF SavedModel wrapper
+├── adapters/                      # Adaptor system (vendored from vlaworkspace&#39;s adaptors/)
+│   ├── __init__.py                # re-exports public API from robots/ + models/ sub-packages
+│   ├── adaptor.py                 # composed Adaptor(robot, model)
+│   ├── canonical.py               # CanonicalDict / CanonicalInfo / make_canonical_*
+│   ├── robots/                    # ⬅ env-coupled side (auto-discovered by canvas)
+│   │   ├── __init__.py            # re-exports: RobotAdaptor, LiberoRobot, SimplerRobot
+│   │   ├── base_robot.py          # RobotAdaptor (abstract); excluded from discovery
+│   │   ├── libero_robot.py        # LiberoRobot + DEFAULT_KWARGS (LIBERO Pi0/DP delta preset)
+│   │   ├── libero_robot_absolute.py  # variant — re-exports LiberoRobot, empty DEFAULT_KWARGS
+│   │   │                              #   (SmolVLA / DROID-DP-pretrained absolute preset)
+│   │   └── simpler_robot.py       # SimplerRobot (WidowX + Google Robot, joint-space proprio,
+│   │                              #   no wrist cam, delta actions native)
+│   └── models/                    # ⬅ model-coupled side (auto-discovered by canvas)
+│       ├── __init__.py            # re-exports: ModelAdaptor, Pi0Model, SmolVLAModel, DPModel, Rt1Model
+│       ├── base_model.py          # ModelAdaptor (abstract) + norm_stats loading; excluded
+│       ├── pi0_model.py           # Pi0Model + DEFAULT_KWARGS
+│       ├── smolvla_model.py       # SmolVLAModel + DEFAULT_KWARGS
+│       ├── dp_model.py            # DPModel + DEFAULT_KWARGS (used by dp + droid_dp policies)
+│       ├── dp_defaults.py         # shared constants (not a ModelAdaptor; excluded from discovery)
+│       └── rt1_model.py           # Rt1Model — pass-through adapter (no norm-stats; canonical
+│                                  #   ↔ {image:HWC uint8, instruction:str})
+├── models/                        # vendored model architectures (nn.Modules)
+│   ├── action_expert/             # Pi0 action-expert internals
+│   ├── openpi/                    # Pi0 backbone (vendored from openpi)
+│   ├── smolvla/                   # SmolVLA backbone
+│   ├── dp/                        # Diffusion Policy backbone
+│   ├── droid/                     # DROID DP backbone
+│   ├── ema_model.py / flow_matching.py / z_pytorch_util.py / z_utils/
+│   └── convert_jax_model_to_pytorch.py   # Pi0 JAX-checkpoint → PyTorch
+└── policies/                      # ⬅ BasePolicy wrappers (auto-discovered by canvas)
+    ├── __init__.py                # re-exports BasePolicy + 5 concrete subclasses
+    ├── base_policy.py             # BasePolicy (abstract); excluded from discovery
+    ├── pi0_policy.py              # Pi0Policy + DEFAULT_KWARGS
+    ├── smolvla_policy.py          # SmolVLAPolicy + DEFAULT_KWARGS
+    ├── dp_policy.py               # DiffusionUnetHybridImagePolicy + DEFAULT_KWARGS
+    ├── droid_dp_policy.py         # DroidDiffusionPolicy + DEFAULT_KWARGS
+    ├── rt1_policy.py              # Rt1Policy — TF SavedModel wrapped as a degenerate nn.Module;
+    │                              #   DEFAULT_KWARGS = {policy_setup: widowx_bridge}
+    └── rt1_policy_google_robot.py # variant — re-exports Rt1Policy with
+                                   #   DEFAULT_KWARGS = {policy_setup: google_robot}
+</code></pre></div>
+<p>Note that <code>rt1_inference.py</code> sits at the package root (alongside <code>__init__.py</code>), not under <code>policies/</code>. That's intentional: it's vendored upstream code (the TF SavedModel inference wrapper from SimplerEnv), not a <code>BasePolicy</code> subclass. <code>Rt1Policy</code> (the thin nn.Module wrapper that the framework actually instantiates) lives under <code>policies/</code> like every other policy. By keeping vendored code separate from the framework-conformant wrapper, re-vendoring upstream changes is a single-file overwrite.</p>
+<p><strong>Horizontal split mirrors vlaworkspace upstream</strong>: <code>adapters/robots/</code> is the env-coupled side (stages 1+4), <code>adapters/models/</code> is the model-coupled side (stages 2+3). Three layers of vendored code total: <code>adapters/</code> is the user-facing abstraction, top-level <code>models/</code> is the raw <code>nn.Module</code> weights, <code>policies/</code> is the inference wrapper that holds weights + checkpoint loading + <code>predict_action</code>.</p>
+<p><strong>Discovery rules</strong> — <code>_discover_modules(subpkg_relpath)</code> (in <code>__init__.py</code>) lists <code>.py</code> stems in the target folder, <strong>excluding</strong> <code>__init__</code>, files starting with <code>_</code> or <code>base_</code>, and the literal name <code>dp_defaults</code>. The result is sorted and exposed as the dropdown options on the matching canvas node (<code>adapters/robots/</code> → <code>robot</code> select on stage 1; <code>adapters/models/</code> → <code>model</code> select on stage 2; <code>policies/</code> → <code>policy</code> select on <code>predict</code>). The scan is filename-only — no module imports happen at scan time, so heavy deps (torch, diffusers, transformers) stay out of the framework process until the user actually picks an option.</p>
+<hr>
+<h2 id="8-conda-env-and-server-mode-hosting"><span class="num">8.</span> Conda env and server-mode hosting</h2>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PolicyVlaNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;policy_vla&quot;</span>
+    <span class="n">server_python</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+        <span class="s2">&quot;VLA_POLICY_PYTHON&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;python&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">parallelism</span> <span class="o">=</span> <span class="s2">&quot;replicated&quot;</span>   <span class="c1"># per-worker torch + CUDA state</span>
+    <span class="n">default_per_step_budget_sec</span> <span class="o">=</span> <span class="mf">60.0</span>   <span class="c1"># Pi0 first-call JAX→PT + torch.compile</span>
+</code></pre></div>
+<ul>
+<li>Hosted in its own subprocess via auto_host (ADR-server-001), bound to the <code>ac-vla-policy</code> conda env.</li>
+<li>Install script: <code>scripts/install/install_ac_vla_policy.sh</code>.</li>
+<li><code>parallelism="replicated"</code> means each eval worker spins its own subprocess with its own GPU policy — no model sharing. <code>batched=False</code> everywhere (no shared rendezvous tier).</li>
+</ul>
+<hr>
+<h2 id="9-extension-cookbook-current-understanding"><span class="num">9.</span> Extension cookbook (current understanding)</h2>
+<blockquote>
+<p>§3 captures the <strong>design principle</strong> for extension (env-side locked, policy-side as a triple). This section captures the <strong>mechanical steps</strong> observable in the current code. Where the two diverge — most notably the lack of a robot-pluggability mechanism in §9.2 — the principle wins; the code needs to catch up.</p>
+</blockquote>
+<h3 id="91-adding-a-new-model-eg-openvla"><span class="num">9.1</span> Adding a new model (e.g. OpenVLA)</h3>
+<p>Code-level steps in the current source — drop-in pattern, no central registry edits:</p>
+<ol>
+<li><strong>Add a <code>ModelAdaptor</code> subclass</strong> at <code>adapters/models/&lt;name&gt;_model.py</code>. Implement <code>canonical_to_model</code>, <code>model_to_canonical</code>, <code>get_norm_stats_keys</code>, <code>get_norm_stats_mode</code>, <code>canonical_to_norm_stats_format</code>, <code>model_input</code>, <code>model_output</code>. Use the base class's <code>_load_norm_stats_from_path</code> for normalisation if your stats fit the standard schema. Append a <code>DEFAULT_KWARGS: dict = {...}</code> module constant transcribed from the upstream Hydra YAML (or any other source of truth for that model's defaults). Hydra-style <code>_target_:</code> dicts are supported — <code>_instantiate()</code> recursively materializes them.</li>
+<li><strong>Add a <code>BasePolicy</code> subclass</strong> at <code>policies/&lt;name&gt;_policy.py</code>. Implement at least <code>predict_action(batch) → dict</code>, <code>load_checkpoint(path)</code>, <code>to(device)</code>, <code>eval()</code>. (Or reuse an existing one if your model's inference matches — DP and DROID-DP share <code>DPModel</code> but not the policy class.) Append its own <code>DEFAULT_KWARGS</code>.</li>
+<li><strong>Vendored backbone</strong>: drop the actual <code>nn.Module</code> code under top-level <code>models/&lt;name&gt;/</code>. AgentCanvas vendors verbatim, doesn't import from upstream repos (per <code>__init__.py</code> docstrings).</li>
+<li><strong>Hot-reload</strong> (<code>POST /api/components/reload</code>) — both new files appear in the <code>model</code> and <code>policy</code> dropdowns immediately. No <code>_resolve_classes()</code> edit, no <code>_MODEL_TYPES</code> edit, no <code>ConfigField.options</code> edit.</li>
+<li><strong>Optional — re-export</strong> from <code>adapters/models/__init__.py</code> and <code>policies/__init__.py</code> if you want <code>from policy_vla.adapters import OpenVLAModel</code> to work for direct Python callers (the canvas path uses <code>_load_module</code> + <code>_find_subclass</code> and doesn't need the re-export).</li>
+<li><strong>Class resolution</strong> — model/policy/robot classes are resolved by folder-scan discovery (<code>ROBOT_OPTIONS</code> / <code>MODEL_OPTIONS</code> / <code>POLICY_OPTIONS</code>) and instantiated via <code>ensure_model_adaptor</code> / <code>ensure_policy</code>; drop a file in, <code>POST /api/components/reload</code>. (The legacy hardcoded <code>_resolve_classes()</code> table + <code>load_model()</code> path — used only by the since-removed <code>smoke_vla_libero.py</code> runner — was deleted 2026-06-30.)</li>
+</ol>
+<p><strong>Open questions for this path:</strong></p>
+<ul>
+<li>What about norm_stats files that don't fit the <code>mean/std/q01/q99</code> schema (e.g. OpenVLA's 256-bin discretisation)? The base class's loader assumes the schema; non-conforming stats need either a subclass override or a different loading path.</li>
+<li>See §10 for the unresolved-questions list.</li>
+</ul>
+<h3 id="911-worked-example-onboarding-rt-1-x-2026-05-04"><span class="num">9.1.1</span> Worked example — onboarding RT-1-X (2026-05-04)</h3>
+<p>RT-1-X is the first VLA whose lineage is <strong>not</strong> vlaworkspace's Pi0/SmolVLA/DP family — it's a Google TF SavedModel served via tf-agents, with its own image preprocessing, USE language embedding, and per-embodiment action rescaling. Folding it into <code>policy_vla</code> without bending the rules in §3 is the canonical proof that "every VLA = adapter+policy+adapter" generalises beyond the original family.</p>
+<p>What got added (no new node, no new nodeset):</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>policy_vla/rt1_inference.py</code></td>
+<td>Vendored verbatim from <code>third_party/SimplerEnv/simpler_env/policies/rt1/rt1_model.py</code>. Imported through a relative path so <code>simpler_env/__init__.py</code>'s <code>import mani_skill2_real2sim.envs</code> doesn't fire — keeps SAPIEN out of <code>ac-vla-policy</code>.</td>
+</tr>
+<tr>
+<td><code>policy_vla/adapters/models/rt1_model.py</code></td>
+<td><code>Rt1Model(ModelAdaptor)</code>. Pass-through: stage 2 packs <code>{image: HWC uint8, instruction: str}</code> from <code>CanonicalDict[obs]</code>; stage 3 unpacks <code>(K, 7)</code> action into <code>CanonicalDict[action]</code> with <code>pos / rot / gripper</code> slots. No norm-stats — RT-1's per-embodiment rescaling is baked into the SavedModel + the <code>_unnormalize_action_widowx_bridge</code> / <code>_small_action_filter_google_robot</code> paths in <code>rt1_inference.py</code>.</td>
+</tr>
+<tr>
+<td><code>policy_vla/policies/rt1_policy.py</code></td>
+<td><code>Rt1Policy(BasePolicy)</code>. Inference-only nn.Module wrapper: registers a single frozen <code>nn.Parameter(zeros(1))</code> so <code>policy.to(device)</code>, <code>policy.eval()</code>, <code>policy.parameters()</code>, <code>policy.device</code> all work without touching the TF graph. <code>predict_action(batch)</code> strips <code>_batch_to_torch</code>'s wrapping (image becomes torch uint8 (1,H,W,3) → numpy uint8 (H,W,3)), calls <code>RT1Inference.step(image, instruction)</code>, packs the 7-D action into <code>(B=1, K=1, 7)</code> torch — the manager's <code>predict()</code> then squeezes the leading 1. <code>compute_loss</code> raises NotImplementedError. <code>DEFAULT_KWARGS = {"policy_setup": "widowx_bridge"}</code>.</td>
+</tr>
+<tr>
+<td><code>policy_vla/policies/rt1_policy_google_robot.py</code></td>
+<td>Variant — re-exports <code>Rt1Policy</code> with <code>DEFAULT_KWARGS = {"policy_setup": "google_robot"}</code>. Same pattern as <code>libero_robot_absolute.py</code>: drop a file = add a dropdown entry that shares the class.</td>
+</tr>
+</tbody>
+</table>
+<p>That's it. <strong>Zero edits to canvas node code, zero edits to <code>VlaPolicyManager</code> ensure_* logic, zero edits to graph topology.</strong> The 5-stage graph at <code>workspace/graphs/vla_policy_simpler.json</code> selects RT-1-X by setting <code>model=rt1_model</code>, <code>policy=rt1_policy</code> (or <code>rt1_policy_google_robot</code>), <code>robot=simpler_robot</code> — three filenames, three dropdowns.</p>
+<p>What this proves:</p>
+<ul>
+<li><strong>The framework's "any robot × any model" Cartesian product is real</strong> — <code>Rt1Model</code> doesn't know which robot it's paired with; <code>SimplerRobot</code> doesn't know which model is downstream; the contract between them is <code>CanonicalDict</code> + <code>CanonicalInfo</code>.</li>
+<li><strong><code>BasePolicy = nn.Module</code> doesn't force every VLA to be torch.</strong> RT-1's actual model is TF; the dummy parameter trick lets a TF/JAX/MLX backend live behind the BasePolicy interface as long as it overrides <code>predict_action</code> and <code>load_checkpoint</code>.</li>
+<li><strong>Dependency stacks coexist when they're additive.</strong> RT-1 adds <code>tensorflow==2.15</code>, <code>tf-agents==0.19</code>, <code>tensorflow-hub==0.16</code>, <code>transforms3d</code> to the existing <code>ac-vla-policy</code> env. Torch 2.6, JAX 0.5.3, Flax 0.10.2 all stay put. (Octo's <code>jax==0.4.20</code> + <code>flax==0.8.1</code> pins are <em>not</em> additive — that's why Octo is currently a separate nodeset; see §10.9.)</li>
+</ul>
+<h3 id="92-adding-a-new-robot-eg-simpler-bridge"><span class="num">9.2</span> Adding a new robot (e.g. SIMPLER bridge)</h3>
+<ol>
+<li><strong>Add a <code>RobotAdaptor</code> subclass</strong> at <code>adapters/robots/&lt;name&gt;_robot.py</code>. Implement all 9 abstract methods. Append a <code>DEFAULT_KWARGS: dict = {...}</code> module constant.</li>
+<li><strong>Hot-reload</strong> — the new file appears in the <code>robot</code> dropdown on <code>adapt_env_to_canonical</code> immediately. The manager no longer hardcodes <code>LiberoRobot</code>; <code>ensure_robot(robot_module)</code> resolves <code>&lt;name&gt;_robot.py</code> → <code>RobotAdaptor</code> subclass via <code>_load_module</code> + <code>_find_subclass</code>.</li>
+<li><strong>Optional — re-export</strong> from <code>adapters/robots/__init__.py</code> for direct Python callers.</li>
+</ol>
+<p><strong>Mechanical pluggability is now in place.</strong> What's still <strong>TBD</strong> is the §3.1 principle constraint — that the <code>robot</code> dropdown should be filtered (or interlocked) by the graph's env nodes, so that picking a <code>franka_robot</code> on a LIBERO graph isn't possible. Today the dropdown lists every file in <code>adapters/robots/</code>, and the user is responsible for picking a compatible one. The <code>libero_robot_absolute.py</code> demo variant exists precisely to prove this: it shows up in the dropdown next to <code>libero_robot</code>, both are LIBERO-compatible, and the user picks between them by file name. Cross-env contamination is an open guard.</p>
+<hr>
+<h2 id="10-open-questions-for-the-maintainer"><span class="num">10.</span> Open questions for the maintainer</h2>
+<blockquote>
+<p>The following are points where the code's current shape leaves the design intent ambiguous. The maintainer will resolve these by adding principles inline.</p>
+</blockquote>
+<ol>
+<li><strong>Robot pluggability — env-locking interlock.</strong> §3.1's principle ("env-side adapters are locked to the graph's env nodes") is half-implemented: the <em>mechanical</em> pluggability is in place — <code>ensure_robot(robot_module)</code> resolves any <code>&lt;name&gt;_robot.py</code> via <code>_load_module</code> + <code>_find_subclass</code>, no <code>LiberoRobot</code> hardcode. What's still missing is the <em>interlock</em> — today the <code>robot</code> dropdown lists every file under <code>adapters/robots/</code>, so a user can pick <code>franka_robot</code> on a LIBERO graph and the pipeline will fail with an obs-shape mismatch deep in the model. End-state: the env nodeset advertises a compatible-robot list (e.g. <code>env_libero</code> → <code>[libero_robot, libero_robot_absolute]</code>, <code>env_simpler</code> → <code>[simpler_robot]</code>) and the dropdown filters to that list, OR the canvas pops a confirmation modal on env swap.</li>
+<li><strong>What counts as "a new VLA"?</strong> ~~<strong>Resolved by RT-1-X integration (2026-05-04):</strong>~~ Every VLA, regardless of lineage, joins as a <code>(ModelAdaptor, BasePolicy)</code> pair inside <code>policy_vla</code>. RT-1-X's TF SavedModel + USE-embedding pipeline fit cleanly behind the <code>BasePolicy</code> + <code>ModelAdaptor</code> interfaces — see §9.1.1. The only legitimate reason to spawn a separate nodeset is a hard <em>Python environment</em> conflict (Octo, currently — see §10.9), not a model-architecture difference. When/if Octo's jax/flax pin gets unstuck, it folds in too.</li>
+<li>~~<strong>What goes in <code>presets/</code>?</strong>~~ <strong>Resolved (2026-05-04)</strong> — <code>presets/</code> is gone. A centralized presets directory was explicitly rejected. Per-adapter / per-policy defaults now live as <code>DEFAULT_KWARGS</code> module constants inside each <code>.py</code> file, transcribed from the upstream Hydra YAMLs. Adding a defaults variant = drop a new <code>.py</code> file in the right folder; removing = delete the file. Per-checkpoint preset blobs (if ever needed) would attach to specific checkpoints, not to a global registry.</li>
+<li><strong>Norm-stats schema.</strong> <code>_load_norm_stats_from_path</code> expects <code>mean/std/q01/q99</code> per key. What's the design for stats that don't fit (e.g. OpenVLA's 256-bin token boundaries, RT-2's no-norm path)?</li>
+<li><strong><code>canonical_to_env</code> contract on action chunks.</strong> Today emits <code>{"actions": ndarray (K, 7)}</code> and <code>adapt_canonical_to_env</code> JSON-encodes. For non-7-DoF embodiments (mobile manipulators, wheeled bases, dual-arm) is <code>(K, 7)</code> still the contract or does the wire type evolve?</li>
+<li><strong>Cross-env state vector.</strong> <code>current_state</code> is documented as 8-D LIBERO state at <code>adapt_canonical_to_env</code>. Is there a canonical state schema across envs, or does each <code>RobotAdaptor</code> own its own state shape and the wire just stays <code>ANY</code>?</li>
+<li><strong><code>models/</code> vs <code>policies/</code> split.</strong> Why two layers (raw nn.Module vs Policy wrapper) instead of one? Is a new VLA expected to follow the split or can it ship as a single fused class?</li>
+<li>
+<p><strong>Composite vs separate nodeset.</strong> When does a new VLA join <code>policy_vla</code> vs spawn its own nodeset? <strong>Resolved alongside Q2 (2026-05-04):</strong> every VLA joins <code>policy_vla</code> unless its Python deps hard-conflict with the shared <code>ac-vla-policy</code> env. Architecture, lineage, and training framework are all irrelevant to nodeset identity — only the env conflict matters. See §10.9.</p>
+</li>
+<li>
+<p><strong>Octo and the env-conflict escape hatch.</strong> Octo (RAIL Berkeley, JAX/Flax) is the one VLA that did <em>not</em> fold into <code>policy_vla</code> on its first integration pass. Its upstream <code>octo-1.0</code> pin is <code>jax==0.4.20</code> + <code>flax==0.8.1</code> — two major versions behind <code>ac-vla-policy</code>'s <code>jax==0.5.3</code> + <code>flax==0.10.2</code>, with breaking API changes in between (<code>flax.training.checkpoints</code> removed, <code>nn.Module</code> <code>init/apply</code> tightened, <code>jax.random.KeyArray</code> deleted, etc.). Downgrading would break Pi0/openpi; upgrading Octo source needs ~1–2 days of port + correctness validation against the published baseline. Octo therefore lives in its own <code>policy_octo</code> nodeset on a separate <code>ac-octo</code> conda env <em>as the explicit escape hatch</em>, not as a new pattern. <strong>The pattern remains "everything in <code>policy_vla</code>"; a separate nodeset is the temporary refuge until the env conflict resolves.</strong> Once Octo is ported forward (or once we adopt a JAX-version-agnostic loader), it folds back as <code>octo_model.py</code> + <code>octo_policy.py</code> like every other VLA.</p>
+</li>
+</ol>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-11 15:37: workspace/nodesets paths updated to the role-directory layout (ADR-platform-008): env/ method/ policy/ model/ common/ other/, server/ eliminated; renames sam→model_sam, ram_perception→model_ram, others split into geometry + mock_frontier.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-05-04 (RT-1-X integration): Add RT-1-X as a (<code>Rt1Model</code> + <code>Rt1Policy</code> + <code>rt1_policy_google_robot</code> variant) trio under <code>adapters/models/</code> and <code>policies/</code>, plus vendored <code>rt1_inference.py</code> at the package root. No new nodes, no new nodeset — RT-1-X runs through the existing 5-stage graph by selecting three dropdowns. Add <code>SimplerRobot</code> to <code>adapters/robots/</code> as the second shipped robot. Update §1 to declare uniformity as the load-bearing rule, §1.1 to list both env families, §6 matrix to add the SimplerRobot column + RT-1-X rows, §7 file layout to match current contents, §9.1.1 with the worked-example walkthrough. Resolve §10.1 (robot pluggability mechanically in place; env-locking interlock still TBD), §10.2 + §10.8 ("every VLA joins <code>policy_vla</code> unless Python deps hard-conflict"). Add §10.9 explaining Octo's separate-nodeset status as a temporary env-conflict escape hatch.</li>
+<li>2026-05-04 13:12: Reorganise <code>adapters/</code> into horizontal <code>robots/</code> ⊕ <code>models/</code> sub-folders mirroring vlaworkspace upstream. Per-adapter / per-policy defaults move from free-form JSON ConfigFields to <code>DEFAULT_KWARGS</code> module constants inside each file, transcribed from upstream Hydra YAMLs (<code>CORL_pi0_libero_lerobot.yaml</code>, <code>smolvla_libero.yaml</code>, <code>diffusion_policy_libero.yaml</code>, <code>droid_dp_libero.yaml</code>). Canvas tools now expose <code>robot</code> / <code>model</code> / <code>policy</code> select dropdowns auto-populated by file discovery (<code>_discover_modules</code> filename-only scan). <code>ensure_*</code> methods rekeyed to module name + frozen kwargs cache. <code>presets/</code> directory deleted (Q3 in §10 resolved). Cookbook §9.1 / §9.2 rewritten around the drop-in pattern. UI rules table in §3.4 reflects new selector semantics: stage-3 / stage-4 mirror nodes auto-follow stage-1 / stage-2 dropdowns via the manager singleton.</li>
+<li>2026-05-03 16:58: Add §3 — the load-bearing design principle: env-side adapters (stages 1+4) are locked to the graph's env nodes; policy-side adapters (stages 2+3) move as a linked triple with the policy class itself. Codifies the "add a new policy" three-step contract (policy + 2 policy-side adapters + register) and the UI rules (linked policy dropdown, locked env, prompt-on-attempt modal for env swap). Renumbered §3-§9 → §4-§10. Updated §9.2 + §10.1 to reflect that the principle now rules out a free-floating <code>robot_type</code> selector.</li>
+<li>2026-05-03 16:10: Split <code>policy_vla__adapt_model_to_env</code> (fused stage 3+4) into two atomic nodes — <code>adapt_model_to_canonical</code> (stage 3) + <code>adapt_canonical_to_env</code> (stage 4) — exposing <code>canonical_action</code> (CanonicalDict[action]) as a real canvas wire. Now 5 canvas nodes 1:1 with the 4 atomic adapter stages + 1 model forward; obs side and action side are perfectly symmetric.</li>
+<li>2026-05-03 15:53: Reframe §1 + §2 — policy_vla is a generic VLA inference framework (4 atomic adapter stages), not a 4-model wrapper; vlaworkspace credited as upstream source of vendored adapter system.</li>
+<li>2026-05-03 15:41: Initial doc — code-derived snapshot of the policy_vla architecture as it exists today; design principles deferred to maintainer annotations.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h3" href="#11-where-it-fits">1.1 Where it fits</a>
+      <a class="toc-h2" href="#2-architecture-the-adaptor-system">2. Architecture: the Adaptor system</a>
+      <a class="toc-h3" href="#21-canonicaldict-the-lingua-franca">2.1 CanonicalDict — the lingua franca</a>
+      <a class="toc-h3" href="#22-robotadaptor-abstract">2.2 RobotAdaptor (abstract)</a>
+      <a class="toc-h3" href="#23-modeladaptor-abstract">2.3 ModelAdaptor (abstract)</a>
+      <a class="toc-h3" href="#24-composed-adaptor">2.4 Composed Adaptor</a>
+      <a class="toc-h3" href="#25-basepolicy-abstract-separate-from-modeladaptor">2.5 BasePolicy (abstract, separate from ModelAdaptor)</a>
+      <a class="toc-h2" href="#3-design-principle-env-side-vs-policy-side-adapter-coupling">3. Design principle: env-side vs policy-side adapter coupling</a>
+      <a class="toc-h3" href="#31-env-side-locked-to-the-graphs-environment">3.1 Env-side: locked to the graph's environment</a>
+      <a class="toc-h3" href="#32-policy-side-policy-2-adapters-as-a-linked-triple">3.2 Policy-side: policy + 2 adapters as a linked triple</a>
+      <a class="toc-h3" href="#33-adding-a-new-policy-the-minimal-contract">3.3 Adding a new policy: the minimal contract</a>
+      <a class="toc-h3" href="#34-ui-rules-summary">3.4 UI rules summary</a>
+      <a class="toc-h2" href="#4-the-five-canvas-nodes">4. The five canvas nodes</a>
+      <a class="toc-h3" href="#41-policy_vla__adapt_env_to_canonical">4.1 policy_vla__adapt_env_to_canonical</a>
+      <a class="toc-h3" href="#42-policy_vla__adapt_canonical_to_model">4.2 policy_vla__adapt_canonical_to_model</a>
+      <a class="toc-h3" href="#43-policy_vla__predict">4.3 policy_vla__predict</a>
+      <a class="toc-h3" href="#44-policy_vla__adapt_model_to_canonical">4.4 policy_vla__adapt_model_to_canonical</a>
+      <a class="toc-h3" href="#45-policy_vla__adapt_canonical_to_env">4.5 policy_vla__adapt_canonical_to_env</a>
+      <a class="toc-h3" href="#46-wire-formats-opaque-between-nodes">4.6 Wire formats (opaque between nodes)</a>
+      <a class="toc-h2" href="#5-vlapolicymanager-runtime-singleton">5. VlaPolicyManager — runtime singleton</a>
+      <a class="toc-h3" href="#51-the-three-ensure_-methods">5.1 The three ensure_* methods</a>
+      <a class="toc-h3" href="#52-inference-path-per-step">5.2 Inference path (per step)</a>
+      <a class="toc-h2" href="#6-currently-supported-model-robot-matrix">6. Currently supported model × robot matrix</a>
+      <a class="toc-h2" href="#7-file-layout">7. File layout</a>
+      <a class="toc-h2" href="#8-conda-env-and-server-mode-hosting">8. Conda env and server-mode hosting</a>
+      <a class="toc-h2" href="#9-extension-cookbook-current-understanding">9. Extension cookbook (current understanding)</a>
+      <a class="toc-h3" href="#91-adding-a-new-model-eg-openvla">9.1 Adding a new model (e.g. OpenVLA)</a>
+      <a class="toc-h3" href="#911-worked-example-onboarding-rt-1-x-2026-05-04">9.1.1 Worked example — onboarding RT-1-X (2026-05-04)</a>
+      <a class="toc-h3" href="#92-adding-a-new-robot-eg-simpler-bridge">9.2 Adding a new robot (e.g. SIMPLER bridge)</a>
+      <a class="toc-h2" href="#10-open-questions-for-the-maintainer">10. Open questions for the maintainer</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

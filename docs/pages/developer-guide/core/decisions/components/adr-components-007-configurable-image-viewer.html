@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-007 — AgentCanvas</title>
+<meta name="description" content="Configurable `imageViewer` replaces fixed `observationViewer`">
+<meta property="og:title" content="ADR-components-007 — AgentCanvas">
+<meta property="og:description" content="Configurable `imageViewer` replaces fixed `observationViewer`">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-007-configurable-image-viewer.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-007-configurable-image-viewer.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-007</span>
+  </div>
+  <div class="last-updated">2026-04-17 15:55</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-007</h1>
+  <p class="tagline">Configurable `imageViewer` replaces fixed `observationViewer`</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-17 15:55</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-029</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p><code>ObservationViewerSink</code> was a fixed 2-port (<code>rgb</code>, <code>depth</code>) RGB+depth viewer — every instance rendered identically, and scenes that wanted a different sensor set (front+back cameras, multi-view RGB-D, depth-only, RGB-only) had to fork the class. The rest of the configurable-port infrastructure already existed (<code>BaseCanvasNode._resolve_ports(config)</code>, <code>frontend/src/canvas/portResolution.ts</code>, <code>PortListEditor</code>, <code>ports_mode="sink"</code>) and <code>IterIn</code>/<code>IterOut</code> (ADR-dataflow-003) were already using it — the viewer was the odd-one-out.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Replace <code>ObservationViewerSink</code> with a new <code>ImageViewerSink</code> (node_type <code>imageViewer</code>) whose ports and grid layout are <strong>instance-derived</strong> from per-graph-instance config. Config shape at graph root: <code>{ rows: int, cols: int, ports: [{name, wire_type}, ...] }</code> with <code>wire_type ∈ {IMAGE, DEPTH}</code>. <code>_resolve_ports(config)</code> derives one required-in-intent, <code>optional=True</code>-at-class-level port per <code>ports[]</code> entry (matching existing viewer firing semantics and the <code>_SinkBase</code> invariant that class-level ports stay optional so <code>_is_ready()</code> doesn't deadlock). A new frontend layout <code>imageGrid</code> in <code>GenericBlockRenderer</code> dispatches to <code>ImageGridViewerLayout.tsx</code>, which reads <code>data.rows/cols/ports</code> directly (ports materialise on both sides from the same config key). WS wire unchanged: <code>viewer_data {node_id, step, fields: {&lt;port.name&gt;: &lt;b64&gt;}}</code>. Step-sync is provided by the env emitting all outputs in one step; frontend bag-merges <code>fields</code> across multiple firings per step. The 4 workspace graphs using <code>observationViewer</code> (<code>straightforward.json</code>, <code>navgpt_ce.json</code>, <code>text_analysis_demo.json</code>, <code>opennav_habitat.json</code>) are migrated in-place to <code>imageViewer</code> with <code>{rows:1, cols:2, ports: [rgb/IMAGE, depth/DEPTH]}</code> — existing edges already target handles <code>rgb</code>/<code>depth</code> so no edge changes were needed.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep <code>observationViewer</code> as a thin preset around <code>imageViewer</code></strong> — rejected, adds a second type that does nothing the new one doesn't. (b) <strong>Nest grid config as <code>{grid: {rows, cols}}</code></strong> — rejected, <code>ConfigFieldRenderer</code> has flat-key addressing (<code>data[field.name]</code>), so flat <code>rows</code>/<code>cols</code> at config root costs nothing and saves a nesting hop. (c) <strong>Declare dynamic ports required (<code>optional=False</code>)</strong> to enforce strict same-step — rejected; <code>standard/node_io.py</code>'s <code>REQUIRED_INPUTS</code> reads class-level ports only, so required instance ports would be invisible to <code>_is_ready()</code> and cause premature firing. Env-side same-step emission + frontend bag-merging already gives the same user-visible guarantee. (d) <strong>Add a <code>label</code> field on port config</strong> — deferred; <code>port.name</code> doubles as cell label for now, a richer field is a follow-up.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>One configurable type replaces a family of hardcoded forks. The design reuses every piece of the existing configurable-port contract (<code>ports_mode="sink"</code>, <code>_resolve_ports</code>, <code>portResolution.ts</code>, <code>PortListEditor</code>) so the new node is mostly a thin subclass + one new layout component — no new frontend plumbing. Choosing <code>config.ports</code> (the canonical key already consumed by <code>portResolution.ts</code>) over a semantic <code>config.images</code> means the frontend's existing port-derivation logic works unchanged. The <code>optional=True</code>-at-class-level decision preserves the <code>_SinkBase</code> firing invariant (ADR-components-006 family) so no executor changes were needed. Wire types restricted to IMAGE/DEPTH in <code>_resolve_ports</code> — enforced backend-side for v1; a frontend <code>allowed_wire_types</code> filter on <code>PortListEditor</code> is a small follow-up. Note that <code>backend/app/standard/node_io.py:45-60</code> still builds <code>REQUIRED_INPUTS</code> from class-level <code>input_ports</code> only; this is safe today because <code>imageViewer</code> (like all viewers) uses optional ports, but is worth a general fix when a configurable-port node needs true required semantics (follow-up).</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>core/architecture.md, core/blueprint.md, design-docs/canvas-system.md, design-docs/graph-system.md, tutorials/execution-logs.md, capabilities/real-time-observability.md, demos/navgpt-second-try.md, core/codebase-map.md, api-reference/base-canvas-node.md, core/roadmap.md (changelog)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

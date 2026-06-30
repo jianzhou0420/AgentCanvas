@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coding-Agent Backend Surface — AgentCanvas</title>
+<meta name="description" content="Programmatic API surface — HTTP + filesystem + process model">
+<meta property="og:title" content="Coding-Agent Backend Surface — AgentCanvas">
+<meta property="og:description" content="Programmatic API surface — HTTP + filesystem + process model">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/surfaces/coding-agent-backend-surface.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="cas-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#casa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/surfaces/coding-agent-backend-surface.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Surfaces</a>
+    <span class="sep">/</span>
+    <span class="here">Coding-Agent Backend Surface</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Coding-Agent Backend Surface</h1>
+  <p class="tagline">Programmatic API surface — HTTP + filesystem + process model</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="casa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">The interface a coding agent (Claude Code, Cursor, a custom harness) uses to drive AgentCanvas <em>without</em> the UI — run experiments, edit graphs, introspect components, read results. It is three layers at once: an HTTP API, a set of canonical filesystem paths, and a process model the agent must supervise. This page tells the integration story that connects them; for any one component's internals, follow its linked design doc. An <a href="#6-mcp-packaging">MCP server</a> already wraps the core of this surface as discoverable tools (§6) — bare HTTP + files remain the substrate underneath.</p>
+<hr>
+<h2 id="1-what-this-surface-is"><span class="num">1.</span> What this surface is</h2>
+<p>AgentCanvas is a typed graph DSL: an agent is a directed graph of typed Python nodes evaluated by a shared executor against a shared environment substrate (see <a href="../graph/graph-system.html">Graph System</a>, <a href="../graph/graph-executor.html">Graph Executor</a>, <a href="../graph/wire-types.html">Wire Types</a>). Humans operate it through the desktop UI; a <strong>coding agent operates the same surface programmatically</strong> — same graphs, same executor, same evaluation, with the UI replaced by HTTP calls and file edits. That surface has three layers, and one task touches all three:</p>
+<svg class="rxsvg" viewBox="0 0 700 188" role="img" aria-label="A coding agent drives three layers at once. The HTTP API (FastAPI routers under app/api — eval, graphs, components) for it acting as an HTTP client; filesystem conventions (workspace/ graphs and nodesets, outputs/ run logs) for it reading and editing files directly; and the process model (a self-hosted uvicorn backend plus per-worker auto_host subprocesses) for it acting as supervisor of the whole stack.">
+  <rect class="accent" x="270" y="78" width="160" height="40" rx="8"/>
+  <text class="at" x="350" y="103" text-anchor="middle">coding agent</text>
+
+  <rect class="box" x="20" y="20" width="200" height="48" rx="8"/>
+  <text x="120" y="40" text-anchor="middle">HTTP API</text>
+  <text class="dim" x="120" y="57" text-anchor="middle">eval · graphs · components</text>
+  <path class="edge" d="M270,90 C200,72 200,68 220,52"/>
+  <text class="dim" x="232" y="84">HTTP client</text>
+
+  <rect class="box" x="480" y="20" width="200" height="48" rx="8"/>
+  <text x="580" y="40" text-anchor="middle">Filesystem</text>
+  <text class="dim" x="580" y="57" text-anchor="middle">workspace/ · outputs/</text>
+  <path class="edge" d="M430,90 C500,72 500,68 480,52"/>
+  <text class="dim" x="438" y="84">reads / edits files</text>
+
+  <rect class="box" x="250" y="148" width="200" height="40" rx="8"/>
+  <text x="350" y="167" text-anchor="middle">Process model</text>
+  <path class="edge" d="M350,118 L350,148"/>
+  <text class="dim" x="360" y="138">supervises</text>
+</svg>
+<p>The three are not independent — running an experiment POSTs to start, writes <code>workspace/graphs/</code> to revise, and reads <code>outputs/eval_runs/</code> to analyse. An agent that ignores any one of them round-trips through the human.</p>
+<p><strong>The surface was designed for the UI first, then opened to programmatic use.</strong> Some conveniences an agent expects — tool discovery, schema introspection, structured auth — were absent in the raw HTTP surface; the shipped MCP server (§6) closes the first two for its tool set, and §5 lists what remains.</p>
+<hr>
+<h2 id="2-surface-inventory"><span class="num">2.</span> Surface inventory</h2>
+<h3 id="21-http-endpoints"><span class="num">2.1</span> HTTP endpoints</h3>
+<p>All endpoints live under the FastAPI app in <code>agentcanvas/backend/app/main.py</code>, mounted by the routers in <code>app/api/</code>. Default backend port is <code>8000</code> for the user's primary instance; coding-agent skills self-host on <code>8765-8769</code> to avoid collisions.</p>
+<h4 id="211-eval-execution">2.1.1 Eval execution</h4>
+<p>The minimum a coding agent needs to run an experiment.</p>
+<table>
+<thead>
+<tr>
+<th>Method + Path</th>
+<th>Body / Query</th>
+<th>Returns</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /api/eval/v2/start</code></td>
+<td><code>StartEvalV2Request</code></td>
+<td><code>{run_id, status}</code> — <code>"queued"</code> on the default subprocess path, else <code>"pending"</code></td>
+<td><code>eval.py:164</code></td>
+</tr>
+<tr>
+<td><code>GET /api/eval/v2/status</code></td>
+<td>—</td>
+<td>active-run summary (status, completed_count, total_episodes, elapsed_sec)</td>
+<td><code>eval.py:415</code></td>
+</tr>
+<tr>
+<td><code>GET /api/eval/v2/export/{run_id}</code></td>
+<td>—</td>
+<td>full per-episode results + <code>aggregate_metrics</code> (live run in-memory, else <code>summary.json</code>)</td>
+<td><code>eval.py:522</code></td>
+</tr>
+<tr>
+<td><code>GET /api/eval/v2/runs</code> · <code>/runs/{run_id}</code></td>
+<td>—</td>
+<td>list past runs / one run summary</td>
+<td><code>eval.py:433,439</code></td>
+</tr>
+<tr>
+<td><code>GET /api/eval/v2/episodes</code></td>
+<td><code>?run_id</code></td>
+<td>per-episode rows for a run</td>
+<td><code>eval.py:424</code></td>
+</tr>
+<tr>
+<td><code>POST /api/eval/v2/stop</code></td>
+<td>—</td>
+<td>best-effort halt of the in-process (legacy) run</td>
+<td><code>eval.py:404</code></td>
+</tr>
+<tr>
+<td><code>GET /api/eval/v2/queue</code> · <code>POST /runs/{run_id}/cancel</code></td>
+<td>—</td>
+<td><strong>JobScheduler</strong> queue snapshot / cancel a queued-or-running subprocess job (the default path — <code>/stop</code> does not reach these)</td>
+<td><code>eval.py:457,466</code></td>
+</tr>
+<tr>
+<td><code>DELETE /api/eval/v2/runs/{run_id}</code></td>
+<td>—</td>
+<td>delete a run's <code>outputs/eval_runs/</code> dir</td>
+<td><code>eval.py:448</code></td>
+</tr>
+<tr>
+<td><code>POST /api/eval/v2/introspect</code></td>
+<td><code>{graph_name}</code></td>
+<td>graph's env nodeset, dataset/split options, episode count — without running</td>
+<td><code>eval.py:481</code></td>
+</tr>
+<tr>
+<td><code>WS /ws</code></td>
+<td>—</td>
+<td>live progress events (mounted at the root, <strong>not</strong> under <code>/api/eval/v2</code>)</td>
+<td><code>websocket.py:16</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>StartEvalV2Request</code> body (<code>eval.py:37-96</code>). <strong>Only <code>graph_name</code> is required</strong> — every other field has a default, so a one-line <code>{"graph_name": "..."}</code> is a valid run:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type (default)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>graph_name</code></td>
+<td><code>str</code> <em>(required)</em></td>
+<td>Resolves against <code>workspace/graphs/{graph_name}.json</code></td>
+</tr>
+<tr>
+<td><code>episode_count</code></td>
+<td><code>int</code> (<code>-1</code>)</td>
+<td>How many episodes; <code>-1</code> = all</td>
+</tr>
+<tr>
+<td><code>start_episode_index</code></td>
+<td><code>int</code> (<code>0</code>)</td>
+<td>Consecutive-mode start index (ignored when <code>episode_indices</code> is set)</td>
+</tr>
+<tr>
+<td><code>episode_indices</code></td>
+<td><code>list[int] | null</code></td>
+<td>Explicit indices — overrides consecutive mode</td>
+</tr>
+<tr>
+<td><code>worker_count</code></td>
+<td><code>int</code> (<code>1</code>)</td>
+<td>Concurrent workers (subject to the nodeset's <code>parallelism</code> mode)</td>
+</tr>
+<tr>
+<td><code>step_budget</code></td>
+<td><code>int | null</code></td>
+<td>Per-episode iteration cap. <code>null</code> defers to the resolver chain: env-supplied (env panel <code>on_load</code>) → graph-authored → <code>DEFAULT_STEP_BUDGET</code>. (Legacy <code>max_steps</code> is accepted and mapped here.)</td>
+</tr>
+<tr>
+<td><code>per_step_budget_sec</code></td>
+<td><code>float | null</code></td>
+<td>Per-step wall-clock budget; <code>null</code> = the nodeset default</td>
+</tr>
+<tr>
+<td><code>selectors</code> · <code>episode_selectors</code></td>
+<td><code>dict</code> (<code>{}</code>) · <code>list[dict] | null</code></td>
+<td>The generic env-panel cascade pushed before each episode (e.g. <code>{"task_id": …}</code>); <code>episode_selectors</code> gives per-episode overrides for cross-task sweeps. <code>dataset</code> and <code>split</code> (default <code>"val_unseen"</code>) are legacy shims merged into this dict.</td>
+</tr>
+<tr>
+<td><code>via_subprocess</code></td>
+<td><code>bool</code> (<code>true</code>)</td>
+<td><strong>Default true</strong> — the run is admitted through the JobScheduler and executes in its own subprocess (returns <code>status: "queued"</code>, a timestamp <code>run_id</code>). Set <code>false</code> for the legacy in-process path (<code>ExecutionGuard</code>, an 8-char hex <code>run_id</code>).</td>
+</tr>
+<tr>
+<td><code>marginal_vram_mb</code> · <code>exclusive_gpu</code> · <code>priority</code></td>
+<td><code>int</code> (<code>0</code>) · <code>bool</code> (<code>false</code>) · <code>str</code> (<code>"normal"</code>)</td>
+<td>GPU-admission declaration consumed by the JobScheduler (subprocess path only).</td>
+</tr>
+<tr>
+<td><code>active_workspace_dir</code></td>
+<td><code>str | null</code></td>
+<td>Absolute path to overlay <code>workspace/graphs/</code> + <code>graph_nodes/</code> before the frozen base (ADR-components-009) — the mechanism architect skills use to isolate concurrent edits.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="212-graph-crud">2.1.2 Graph CRUD</h4>
+<p>Used when the coding agent edits a graph between iterations. All graph routes live in <code>app/api/canvas/graphs.py</code> (mounted at <code>/api/graphs</code>). The id is a <strong><code>{graph_id:path}</code></strong> — a graph name may contain <code>/</code> (e.g. <code>experiments/foo</code>), so it is hierarchical, not a flat name.</p>
+<table>
+<thead>
+<tr>
+<th>Method + Path</th>
+<th>Purpose</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/graphs</code></td>
+<td>List all saved graphs (+ <code>/folders</code> for the folder tree)</td>
+<td><code>graphs.py:265,193</code></td>
+</tr>
+<tr>
+<td><code>GET /api/graphs/{graph_id:path}</code></td>
+<td>Read full graph JSON</td>
+<td><code>graphs.py:326</code></td>
+</tr>
+<tr>
+<td><code>POST /api/graphs</code> · <code>PUT /api/graphs/{id}</code></td>
+<td>Create / overwrite a graph</td>
+<td><code>graphs.py:279,336</code></td>
+</tr>
+<tr>
+<td><code>DELETE /api/graphs/{id}</code> · <code>POST /{id}/move</code> · <code>POST /layout</code></td>
+<td>Delete, move/rename, auto-layout</td>
+<td><code>graphs.py:388,304,297</code></td>
+</tr>
+<tr>
+<td><code>POST /api/graphs/validate</code></td>
+<td>Schema-check a graph without running</td>
+<td><code>graphs.py:350</code></td>
+</tr>
+<tr>
+<td><code>POST /api/components/reload</code></td>
+<td>Hot-reload nodesets after editing <code>workspace/nodesets/*.py</code> (under the <em>components</em> router, not graphs)</td>
+<td><code>app/api/platform/components.py:96</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="213-component-introspection">2.1.3 Component introspection</h4>
+<table>
+<thead>
+<tr>
+<th>Method + Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/components</code></td>
+<td>Registered <code>nodesets</code> + <code>nodes</code> (two keys; no "policies" key) — <code>components.py:86</code></td>
+</tr>
+<tr>
+<td><code>GET /api/components/node-schemas</code></td>
+<td><strong>All</strong> node types with input/output ports + config schema (there is no per-type <code>/nodes/{type}</code> route) — <code>components.py:221</code></td>
+</tr>
+</tbody>
+</table>
+<p>These are what a coding agent reads to know what wires can connect to what — the runtime equivalent of the per-tutorial <code>skill-canvas-node.md</code> documentation. Several other live routers exist that a supervising agent may touch — <code>/api/profiles</code> (LLM/run config), <code>/api/env-panels</code> (per-nodeset control panels), <code>/api/logs</code>, <code>/api/config</code> — see <code>main.py:214-228</code> for the full mount list.</p>
+<h4 id="214-health-lifecycle">2.1.4 Health / lifecycle</h4>
+<table>
+<thead>
+<tr>
+<th>Method + Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /health</code></td>
+<td>Liveness probe (used during self-host startup)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-filesystem-conventions"><span class="num">2.2</span> Filesystem conventions</h3>
+<p>Several paths are part of the contract — the backend reads them as-is and the coding agent is expected to write them in canonical format.</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Role</th>
+<th>Schema authority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace/graphs/{name}.json</code></td>
+<td>Saved graph definitions</td>
+<td><a href="../graph/graph-system.html">Graph System</a> — <code>GraphDefinition</code></td>
+</tr>
+<tr>
+<td><code>workspace/architect/exp_profiles/{name}.yaml</code></td>
+<td>Per-graph experiment profile (split, worker_count, primary_metric, secondary_metrics)</td>
+<td><code>.claude/architect/README.md</code> § Per-graph experiment profile</td>
+</tr>
+<tr>
+<td><code>workspace/nodesets/*.py</code></td>
+<td>Local nodesets (run in backend process)</td>
+<td><a href="../components/nodesets.html">NodeSets</a></td>
+</tr>
+<tr>
+<td><code>workspace/nodesets/{role}/*.py</code> with <code>server_python</code> set</td>
+<td>Server-mode nodesets (run as <code>auto_host</code> subprocesses; role directories per ADR-platform-008)</td>
+<td><a href="../operations/server-mode.html">Server Mode</a></td>
+</tr>
+<tr>
+<td><code>outputs/eval_runs/{run_id}/</code></td>
+<td>Run root — <code>summary.json</code> (metrics + <code>episodes[]</code>), <code>graph.json</code> (frozen snapshot), <code>spec.json</code>, <code>shared_urls.json</code>, <code>stdout.log</code>, <code>stderr.log</code>, <code>_DONE</code></td>
+<td><a href="../graph/batch-eval.html">Batch Eval</a></td>
+</tr>
+<tr>
+<td><code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/</code></td>
+<td><strong>Per-episode</strong> dir — <code>log.jsonl</code> (one row per node firing), <code>assets/</code> (image/depth/tensor artifacts), <code>episode.json</code>. There is no top-level <code>log.jsonl</code> under the run root.</td>
+<td><a href="../operations/execution-logs.html">Execution Logs</a> (ADR-eval-004)</td>
+</tr>
+</tbody>
+</table>
+<p>The path layout is stable enough that a coding agent should treat it as part of the API; re-layout changes get a corresponding ADR. Note <code>exp_profiles/*.yaml</code> (experiment profiles, a file convention) is unrelated to the <code>/api/profiles</code> endpoint (LLM/run config profiles) — same word, different concept.</p>
+<h3 id="23-process-model"><span class="num">2.3</span> Process model</h3>
+<p>A live AgentCanvas backend is <strong>not a single process</strong>. When a graph references a nodeset declared <code>parallelism = "replicated"</code> (e.g. <code>env_mp3d</code>), the backend spawns one <code>auto_host</code> subprocess per worker; with K workers a 50-worker run is <code>1 (uvicorn) + 50 (auto_host) = 51 processes</code>. Each <code>auto_host</code> is a small uvicorn hosting the nodeset's <code>BaseServer</code> (see <a href="../operations/server-mode.html">Server Mode</a>), receiving <code>/call/&lt;node_type&gt;</code> POSTs over loopback HTTP.</p>
+<svg class="rxsvg" viewBox="0 0 700 170" role="img" aria-label="Process tree of a self-hosted run. The coding agent spawns, under setsid -f, a conda run wrapper that launches one uvicorn backend; the uvicorn parent spawns N auto_host subprocesses (one per replicated worker), each a small uvicorn reached over loopback HTTP. A single kill on the negative process-group id reaps the conda wrapper and uvicorn; each auto_host calls os.setsid() into its own group, so a per-auto_host PGID kill reaps the rest.">
+  <rect class="accent" x="270" y="12" width="160" height="34" rx="7"/>
+  <text class="at" x="350" y="34" text-anchor="middle">coding agent</text>
+  <path class="edge" d="M350,46 L350,66"/>
+  <text class="dim" x="360" y="62">setsid -f</text>
+
+  <rect class="box" x="250" y="66" width="200" height="34" rx="7"/>
+  <text x="350" y="88" text-anchor="middle">conda run → uvicorn</text>
+  <text class="dim" x="464" y="86">one backend, the PGID leader</text>
+
+  <path class="edge" d="M300,100 L150,130"/>
+  <path class="edge" d="M345,100 L345,130"/>
+  <path class="edge" d="M400,100 L545,130"/>
+  <rect class="box" x="60" y="130" width="170" height="32" rx="7"/>
+  <text class="mono" x="145" y="150" text-anchor="middle">auto_host #0</text>
+  <text x="345" y="150" text-anchor="middle" class="dim">…</text>
+  <rect class="box" x="470" y="130" width="170" height="32" rx="7"/>
+  <text class="mono" x="555" y="150" text-anchor="middle">auto_host #N-1</text>
+</svg>
+<p>Each <code>auto_host</code> calls <code>os.setsid()</code> into its own group via the <code>_preexec_setsid_pdeathsig</code> spawn hook (<code>app/server/base_server.py · _preexec_setsid_pdeathsig</code>), so cleanup is a PGID kill of the conda/uvicorn leader plus a per-<code>auto_host</code> PGID kill.</p>
+<p>Implications for a coding agent acting as supervisor:</p>
+<ol>
+<li><strong>Self-host on a dedicated port from a 5-slot pool.</strong> Reuse-by-default would mean spawning into the user's primary backend on <code>:8000</code>, where their kill/restart cycle could take down a mid-run experiment. Convention: walk ports <code>8765-8769</code> and acquire the first one whose lockfile under <code>~/.cache/agentcanvas-mcp/locks/{port}.lock</code> is <code>flock</code>-able (<code>LOCK_EX | LOCK_NB</code>); the kernel auto-releases the lock when the holder process dies any way (clean exit, SIGTERM, SIGKILL, OOM). Each Claude Code conversation thus gets its own backend without colliding with other concurrent conversations.</li>
+<li><strong>Spawn under <code>setsid -f</code>.</strong> The resulting process tree has <code>conda run</code> → <code>uvicorn</code> → many <code>auto_host</code> children, with each <code>auto_host</code> calling <code>os.setsid()</code> to escape the parent's group (<code>base_server.py:52</code>). Without <code>setsid -f</code> on the spawn, a single <code>kill -- -PGID</code> cleanup misses every <code>auto_host</code>. With it, one PGID kill atomically reaps the conda wrapper and uvicorn; a separate per-<code>auto_host</code> PGID kill reaps the rest. See <code>/architect:experiment-http</code> step 3 for the canonical sequence (the <code>-mcp</code> skill delegates this to <code>BackendManager</code> in <code>agentcanvas/mcp_server/</code>).</li>
+<li><strong>Cleanup is mandatory and PGID-targeted.</strong> Never use <code>pkill -f uvicorn</code> or <code>pkill -f auto_host</code> — the user almost always has unrelated <code>uvicorn</code> instances running (e.g. their primary backend on <code>:8000</code>, the docs site on <code>:8001</code>). Pattern-broad kills destroy their work.</li>
+</ol>
+<hr>
+<h2 id="3-workflows"><span class="num">3.</span> Workflows</h2>
+<p>Each subsection below threads endpoints, files, and the process model into a single coherent task. Snippets are real (taken from the most recent NavGPT-MP3D experiments under <code>outputs/design_runs/navgpt_mp3d/v2/</code>).</p>
+<h3 id="31-launch-a-batch-experiment"><span class="num">3.1</span> Launch a batch experiment</h3>
+<p>The most common workflow.</p>
+<pre class="hl"><span class="c1"># 1. Pick a free port + spawn backend</span>
+<span class="nv">PORT</span><span class="o">=</span><span class="m">8765</span>
+<span class="o">(</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>agentcanvas/backend<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>setsid<span class="w"> </span>-f<span class="w"> </span>conda<span class="w"> </span>run<span class="w"> </span>-n<span class="w"> </span>agentcanvas<span class="w"> </span>--no-capture-output<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>uvicorn<span class="w"> </span>app.main:app<span class="w"> </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="nv">$PORT</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>&lt;<span class="w"> </span>/dev/null<span class="w"> </span>&gt;<span class="w"> </span>/tmp/backend.log<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">)</span>
+
+<span class="c1"># 2. Wait for /health</span>
+<span class="k">until</span><span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/health<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-q<span class="w"> </span>ok<span class="p">;</span><span class="w"> </span><span class="k">do</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="k">done</span>
+
+<span class="c1"># 3. POST the eval config</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/eval/v2/start<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+<span class="s1">    &quot;graph_name&quot;: &quot;navgpt_mp3d&quot;,</span>
+<span class="s1">    &quot;split&quot;: &quot;val_unseen&quot;,</span>
+<span class="s1">    &quot;episode_count&quot;: 50,</span>
+<span class="s1">    &quot;start_episode_index&quot;: 0,</span>
+<span class="s1">    &quot;episode_indices&quot;: [26, 102, 108, ...],</span>
+<span class="s1">    &quot;worker_count&quot;: 25,</span>
+<span class="s1">    &quot;step_budget&quot;: 15,</span>
+<span class="s1">    &quot;per_step_budget_sec&quot;: 120</span>
+<span class="s1">  }&#39;</span>
+<span class="c1"># → {&quot;run_id&quot;: &quot;20260613_145434&quot;, &quot;status&quot;: &quot;queued&quot;}</span>
+
+<span class="c1"># 4. Poll status until completed (or stream via WebSocket)</span>
+curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/eval/v2/status
+
+<span class="c1"># 5. Export</span>
+curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/eval/v2/export/20260613_145434<span class="w"> </span>&gt;<span class="w"> </span>export.json
+
+<span class="c1"># 6. Cleanup (PGID-targeted)</span>
+<span class="nb">kill</span><span class="w"> </span>--<span class="w"> </span>-<span class="nv">$BACKEND_PGID</span>
+</pre>
+<p>The skills <code>/architect:experiment-http</code> (curl-based) and <code>/architect:experiment-mcp</code> (MCP-tool-based) wrap these steps with iter-directory bookkeeping, profile resolution, and token-cost estimation. Bare <code>curl</code> / MCP tools are the foundation; the skill is the convention.</p>
+<h3 id="32-modify-a-graph"><span class="num">3.2</span> Modify a graph</h3>
+<p>When the coding agent decides to revise a graph between iterations.</p>
+<pre class="hl"><span class="c1"># 1. Read current graph</span>
+curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/graphs/navgpt_mp3d<span class="w"> </span>&gt;<span class="w"> </span>graph.json
+
+<span class="c1"># 2. Edit graph.json directly (file-level edit; no special endpoint)</span>
+
+<span class="c1"># 3. Validate before saving</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/graphs/validate<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>@graph.json
+
+<span class="c1"># 4. Save</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>PUT<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/graphs/navgpt_mp3d<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>@graph.json
+</pre>
+<p>Validation catches schema breakage (missing ports, bad node types) before a real run.</p>
+<h3 id="33-modify-a-nodeset-hot-reload"><span class="num">3.3</span> Modify a nodeset (hot reload)</h3>
+<p>When the coding agent edits Python in <code>workspace/nodesets/</code>.</p>
+<pre class="hl"><span class="c1"># 1. Edit workspace/nodesets/{nodeset}.py directly</span>
+
+<span class="c1"># 2. Hot-reload — backend re-imports the changed modules</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/components/reload
+</pre>
+<p>Hot reload re-imports only local-mode nodesets. <strong>Server-mode nodesets</strong> (those with <code>server_python</code> set) require restarting the backend — their code lives in already-spawned <code>auto_host</code> subprocesses.</p>
+<h3 id="34-debug-a-single-episode"><span class="num">3.4</span> Debug a single episode</h3>
+<p>The smoke-test pattern: same <code>eval/v2/start</code> endpoint, but <code>episode_count=1, worker_count=1</code>. The skill <code>/architect:debug</code> wraps this with a fix-loop (≤5 fix attempts, edit-whitelist constrained to the graph's nodesets); see its source for the full algorithm.</p>
+<h3 id="35-reuse-run-history"><span class="num">3.5</span> Reuse run history</h3>
+<pre class="hl"><span class="c1"># List all past runs</span>
+curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/eval/v2/runs
+
+<span class="c1"># Inspect a specific run (without re-running)</span>
+curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:<span class="nv">$PORT</span>/api/eval/v2/runs/20260613_145434
+
+<span class="c1"># Read its raw log</span>
+cat<span class="w"> </span>outputs/eval_runs/20260613_145434/episodes/ep0000/log.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>head
+</pre>
+<p>Old runs persist indefinitely under <code>outputs/eval_runs/</code>. The coding agent typically re-reads <code>log.jsonl</code> for analysis (per-step traces, per-node timing, LLM prompts/responses) rather than re-running.</p>
+<hr>
+<h2 id="4-persistence-and-observability"><span class="num">4.</span> Persistence and observability</h2>
+<h3 id="41-where-each-kind-of-output-lands"><span class="num">4.1</span> Where each kind of output lands</h3>
+<table>
+<thead>
+<tr>
+<th>Artifact</th>
+<th>Location</th>
+<th>Schema authority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-node execution trace</td>
+<td><code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/log.jsonl</code> <em>(per episode)</em></td>
+<td><a href="../operations/execution-logs.html">Execution Logs</a></td>
+</tr>
+<tr>
+<td>Large tensor / image assets</td>
+<td><code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/assets/</code> <em>(per episode)</em></td>
+<td><a href="../operations/execution-logs.html">Execution Logs</a></td>
+</tr>
+<tr>
+<td>Run summary + graph snapshot</td>
+<td><code>outputs/eval_runs/{run_id}/summary.json</code>, <code>graph.json</code> <em>(run root)</em></td>
+<td><a href="../graph/batch-eval.html">Batch Eval</a></td>
+</tr>
+<tr>
+<td>Aggregate / per-episode metrics</td>
+<td><code>GET /api/eval/v2/export/{run_id}</code> → <code>aggregate_metrics</code> / <code>episodes[*].metrics</code></td>
+<td><a href="../graph/batch-eval.html">Batch Eval</a></td>
+</tr>
+<tr>
+<td>Live progress</td>
+<td><code>WS /ws</code> (root-mounted)</td>
+<td><code>app/api/execution/websocket.py:16</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-what-logjsonl-looks-like"><span class="num">4.2</span> What <code>log.jsonl</code> looks like</h3>
+<p>One JSON object per line, one line per node firing:</p>
+<pre class="hl"><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-30T09:55:03.217&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;execution_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;20260613_145434_ep0000&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;step&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;orchestrator_llm&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llmCall&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;duration_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2843.5</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;inputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;outputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;response&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Action: action_maker...&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;inner_log&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rendered_prompt&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;model&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4&quot;</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;response_length&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">84</span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="p">}</span>
+</pre>
+<p>The <code>inner_log</code> array is where individual nodes attach their per-call breadcrumbs — including the per-node <strong><code>usage</code></strong> bucket ({calls, tokens, <code>usd_cost</code>, model}), which now lands here as a <code>{"key": "usage", …}</code> entry (§5.4). Each line also carries <code>parent_node_id</code> / <code>dynamic_index</code> provenance for dynamic-fan-out children.</p>
+<h3 id="43-live-progress"><span class="num">4.3</span> Live progress</h3>
+<p>For UIs and long-running supervision, the root-mounted <code>WS /ws</code> streams per-episode progress — the executor broadcasts <code>eval_episode_done</code> (<code>eval_batch.py · _broadcast_episode_done</code>); the socket itself only handles inbound <code>ping</code>/<code>pong</code> (<code>websocket.py</code>). Coding-agent skills today poll <code>GET /status</code> instead, which is fine for ≤60-min runs but trades immediacy for simplicity.</p>
+<hr>
+<h2 id="5-current-limitations"><span class="num">5.</span> Current limitations</h2>
+<p>The surface works, but it carries assumptions from its UI-first origin. A coding agent integrating against it today encounters the following:</p>
+<h3 id="51-no-tool-discovery-or-schema-introspection-at-the-protocol-level"><span class="num">5.1</span> No tool discovery or schema introspection at the protocol level</h3>
+<p>The <strong>raw HTTP surface</strong> does not advertise its endpoints/schemas (no OpenAPI listing surfaced at a known path for agent consumption); there is a <code>GET /api/components/node-schemas</code> endpoint for <em>node</em> introspection, but no equivalent for <em>API endpoint</em> introspection. The shipped MCP server (§6) closes this for its tool set — agents that go through MCP get a discoverable, JSON-Schema-validated tool list. Agents driving bare HTTP must still be told the API out-of-band, today via skill-file conventions like <code>.claude/commands/architect/experiment.md</code>, or read backend source.</p>
+<h3 id="52-no-structured-authentication-or-sandbox"><span class="num">5.2</span> No structured authentication or sandbox</h3>
+<p>The HTTP surface trusts loopback; there is no per-call authorisation, no per-graph quota, no execution sandbox between graphs. Acceptable for single-user development; insufficient for hosting multiple isolated coding-agent harnesses simultaneously, or for accepting a graph from an untrusted source.</p>
+<h3 id="53-self-host-process-management-is-manual"><span class="num">5.3</span> Self-host process management is manual</h3>
+<p>Picking a port, spawning under <code>setsid -f</code>, recording the PGID, walking auto_host descendants on cleanup — a curl-based skill must reimplement this dance, and any small mistake (plain <code>setsid</code> without <code>-f</code>, or <code>pkill -f uvicorn</code>) damages the user's environment. The MCP server's <code>BackendManager</code> (<code>agentcanvas/mcp_server/</code>) now bundles "spawn, health-check, capture cleanup handle" into one operation for the MCP path; the bare-HTTP path still has no such helper.</p>
+<h3 id="54-token-usage-is-now-captured-per-node-firing"><span class="num">5.4</span> Token usage is now captured per node firing (ADR-observability-005)</h3>
+<p><strong>Closed (ADR-observability-005).</strong> Token usage and dollar cost are tracked per node firing via the <code>_current_node_usage</code> ContextVar in <code>app/llm/call.py:47</code>: the executor sets a fresh accumulator dict around every <code>node.forward()</code> call (<code>graph_executor.py · _fire_node</code>), and every <code>llm_complete</code> / <code>llm_complete_n</code> / <code>vlm_complete</code> call writes its <code>response.usage</code> + <code>litellm.completion_cost()</code> into the bucket. The executor then emits one log entry per node with <code>{calls, prompt_tokens, completion_tokens, total_tokens, cached_tokens, usd_cost, model}</code> attached.</p>
+<p>Coding agents reading <code>log.jsonl</code> for cost should consume the executor-emitted usage record directly rather than re-tokenising with <code>tiktoken</code>. The local-tokenise path in older <code>/architect:experiment-*</code> skills is now redundant; remove it in any new skill you write. See <a href="../operations/llm-config-system.html#12-per-node-usage-hook">LLM Config §12</a> for the contract.</p>
+<h3 id="55-run-directory-bookkeeping-lives-in-skills-not-the-backend"><span class="num">5.5</span> Run-directory bookkeeping lives in skills, not the backend</h3>
+<p>The backend writes <code>outputs/eval_runs/{run_id}/</code> (executor-owned). The coding-agent skills add a parallel <code>outputs/design_runs/{graph}/vN/iter_M/</code> tree (skill-owned, captures graph snapshots, profile snapshots, metric summaries, trace.md, debug logs). Two trees that record overlapping information is a transitional state — the skill tree exists because the backend has no concept of an "iteration."</p>
+<p>These items are the current friction points of the <strong>bare-HTTP</strong> path. The MCP layer below was the planned answer to the first three — and it has shipped.</p>
+<hr>
+<h2 id="6-mcp-packaging"><span class="num">6.</span> MCP packaging</h2>
+<p>An <a href="https://modelcontextprotocol.io/">MCP</a> server ships at <code>agentcanvas/mcp_server/</code> (FastMCP, stdio transport). It exposes the surface as discoverable, JSON-Schema-validated tools, replacing the curl-over-self-hosted-port pattern. The MVP is <strong>6 tools</strong>: <code>eval_start</code>, <code>eval_status</code>, <code>eval_export</code>, <code>eval_stop</code>, <code>graph_list</code>, <code>eval_runs_list</code> (<code>tools/{eval,graph,runs}.py</code>). <code>eval_export</code> reads <code>summary.json</code> file-direct so historical runs are queryable without a live backend.</p>
+<p>Lifecycle is handled by <code>BackendManager</code>: it acquires a slot from the <code>8765-8769</code> flock pool, spawns + health-checks the backend, and captures the cleanup handle — so each Claude Code conversation gets its own backend and the §5.1 / §5.3 friction is closed for the MCP path. What remains open: the tool set is a subset (no graph mutation / component introspection yet), HTTP/SSE transport for remote harnesses is not wired, and §5.2 (auth/sandbox) and §5.5 (iteration bookkeeping) are untouched. The point stands — the HTTP surface is shaped well enough that the MCP layer on top is thin.</p>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass. All ~25 line-pinned route citations (eval/graphs/components endpoints) re-verified Δ0 against the working tree; <code>StartEvalV2Request</code> field defaults and the 6-tool MCP set all CONFIRMED. Fixed three drifted citations by converting them to drift-proof <code>file · function</code> form: §2.3 spawn-hook (<code>base_server.py:52</code> → <code>· _preexec_setsid_pdeathsig</code>), §4.3 episode broadcast (<code>eval_batch.py:760</code> → <code>· _broadcast_episode_done</code>, real L814), §5.4 usage accumulator (<code>graph_executor.py:1062-1083</code> → <code>· _fire_node</code>, real L1120/1128). <code>call.py:47</code> usage ContextVar cite still exact, left as-is.</li>
+<li>2026-06-13 17:50: code-alignment + inverted-pyramid + HTML-first pass. Aligned the API surface to code: <code>StartEvalV2Request</code> has no required fields but <code>graph_name</code> (added <code>selectors</code>/<code>via_subprocess</code>-default-true/<code>active_workspace_dir</code>/GPU-admission); added the missing eval routes (episodes, queue, cancel, introspect, DELETE); fixed Graph CRUD source (<code>app/api/canvas/graphs.py</code>, <code>{graph_id:path}</code>) and component introspection (<code>/node-schemas</code>, no <code>/nodes/{type}</code>); corrected the eval_runs layout to per-episode <code>episodes/ep{NNNN}/{log.jsonl,assets/}</code>; fixed the WS path (<code>/ws</code>, root-mounted), <code>base_server.py:52</code>, and §5.4 usage cites (<code>call.py:47</code>, <code>graph_executor.py:1062-1083</code>). Reframed §5.1/§5.3/§6 around the <strong>shipped</strong> MCP server (6 tools, <code>BackendManager</code>). Added a <code>lede</code> + two SVG figures (three-layer surface, process tree); all <code>div.highlight</code> code → <code>pre.hl</code>.</li>
+<li>2026-06-11 15:37: workspace/nodesets paths updated to the role-directory layout (ADR-platform-008): env/ method/ policy/ model/ common/ other/, server/ eliminated; renames sam→model_sam, ram_perception→model_ram, others split into geometry + mock_frontier.</li>
+<li>2026-06-11 13:46: Controller → env panel rename — <code>BaseEnvPanel</code> / <code>EnvPanelField</code> / <code>EnvPanelAction</code>, <code>BaseNodeSet.env_panel</code> ClassVar, REST <code>/api/env-panels/*</code>, server bridge <code>/env-panel/*</code>, <code>RemoteEnvPanelProxy</code>, <code>env_panel_overrides</code>. Page wording updated accordingly.</li>
+<li>2026-05-18: §5.4 closed — token usage IS now captured per node firing via the <code>_current_node_usage</code> ContextVar hook (ADR-observability-005); rewrote the section as "now captured" with concrete <code>graph_executor.py:1053-1074</code> + <code>call.py:44</code> citations and a cross-link to LLM Config §11. Coding-agent skills should consume the executor-emitted usage record instead of re-tokenising locally.</li>
+<li>2026-04-30 20:03: Initial — captures the coding-agent integration surface as it exists at the moment AgentCanvas began considering MCP packaging. Section 5's enumeration of limitations is the snapshot of friction motivating the migration.</li>
+<li>2026-05-01: MCP MVP shipped at <code>agentcanvas/mcp_server/</code> — 5 tools (<code>eval_start</code>, <code>eval_status</code>, <code>eval_export</code>, <code>eval_stop</code>, <code>graph_list</code>), stdio transport, FastMCP-based. Spawn-or-borrow lifecycle on <code>127.0.0.1:8765</code> (replicates the proven <code>/architect:experiment</code> PGID-targeted cleanup in Python). Closes Section 5.1 (tool discovery) and 5.3 (manual self-host) for the MVP tool set. See plan <code>2026-05-01-agentcanvas-mcp-mvp.md</code>.</li>
+<li>2026-05-06 19:04: MCP server moved to flock-based 5-slot pool on <code>8765-8769</code> — each Claude Code conversation acquires its own slot, kernel auto-releases on process death; multiple conversations can run experiments in parallel. <code>eval_export</code> now reads <code>outputs/eval_runs/{run_id}/summary.json</code> directly so historical runs are queryable without a live backend (file-direct path; live progress moved to <code>eval_status</code>). <code>eval_start</code> swaps <code>max_steps=500</code> for <code>step_budget=null</code> (defers to framework resolver: env-supplied → graph → <code>DEFAULT_STEP_BUDGET</code>). New <code>eval_runs_list</code> tool — list past runs from filesystem, backend-independent.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-this-surface-is">1. What this surface is</a>
+      <a class="toc-h2" href="#2-surface-inventory">2. Surface inventory</a>
+      <a class="toc-h3" href="#21-http-endpoints">2.1 HTTP endpoints</a>
+      <a class="toc-h3" href="#22-filesystem-conventions">2.2 Filesystem conventions</a>
+      <a class="toc-h3" href="#23-process-model">2.3 Process model</a>
+      <a class="toc-h2" href="#3-workflows">3. Workflows</a>
+      <a class="toc-h3" href="#31-launch-a-batch-experiment">3.1 Launch a batch experiment</a>
+      <a class="toc-h3" href="#32-modify-a-graph">3.2 Modify a graph</a>
+      <a class="toc-h3" href="#33-modify-a-nodeset-hot-reload">3.3 Modify a nodeset (hot reload)</a>
+      <a class="toc-h3" href="#34-debug-a-single-episode">3.4 Debug a single episode</a>
+      <a class="toc-h3" href="#35-reuse-run-history">3.5 Reuse run history</a>
+      <a class="toc-h2" href="#4-persistence-and-observability">4. Persistence and observability</a>
+      <a class="toc-h3" href="#41-where-each-kind-of-output-lands">4.1 Where each kind of output lands</a>
+      <a class="toc-h3" href="#42-what-logjsonl-looks-like">4.2 What log.jsonl looks like</a>
+      <a class="toc-h3" href="#43-live-progress">4.3 Live progress</a>
+      <a class="toc-h2" href="#5-current-limitations">5. Current limitations</a>
+      <a class="toc-h3" href="#51-no-tool-discovery-or-schema-introspection-at-the-protocol-level">5.1 No tool discovery or schema introspection at the protocol level</a>
+      <a class="toc-h3" href="#52-no-structured-authentication-or-sandbox">5.2 No structured authentication or sandbox</a>
+      <a class="toc-h3" href="#53-self-host-process-management-is-manual">5.3 Self-host process management is manual</a>
+      <a class="toc-h3" href="#54-token-usage-is-now-captured-per-node-firing">5.4 Token usage is now captured per node firing (ADR-observability-005)</a>
+      <a class="toc-h3" href="#55-run-directory-bookkeeping-lives-in-skills-not-the-backend">5.5 Run-directory bookkeeping lives in skills, not the backend</a>
+      <a class="toc-h2" href="#6-mcp-packaging">6. MCP packaging</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-006 — AgentCanvas</title>
+<meta name="description" content="Three-pivot boundary nodes — `Initialize` + `iterIn` + `iterOut`">
+<meta property="og:title" content="ADR-dataflow-006 — AgentCanvas">
+<meta property="og:description" content="Three-pivot boundary nodes — `Initialize` + `iterIn` + `iterOut`">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-006-three-pivot-boundary-nodes.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-006-three-pivot-boundary-nodes.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-006</span>
+  </div>
+  <div class="last-updated">2026-04-18 10:38</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-006</h1>
+  <p class="tagline">Three-pivot boundary nodes — `Initialize` + `iterIn` + `iterOut`</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-18 10:38</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-031 (dataflow half)</code></dd><dt>Companion</dt><dd><a href='../executor/adr-executor-002.html'>ADR-executor-002</a></dd></dl>
+
+<div class='callout note'><p>Scope split. The original ADR-031 decided two related-but-separable things — (i) the boundary-node typology (three pivot types, <code>ports_mode</code> semantics, port synthesis at load) and (ii) the executor scheduling change (seed-discovery rule, <code>pairedWith</code> internal transfer, <code>validate_graph_connectivity</code>). This file covers <strong>(i)</strong> — the dataflow / boundary-node half. The executor-side half is <a href="../executor/adr-executor-002-three-pivot-scheduling.html">ADR-executor-002</a>. Both landed together; the split exists only to keep each field's decision log focused.</p></div>
+
+<h2 id='context'>Context</h2>
+<p>Until this change the canvas had a single iteration-boundary node, <code>iterIn</code>, which conflated two roles: (1) the per-iteration boundary that broadcasts <code>step_start</code> and exposes the loop-carry bundle to the iteration body, and (2) the run-start collection pivot that received initial state (RGB, pose, topo state) from "seed" nodes wired directly into its input ports. This conflation produced three concrete problems. (a) <strong>iterIn fired multiple times within step 0</strong> — once per seed-wire arrival — because the graph executor re-evaluates a node's readiness as each pending input lands, breaking <code>step_start</code> semantics and per-step logging. (b) <strong>Implicit ordering</strong>: nothing in the graph declared "initialization is complete — start the loop"; the engine discovered it ad-hoc. (c) The dual role made the boundary-node typology muddled — <code>iterIn</code> was both source and sink, depending on which edges were wired.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Introduce a third pivot, <code>Initialize</code> (<code>node_type="initialize"</code>, <code>ports_mode="sink"</code>, <code>kind="control"</code>), that mirrors <code>iterOut</code>'s class shape — a sink that collects its input bundle from upstream seed-region nodes and is paired with an <code>iterIn</code> via a <code>pairedWith</code> config field. <code>iterIn</code> becomes output-only via a new <code>ports_mode="source"</code> (input ports stripped, <code>_resolve_ports</code> returns <code>([], outputs)</code>); <code>portResolution.ts</code> gains a fourth branch as the symmetric inverse of <code>"sink"</code>. The frontend's existing iterIn paired-drag handler (<code>UnifiedGraphEditor.tsx</code>) is extended to spawn the three-node trio (<code>Initialize</code> left of <code>iterIn</code>, <code>iterOut</code> right). The three production graphs (<code>mapgpt_mp3d.json</code>, <code>navgpt_ce.json</code>, <code>straightforward.json</code>) are migrated in place: a new <code>init</code> node receives every edge that previously targeted iterIn, with <code>config.pairedWith</code> referencing the iterIn id and <code>config.ports</code> matching iterIn's port shape.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep iterIn as the single pivot but add a config flag like <code>init_only=true</code></strong> — rejected; this would have only postponed the multi-fire-at-step-0 problem (still one node, still re-evaluated as each pending input lands) and wouldn't have produced a clean typology. (b) <strong>Make <code>Initialize</code> a regular operation node instead of a control pivot, wiring it directly into iterIn over a normal canvas edge</strong> — rejected; the value of the <code>pairedWith</code> mechanism is precisely that the transfer is executor-internal, identical to the iterOut→iterIn handoff already in place, so the loop body's wires never fan in from outside the loop. A canvas wire would re-introduce the "required ports declared but only fed at startup" ambiguity at the iterIn input.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Each pivot gets exactly one job — <code>Initialize</code> collects step-0 state, <code>iterIn</code> broadcasts step boundaries and exposes loop-carry data, <code>iterOut</code> collects end-of-iter state — and the run-start data flow is <em>declarative</em> (the graph names which node feeds Initialize) rather than discovered (the executor scanning for nodes with no incoming edges and inferring intent). The backward-compat removal in Phase A (input ports stripped, <code>ports_mode="source"</code>) makes the contract impossible to misuse — you cannot draw a wire into iterIn because the target handles do not exist — which collapses an entire category of graph-design questions ("should this go to Initialize or to iterIn?") to a structural answer. The new <code>"source"</code> ports mode is the symmetric counterpart of the existing <code>"sink"</code> mode and is implemented in three lines of <code>portResolution.ts</code>, with no other frontend file affected — port-derivation logic stays single-source-of-truth. Reusing the existing <code>pairedWith</code> mechanism (already used by iterOut) means no new config-field UX is required.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>design-docs/graph-system.md (new "Graph Design Principles" section), core/glossary.md (new terms: <code>Initialize</code>, <code>pairedWith</code>, <code>ports_mode="source"</code>), core/architecture.md (Execution Engines section — three-pivot iteration model), core/codebase-map.md (new pivot class)</p>
+<hr>
+<h2>Refinement (2026-04-21) — iterIn port synthesis</h2>
+<p>iterIn loses its user-authored <code>config.ports</code> entirely. iterIn's config now carries only <code>{version: 3, pairedWith}</code>; its full port surface is <strong>synthesised at graph load</strong> by <code>_synthesize_iterin_ports</code> in <code>graph_def.py</code> and mirrored live in the canvas by <code>synthesizeIterInPortsForId</code> in <code>portResolution.ts</code>. Synthesis always prefixes by origin: paired <code>Initialize.&lt;X&gt;</code> → <code>init_&lt;X&gt;</code>, paired <code>iterOut.&lt;X&gt;</code> → <code>iterout_&lt;X&gt;</code>, direct canvas edges keep their <code>targetHandle</code> verbatim. A name <code>X</code> declared on both writers therefore produces <strong>two independent slots</strong> — there is no cross-writer merging, which retires the earlier "overlap trick" design question and makes writer-name collisions structurally impossible.</p>
+<p><code>NodeInstance.port_slots</code> is a single dict keyed by the prefixed handle name; all three writers land there via the unified <code>_write_iterin_slot</code> helper (Initialize transfer at <code>graph_executor.py:373-398</code> applies the <code>init_</code> prefix, iterOut transfer applies <code>iterout_</code>, direct canvas edges write verbatim). The per-port <code>persist</code> flag lives <strong>on the writer's port entry</strong> (<code>Initialize.ports[*].persist</code>, <code>iterOut.ports[*].persist</code>); iterIn's <code>IterInExpandPanel</code> UI aggregates them with origin badges and writes back through to the writer. Origin-dependent default: Initialize-origin ports default to <code>persist=false</code> (Step-0 one-shot), iterOut-origin to <code>persist=true</code> (loop-carried); defaults are applied at both backend synthesis and frontend mirror. Post-fire clear at <code>graph_executor.py:411-416</code> deletes <code>persist=false</code> slots; <code>persist=true</code> slots retain their last write. LIST[T] fan-in concat is suppressed for iterIn slots.</p>
+<p>Config version bumped to <code>3</code>; legacy <code>init_ports</code>/<code>loop_ports</code> schemas hard-rejected at load with a migration-pointer. <code>StripLayout.tsx</code> renders iterIn with an init band above a dashed horizontal divider and an iterOut band below; handle count is unchanged vs the pre-refinement scheme (disjoint slots, not compressed). All five in-repo graphs migrated in place (outgoing iterIn edges rewritten to prefixed handles). An unshipped 2026-04-20 single-merged-slot proposal is superseded by this refinement. Not a new ADR — the three-pivot mental model and executor transfer paths are unchanged; only port-synthesis and persist-ownership shifted. See <code>docs-site/docs/design-docs/loop-control-system.md</code> + <code>loop-control-logic-scratch.md</code> §§4-6 for full narrative.</p>
+<hr>
+<h2>Forward reference (2026-05-09) — multi-scope iteration</h2>
+<p>This ADR decides the boundary-node typology for <strong>one</strong> (Initialize, iterIn, iterOut) triple per graph. Hierarchical agents need multiple coexisting triples in one flat graph (outer reasoning loop wrapping inner execution loop, etc.). That extension is <a href="adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007 — multi-scope iteration</a>, which is strictly additive: every existing single-scope graph executes byte-identically (gated by <code>forest.is_single_scope == True</code>). The three-pivot model in this ADR becomes the <strong>base case</strong> of multi-scope; the new abstraction is <em>scope</em> (= one triple plus its body, IO interface via portIn/portOut, and per-scope config on its iter_in).</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

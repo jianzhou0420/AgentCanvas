@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>myloop v1 — knowledge-distillation orchestrator</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1a1a1a; --muted: #6b6b6b;
+    --accent: #2d6a4f; --accent-bg: #e9f4ee;
+    --frame: #d4d4d0; --frame-strong: #1a1a1a;
+    --box: #ffffff; --warn: #a52a00;
+    --code-bg: #f0efe9;
+    --think: #1e5a8a;   --think-bg: #e6f0f8;
+    --exp:   #b34700;   --exp-bg:   #fff3eb;
+    --dist:  #2d6a4f;   --dist-bg:  #e9f4ee;
+    --user:  #6a4c93;   --user-bg:  #efeaf5;
+    --meta:  #8a5a1e;   --meta-bg:  #f5ede1;
+  }
+  [data-theme="dark"] {
+    --accent: #5fb88a; --warn: #e8896c;
+    --think: #6ba6dc; --think-bg: #1f2933;
+    --exp:   #e8896c; --exp-bg:   #2f211c;
+    --dist:  #5fb88a; --dist-bg:  #1f2c25;
+    --user:  #b29ad9; --user-bg:  #262232;
+    --meta:  #d4a24a; --meta-bg:  #2b2620;
+  }
+  [data-theme="dark"] .file-group.user  { background: #262232; }
+  [data-theme="dark"] .file-group.dist  { background: #1f2c25; }
+  [data-theme="dark"] .file-group.meta  { background: #2b2620; }
+  [data-theme="dark"] .file-group.audit { background: #232328; }
+  [data-theme="dark"] .note { background: #2f2a1d; }
+  [data-theme="dark"] .note h4 { color: #e0c089; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+    max-width: 1000px; margin: 2.5rem auto; padding: 0 1.5rem;
+    line-height: 1.55;
+  }
+  nav.crumbs {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: .85rem; color: var(--muted);
+    padding-bottom: .6rem; border-bottom: 1px solid var(--frame); margin-bottom: 1.2rem;
+  }
+  nav.crumbs a { color: var(--think); text-decoration: none; }
+  nav.crumbs a:hover { text-decoration: underline; }
+  nav.crumbs .here { color: var(--fg); font-weight: 600; }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid var(--frame-strong); padding-bottom: .35rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.2rem; margin-top: 2.4rem; border-bottom: 1px solid var(--frame); padding-bottom: .2rem; }
+  h3 { font-size: 1.0rem; margin-top: 1.4rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; font-size: .95rem; }
+  .lede {
+    background: var(--accent-bg); border-left: 4px solid var(--accent);
+    padding: .9rem 1.15rem; margin: 1.4rem 0 1.8rem; font-size: .96rem;
+    border-radius: 0 4px 4px 0;
+  }
+  .lede strong { color: var(--accent); }
+  .badge {
+    display: inline-block;
+    background: var(--accent-bg); color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: .05rem .5rem; border-radius: 3px; font-size: .8rem;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .badge.think { background: var(--think-bg); color: var(--think); border-color: var(--think); }
+  .badge.exp   { background: var(--exp-bg);   color: var(--exp);   border-color: var(--exp); }
+  .badge.dist  { background: var(--dist-bg);  color: var(--dist);  border-color: var(--dist); }
+  .badge.user  { background: var(--user-bg);  color: var(--user);  border-color: var(--user); }
+  .badge.meta  { background: var(--meta-bg);  color: var(--meta);  border-color: var(--meta); }
+
+  table { border-collapse: collapse; width: 100%; margin-top: .6rem; font-size: .9rem; }
+  th, td { border: 1px solid var(--frame); padding: .4rem .55rem; text-align: left; vertical-align: top; }
+  th { background: #f0efe9; font-weight: 600; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .05rem .35rem; border-radius: 2px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); padding: .7rem .9rem; border-radius: 3px;
+    overflow-x: auto; font-size: .85rem; border-left: 3px solid var(--accent);
+  }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin-bottom: .25rem; }
+
+  .diagram { background: var(--box); border: 1px solid var(--frame); border-radius: 4px; padding: 1rem; margin: 1rem 0; }
+  .legend { font-size: .82rem; color: var(--muted); margin-top: .6rem; }
+  .legend span { display: inline-block; margin-right: 1rem; }
+  .legend .sw { display: inline-block; width: 11px; height: 11px; vertical-align: middle; margin-right: .3rem; border: 1px solid #999; }
+
+  .phases { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  .phase-card { padding: 1rem; border-radius: 4px; border: 1px solid var(--frame); border-left-width: 4px; background: var(--box); }
+  .phase-card h3 { margin-top: 0; font-size: 1.0rem; }
+  .phase-card.think { border-left-color: var(--think); }
+  .phase-card.exp   { border-left-color: var(--exp); }
+  .phase-card.dist  { border-left-color: var(--dist); }
+  .phase-card.think h3 { color: var(--think); }
+  .phase-card.exp   h3 { color: var(--exp); }
+  .phase-card.dist  h3 { color: var(--dist); }
+  .phase-card p     { font-size: .88rem; margin: .35rem 0; }
+  .phase-card .label { font-family: "SF Mono", Menlo, monospace; font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: .55rem; }
+
+  .file-group {
+    border: 1px solid var(--frame); border-left-width: 4px;
+    border-radius: 4px; padding: 1rem 1.15rem; margin: 1rem 0; background: var(--box);
+  }
+  .file-group h3 { margin-top: 0; font-size: 1.0rem; }
+  .file-group.user  { border-left-color: var(--user);  background: #fdfbff; }
+  .file-group.dist  { border-left-color: var(--dist);  background: #f7fbf9; }
+  .file-group.meta  { border-left-color: var(--meta);  background: #fdfaf3; }
+  .file-group.audit { border-left-color: var(--muted); background: #fafaf7; }
+  .file-group.user  h3 { color: var(--user); }
+  .file-group.dist  h3 { color: var(--dist); }
+  .file-group.meta  h3 { color: var(--meta); }
+  .file-group .role { font-size: .85rem; color: var(--muted); margin-bottom: .55rem; }
+  .file-group table { margin-top: .35rem; }
+
+  .note {
+    background: #fffbe6; border-left: 3px solid #d97706;
+    padding: .7rem 1rem; margin: 1rem 0; font-size: .92rem;
+  }
+  .note h4 { margin: 0 0 .35rem; color: #92400e; font-size: .95rem; }
+
+  .channels { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  .channel  { padding: 1rem; border: 1px solid var(--frame); border-radius: 4px; background: var(--box); }
+  .channel h3 { margin-top: 0; font-size: 1.0rem; }
+  .channel.eager  { border-left: 4px solid var(--dist); }
+  .channel.atomic { border-left: 4px solid var(--exp); }
+  .channel.eager  h3 { color: var(--dist); }
+  .channel.atomic h3 { color: var(--exp); }
+  .channel p { font-size: .9rem; }
+  .channel ul { font-size: .88rem; margin: .35rem 0; }
+
+  @media (max-width: 720px) {
+    .phases, .channels { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<!-- aas-cross-nav: v1 -->
+<script>
+  // Match the site-wide theme choice (shared 'site-theme' key) before first
+  // paint, so an AAS page opened from a dark main-site session renders dark.
+  (function() {
+    var t;
+    try { t = localStorage.getItem('site-theme'); } catch (e) {}
+    if (!t) { t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<nav class="aas-xnav" aria-label="Site sections">
+  <a class="aas-xnav-brand" href="../../../../index.html">AgentCanvas</a>
+  <div class="aas-xnav-tabs">
+    <a href="../../../../pages/developer-guide/capabilities/index.html">Developer Guide</a>
+    <a class="active" href="../../../../pages/aas/index.html">AAS</a>
+  </div>
+  <button class="aas-xnav-theme" type="button" aria-label="Toggle light / dark theme"
+    onclick="(function(){var d=document.documentElement;var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('site-theme',n);}catch(e){}})()">&#9680;</button>
+</nav>
+<style>
+.aas-xnav {
+  background: #1a1a1a; color: #fafaf7;
+  padding: .55rem 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: .88rem;
+  display: flex; align-items: center; gap: 1.6rem;
+  position: sticky; top: 0; z-index: 1000;
+  margin: 0; box-shadow: 0 1px 0 rgba(0,0,0,.15);
+}
+.aas-xnav .aas-xnav-brand {
+  color: #fafaf7; text-decoration: none; font-weight: 700;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: .92rem;
+}
+.aas-xnav .aas-xnav-tabs { display: flex; gap: .4rem; }
+.aas-xnav .aas-xnav-tabs a {
+  color: #fafaf7; text-decoration: none; opacity: .65;
+  padding: .25rem .65rem; border-radius: 3px;
+  transition: opacity .12s, background .12s;
+}
+.aas-xnav .aas-xnav-tabs a:hover { opacity: 1; background: rgba(255,255,255,.06); }
+.aas-xnav .aas-xnav-tabs a.active {
+  opacity: 1; font-weight: 600; background: rgba(255,255,255,.12);
+}
+.aas-xnav-theme {
+  margin-left: auto;
+  background: transparent; border: 1px solid rgba(255,255,255,.28);
+  color: #fafaf7; cursor: pointer; border-radius: 3px;
+  padding: .15rem .55rem; font-size: .95rem; line-height: 1;
+}
+.aas-xnav-theme:hover { background: rgba(255,255,255,.1); }
+
+/* Dark theme for the AAS subsite. These pages are self-contained (own
+   <head>/<style>, no shared style.css) but all share the same CSS var
+   names + boilerplate classes, so one override block covers the whole
+   subtree. It lives in <body> (injected after <head>), so it wins on
+   source order for equal-specificity rules. Per-page saturated --accent
+   text is left as-is; only the light --accent-bg tint is neutralised. */
+[data-theme="dark"] {
+  --bg: #1a1a1c; --fg: #e8e8e6; --muted: #8a8a86;
+  --frame: #3a3a3e; --frame-strong: #cfcfcc;
+  --box: #232328; --code-bg: #2a2a2e;
+  --accent-bg: #2b2b32; --link: #6ba6dc;
+}
+[data-theme="dark"] th { background: #26262b; }
+[data-theme="dark"] .frontmatter { background: #232328; }
+[data-theme="dark"] details.toc { background: #232328; }
+[data-theme="dark"] .group { background: #232328; }
+[data-theme="dark"] blockquote { color: #c0c0bc; }
+</style>
+<!-- /aas-cross-nav -->
+
+<nav class="crumbs">
+  <a href="../../index.html">aas</a> /
+  <a href="../index.html">reference</a> /
+  <span class="here">myloop</span>
+</nav>
+
+<h1>myloop v1 <code>(knowledge-distillation orchestrator)</code></h1>
+<p class="subtitle">
+  <code>/architect:myloop:loop</code> — a hard-paired
+  <code>THINK → EXPERIMENT → DISTILL</code> cycle over one frozen graph,
+  driven by a user-authored <code>goal.md</code>. Maximizing agent
+  performance is the <em>goal</em>; distilling understanding against
+  that goal is the implementation mechanism the loop uses to get there,
+  not an end in itself.
+</p>
+
+<p>
+  <span class="badge">shape</span> three-phase hard-paired loop
+  &nbsp;
+  <span class="badge">memory</span> 8 typed files, no archive
+  &nbsp;
+  <span class="badge">termination</span> goal-driven, not iter-capped
+  &nbsp;
+  <span class="badge">spawns/iter</span> 2 sub-agents
+</p>
+
+<div class="lede">
+  <strong>The whole loop turns on one move — distillation.</strong> Every
+  iter, an experiment produces raw eval logs (MB-scale per-episode
+  <code>log.jsonl</code>); a dedicated DISTILL phase converts that into
+  typed, human-readable working memory <em>before</em> the next iter's
+  THINK plans from it. THINK reasons mostly from that distilled memory —
+  it may dip into raw logs to target an episode subset, but it never has
+  to digest a whole run. The file count, the phase split, the two-spawn
+  cost, the atomic-commit boundary all follow from making distillation a
+  first-class phase.
+</div>
+
+<h2>The two-spawn split — why THINK and DISTILL are separate</h2>
+
+<p>
+  ADAS-family variants fold "what just happened" into the next iter's
+  THINK — one sub-agent spawn per iter, but THINK must digest the raw
+  eval artifacts itself. myloop pays for a second spawn so each phase has
+  a single cognitive task: DISTILL converts raw → typed memory while the
+  iter's context is still warm; THINK plans the next experiment from that
+  memory. THINK may still read raw logs — but narrowly, to pick the
+  episodes for a targeted subset, not to digest a run. The split is by
+  cognitive task and timing, not by log access:
+</p>
+
+<div class="diagram">
+<svg viewBox="0 0 940 300" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr-dist" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2d6a4f"/>
+    </marker>
+    <marker id="arr-think" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e5a8a"/>
+    </marker>
+    <marker id="arr-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a52a00"/>
+    </marker>
+  </defs>
+
+  <!-- LEFT: raw eval data -->
+  <rect x="30" y="80" width="210" height="150" fill="#fff" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="135" y="70" text-anchor="middle" font-weight="600" fill="#a52a00">Raw eval artifacts</text>
+  <text x="135" y="105" text-anchor="middle" font-size="11">outputs/eval_runs/&lt;run_id&gt;/</text>
+  <text x="135" y="128" text-anchor="middle" font-size="11">summary.json</text>
+  <text x="135" y="148" text-anchor="middle" font-size="11">episodes/ep*/episode.json</text>
+  <text x="135" y="168" text-anchor="middle" font-size="11">episodes/ep*/log.jsonl</text>
+  <text x="135" y="190" text-anchor="middle" font-size="10" fill="#a52a00">(MB-scale per ep,</text>
+  <text x="135" y="204" text-anchor="middle" font-size="10" fill="#a52a00">node-firing trace)</text>
+
+  <!-- MIDDLE: distilled state -->
+  <rect x="370" y="70" width="200" height="180" fill="#e9f4ee" stroke="#2d6a4f" stroke-width="2"/>
+  <text x="470" y="60" text-anchor="middle" font-weight="600" fill="#2d6a4f">Distilled working memory</text>
+  <text x="470" y="100" text-anchor="middle" font-size="11">knowledge.md</text>
+  <text x="470" y="120" text-anchor="middle" font-size="11">experience.jsonl</text>
+  <text x="470" y="140" text-anchor="middle" font-size="11">hypotheses.jsonl</text>
+  <text x="470" y="160" text-anchor="middle" font-size="11">experiment_design.yaml</text>
+  <text x="470" y="180" text-anchor="middle" font-size="11">tools/*.py</text>
+  <text x="470" y="200" text-anchor="middle" font-size="11">iteration/iter_*/record.json</text>
+  <text x="470" y="224" text-anchor="middle" font-size="10" fill="#2d6a4f">(KB-scale, text,</text>
+  <text x="470" y="238" text-anchor="middle" font-size="10" fill="#2d6a4f">human-readable)</text>
+
+  <!-- RIGHT: THINK -->
+  <rect x="710" y="80" width="200" height="65" fill="#e6f0f8" stroke="#1e5a8a" stroke-width="2"/>
+  <text x="810" y="105" text-anchor="middle" font-weight="600" fill="#1e5a8a">THINK</text>
+  <text x="810" y="125" text-anchor="middle" font-size="11">/architect:myloop:proposer</text>
+
+  <!-- RIGHT-LOWER: DISTILL -->
+  <rect x="710" y="175" width="200" height="65" fill="#e9f4ee" stroke="#2d6a4f" stroke-width="2"/>
+  <text x="810" y="200" text-anchor="middle" font-weight="600" fill="#2d6a4f">DISTILL</text>
+  <text x="810" y="220" text-anchor="middle" font-size="11">/architect:myloop:distill</text>
+
+  <!-- Arrows -->
+  <!-- raw → DISTILL (digests fully) -->
+  <path d="M 240 175 Q 470 285 710 215" fill="none" stroke="#2d6a4f" stroke-width="1.8" marker-end="url(#arr-dist)"/>
+  <text x="470" y="288" text-anchor="middle" font-size="11" fill="#2d6a4f">raw logs — DISTILL digests them fully</text>
+
+  <!-- raw → THINK (selective, routed over the top) -->
+  <path d="M 135 80 L 135 42 L 810 42 L 810 80" fill="none" stroke="#1e5a8a" stroke-width="1.4" stroke-dasharray="6 3" marker-end="url(#arr-think)"/>
+  <text x="470" y="32" text-anchor="middle" font-size="11" fill="#1e5a8a">THINK reads raw too — selectively, to pick episode subsets</text>
+
+  <!-- DISTILL → distilled memory (writes) -->
+  <line x1="710" y1="195" x2="572" y2="160" stroke="#2d6a4f" stroke-width="1.8" marker-end="url(#arr-dist)"/>
+  <text x="628" y="183" font-size="11" fill="#2d6a4f">writes</text>
+
+  <!-- Distilled memory → THINK (reads lessons) -->
+  <line x1="572" y1="110" x2="710" y2="105" stroke="#1e5a8a" stroke-width="1.8" marker-end="url(#arr-think)"/>
+  <text x="612" y="98" font-size="11" fill="#1e5a8a">reads</text>
+
+  <!-- THINK can also append (eager-write) -->
+  <line x1="710" y1="128" x2="572" y2="142" stroke="#1e5a8a" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#arr-think)"/>
+  <text x="600" y="136" font-size="10" fill="#1e5a8a">append</text>
+</svg>
+
+<div class="legend">
+  <span><span class="sw" style="background:#fff;border-color:#a52a00"></span>raw eval logs (DISTILL digests; THINK samples)</span>
+  <span><span class="sw" style="background:#e9f4ee;border-color:#2d6a4f"></span>distilled working memory</span>
+  <span><span class="sw" style="background:#e6f0f8;border-color:#1e5a8a"></span>THINK</span>
+</div>
+</div>
+
+<p>
+  The two spawns are not redundant. Each has a single cognitive task on
+  focused input:
+</p>
+
+<ul>
+  <li><strong>THINK</strong> plans the next experiment. Its primary input
+    is the 8 distilled files + the last 3 iters' <code>record.json</code>
+    + the live <code>workspace/</code>. It MAY read raw eval logs —
+    selectively — to construct a targeted (e.g. failure-mode) episode
+    subset, but it does not digest a whole run.</li>
+  <li><strong>DISTILL</strong> digests the freshly-produced eval — its
+    cognitive task is raw data → typed memory, not text → plan. The warm
+    context (this iter's spec, think-trace, expected signal, raw per-ep
+    traces all current) makes the conversion cheap.</li>
+</ul>
+
+<h2>The iteration cycle</h2>
+
+<div class="diagram">
+<svg viewBox="0 0 940 700" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr2-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2d6a4f"/>
+    </marker>
+    <marker id="arr2-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b6b"/>
+    </marker>
+  </defs>
+
+  <!-- ============= LEFT COLUMN: vertical cycle ============= -->
+
+  <!-- Goal box (top) -->
+  <rect x="50" y="20" width="260" height="55" fill="#efeaf5" stroke="#6a4c93" stroke-width="1.5"/>
+  <text x="180" y="40" text-anchor="middle" font-weight="600" fill="#6a4c93">goal.md (user-authored)</text>
+  <text x="180" y="56" text-anchor="middle" font-size="11" fill="#6a4c93">Ultimate · Escalation · Termination</text>
+  <text x="180" y="70" text-anchor="middle" font-size="11" fill="#6a4c93">read at every iter</text>
+
+  <!-- Goal → termination -->
+  <line x1="180" y1="75" x2="180" y2="93" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- Termination poll diamond -->
+  <polygon points="180,95 250,135 180,175 110,135" fill="#fffbe6" stroke="#d97706" stroke-width="1.5"/>
+  <text x="180" y="131" text-anchor="middle" font-weight="600" fill="#92400e">Termination poll</text>
+  <text x="180" y="148" text-anchor="middle" font-size="11" fill="#92400e">vs goal § Termination</text>
+
+  <!-- Exit branch (right of termination) -->
+  <line x1="250" y1="135" x2="368" y2="135" stroke="#6b6b6b" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arr2-muted)"/>
+  <text x="310" y="127" text-anchor="middle" font-size="11" fill="#6b6b6b">hit → exit</text>
+  <rect x="370" y="115" width="100" height="40" fill="#fff" stroke="#6b6b6b" stroke-width="1" stroke-dasharray="4 2"/>
+  <text x="420" y="132" text-anchor="middle" font-weight="600" font-size="11" fill="#6b6b6b">SUMMARY.md</text>
+  <text x="420" y="147" text-anchor="middle" font-size="10" fill="#6b6b6b">final write</text>
+
+  <!-- No-exit → THINK (straight down now that layout is vertical) -->
+  <line x1="180" y1="175" x2="180" y2="208" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="195" y="195" font-size="11" fill="#6b6b6b">no exit</text>
+
+  <!-- THINK box -->
+  <rect x="50" y="210" width="260" height="70" fill="#e6f0f8" stroke="#1e5a8a" stroke-width="2"/>
+  <text x="180" y="235" text-anchor="middle" font-weight="600" fill="#1e5a8a">THINK</text>
+  <text x="180" y="252" text-anchor="middle" font-size="11">sub-agent #1 · reads distilled state</text>
+  <text x="180" y="268" text-anchor="middle" font-size="11">writes spec.json (mandatory)</text>
+
+  <line x1="180" y1="280" x2="180" y2="308" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- EXPERIMENT box -->
+  <rect x="50" y="310" width="260" height="70" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="180" y="335" text-anchor="middle" font-weight="600" fill="#b34700">EXPERIMENT</text>
+  <text x="180" y="352" text-anchor="middle" font-size="11">apply step (if spec.patch)</text>
+  <text x="180" y="368" text-anchor="middle" font-size="11">+ /experiment:run</text>
+
+  <line x1="180" y1="380" x2="180" y2="408" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- DISTILL box -->
+  <rect x="50" y="410" width="260" height="70" fill="#e9f4ee" stroke="#2d6a4f" stroke-width="2"/>
+  <text x="180" y="435" text-anchor="middle" font-weight="600" fill="#2d6a4f">DISTILL</text>
+  <text x="180" y="452" text-anchor="middle" font-size="11">sub-agent #2 · reads raw eval logs</text>
+  <text x="180" y="468" text-anchor="middle" font-size="11">writes distill.json</text>
+
+  <line x1="180" y1="480" x2="180" y2="508" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- Commit box -->
+  <rect x="50" y="510" width="260" height="55" fill="#fafaf7" stroke="#2d6a4f" stroke-width="1.5"/>
+  <text x="180" y="530" text-anchor="middle" font-weight="600" fill="#2d6a4f">Atomic commit (minimal)</text>
+  <text x="180" y="546" text-anchor="middle" font-size="11" fill="#2d6a4f">mv .staging/iter_M → iteration/iter_M/</text>
+  <text x="180" y="560" text-anchor="middle" font-size="11" fill="#2d6a4f">+ write record.json</text>
+
+  <!-- Loop-back: commit-left → far-left → up → into termination's left vertex -->
+  <path d="M 50 537 L 25 537 L 25 135 L 108 135" fill="none" stroke="#2d6a4f" stroke-width="1.5" stroke-dasharray="4 2" stroke-linejoin="round" marker-end="url(#arr2-accent)"/>
+  <text x="32" y="350" font-size="11" fill="#2d6a4f">next iter</text>
+
+  <!-- ============= RIGHT COLUMN: Working memory ============= -->
+
+  <rect x="500" y="210" width="410" height="270" fill="#fafaf7" stroke="#1a1a1a" stroke-width="1.5"/>
+
+  <text x="705" y="232" text-anchor="middle" font-weight="600" fill="#1a1a1a">Working memory (persistent across iters)</text>
+  <line x1="520" y1="240" x2="890" y2="240" stroke="#d4d4d0" stroke-width="1"/>
+
+  <!-- User-owned layer -->
+  <text x="520" y="259" font-size="11" font-weight="600" fill="#6a4c93">User-owned (read-only to orchestrator)</text>
+  <text x="535" y="277" font-size="11" fill="#6a4c93">• goal.md</text>
+  <text x="535" y="292" font-size="11" fill="#6a4c93">• constraints.md (optional, MUST / MUST NOT)</text>
+
+  <!-- Distilled-knowledge layer -->
+  <text x="520" y="316" font-size="11" font-weight="600" fill="#2d6a4f">Distilled knowledge</text>
+  <text x="535" y="334" font-size="11" fill="#2d6a4f">• knowledge.md (facts; append-only)</text>
+  <text x="535" y="349" font-size="11" fill="#2d6a4f">• experience.jsonl (closed-case lessons)</text>
+  <text x="535" y="364" font-size="11" fill="#2d6a4f">• hypotheses.jsonl (open conjectures — queue)</text>
+
+  <!-- Self-extension layer -->
+  <text x="520" y="388" font-size="11" font-weight="600" fill="#8a5a1e">Self-extension</text>
+  <text x="535" y="406" font-size="11" fill="#8a5a1e">• experiment_design.yaml (probe registry)</text>
+  <text x="535" y="421" font-size="11" fill="#8a5a1e">• tools/*.py (analysis utilities)</text>
+
+  <!-- Iter audit layer -->
+  <text x="520" y="445" font-size="11" font-weight="600" fill="#6b6b6b">Iter audit</text>
+  <text x="535" y="463" font-size="11" fill="#6b6b6b">• iteration/iter_*/record.json (dense IterRecord)</text>
+
+  <!-- ============= Dashed phase ↔ WM connectors ============= -->
+
+  <line x1="310" y1="245" x2="500" y2="245" stroke="#1e5a8a" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="240" font-size="10" fill="#1e5a8a">reads all · eager-writes hyp/know/design/tools</text>
+
+  <line x1="310" y1="345" x2="500" y2="345" stroke="#b34700" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="340" font-size="10" fill="#b34700">reads experiment_design (eval profile)</text>
+
+  <line x1="310" y1="445" x2="500" y2="445" stroke="#2d6a4f" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="440" font-size="10" fill="#2d6a4f">reads all · eager-writes know/exp/hyp</text>
+</svg>
+</div>
+
+<div class="phases">
+  <div class="phase-card think">
+    <h3>THINK <span class="badge think">proposer</span></h3>
+    <p>One tool-augmented sub-agent spawn. Reads goal, knowledge,
+    experience, hypotheses, last 3 iters' records, experiment design,
+    tools, current graph — and may sample raw eval logs to compose a
+    targeted episode subset.</p>
+    <p>May eager-write <code>hypotheses.jsonl</code>,
+    <code>knowledge.md</code>, <code>experiment_design.yaml</code>,
+    <code>tools/*.py</code> during its turn — those writes <em>are not</em>
+    staged; they go straight to the persistent <code>vN/</code> files.</p>
+    <p class="label">Mandatory output</p>
+    <p style="margin-top:.2rem;"><code>.staging/iter_M/spec.json</code> — a complete
+    <code>ExperimentSpec</code>. SKIP_THINK_EMPTY only if nothing is
+    left to test.</p>
+    <p class="label">Iter-0 rule</p>
+    <p style="margin-top:.2rem;">iter_0 is a no-patch baseline run
+    (<code>spec.patch=null</code>) on the <code>search</code> tier (or
+    <code>perf</code>) — it establishes both a comparison point and the
+    per-episode log corpus later iters mine for failure-mode subsets.</p>
+  </div>
+  <div class="phase-card exp">
+    <h3>EXPERIMENT <span class="badge exp">loop</span></h3>
+    <p>Owned by <code>loop.md § 3c</code> itself — not a reasoning
+    sub-agent phase like THINK / DISTILL. myloop has no implementer
+    skill: the apply step is inline (the loop being a coding agent),
+    and it does spawn one isolated editing sub-agent per attempt.</p>
+    <p>If <code>spec.patch</code> non-null, the inline apply step
+    realizes it into <code>.staging/iter_M/active_workspace/</code> via
+    an editing sub-agent and smoke-retries up to 3 attempts. Failures
+    still count — see <em>Failure semantics</em>.</p>
+    <p>Then <code>/experiment:run</code> with
+    <code>spec.eval_profile.name</code> + the staging workspace as
+    overlay. Probe of 1 ep is the floor; the rhythm cannot be broken.</p>
+    <p class="label">Output</p>
+    <p style="margin-top:.2rem;"><code>.staging/iter_M/eval_metadata.json</code>
+    (<code>run_id</code>, aggregate metrics, per-ep summary,
+    <code>outcome_class</code>).</p>
+  </div>
+  <div class="phase-card dist">
+    <h3>DISTILL <span class="badge dist">distill</span></h3>
+    <p>Second sub-agent spawn, fired immediately after EXPERIMENT while
+    context is warm. Reads this iter's spec / think-trace / eval-metadata
+    plus the raw per-episode <code>log.jsonl</code> files. Sample 2–3 eps
+    deeply rather than skim all eps shallowly.</p>
+    <p>For every open hypothesis: decide
+    <em>confirmed | refuted | inconclusive</em>. Resolved ones get
+    line-deleted from <code>hypotheses.jsonl</code> and appended to
+    <code>experience.jsonl</code> atomically (same DISTILL turn).</p>
+    <p class="label">Output</p>
+    <p style="margin-top:.2rem;"><code>.staging/iter_M/distill.json</code>
+    — merged into <code>record.json</code> at commit; omitted on
+    SKIP_DISTILL_EMPTY (valid; the phase still ran).</p>
+  </div>
+</div>
+
+<h2>The eight typed memory files</h2>
+
+<p>
+  myloop deliberately fans out what ADAS keeps in one
+  <code>archive.jsonl</code> into eight files, each one capturing a
+  different <em>kind</em> of knowledge. Confusing the kinds is the
+  fastest way to break the loop — e.g. logging "we tried gpt-4o and
+  failed" into <code>knowledge.md</code> instead of
+  <code>experience.jsonl</code> would treat a lesson as a fact.
+</p>
+
+<div class="file-group user">
+  <h3>① User-input layer</h3>
+  <p class="role">Set by the user before the run; loop never writes these.</p>
+  <table>
+    <tr><th>File</th><th>Kind of knowledge</th></tr>
+    <tr>
+      <td><code>goal.md</code></td>
+      <td>Direction. Three sections: <em>Ultimate</em> (where to go),
+      <em>Escalation</em> (when to upgrade probe → search → perf),
+      <em>Termination</em> (predicates polled every iter — first hit exits).</td>
+    </tr>
+    <tr>
+      <td><code>constraints.md</code> <em>(optional)</em></td>
+      <td>Invariants. <code>MUST</code> / <code>MUST NOT</code> bullets
+      that every phase prompt injects as a non-negotiable preamble.
+      Bootstrap-merged from up to 4 layers (see § Goal and constraints).</td>
+    </tr>
+  </table>
+</div>
+
+<div class="file-group dist">
+  <h3>② Distilled-knowledge layer</h3>
+  <p class="role">The "what we know now" state, sharpened iteration by iteration.</p>
+  <table>
+    <tr><th>File</th><th>Kind of knowledge</th><th>Writer</th></tr>
+    <tr>
+      <td><code>knowledge.md</code></td>
+      <td><em>Pure facts</em> about system / graph / env / dataset.
+      Append-only in v1; corrections go in as superseding bullets.</td>
+      <td>THINK + DISTILL (eager)</td>
+    </tr>
+    <tr>
+      <td><code>experience.jsonl</code></td>
+      <td><em>Lessons learned</em> — closed-case empirical results, both
+      confirmed and refuted. One entry per resolved hypothesis at minimum.</td>
+      <td>DISTILL (eager)</td>
+    </tr>
+    <tr>
+      <td><code>hypotheses.jsonl</code></td>
+      <td><em>Open conjectures</em> awaiting test. Mutable: append on
+      creation, line-delete on resolve. This is a <strong>queue</strong>
+      consumed by experiments, not a log.</td>
+      <td>THINK + DISTILL (eager)</td>
+    </tr>
+  </table>
+</div>
+
+<div class="file-group meta">
+  <h3>③ Self-extension layer</h3>
+  <p class="role">Capabilities the loop grows for itself during the run.</p>
+  <table>
+    <tr><th>File</th><th>Kind of knowledge</th><th>Writer</th></tr>
+    <tr>
+      <td><code>experiment_design.yaml</code></td>
+      <td><em>Available eval profiles</em>. Bootstraps from the graph's
+      <code>{graph}.yaml</code> (smoke / search / perf tiers); THINK may
+      append new profiles mid-run — including failure-mode subsets it
+      composes by reading a prior run's raw logs (explicit
+      <code>episode_indices</code> + a <code>derived_from</code> block).</td>
+      <td>bootstrap + THINK (eager)</td>
+    </tr>
+    <tr>
+      <td><code>tools/*.py</code></td>
+      <td><em>Analysis utilities</em> the orchestrator authors when a
+      pattern needs detecting (e.g. "filter episodes by instruction
+      length"). The directory is the registry — discovered by
+      <code>ls tools/*.py</code> + reading docstrings.</td>
+      <td>THINK (eager)</td>
+    </tr>
+  </table>
+  <p style="font-size:.88rem;margin-top:.6rem;">
+    The loop's analysis surface is not fixed at start. By iter N it may
+    have a half-dozen tools and a dozen extra probes the proposer wrote
+    when they were needed.
+  </p>
+</div>
+
+<div class="file-group audit">
+  <h3>④ Iter-forensic layer</h3>
+  <p class="role">Per-iter snapshots; appended once per committed iter.</p>
+  <table>
+    <tr><th>File</th><th>Kind of knowledge</th><th>Writer</th></tr>
+    <tr>
+      <td><code>iteration/iter_M/record.json</code></td>
+      <td>Dense <code>IterRecord</code> — think rationale + experiment
+      params + metrics + distill block + cost. Written once at commit.
+      The audit trail.</td>
+      <td>loop (commit)</td>
+    </tr>
+  </table>
+  <p style="font-size:.88rem;margin-top:.5rem;">
+    Note: each iter dir also holds the un-promoted files from
+    <code>.staging/iter_M/</code> — <code>spec.json</code>,
+    <code>think_trace.md</code>, <code>eval_metadata.json</code>,
+    <code>distill.json</code>, <code>distill_trace.md</code>,
+    <code>active_workspace/</code> (if patched), <code>debug_log.md</code>
+    (if the apply step ran). These are the forensic primaries;
+    <code>record.json</code> indexes them.
+  </p>
+</div>
+
+<h2>The hypothesis lifecycle — a queue, not a log</h2>
+
+<p>
+  The interplay between <code>hypotheses.jsonl</code> and
+  <code>experience.jsonl</code> is the loop's central learning mechanic.
+  A hypothesis is a <em>liability</em> — it owes the loop a test.
+  Experience is an <em>asset</em> — a closed case that future THINKs can
+  reason from without re-running the experiment.
+</p>
+
+<div class="diagram">
+<svg viewBox="0 0 940 250" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr3-dist" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2d6a4f"/>
+    </marker>
+  </defs>
+
+  <!-- born -->
+  <rect x="20" y="40" width="160" height="70" fill="#e6f0f8" stroke="#1e5a8a" stroke-width="1.5"/>
+  <text x="100" y="62" text-anchor="middle" font-weight="600" fill="#1e5a8a">conjecture born</text>
+  <text x="100" y="80" text-anchor="middle" font-size="11">THINK (most cases)</text>
+  <text x="100" y="95" text-anchor="middle" font-size="11">or DISTILL (surprise)</text>
+
+  <line x1="180" y1="75" x2="220" y2="75" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <!-- queue -->
+  <rect x="220" y="40" width="180" height="70" fill="#fffbe6" stroke="#d97706" stroke-width="1.5"/>
+  <text x="310" y="62" text-anchor="middle" font-weight="600" fill="#92400e">hypotheses.jsonl</text>
+  <text x="310" y="80" text-anchor="middle" font-size="11">parked, awaiting test</text>
+  <text x="310" y="95" text-anchor="middle" font-size="11">(any number; FIFO not required)</text>
+
+  <line x1="400" y1="75" x2="440" y2="75" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <!-- tested -->
+  <rect x="440" y="40" width="180" height="70" fill="#fff3eb" stroke="#b34700" stroke-width="1.5"/>
+  <text x="530" y="62" text-anchor="middle" font-weight="600" fill="#b34700">tested by EXPERIMENT</text>
+  <text x="530" y="80" text-anchor="middle" font-size="11">THINK picks one (or several)</text>
+  <text x="530" y="95" text-anchor="middle" font-size="11">to write into spec.json</text>
+
+  <line x1="620" y1="75" x2="660" y2="75" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <!-- resolved -->
+  <rect x="660" y="40" width="240" height="70" fill="#e9f4ee" stroke="#2d6a4f" stroke-width="2"/>
+  <text x="780" y="60" text-anchor="middle" font-weight="600" fill="#2d6a4f">DISTILL resolves</text>
+  <text x="780" y="78" text-anchor="middle" font-size="11">verdict: confirmed | refuted | inconclusive</text>
+  <text x="780" y="94" text-anchor="middle" font-size="11">line-delete from queue + append to experience</text>
+
+  <!-- new conjecture branch -->
+  <path d="M 780 110 Q 780 165 100 165 L 100 110" fill="none" stroke="#1e5a8a" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#arr3-dist)"/>
+  <text x="440" y="160" font-size="11" fill="#1e5a8a">DISTILL may also surface NEW conjectures → re-enter queue</text>
+
+  <!-- experience archive -->
+  <rect x="660" y="180" width="240" height="55" fill="#fafaf7" stroke="#2d6a4f" stroke-width="1.5"/>
+  <text x="780" y="200" text-anchor="middle" font-weight="600" fill="#2d6a4f">experience.jsonl (append-only)</text>
+  <text x="780" y="218" text-anchor="middle" font-size="11">closed cases — what was learned</text>
+
+  <line x1="780" y1="110" x2="780" y2="180" stroke="#2d6a4f" stroke-width="1.5" marker-end="url(#arr3-dist)"/>
+</svg>
+</div>
+
+<p>
+  Two consequences:
+</p>
+
+<ul>
+  <li><strong>Refuted hypotheses are first-class.</strong> A failed test
+    closes the case just as cleanly as a confirmation; both append a
+    full <code>experience.jsonl</code> entry. The loop doesn't
+    distinguish "we proved it" from "we disproved it" — both are
+    knowledge.</li>
+  <li><strong>Saturation is a real termination condition.</strong>
+    "5 consecutive iters with no resolved hypothesis and no new
+    knowledge" is a default termination predicate. When the queue stops
+    moving and nothing new enters, the loop has reached the edge of
+    what it can learn at the current goal — exit cleanly rather than
+    grind.</li>
+</ul>
+
+<h2>Two channels of persistence</h2>
+
+<p>
+  Within an iter, writes go to two different places. The atomic commit
+  at iter-end only promotes one of them — the other is already on disk.
+</p>
+
+<div class="channels">
+  <div class="channel eager">
+    <h3>Channel A — eager writes (persistent memory)</h3>
+    <p>THINK and DISTILL write to these <em>during</em> their sub-agent
+    turn, directly to the <code>vN/</code> root:</p>
+    <ul>
+      <li><code>knowledge.md</code> (both phases)</li>
+      <li><code>hypotheses.jsonl</code> (both phases — append + delete)</li>
+      <li><code>experience.jsonl</code> (DISTILL only)</li>
+      <li><code>experiment_design.yaml</code> (THINK only)</li>
+      <li><code>tools/*.py</code> (THINK only)</li>
+    </ul>
+    <p>If THINK proposes a probe against a brand-new hypothesis, that
+    hypothesis <em>must</em> be visible to EXPERIMENT and DISTILL in
+    the same iter — eager-writes are how that works. The trade-off:
+    these writes survive crashes mid-iter, even if the iter ultimately
+    fails to commit. Recovery is by reasoning (next THINK reads the
+    partial state), not rollback.</p>
+  </div>
+
+  <div class="channel atomic">
+    <h3>Channel B — staged → atomic-promoted (iter forensics)</h3>
+    <p>Files written to <code>.staging/iter_M/</code> during the iter,
+    then bulk-promoted at commit:</p>
+    <ul>
+      <li><code>spec.json</code> (THINK output)</li>
+      <li><code>think_trace.md</code> (THINK forensic trace)</li>
+      <li><code>eval_metadata.json</code> (loop, after EXPERIMENT)</li>
+      <li><code>distill.json</code> (DISTILL output)</li>
+      <li><code>distill_trace.md</code> (DISTILL forensic trace)</li>
+      <li><code>active_workspace/</code> (if patch applied)</li>
+      <li><code>debug_log.md</code> (if the apply step retried)</li>
+    </ul>
+    <p>Atomic commit is therefore minimal: one <code>mv</code> + one
+    <code>record.json</code> write. If the commit fails, the iter dir
+    is rolled back; eager writes from Channel A remain — the next iter
+    deals with them.</p>
+  </div>
+</div>
+
+<h2>Run-dir layout</h2>
+
+<pre>outputs/design_runs/myloop/{graph}/v{N}/
+├── goal.md                   USER-AUTHORED, read-only to orchestrator
+├── constraints.md            OPTIONAL — merged from 4 layers at bootstrap
+├── knowledge.md              append-only facts
+├── experience.jsonl          lessons learned
+├── hypotheses.jsonl          open conjectures (mutable: line-delete)
+├── experiment_design.yaml    eval-profile registry
+├── tools/                    orchestrator-authored *.py utilities
+│   └── *.py
+├── iteration/                one subdir per committed iter
+│   ├── iter_0/
+│   │   ├── record.json           dense IterRecord
+│   │   ├── spec.json             ExperimentSpec produced by THINK
+│   │   ├── think_trace.md        THINK sub-agent forensic trace
+│   │   ├── eval_metadata.json    run_id + aggregate metrics + per-ep summary
+│   │   ├── distill.json          DISTILL output (omitted on SKIP_*)
+│   │   ├── distill_trace.md      DISTILL sub-agent forensic trace
+│   │   ├── active_workspace/     patched workspace overlay (if patch applied)
+│   │   └── debug_log.md          EXPERIMENT apply-step smoke-retry history (if any)
+│   └── iter_1/, iter_2/, ...
+├── .staging/iter_M/          transient; mv'd to iteration/iter_M/ on commit
+├── .loop_state/              bookkeeping for resume / termination
+│   ├── last_committed_iter
+│   └── consecutive_skips
+└── SUMMARY.md                written at termination</pre>
+
+<h2>Failure semantics — recovery by reasoning</h2>
+
+<p>
+  myloop has no transactions, no revert chains, no rollback semantics.
+  When things go wrong, the design is to <em>archive the failure as
+  evidence</em> and let the next iter's THINK reason about it. The
+  invariant: <strong>every committed iter has a <code>think</code>
+  block and an <code>experiment</code> block</strong>, even if the
+  experiment was "the patch failed smoke retry 3 times" or "the eval
+  crashed at episode 2".
+</p>
+
+<table>
+  <tr>
+    <th>Failure mode</th>
+    <th>Loop response</th>
+    <th>What gets recorded</th>
+  </tr>
+  <tr>
+    <td><strong>Apply-step SKIP</strong> (patch fails smoke retry 3×)</td>
+    <td>Skip <code>/experiment:run</code>; commit the iter anyway with
+    <code>outcome_class="implementer_skip"</code>. DISTILL still runs and
+    typically writes a refuted-patch experience.</td>
+    <td>The patch and its failure mode become an
+    <code>experience.jsonl</code> entry: "patch X failed because Y".</td>
+  </tr>
+  <tr>
+    <td><strong>Eval crash</strong> (<code>/experiment:run</code> non-zero, missing _DONE)</td>
+    <td><code>outcome_class="crash"</code>; capture stderr tail; commit
+    iter; DISTILL still runs.</td>
+    <td>Crash context goes into <code>experience.jsonl</code>. Often
+    surfaces hidden bugs in the patched code.</td>
+  </tr>
+  <tr>
+    <td><strong>THINK SKIP_THINK_EMPTY</strong> (nothing left to test)</td>
+    <td>Terminate run with status <code>SATURATED</code>. This is a
+    clean exit, not a failure.</td>
+    <td>No iter committed; <code>SUMMARY.md</code> records the saturation.</td>
+  </tr>
+  <tr>
+    <td><strong>THINK / DISTILL malformed output</strong></td>
+    <td><code>SKIP_INVALID_SPEC</code> / <code>SKIP_INVALID_DISTILL</code>;
+    <code>consecutive_skips++</code>; continue. At <code>≥ max_consecutive_skips</code>
+    terminate with <code>STUCK</code>.</td>
+    <td>Iter not committed (for SPEC) or committed without distill block
+    (for DISTILL). Eager writes already made by the sub-agent stay on
+    disk.</td>
+  </tr>
+  <tr>
+    <td><strong>Commit step fails</strong> (mv or record.json write)</td>
+    <td>Rollback iter dir if mv succeeded; do not write record. <code>consecutive_skips++</code>.</td>
+    <td>No iter committed; Channel A eager writes remain. Next THINK
+    sees the inconsistent state and reasons about it.</td>
+  </tr>
+</table>
+
+<h2>Goal and constraints — 4-layer governance</h2>
+
+<h3>goal.md — required pre-flight</h3>
+
+<p>
+  One <code># Goal</code> header plus three <code>##</code> sections.
+  Both forms below are valid; the loop refuses to start with neither.
+</p>
+
+<ul>
+  <li><strong>Detailed</strong>: a pre-authored <code>goal.md</code> with
+  all three sections (Ultimate / Escalation / Termination) non-empty.
+  Partial files abort the run.</li>
+  <li><strong>One-liner</strong>: <code>--goal "&lt;text&gt;"</code> on
+  the command line, with no <code>goal.md</code> yet present. The loop
+  bootstraps <code>goal.md</code> using <code>&lt;text&gt;</code> as
+  Ultimate plus built-in defaults for Escalation + Termination (3-tier
+  escalation ladder probe/custom → search → perf; saturation + stuck +
+  budget + cap termination predicates).</li>
+</ul>
+
+<pre># Goal
+
+## Ultimate
+&lt;one paragraph stating what this run is for.&gt;
+
+## Escalation
+&lt;plain-English rules for when to upgrade probe → search → perf.&gt;
+
+## Termination
+&lt;predicates; loop terminates on first match.
+ e.g. "perf success ≥ 0.50"   (goal-achieved)
+      "5 consecutive iters with no knowledge / hypothesis movement"
+                                  (saturated)
+      "cumulative GPU-min ≥ 600 OR LLM-tokens ≥ 5M"  (budget)&gt;</pre>
+
+<h3>constraints.md — 4-layer bootstrap merge</h3>
+
+<p>
+  Hard <code>MUST</code> / <code>MUST NOT</code> rules — distinct from
+  <code>goal.md</code> (direction) and <code>knowledge.md</code> (facts).
+  At bootstrap, up to four layers are concatenated (in order, with
+  <code>## --- from &lt;source&gt; ---</code> audit headers) into
+  <code>vN/constraints.md</code>. A pre-authored <code>vN/constraints.md</code>
+  (user edited before invocation) is left untouched.
+</p>
+
+<table>
+  <tr><th>Layer</th><th>Source</th><th>Purpose</th></tr>
+  <tr>
+    <td>1</td>
+    <td><code>data/constraints/common.md</code></td>
+    <td>Pipeline-wide myloop discipline (edit scope, cost gates, eval-tier discipline). Ships with the skill.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><code>data/constraints/{graph}.md</code></td>
+    <td>Per-graph hard rules (e.g. <code>mapgpt_mp3d.md</code>: model fixed at gpt-5-mini, temperature must be 1.0).</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>--cons-file &lt;path&gt;</code> at invoke</td>
+    <td>Per-invocation extra file (e.g. a topic-specific overlay the user wrote for this run).</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><code>--constraints "&lt;text&gt;"</code> at invoke</td>
+    <td>Inline ad-hoc rule, e.g. "MUST NOT change build_options.stop_after this run; only test prompt edits".</td>
+  </tr>
+</table>
+
+<p style="margin-top:.6rem;font-size:.92rem;">
+  The merged file is injected into <strong>every</strong> THINK and
+  DISTILL prompt as a non-negotiable preamble. THINK also does a coarse
+  string-match guard on <code>spec.patch.intent</code> against
+  constraint phrases (catches the obvious "intent describes changing
+  <code>planner_llm.config.profile</code> while a constraint pins it"
+  cases). Structured validators are deferred to v2.
+</p>
+
+<h2>Edit scope</h2>
+
+<p>
+  Patches proposed by THINK and applied by the EXPERIMENT phase MAY
+  target any path under <code>workspace/</code>: graph JSON, top-level
+  nodesets, server-mode nodesets, env wrappers, policies, hooks.
+  All edits land in <code>iteration/iter_M/active_workspace/</code>
+  (isolated overlay) and never pollute the frozen <code>workspace/</code>
+  tree. The AgentCanvas backend honors the overlay via the
+  <code>ACTIVE_WORKSPACE_DIR</code> mechanism (ADR-components-009).
+</p>
+
+<p>
+  Outside <code>workspace/</code> is <strong>never</strong> editable:
+  <code>agentcanvas/backend/app/**</code> (framework code) and
+  <code>third_party/**</code> (vendored upstream). The EXPERIMENT
+  apply-step enforces this at the filesystem level (via
+  <code>_common/lib/overlay.py</code>).
+</p>
+
+<div class="note">
+  <h4>Server-mode hot-reload (TODO #60 unlock, 2026-05-15)</h4>
+  <p style="margin:.25rem 0 .5rem;"><code>workspace/nodesets/server/**</code>
+  edits used to require a manual backend restart — the parent backend's
+  <code>auto_host</code> singletons (loaded once at startup for
+  <code>parallelism="shared"</code> nodesets) were unaffected by the
+  overlay. The JobScheduler now detects content-hash divergence between
+  frozen and overlay source trees at eval-admit time and spawns an
+  ephemeral <code>auto_host</code> child loaded from the overlay; it is
+  torn down when the eval finalizes.</p>
+  <p style="margin:.25rem 0 0;">First iter touching a
+  <code>shared</code> nodeset pays a one-time spawn cost (≈ 30–60 s for
+  VLM-class models); the eval briefly doubles VRAM usage on that
+  nodeset — budget <code>marginal_vram_mb</code> accordingly on the
+  experiment profile.</p>
+</div>
+
+<h2>What myloop is NOT</h2>
+
+<p>
+  myloop sits in the <code>/architect:*</code> skill family alongside
+  ADAS-shape variants (<code>adas-subagent</code>, <code>aflow</code>).
+  The shared piece is <code>_common/</code>
+  infrastructure — native overlay editing, smoke retry, edit whitelist,
+  resolve protocol. The divergence is what they choose to track.
+</p>
+
+<p>
+  <strong>ADAS-shape variants optimize <em>the archive</em>.</strong>
+  They generate candidate agents, score them on a fitness metric, keep
+  the winners in a flat <code>archive.jsonl</code>, and run until cap or
+  saturation. Failed generations are thrown out.
+</p>
+
+<p>
+  <strong>myloop optimizes <em>the file system</em>.</strong> Each iter's
+  output is "what changed in the 8 working-memory files"; agent
+  performance is one signal among many. Failed patches are archived as
+  experience. The run ends when the user-authored
+  <code>goal.md § Termination</code> says so — which may be a
+  metric-threshold predicate <em>or</em> a saturation predicate
+  ("nothing new learned in 5 iters") <em>or</em> a budget cap.
+</p>
+
+<table>
+  <tr>
+    <th>Dimension</th>
+    <th>ADAS-family</th>
+    <th>myloop v1</th>
+  </tr>
+  <tr>
+    <td>What gets optimized</td>
+    <td>fitness on archive</td>
+    <td>distilled understanding against goal</td>
+  </tr>
+  <tr>
+    <td>Working memory</td>
+    <td>one flat <code>archive.jsonl</code></td>
+    <td>eight typed files</td>
+  </tr>
+  <tr>
+    <td>THINK structure</td>
+    <td>3-call Reflexion (R0 / R1 / R2)</td>
+    <td>one sub-agent, free-form, must-emit-spec contract</td>
+  </tr>
+  <tr>
+    <td>Spawns per iter</td>
+    <td>1 (think folds in last iter's results)</td>
+    <td>2 (THINK clean-context + DISTILL warm-context)</td>
+  </tr>
+  <tr>
+    <td>Failed generation</td>
+    <td><code>n -= 1</code>; not archived</td>
+    <td>committed as evidence; <code>outcome_class</code> records it</td>
+  </tr>
+  <tr>
+    <td>Termination</td>
+    <td>iter cap or consecutive_skips</td>
+    <td>user-authored <code>goal.md § Termination</code> predicates</td>
+  </tr>
+  <tr>
+    <td>Self-extension</td>
+    <td>none — agent space is fixed by the prompt</td>
+    <td>new probes + new analysis tools authored mid-run</td>
+  </tr>
+</table>
+
+<h2>Deferred to v2</h2>
+
+<ul>
+  <li><strong><code>knowledge.md</code> append-only.</strong> v1 corrects
+    by superseding bullets; v2 may add explicit supersede / retract
+    semantics.</li>
+  <li><strong>Hypothesis priority ordering.</strong> v1 queue is flat;
+    THINK picks based on prompt-time judgement. v2 may make priority
+    first-class.</li>
+  <li><strong>Single-objective goal.</strong> v2 may compose direction +
+    investigation + budget trade-off.</li>
+  <li><strong><code>tools/</code> runtime metadata.</strong> v1 has no
+    usage count / last-used / deprecation marker.</li>
+  <li><strong>Critique pass on THINK.</strong> v1 is single-pass; if
+    that proves too shallow on harder graphs, add a critique sub-agent.</li>
+  <li><strong>Structured constraints.</strong> v1 enforces by in-prompt
+    injection + coarse jsonpath string-match. v2 may add a
+    <code>constraints.yaml</code> with explicit validators.</li>
+</ul>
+
+<h2>Source files</h2>
+
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>.claude/commands/architect/myloop/README.md</code></td><td>v1 mental model — normative</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/schemas.md</code></td><td>single source of truth for every file shape</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/config.yaml</code></td><td>paths, caps, files manifest, bootstrap hint</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/loop.md</code></td><td>outer orchestrator (THINK → EXPERIMENT → DISTILL → commit)</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/proposer.md</code></td><td>THINK phase</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/distill.md</code></td><td>DISTILL phase</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/reflect.md</code></td><td>REFLECT meta-phase (search-space cartography)</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/understand.md</code></td><td>standalone (NOT a <code>_common/</code> stub) — session-start mental-model load</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/data/seed_knowledge.md</code></td><td>bootstrap content for <code>knowledge.md</code></td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/data/constraints/common.md</code></td><td>layer-1 constraints (always present)</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/data/constraints/&lt;graph&gt;.md</code></td><td>layer-2 constraints (per-graph)</td></tr>
+  <tr><td><code>.claude/commands/architect/_common/lib/overlay.py</code></td><td>shared seed-helper — copy-on-touch into the overlay + §7 edit-whitelist check (no patch DSL)</td></tr>
+  <tr><td><code>.claude/commands/architect/myloop/lib/helpers.py</code></td><td>LLM-profile cheat-sheet renderer for proposer</td></tr>
+</table>
+
+<p style="margin-top:1rem;font-size:.85rem;color:var(--muted);">
+  Auto-rendered execution view of each <code>.md</code> file is at
+  <a href="../../mirror/myloop/">mirror/myloop/</a>. The page you are
+  reading is the hand-written, stable algorithm reference; the mirror
+  is regenerated from the skill markdown by
+  <code>docs/pages/aas/build_mirror.py</code>.
+</p>
+
+</body>
+</html>

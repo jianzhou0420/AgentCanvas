@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7Hook System — AgentCanvas</title>
+<meta name="description" content="Shell commands fire at lifecycle boundaries (run-start / step / run-end) — for logging, eval, side effects.">
+<meta property="og:title" content="7Hook System — AgentCanvas">
+<meta property="og:description" content="Shell commands fire at lifecycle boundaries (run-start / step / run-end) — for logging, eval, side effects.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/hook-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/hook-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">7Hook System</span>
+  </div>
+  <div class="last-updated">2026-05-18 (api/execution/run.py path fix + test gap)</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">7</span>Hook System</h1>
+  <p class="tagline">Shell commands fire at lifecycle boundaries (run-start / step / run-end) — for logging, eval, side effects.</p>
+</header>
+
+
+
+<p>Shell commands that fire before and after node execution, at graph lifecycle boundaries, enabling validation, logging, and policy enforcement without modifying the execution engine.</p>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<p>The hook system lets researchers attach shell commands to graph execution events. Hooks can observe, modify inputs/outputs, or block node execution — all without changing the graph nodes themselves.</p>
+<p><strong>Design principles:</strong>
+- <strong>Fail-open</strong> — hook errors (timeout, crash, malformed JSON) default to <code>continue</code>. Never crashes graph execution.
+- <strong>Zero-cost when unused</strong> — a single <code>has_hooks()</code> boolean check guards all hook logic. No overhead when <code>graph.hooks</code> is empty.
+- <strong>Serializable</strong> — hooks are pure JSON data in <code>GraphDefinition</code>. They travel with saved graphs.</p>
+<h2 id="2-hook-events"><span class="num">2.</span> Hook Events</h2>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>When it fires</th>
+<th>Common use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PreNodeExecute</code></td>
+<td>Before <code>instance.forward()</code> is called</td>
+<td>Validate inputs, block dangerous nodes, modify inputs</td>
+</tr>
+<tr>
+<td><code>PostNodeExecute</code></td>
+<td>After <code>instance.forward()</code> completes (success or error)</td>
+<td>Log results, modify outputs, track errors</td>
+</tr>
+<tr>
+<td><code>GraphStart</code></td>
+<td>Before the dataflow loop begins</td>
+<td>Set up logging, initialize external systems</td>
+</tr>
+<tr>
+<td><code>GraphComplete</code></td>
+<td>After the loop ends (both success and error)</td>
+<td>Export metrics, finalize logs</td>
+</tr>
+<tr>
+<td><code>GraphError</code></td>
+<td>When an unhandled exception occurs</td>
+<td>Alert, dump diagnostics</td>
+</tr>
+</tbody>
+</table>
+<h3 id="21-prenodeexecute-actions"><span class="num">2.1</span> PreNodeExecute Actions</h3>
+<p>The hook's response determines what happens:</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"continue"</code></td>
+<td>Proceed normally (default)</td>
+</tr>
+<tr>
+<td><code>"block"</code></td>
+<td>Skip this node — <code>_fire_node()</code> returns <code>{}</code> without executing</td>
+</tr>
+<tr>
+<td><code>"modify"</code></td>
+<td>Replace <code>pending_inputs</code> with <code>modified_data</code> before executing</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-postnodeexecute-actions"><span class="num">2.2</span> PostNodeExecute Actions</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"continue"</code></td>
+<td>Proceed normally (default)</td>
+</tr>
+<tr>
+<td><code>"modify"</code></td>
+<td>Replace the node's output with <code>modified_data</code> (only on success, not on error)</td>
+</tr>
+</tbody>
+</table>
+<p>PostNodeExecute receives an <code>error</code> field in the payload: <code>null</code> on success, the error message string on failure. This ensures observability hooks can track failures.</p>
+<h2 id="3-hook-configuration"><span class="num">3.</span> Hook Configuration</h2>
+<p>Hooks are defined in the <code>GraphDefinition</code> JSON:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;My Agent&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;edges&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;hooks&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PostNodeExecute&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python log_node.py&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;match_node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llmCall&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;timeout_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PreNodeExecute&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python validate_env.py&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;match_node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;env_habitat__*&quot;</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;GraphComplete&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python export_metrics.py&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;match_node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;*&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="31-hookdef-fields"><span class="num">3.1</span> HookDef Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>event</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>One of the 5 events above</td>
+</tr>
+<tr>
+<td><code>command</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>Shell command to run</td>
+</tr>
+<tr>
+<td><code>match_node_type</code></td>
+<td>string</td>
+<td><code>"*"</code></td>
+<td>Node type filter (see matching rules)</td>
+</tr>
+<tr>
+<td><code>match_node_id</code></td>
+<td>string | null</td>
+<td><code>null</code></td>
+<td>Exact node instance match (auto-set for node-level hooks)</td>
+</tr>
+<tr>
+<td><code>timeout_ms</code></td>
+<td>int</td>
+<td><code>1000</code></td>
+<td>Max execution time per invocation</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Toggle without deleting</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-backend-data-model"><span class="num">3.2</span> Backend Data Model</h3>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HookDef</span><span class="p">:</span>
+    <span class="n">event</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">command</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">match_node_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;*&quot;</span>
+    <span class="n">match_node_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># exact node instance match</span>
+    <span class="n">timeout_ms</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span>
+    <span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+</code></pre></div>
+<p>Added to <code>GraphDefinition</code> as <code>hooks: List[HookDef]</code> — serialized only when non-empty for backward compatibility. Node-level hooks are stored in <code>NodeDef.config["hooks"]</code> and auto-get <code>match_node_id</code> set during merge.</p>
+<h2 id="4-matching-rules"><span class="num">4.</span> Matching Rules</h2>
+<h3 id="41-type-based-matching"><span class="num">4.1</span> Type-based matching</h3>
+<p>The <code>match_node_type</code> field supports three patterns:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Matches</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"*"</code></td>
+<td>All node types</td>
+<td>Every node fires the hook</td>
+</tr>
+<tr>
+<td><code>"llmCall"</code></td>
+<td>Exact match</td>
+<td>Only <code>llmCall</code> nodes</td>
+</tr>
+<tr>
+<td><code>"env_habitat__*"</code></td>
+<td>Prefix match via <code>startswith</code></td>
+<td><code>env_habitat__observe</code>, <code>env_habitat__step</code>, etc.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-instance-based-matching"><span class="num">4.2</span> Instance-based matching</h3>
+<p>When <code>match_node_id</code> is set (non-null), the hook matches <strong>only</strong> the specific node instance with that ID. This takes precedence over <code>match_node_type</code> — type matching is skipped entirely.</p>
+<p>Node-level hooks (from <code>NodeDef.config["hooks"]</code>) automatically get <code>match_node_id</code> set to the node's ID during extraction, ensuring they fire only for their owning node.</p>
+<h3 id="43-implementation"><span class="num">4.3</span> Implementation</h3>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">_matches</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hook</span><span class="p">,</span> <span class="n">node_type</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="c1"># Node-level hooks: exact instance match</span>
+    <span class="k">if</span> <span class="n">hook</span><span class="o">.</span><span class="n">match_node_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">node_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">hook</span><span class="o">.</span><span class="n">match_node_id</span> <span class="o">==</span> <span class="n">node_id</span>
+    <span class="c1"># Type-based matching (graph-level and global hooks)</span>
+    <span class="n">pattern</span> <span class="o">=</span> <span class="n">hook</span><span class="o">.</span><span class="n">match_node_type</span>
+    <span class="k">if</span> <span class="n">pattern</span> <span class="o">==</span> <span class="s2">&quot;*&quot;</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">True</span>
+    <span class="k">if</span> <span class="n">node_type</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">False</span>
+    <span class="k">if</span> <span class="n">pattern</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;__*&quot;</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">node_type</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">pattern</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+    <span class="k">return</span> <span class="n">pattern</span> <span class="o">==</span> <span class="n">node_type</span>
+</code></pre></div>
+<h2 id="5-execution-protocol"><span class="num">5.</span> Execution Protocol</h2>
+<p>Hooks communicate with the executor via stdin/stdout JSON.</p>
+<h3 id="51-stdin-executor-hook"><span class="num">5.1</span> stdin (executor → hook)</h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PreNodeExecute&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;llmCall&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;node_abc123&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;inputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;prompt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Navigate to the kitchen...&quot;</span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>For <code>PostNodeExecute</code>, includes <code>outputs</code> and <code>error</code> (null or string).
+For lifecycle events (<code>GraphStart</code>, <code>GraphComplete</code>, <code>GraphError</code>), includes relevant metadata.</p>
+<h3 id="52-stdout-hook-executor"><span class="num">5.2</span> stdout (hook → executor)</h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;continue&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;modified_data&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="p">}</span>
+</code></pre></div>
+<ul>
+<li>Empty stdout or no JSON → treated as <code>"continue"</code> (fail-open)</li>
+<li>Unknown <code>action</code> value → treated as <code>"continue"</code></li>
+<li>Non-zero exit code → treated as <code>"continue"</code></li>
+<li>Timeout → subprocess killed, treated as <code>"continue"</code></li>
+</ul>
+<h3 id="53-execution-order"><span class="num">5.3</span> Execution Order</h3>
+<p>Multiple hooks for the same event run <strong>sequentially in list order</strong>:
+- First <code>"block"</code> result wins — short-circuits, remaining hooks don't run
+- <code>"modify"</code> results accumulate — each hook can re-modify the previous hook's output
+- Errors in one hook don't prevent subsequent hooks from running</p>
+<h2 id="6-hook-sources-and-merge-order"><span class="num">6.</span> Hook Sources and Merge Order</h2>
+<p>Hooks come from three sources, merged in order from least to most specific:</p>
+<div class="highlight"><pre><span></span><code>global hooks  (workspace/hooks.json)
+  + graph-level hooks  (GraphDefinition.hooks)
+  + node-level hooks   (NodeDef.config.hooks, match_node_id auto-set)
+  = merged list → HookRunner
+</code></pre></div>
+<h3 id="61-global-hooks"><span class="num">6.1</span> Global Hooks</h3>
+<p>Project-wide hooks defined in <code>workspace/hooks.json</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;GraphComplete&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python log_metrics.py&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;match_node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;*&quot;</span><span class="p">}</span>
+<span class="p">]</span>
+</code></pre></div>
+<p>Loaded by <code>WorkspaceComponentRegistry._load_global_hooks()</code> at scan time. Passed to <code>GraphExecutor</code> via the API → <code>LoopRunner</code> → executor chain.</p>
+<h3 id="62-graph-level-hooks"><span class="num">6.2</span> Graph-Level Hooks</h3>
+<p>Defined in <code>GraphDefinition.hooks</code> — travel with saved graph JSON files.</p>
+<h3 id="63-node-level-hooks"><span class="num">6.3</span> Node-Level Hooks</h3>
+<p>Stored in <code>NodeDef.config["hooks"]</code>. Configured per-node via the Properties panel. During merge, <code>extract_node_hooks()</code> auto-sets <code>match_node_type</code> to the node's type and <code>match_node_id</code> to the node's ID.</p>
+<h3 id="64-merge-utilities"><span class="num">6.4</span> Merge Utilities</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># hooks.py</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">extract_node_hooks</span><span class="p">(</span><span class="n">nodes</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">NodeDef</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">HookDef</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Extract hooks from NodeDef.config, auto-set match_node_id.&quot;&quot;&quot;</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">merge_hooks</span><span class="p">(</span><span class="n">global_hooks</span><span class="p">,</span> <span class="n">graph_hooks</span><span class="p">,</span> <span class="n">node_hooks</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">HookDef</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Concatenate: global → graph → node.&quot;&quot;&quot;</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">load_hooks_file</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">HookDef</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load from JSON file. Returns [] on missing/malformed.&quot;&quot;&quot;</span>
+</code></pre></div>
+<h3 id="65-precedence-semantics"><span class="num">6.5</span> Precedence Semantics</h3>
+<ul>
+<li><strong>block</strong>: first block wins (global can enforce project-wide policy)</li>
+<li><strong>modify</strong>: last modify wins (node-level has final say)</li>
+</ul>
+<h2 id="7-integration-points"><span class="num">7.</span> Integration Points</h2>
+<h3 id="71-graphexecutorrun"><span class="num">7.1</span> GraphExecutor.run()</h3>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">orchestrator</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">global_hooks</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="c1"># Merge 3 hook sources</span>
+    <span class="n">node_hooks</span> <span class="o">=</span> <span class="n">extract_node_hooks</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">nodes</span><span class="p">)</span>
+    <span class="n">merged</span> <span class="o">=</span> <span class="n">merge_hooks</span><span class="p">(</span><span class="n">global_hooks</span> <span class="ow">or</span> <span class="p">[],</span> <span class="n">graph</span><span class="o">.</span><span class="n">hooks</span><span class="p">,</span> <span class="n">node_hooks</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span> <span class="o">=</span> <span class="n">HookRunner</span><span class="p">(</span><span class="n">merged</span><span class="p">)</span>
+
+    <span class="c1"># GraphStart</span>
+    <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span><span class="s2">&quot;GraphStart&quot;</span><span class="p">,</span> <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="o">...</span><span class="p">})</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="c1"># ... dataflow loop ...</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span><span class="s2">&quot;GraphError&quot;</span><span class="p">,</span> <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)})</span>
+        <span class="k">raise</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span><span class="s2">&quot;GraphComplete&quot;</span><span class="p">,</span> <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="o">...</span><span class="p">})</span>
+</code></pre></div>
+<h3 id="72-graphexecutor_fire_node"><span class="num">7.2</span> GraphExecutor._fire_node()</h3>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_fire_node</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">orchestrator</span><span class="p">):</span>
+    <span class="c1"># PreNodeExecute — can block or modify inputs</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">has_hooks</span><span class="p">():</span>
+        <span class="n">pre_result</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span>
+            <span class="s2">&quot;PreNodeExecute&quot;</span><span class="p">,</span> <span class="n">node_type</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+            <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;node_id&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;inputs&quot;</span><span class="p">:</span> <span class="n">safe_serialize</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span><span class="p">)},</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">pre_result</span><span class="o">.</span><span class="n">action</span> <span class="o">==</span> <span class="s2">&quot;block&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="n">pre_result</span><span class="o">.</span><span class="n">action</span> <span class="o">==</span> <span class="s2">&quot;modify&quot;</span> <span class="ow">and</span> <span class="n">pre_result</span><span class="o">.</span><span class="n">modified_data</span><span class="p">:</span>
+            <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">pre_result</span><span class="o">.</span><span class="n">modified_data</span><span class="p">)</span>
+
+    <span class="c1"># Execute with error capture</span>
+    <span class="n">exec_error</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">instance</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">exec_error</span> <span class="o">=</span> <span class="n">e</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)}</span>
+
+    <span class="c1"># PostNodeExecute — fires on BOTH success and error</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">has_hooks</span><span class="p">():</span>
+        <span class="n">post_result</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span>
+            <span class="s2">&quot;PostNodeExecute&quot;</span><span class="p">,</span> <span class="n">node_type</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+            <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;node_id&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;outputs&quot;</span><span class="p">:</span> <span class="n">safe_serialize</span><span class="p">(</span><span class="n">result</span><span class="p">),</span>
+                     <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">exec_error</span><span class="p">)</span> <span class="k">if</span> <span class="n">exec_error</span> <span class="k">else</span> <span class="kc">None</span><span class="p">},</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">post_result</span><span class="o">.</span><span class="n">action</span> <span class="o">==</span> <span class="s2">&quot;modify&quot;</span> <span class="ow">and</span> <span class="n">post_result</span><span class="o">.</span><span class="n">modified_data</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">exec_error</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="n">post_result</span><span class="o">.</span><span class="n">modified_data</span>
+
+    <span class="k">if</span> <span class="n">exec_error</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exec_error</span>
+    <span class="k">return</span> <span class="n">result</span>
+</code></pre></div>
+<h2 id="8-properties-panel-ui"><span class="num">8.</span> Properties Panel UI</h2>
+<p>When a node is selected on the canvas, the Properties panel shows a <strong>Hooks</strong> section at the bottom:</p>
+<ul>
+<li><strong>Add button</strong> creates a new hook with defaults (<code>PostNodeExecute</code>, empty command, 1000ms timeout, enabled)</li>
+<li>Each hook row shows: event dropdown (<code>PreNodeExecute</code>/<code>PostNodeExecute</code>), command text input, timeout input (ms), enabled toggle, remove button</li>
+<li>Changes are stored in <code>node.data.hooks</code> which maps to <code>NodeDef.config.hooks</code> via <code>fromFlowNodes</code></li>
+<li>The <code>match_node_type</code> and <code>match_node_id</code> fields are <strong>implicit</strong> — auto-set during server-side extraction</li>
+</ul>
+<p>The UI is implemented as <code>HooksSection</code> + <code>HookRow</code> components in <code>PropertiesPanel.tsx</code>.</p>
+<h2 id="9-safe_serialize"><span class="num">9.</span> safe_serialize()</h2>
+<p>Hook payloads must be JSON-safe. The <code>safe_serialize()</code> utility converts complex Python objects to metadata-only representations — no full data (images, arrays) passes through the hook stdin pipe.</p>
+<table>
+<thead>
+<tr>
+<th>Input Type</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>str</code>, <code>int</code>, <code>float</code>, <code>bool</code>, <code>None</code></td>
+<td>Pass through</td>
+</tr>
+<tr>
+<td><code>dict</code></td>
+<td>Recurse (up to <code>max_depth=3</code>)</td>
+</tr>
+<tr>
+<td><code>list</code>, <code>tuple</code></td>
+<td>Recurse (up to <code>max_depth=3</code>)</td>
+</tr>
+<tr>
+<td><code>numpy.ndarray</code></td>
+<td><code>{"__type": "ndarray", "shape": [H, W, C], "dtype": "float32"}</code></td>
+</tr>
+<tr>
+<td><code>PIL.Image</code></td>
+<td><code>{"__type": "Image", "size": [W, H], "mode": "RGB"}</code></td>
+</tr>
+<tr>
+<td><code>bytes</code></td>
+<td><code>{"__type": "bytes", "length": N}</code></td>
+</tr>
+<tr>
+<td>Any other type</td>
+<td><code>str(obj)[:200]</code></td>
+</tr>
+<tr>
+<td>At max depth</td>
+<td><code>str(obj)[:200]</code></td>
+</tr>
+</tbody>
+</table>
+<p>Prior art: <code>_broadcast_step()</code> in <code>graph_executor.py</code> handles similar conversions for WebSocket broadcast.</p>
+<h2 id="10-performance-considerations"><span class="num">10.</span> Performance Considerations</h2>
+<p>Shell hooks have subprocess startup overhead (~5-20ms per invocation). This is significant for large graphs:</p>
+<table>
+<thead>
+<tr>
+<th>Graph</th>
+<th>Nodes/iter</th>
+<th>Iterations</th>
+<th>Wildcard hook overhead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Simple DAG</td>
+<td>5</td>
+<td>1</td>
+<td>~50ms (negligible)</td>
+</tr>
+<tr>
+<td>NavGPT-CE</td>
+<td>14</td>
+<td>500</td>
+<td>~70s (significant)</td>
+</tr>
+<tr>
+<td>NavGPT-CE + pre+post</td>
+<td>14</td>
+<td>500</td>
+<td>~140s (major)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Mitigations:</strong>
+1. Use <strong>exact or prefix matching</strong> instead of wildcard (<code>"llmCall"</code> vs <code>"*"</code>)
+2. Reduce <code>step_budget</code> during development
+3. Set <code>enabled: false</code> to disable hooks without removing config
+4. Future V1.1: persistent-process hooks that avoid subprocess respawn</p>
+<p><strong>Zero-cost guarantee:</strong> When <code>graph.hooks</code> is empty (the common case), <code>HookRunner.has_hooks()</code> returns <code>False</code> and all hook code is skipped — no async overhead, no function calls, just a single boolean check.</p>
+<h2 id="11-key-files"><span class="num">11.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/hooks.py</code></td>
+<td><code>HookRunner</code>, <code>HookResult</code>, <code>safe_serialize()</code>, <code>extract_node_hooks()</code>, <code>merge_hooks()</code>, <code>load_hooks_file()</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_def.py</code></td>
+<td><code>HookDef</code> dataclass (with <code>match_node_id</code>), <code>GraphDefinition.hooks</code> field</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/registry.py</code></td>
+<td><code>_load_global_hooks()</code>, <code>get_global_hooks()</code> — loads <code>workspace/hooks.json</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+<td>3-source merge in <code>run()</code>, <code>node_id</code> in <code>_fire_node()</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/loop_runner.py</code></td>
+<td>Threads <code>global_hooks</code> parameter</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/api/execution/run.py</code></td>
+<td>Fetches global hooks from <code>WorkspaceComponentRegistry.get_global_hooks()</code> and threads them into <code>LoopRunner.run(..., global_hooks=...)</code> on the <code>POST /run</code> path (the single <code>/run</code> endpoint per <a href="../core/decisions/platform/adr-platform-002-single-run-endpoint.html">ADR-platform-002</a>; the old <code>api/navigate_api.py</code> module is gone)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/types.ts</code></td>
+<td><code>HookDef</code> TypeScript interface (with <code>match_node_id</code>)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/panels/PropertiesPanel.tsx</code></td>
+<td><code>HooksSection</code> + <code>HookRow</code> — per-node hook editor</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/runPipeline.ts</code></td>
+<td>Passes hooks to backend in <code>loopDef</code></td>
+</tr>
+<tr>
+<td><code>workspace/hooks.json</code></td>
+<td>Global hooks config file (empty <code>[]</code> by default)</td>
+</tr>
+</tbody>
+</table>
+<div class="callout note">
+  <strong>Test coverage note (2026-05-18)</strong>
+  The previously-listed <code>agent_loop/test_hooks.py</code> (49 tests) is no longer present in the tree; <code>find agentcanvas -name "test*hook*"</code> returns nothing. Behaviour-level coverage of hook merge / matching / subprocess wiring exists implicitly through the higher-level executor tests, but a dedicated hook test suite is currently a gap — flag as a follow-up before relying on hooks for load-bearing eval workflows.
+</div>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HookDef data model</td>
+<td>Done</td>
+<td>Serializable, backward compatible, includes <code>match_node_id</code></td>
+</tr>
+<tr>
+<td>HookRunner (subprocess execution)</td>
+<td>Done</td>
+<td>Fail-open, timeout, kill</td>
+</tr>
+<tr>
+<td>safe_serialize()</td>
+<td>Done</td>
+<td>Metadata-only for numpy/images</td>
+</tr>
+<tr>
+<td>Matching (<em>, exact, prefix__</em>, node_id)</td>
+<td>Done</td>
+<td>4 patterns supported</td>
+</tr>
+<tr>
+<td>PreNodeExecute (block/modify)</td>
+<td>Done</td>
+<td>Guards <code>_fire_node()</code></td>
+</tr>
+<tr>
+<td>PostNodeExecute (success + error)</td>
+<td>Done</td>
+<td>try/except, error field in payload</td>
+</tr>
+<tr>
+<td>GraphStart / GraphComplete / GraphError</td>
+<td>Done</td>
+<td>Lifecycle boundaries</td>
+</tr>
+<tr>
+<td>3-source merge (global/graph/node)</td>
+<td>Done</td>
+<td><code>merge_hooks()</code> in hooks.py</td>
+</tr>
+<tr>
+<td>Global hooks (<code>workspace/hooks.json</code>)</td>
+<td>Done</td>
+<td>Loaded by WorkspaceComponentRegistry</td>
+</tr>
+<tr>
+<td>Node-level hooks (Properties panel UI)</td>
+<td>Done</td>
+<td>HooksSection in PropertiesPanel.tsx</td>
+</tr>
+<tr>
+<td>Frontend types + runPipeline passthrough</td>
+<td>Done</td>
+<td>Also fixed containers/state_edges gap</td>
+</tr>
+<tr>
+<td>Dedicated hook test suite</td>
+<td>Gap</td>
+<td>Earlier <code>agent_loop/test_hooks.py</code> (49 tests) is no longer in the tree; hook code paths are now covered only implicitly via higher-level executor tests. Re-introduce a focused suite before relying on hooks for load-bearing eval gating.</td>
+</tr>
+<tr>
+<td>Persistent-process hooks (V1.1)</td>
+<td>Not done</td>
+<td>Future: avoid subprocess respawn for hot loops</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-05-18: §11 Key Files — replace dead <code>api/navigate_api.py</code> with current <code>api/execution/run.py</code> (single <code>/run</code> endpoint per ADR-platform-002); flag missing <code>test_hooks.py</code> as test-coverage gap in Status table.</li>
+<li>2026-04-02 18:22: Added 3-source hook merge (global/graph/node), match_node_id, Properties panel UI, global hooks from hooks.json</li>
+<li>2026-04-02 17:33: Initial content — hook system implementation docs (7 capability, based on consensus-reviewed plan)</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="real-time-observability.html">← 6. Real-Time Observability</a> · <a href="index.html">↑ Capabilities index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h2" href="#2-hook-events">2. Hook Events</a>
+      <a class="toc-h3" href="#21-prenodeexecute-actions">2.1 PreNodeExecute Actions</a>
+      <a class="toc-h3" href="#22-postnodeexecute-actions">2.2 PostNodeExecute Actions</a>
+      <a class="toc-h2" href="#3-hook-configuration">3. Hook Configuration</a>
+      <a class="toc-h3" href="#31-hookdef-fields">3.1 HookDef Fields</a>
+      <a class="toc-h3" href="#32-backend-data-model">3.2 Backend Data Model</a>
+      <a class="toc-h2" href="#4-matching-rules">4. Matching Rules</a>
+      <a class="toc-h3" href="#41-type-based-matching">4.1 Type-based matching</a>
+      <a class="toc-h3" href="#42-instance-based-matching">4.2 Instance-based matching</a>
+      <a class="toc-h3" href="#43-implementation">4.3 Implementation</a>
+      <a class="toc-h2" href="#5-execution-protocol">5. Execution Protocol</a>
+      <a class="toc-h3" href="#51-stdin-executor-hook">5.1 stdin (executor → hook)</a>
+      <a class="toc-h3" href="#52-stdout-hook-executor">5.2 stdout (hook → executor)</a>
+      <a class="toc-h3" href="#53-execution-order">5.3 Execution Order</a>
+      <a class="toc-h2" href="#6-hook-sources-and-merge-order">6. Hook Sources and Merge Order</a>
+      <a class="toc-h3" href="#61-global-hooks">6.1 Global Hooks</a>
+      <a class="toc-h3" href="#62-graph-level-hooks">6.2 Graph-Level Hooks</a>
+      <a class="toc-h3" href="#63-node-level-hooks">6.3 Node-Level Hooks</a>
+      <a class="toc-h3" href="#64-merge-utilities">6.4 Merge Utilities</a>
+      <a class="toc-h3" href="#65-precedence-semantics">6.5 Precedence Semantics</a>
+      <a class="toc-h2" href="#7-integration-points">7. Integration Points</a>
+      <a class="toc-h3" href="#71-graphexecutorrun">7.1 GraphExecutor.run()</a>
+      <a class="toc-h3" href="#72-graphexecutor_fire_node">7.2 GraphExecutor._fire_node()</a>
+      <a class="toc-h2" href="#8-properties-panel-ui">8. Properties Panel UI</a>
+      <a class="toc-h2" href="#9-safe_serialize">9. safe_serialize()</a>
+      <a class="toc-h2" href="#10-performance-considerations">10. Performance Considerations</a>
+      <a class="toc-h2" href="#11-key-files">11. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

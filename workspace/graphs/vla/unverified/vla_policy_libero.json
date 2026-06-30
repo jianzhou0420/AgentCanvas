@@ -1,0 +1,393 @@
+{
+  "name": "VLA Policy Runner (LIBERO)",
+  "description": "Run any vendored VLA policy (Pi0 / SmolVLA / DiffusionPolicy / DROID-DP) on LIBERO via the 5-node adapter pipeline (4 atomic adapter stages + 1 model forward, 1:1 with vlaworkspace's RobotAdaptor + ModelAdaptor methods). Each config-owning node has a single `select` dropdown whose options come from filesystem discovery: **adapt_env_to_canonical** lists `adapters/robots/*.py` (`robot`); **adapt_canonical_to_model** lists `adapters/models/*.py` (`model`); **predict** lists `policies/*.py` (`policy`) plus a `checkpoint_path` (per-experiment). Each adapter / policy file owns its own `DEFAULT_KWARGS` transcribed from upstream Hydra YAMLs \u2014 drop a new .py in the folder = new dropdown entry; delete a file = option vanishes. Switch model = change two dropdowns (model + policy) and the checkpoint_path. The action-side nodes (**adapt_model_to_canonical** and **adapt_canonical_to_env**) carry no config. Topology (gym-like, 2026-06-10): env_libero__reset emits metadata only; seed_obs (env_libero__observe_egocentric) pulls the first-iter loop carry (agentview/wrist/state); inside the loop, iterIn fans out to adapt_env_to_canonical \u2192 adapt_canonical_to_model \u2192 predict \u2192 adapt_model_to_canonical \u2192 adapt_canonical_to_env, whose JSON action chunk feeds env_libero__step_continuous (control signals only); loop_obs re-observes per iter; evaluate (trigger \u2190 step.info) harvests metrics.",
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_libero__reset",
+      "label": "LIBERO: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_out",
+        "ports": [
+          {
+            "name": "init_instruction",
+            "wire_type": "TEXT",
+            "persist": true,
+            "origin": "init",
+            "writer_name": "instruction"
+          },
+          {
+            "name": "iterout_agentview_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "origin": "iterOut",
+            "writer_name": "agentview_image"
+          },
+          {
+            "name": "iterout_wrist_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "origin": "iterOut",
+            "writer_name": "wrist_image"
+          },
+          {
+            "name": "iterout_state",
+            "wire_type": "ANY",
+            "persist": true,
+            "origin": "iterOut",
+            "writer_name": "state"
+          }
+        ],
+        "initPorts": [
+          {
+            "name": "instruction",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "adapt_env_to_canonical",
+      "type": "policy_vla__adapt_env_to_canonical",
+      "label": "VLA: Env \u2192 Canonical",
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "config": {
+        "robot": "libero_robot"
+      }
+    },
+    {
+      "id": "adapt_canonical_to_model",
+      "type": "policy_vla__adapt_canonical_to_model",
+      "label": "VLA: Canonical \u2192 Model",
+      "position": {
+        "x": 1120,
+        "y": 0
+      },
+      "config": {
+        "model": "pi0_model"
+      }
+    },
+    {
+      "id": "predict",
+      "type": "policy_vla__predict",
+      "label": "VLA: Predict",
+      "position": {
+        "x": 1400,
+        "y": 0
+      },
+      "config": {
+        "policy": "pi0_policy",
+        "checkpoint_path": "data/vla_policy/checkpoints/pi0_libero_pytorch",
+        "num_inference_steps": 10
+      }
+    },
+    {
+      "id": "adapt_model_to_canonical",
+      "type": "policy_vla__adapt_model_to_canonical",
+      "label": "VLA: Model \u2192 Canonical",
+      "position": {
+        "x": 1680,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "adapt_canonical_to_env",
+      "type": "policy_vla__adapt_canonical_to_env",
+      "label": "VLA: Canonical \u2192 Env Action",
+      "position": {
+        "x": 1960,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "env_step",
+      "type": "env_libero__step_continuous",
+      "label": "LIBERO: Step (continuous)",
+      "position": {
+        "x": 2240,
+        "y": 0
+      },
+      "config": {
+        "max_chunk_steps": 8
+      }
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 2800,
+        "y": 0
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "agentview_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "wrist_image",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "state",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "note_env_lock",
+      "type": "note",
+      "label": "Env-side lock",
+      "position": {
+        "x": 650.8859612882867,
+        "y": -372.65144477868273
+      },
+      "config": {
+        "markdown": "**Env-side adapters \u2014 bound to LIBERO**\n\n`adapt_env_to_canonical` (stage 1) and `adapt_canonical_to_env` (stage 4) are coupled to whichever env this graph uses.\n\nTo swap env (\u2192 SIMPLER, Franka, \u2026) you must replace **all four** together: the two `env_libero__*` nodes **and** both env-side adapters."
+      }
+    },
+    {
+      "id": "note_policy_triple",
+      "type": "note",
+      "label": "Policy triple",
+      "position": {
+        "x": 1378.7414550830717,
+        "y": -426.59934970988576
+      },
+      "config": {
+        "markdown": "**Policy \u2014 pick as a triple**\n\nThe `model` dropdown on `adapt_canonical_to_model` drives all three:\n\n1. stage 2 packing (this node)\n2. the policy class in `predict`\n3. stage 3 unpacking (`adapt_model_to_canonical`)\n\nMismatched configs (e.g. `model=pi0` + a SmolVLA `checkpoint_path`) fail at load. Set them to match."
+      }
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 3080,
+        "y": 220
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_libero__observe_egocentric",
+      "label": "Observe (seed)",
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_libero__observe_egocentric",
+      "label": "Observe (loop)",
+      "position": {
+        "x": 2520,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "evaluate",
+      "type": "env_libero__evaluate",
+      "label": "LIBERO: Evaluate",
+      "position": {
+        "x": 3080,
+        "y": 0
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_instruction_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "instruction",
+      "targetHandle": "init_instruction"
+    },
+    {
+      "id": "e_reset_agentview_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "iterout_agentview_image"
+    },
+    {
+      "id": "e_reset_wrist_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "wrist_image",
+      "targetHandle": "iterout_wrist_image"
+    },
+    {
+      "id": "e_reset_state_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "state",
+      "targetHandle": "iterout_state"
+    },
+    {
+      "id": "e_iterin_instruction_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "init_instruction",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e_iterin_agentview_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "iterout_agentview_image",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_iterin_wrist_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "iterout_wrist_image",
+      "targetHandle": "wrist_image"
+    },
+    {
+      "id": "e_iterin_state_to_adapt_env",
+      "source": "iter_in",
+      "target": "adapt_env_to_canonical",
+      "sourceHandle": "iterout_state",
+      "targetHandle": "state"
+    },
+    {
+      "id": "e_iterin_state_to_c2e",
+      "source": "iter_in",
+      "target": "adapt_canonical_to_env",
+      "sourceHandle": "iterout_state",
+      "targetHandle": "current_state"
+    },
+    {
+      "id": "e_adapt_env_to_c2m",
+      "source": "adapt_env_to_canonical",
+      "target": "adapt_canonical_to_model",
+      "sourceHandle": "canonical",
+      "targetHandle": "canonical"
+    },
+    {
+      "id": "e_c2m_to_predict",
+      "source": "adapt_canonical_to_model",
+      "target": "predict",
+      "sourceHandle": "model_batch",
+      "targetHandle": "model_batch"
+    },
+    {
+      "id": "e_predict_to_m2c",
+      "source": "predict",
+      "target": "adapt_model_to_canonical",
+      "sourceHandle": "model_output",
+      "targetHandle": "model_output"
+    },
+    {
+      "id": "e_m2c_to_c2e",
+      "source": "adapt_model_to_canonical",
+      "target": "adapt_canonical_to_env",
+      "sourceHandle": "canonical_action",
+      "targetHandle": "canonical_action"
+    },
+    {
+      "id": "e_c2e_to_step",
+      "source": "adapt_canonical_to_env",
+      "target": "env_step",
+      "sourceHandle": "action_chunk",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_agentview_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "agentview_image",
+      "targetHandle": "agentview_image"
+    },
+    {
+      "id": "e_step_wrist_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "wrist_image",
+      "targetHandle": "wrist_image"
+    },
+    {
+      "id": "e_step_state_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "state",
+      "targetHandle": "state"
+    },
+    {
+      "id": "e_step_done_to_termination__stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_output_18__po",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_reset_to_seedobs",
+      "source": "env_reset",
+      "target": "seed_obs",
+      "sourceHandle": "episode_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_to_loopobs",
+      "source": "env_step",
+      "target": "loop_obs",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iter_out_finalstop_to_evaluate",
+      "source": "iter_out",
+      "target": "evaluate",
+      "sourceHandle": "final_stop",
+      "targetHandle": "trigger"
+    }
+  ],
+  "step_budget": 50,
+  "eval_graph": true
+}

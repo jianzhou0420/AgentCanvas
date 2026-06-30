@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-canvas-003 — AgentCanvas</title>
+<meta name="description" content="Graph Node system — `kind` field, dual storage, snapshot semantics">
+<meta property="og:title" content="ADR-canvas-003 — AgentCanvas">
+<meta property="og:description" content="Graph Node system — `kind` field, dual storage, snapshot semantics">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/canvas/adr-canvas-003-graph-node-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/canvas/adr-canvas-003-graph-node-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Canvas</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-canvas-003</span>
+  </div>
+  <div class="last-updated">2026-03-31</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-canvas);">ADR-canvas-003</h1>
+  <p class="tagline">Graph Node system — `kind` field, dual storage, snapshot semantics</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-03-31</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>canvas</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-015</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Researchers build complex agent subgraphs (e.g. a VLM→Prompt→LLM→Decision chain) and want to reuse them across multiple graphs without re-wiring each time. The existing "Save Graph" feature saves editable templates that open in tabs — useful for top-level graphs, but not for frozen reusable building blocks. Dragging a saved graph onto the canvas was supported but confusing: edits to the source propagated nowhere (copy semantics), yet the UI didn't communicate this. There was no way to distinguish "this is a template I'm actively developing" from "this is a finished module I want to stamp into other graphs." Additionally, both kinds shared the same <code>workspace/graphs/</code> directory and the same filename slug, so saving a graph and a node with the same name overwrote each other.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>(1) <strong><code>kind</code> field</strong> on <code>GraphDefinition</code>: <code>"graph"</code> (default, editable template — opens in tab, not draggable) or <code>"node"</code> (frozen composite archive — draggable onto canvas, not openable). (2) <strong>Dual storage</strong>: <code>workspace/graphs/</code> for graphs, <code>workspace/graph_nodes/</code> for nodes. Same slug can exist in both directories. <code>GET /api/graphs</code> scans both and returns a merged list. <code>POST</code> routes by <code>kind</code>. <code>GET/PUT/DELETE</code> search both via <code>_find_graph()</code>. (3) <strong>Explorer split</strong>: two collapsible sections in the sidebar — "Graphs" (upper, FolderOpen icon, amber) and "Graph Nodes" (lower, Puzzle icon, indigo). Both support VS Code-style tree expansion. (4) <strong>"Save as Node" button</strong>: new canvas toolbar button that opens <code>SaveGraphDialog</code> with <code>kind="node"</code>. (5) <strong>Snapshot semantics</strong> (existing, now documented): drag serializes the full <code>GraphDefinition</code> as JSON into the drag payload. <code>JSON.parse</code> on drop creates a deep copy. No reference or link back to the source file. Edits to the source have zero effect on existing canvas instances or saved parent graphs. (6) <strong>Backward compat</strong>: graphs without a <code>kind</code> field default to <code>"graph"</code>. The <code>kind</code> field is only serialized to JSON when not the default value.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) Reference-based composites (store a graph ID, resolve at execution time) — rejected, adds complexity (version management, broken references) and conflicts with flatten-before-execute. (b) Single directory with <code>node__</code> prefix for graph node filenames — initially implemented, then replaced by dual directories for cleaner separation. (c) Separate API routes (<code>/api/graph-nodes</code>) — rejected, unnecessary duplication when a single <code>kind</code> field suffices.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>Copy semantics + dual storage is the simplest model that satisfies the core need: "archive a graph as a reusable block that won't change under me." No version management, no reference resolution, no sync issues. The <code>kind</code> field is minimal metadata that cleanly separates the two use cases without changing the <code>GraphDefinition</code> schema in any breaking way. Dual directories prevent filename collisions and make filesystem browsing intuitive. The Explorer split gives clear visual separation matching the conceptual distinction.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>architecture.md, glossary.md, blueprint.md, roadmap.md, design-docs/graph-system.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

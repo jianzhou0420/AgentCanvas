@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reload &amp; Code Freshness — AgentCanvas</title>
+<meta name="description" content="Disk as source of truth · cold eval subprocess · re-import primitive · manual reload · active-workspace overlay · shared-server drift">
+<meta property="og:title" content="Reload &amp; Code Freshness — AgentCanvas">
+<meta property="og:description" content="Disk as source of truth · cold eval subprocess · re-import primitive · manual reload · active-workspace overlay · shared-server drift">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/reload-and-code-freshness.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Reload &amp; Code Freshness">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/reload-and-code-freshness.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">Reload &amp; Code Freshness</span>
+  </div>
+  <div class="last-updated">2026-06-15 13:34</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Reload &amp; Code Freshness</h1>
+  <p class="tagline">Disk as source of truth · cold eval subprocess · re-import primitive · manual reload · active-workspace overlay · shared-server drift</p>
+</header>
+
+<p class="lede">The promise behind running agent-edited code: <strong>a run uses the code you meant</strong> — not a stale copy, not a half-updated mix. This page is the developer-facing internals of how that promise is kept (grounded in <code>file·function</code>), and the few places where today's code does not yet match the intended model. For how a run is launched and observed see <a href="../graph/batch-eval.html">Batch Eval System</a>; for the parallelism contract that decides which servers are shared see <a href="../../core/decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>.</p>
+
+<style id="rcf-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:760px; margin:1.4rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:10.5px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.2; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#rcfa); }
+  .rxsvg .edge-faint { stroke: var(--muted); stroke-width:1.2; fill:none; stroke-dasharray:4 4; marker-end:url(#rcfa); opacity:.65; }
+  .rxsvg .title { font-weight:600; }
+</style>
+<svg class="rxsvg" viewBox="0 0 760 366" role="img" aria-label="Disk is the source of truth for workspace code. Three consumers load it differently. An eval run is a cold subprocess that re-scans disk at boot, so it always runs the current code — invariant 3, the immutable snapshot. The live backend scans once at startup and refreshes only on a manual reload or the nodeset watcher. Shared auto_host GPU servers import their code once at spawn and stay sticky, drifting from disk until a manual reload — deviation 1.">
+  <defs>
+    <marker id="rcfa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  </defs>
+  <rect class="accent" x="180" y="20" width="400" height="50" rx="6"/>
+  <text class="at" x="380" y="42" text-anchor="middle">DISK — source of truth</text>
+  <text class="dim" x="380" y="60" text-anchor="middle">workspace/ (frozen)  +  active overlay (optional)</text>
+  <text class="mono" x="380" y="92" text-anchor="middle">re-exec from disk under a fresh synthetic name — no importlib.reload, no module cache</text>
+  <path class="edge" d="M340,70 C 250,110 170,120 140,156"/>
+  <path class="edge" d="M380,70 L 386,156"/>
+  <path class="edge-faint" d="M420,70 C 510,110 600,120 628,156"/>
+  <text class="dim" x="176" y="138" text-anchor="middle">scan every boot</text>
+  <text class="dim" x="392" y="138" text-anchor="middle">scan once @ startup</text>
+  <text class="dim" x="612" y="138" text-anchor="middle">import once @ spawn</text>
+  <rect class="accent" x="24" y="156" width="232" height="152" rx="6"/>
+  <text class="title at" x="140" y="183" text-anchor="middle">EVAL RUN</text>
+  <text class="dim" x="140" y="205" text-anchor="middle">cold subprocess (Popen)</text>
+  <text class="dim" x="140" y="225" text-anchor="middle">scan_all() at boot,</text>
+  <text class="dim" x="140" y="243" text-anchor="middle">re-reads disk</text>
+  <text class="at" x="140" y="282" text-anchor="middle">✓ FRESH every run</text>
+  <rect class="box" x="270" y="156" width="232" height="152" rx="6"/>
+  <text class="title" x="386" y="183" text-anchor="middle">LIVE BACKEND</text>
+  <text class="dim" x="386" y="205" text-anchor="middle">canvas Play · in-process</text>
+  <text class="dim" x="386" y="225" text-anchor="middle">scanned once at startup,</text>
+  <text class="dim" x="386" y="243" text-anchor="middle">then held in registry</text>
+  <text class="dim" x="386" y="282" text-anchor="middle">⟳ manual reload / watcher</text>
+  <rect class="ghost" x="516" y="156" width="232" height="152" rx="6"/>
+  <text class="title" x="632" y="183" text-anchor="middle">SHARED auto_host</text>
+  <text class="dim" x="632" y="205" text-anchor="middle">GPU singletons · long-lived</text>
+  <text class="dim" x="632" y="225" text-anchor="middle">imported once at spawn,</text>
+  <text class="dim" x="632" y="243" text-anchor="middle">parent-owned</text>
+  <text class="title" x="632" y="282" text-anchor="middle">⚠ STICKY — drifts</text>
+  <text class="dim" x="140" y="332" text-anchor="middle">invariant 3 — immutable snapshot</text>
+  <text class="dim" x="386" y="332" text-anchor="middle">manual-only (intended policy)</text>
+  <text class="dim" x="632" y="332" text-anchor="middle">deviation ① (§4) — until reload</text>
+</svg>
+<hr>
+
+<h2 id="1-model"><span class="num">1.</span> The mental model</h2>
+<p>Four invariants — everything else follows. The first three describe how code reaches a run; the fourth is the intended reload <em>policy</em> the code is still converging on (§4 marks where it doesn't yet hold).</p>
+<ul>
+<li><strong>Disk is the source of truth</strong> — the frozen <code>workspace/</code> plus an optional active overlay; nothing else is authoritative.</li>
+<li><strong>A reload is a replace, never an in-place mutation</strong> — re-execute the file, swap in the new class.</li>
+<li><strong>A run is an immutable snapshot</strong> — code is pinned when the run starts; live workers are never updated mid-run.</li>
+<li><strong>Reload is manual-only</strong> <em>(intended)</em> — code refreshes when a human clicks Reload or calls the API, never automatically; a file change should only <em>signal</em> a reload, never perform one.</li>
+</ul>
+
+<p><strong>The smallest case.</strong> Edit one nodeset file, then watch two consumers diverge:</p>
+<pre class="hl">
+<span class="c1"># edited on disk: workspace/nodesets/method/foo/foo.py</span>
+
+POST<span class="w"> </span>/api/eval/v2/start<span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="s2">&quot;graph_name&quot;</span>:<span class="w"> </span><span class="s2">&quot;foo_graph&quot;</span>,<span class="w"> </span><span class="s2">&quot;episode_count&quot;</span>:<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="o">}</span>
+<span class="c1">#   → runs the NEW foo.py — the eval is a cold subprocess that re-scans disk at boot</span>
+
+<span class="c1"># the live canvas still holds the OLD foo.py until you ask:</span>
+POST<span class="w"> </span>/api/components/reload
+<span class="c1">#   → shutdown_all → scan_all → initialize_all   (full re-discovery)</span>
+</pre>
+<p>Two consumers, two freshness rules: the cold eval is fresh for free; the live backend waits for an explicit reload. The rest of the page is why, and the one consumer (shared servers) where even that isn't enough.</p>
+
+<h2 id="2-code"><span class="num">2.</span> How the code does it</h2>
+<p><strong>Re-import primitive.</strong> The registry never calls <code>importlib.reload</code> and never trusts the module cache. <code>registry.py · _import_module</code> pops any stale <code>sys.modules</code> entry and <code>exec_module</code>s the file from disk under a fresh synthetic name carrying a scan-cycle counter (<code>mod_name = f"_ws_{subdir}_{stem}_{scan_cycle}"</code>), so the new class object replaces the old. This is what makes invariant 2 true.</p>
+
+<p><strong>Eval = a pinned snapshot.</strong> An eval run is a fresh interpreter — <code>job_scheduler.py · _spawn</code> does <code>subprocess.Popen([sys.executable, "-m", "app.eval_subprocess_main", …])</code>, not a fork — and <code>eval_subprocess_main.py · _build_local_registry_for_run</code> re-runs <code>registry.scan_all()</code> from disk at startup; the graph is re-read fresh per submit (<code>eval.py · _load_graph_by_name</code>). All <code>worker_count=K</code> workers are spawned from the one resolved <code>source_file</code> (<code>registry.py · _load_nodeset_as_server</code>), each gated on <code>/health</code> before episodes start (<code>base_server.py · _wait_for_health</code>). Once up, a worker never re-reads disk — so a mid-run edit cannot reach it; you get the new code on the <em>next</em> run. This realizes invariant 3.</p>
+
+<p><strong>Live backend = manual reload.</strong> The long-lived backend scans once at startup (<code>main.py · lifespan</code>) and then holds that code for the canvas and for <code>shared</code> servers. To refresh it, <code>POST /api/components/reload</code> runs <code>shutdown_all → scan_all → initialize_all</code> (<code>api/platform/components.py · reload_components</code>) — a complete re-discovery (all parallelisms, policies, hooks, and deletions, because <code>scan_all</code> clears first).</p>
+
+<h2 id="3-active-ws"><span class="num">3.</span> Active-workspace overlay</h2>
+<p>An optional <em>overlay</em> copy of the workspace takes precedence over the committed <em>frozen</em> one, so a search loop (the architect pipeline) can try edited code without dirtying frozen for sibling sessions. Two scopes: <strong>process-wide</strong> (<code>ACTIVE_WORKSPACE_DIR</code> at backend startup — affects everything, including the live canvas) or <strong>per-eval-request</strong> (<code>--workspace=…</code> — reaches only that one eval subprocess).</p>
+<p><strong>Resolution is overlay-first everywhere.</strong> <code>registry.py · scan_all</code> runs two passes — frozen, then overlay, same name wins; graph-by-name checks the overlay before frozen (<code>eval.py · _load_graph_by_name</code>); and the overlay is threaded into the cold eval subprocess via the <code>ACTIVE_WORKSPACE_DIR</code> env at spawn (<code>job_scheduler.py · _spawn</code>), so the subprocess's own two-pass scan loads overlay code. After that scan, each nodeset's resolved <code>source_file</code> already points at the overlay copy if it redefines that nodeset — and <em>that</em> is what determines how each parallelism is handled:</p>
+<table>
+<thead><tr><th>parallelism</th><th>who runs it for an eval</th><th>how the overlay reaches it</th></tr></thead>
+<tbody>
+<tr><td><code>local</code></td><td>in the eval subprocess, in-process</td><td><strong>automatic</strong> — the subprocess's overlay-first scan loads the instance straight from the overlay <code>source_file</code></td></tr>
+<tr><td><code>replicated</code></td><td>K per-worker auto_host children the subprocess spawns</td><td><strong>automatic</strong> — each worker is spawned from the same overlay-resolved <code>source_file</code> (<code>registry.py · _load_nodeset_as_server</code>); the subprocess owns them, so no cross-process coordination is needed</td></tr>
+<tr><td><code>shared</code></td><td>the parent backend's long-lived singleton, over HTTP</td><td><strong>special</strong> — the eval attaches to a parent-owned server it does not own; see below</td></tr>
+</tbody>
+</table>
+<p><strong>Why <code>shared</code> is the only special case.</strong> <code>local</code> and <code>replicated</code> nodesets are <em>owned</em> by the eval subprocess — it scans them overlay-first and spawns them itself, so the overlay is picked up for free via <code>source_file</code>. A <code>shared</code> nodeset is different: it is a single long-lived server in the <em>parent</em> backend, shared across sessions, that the eval merely connects to (<code>shared_urls.json</code>, computed in <code>eval.py · start_eval_v2</code>). The overlay cannot just re-point or reload it without disturbing other sessions or tearing down a GPU model.</p>
+<p><strong>Shared-overlay handling (TODO #60).</strong> So at admit, before the eval starts, the scheduler content-hashes the overlay's nodeset tree against frozen (<code>job_scheduler.py · _prepare_ephemerals</code>, via <code>content_hash.py · hash_nodeset_tree</code> / <code>resolve_overlay_source</code>). If they <strong>differ</strong>, it spawns a <em>tagged ephemeral</em> auto_host child from the overlay source, rewrites that URL into <code>shared_urls.json</code> so the run attaches to the overlay server, and tears it down by tag on reap — the frozen singleton stays alive for everyone else. If they are <strong>identical</strong>, no ephemeral is spawned and the run reuses the frozen singleton (saving VRAM). So the shared version a run sees is content-addressed and decided atomically before any worker attaches.</p>
+
+<h2 id="4-deviations"><span class="num">4.</span> Where it deviates from the mental model</h2>
+<p>Three places where today's code does not match the invariants / the intended manual-only policy. Each is real, shipped behaviour — named here rather than hidden behind the clean model above.</p>
+
+<div class="callout warn">
+<strong>① <code>shared</code> auto_host drifts from disk</strong> — breaks invariant 1. A <code>shared</code> nodeset's server holds the code it imported at first spawn; an eval attaches to that parent-owned server (<code>eval.py · start_eval_v2</code> via <code>shared_urls.json</code>) instead of re-importing, so its <code>.py</code> stays stale until a manual <code>/api/components/reload</code>. It is the one process allowed to be a competing, drift-able source of truth.
+</div>
+
+<div class="callout warn">
+<strong>② Two watchers auto-reload</strong> — breaks invariant 4 (the "no automatic reload" policy). <code>graph_watcher.py · run_graph_watch_loop</code> auto-pushes a UI refresh on graph-JSON change (touches no code), and <code>nodeset_watcher.py · run_nodeset_watch_loop</code> hot-reloads nodeset <code>.py</code> on a settled change via <code>registry.py · hot_reload_nodeset_sources</code>. The target is that file changes only <em>signal</em> a reload, never perform one — the actual reload should always be the explicit call above.
+</div>
+
+<div class="callout warn">
+<strong>③ The targeted watcher is partial</strong> — only reloads <code>local</code> nodesets in place; it leaves <code>shared</code>/server nodesets as notify-only and cannot attribute underscore helper modules or deletions (those need the full <code>/api/components/reload</code>). So the only <em>complete</em> reload is the manual full one — the watcher is a convenience, not a guarantee.
+</div>
+
+<h2 id="5-impl-map"><span class="num">5.</span> Implementation map — which function does what</h2>
+<p>All paths under <code>agentcanvas/backend/</code>. Functions are named, not line-pinned — grep the symbol; line numbers drift, names don't.</p>
+
+<h3 id="51-registry"><span class="num">5.1</span> Registry — discovery, import, load (<code>app/components/registry.py</code>)</h3>
+<table>
+<thead><tr><th>Function</th><th>How it's implemented</th></tr></thead>
+<tbody>
+<tr><td><code>scan_all</code></td><td>bump <code>_scan_cycle</code> → <code>unregister_all</code> → pass 1 frozen, pass 2 overlay (same name wins)</td></tr>
+<tr><td><code>unregister_all</code></td><td>clear discovered dicts, <code>stop()</code> every auto_host, evict standalone <code>NODE_HANDLERS</code> — this is what makes deletions disappear</td></tr>
+<tr><td><code>_import_module</code> / <code>_import_package</code></td><td>pop any stale <code>sys.modules</code> entry, then <code>exec_module</code> under <code>_ws_{subdir}_{stem}_{scan_cycle}</code> — fresh class, no cache (invariant 2)</td></tr>
+<tr><td><code>ensure_nodesets_for_graph</code></td><td>for each <code>nodeset__</code> prefix in the graph, dispatch on declared <code>parallelism</code> (replicated → K tagged copies; shared → singleton)</td></tr>
+<tr><td><code>load_nodeset</code></td><td>(re)load one nodeset: unload-if-loaded, then local in-process, or auto-route to server mode</td></tr>
+<tr><td><code>_load_nodeset_as_server</code></td><td>allocate K ports, spawn K <code>auto_host --file &lt;source_file&gt; --class …</code> children (tag <code>name#k</code>), each via <code>BaseServer.start</code></td></tr>
+<tr><td><code>register_remote_nodeset</code></td><td>attach to a parent-owned URL via a <code>_RemoteAutoServerShim</code> (no spawn) — the <code>shared</code> attach path</td></tr>
+<tr><td><code>hot_reload_nodeset_sources</code> / <code>_resolve_nodeset_reimport</code></td><td>targeted watcher reload: map changed file → entry, re-import, reload <code>local</code> in place, flag <code>shared</code> stale</td></tr>
+<tr><td><code>load_nodeset_ephemeral</code> / <code>unload_nodeset_ephemeral</code></td><td>spawn / tear down a tagged overlay shadow server for the shared-overlay case</td></tr>
+</tbody>
+</table>
+
+<h3 id="52-eval"><span class="num">5.2</span> Eval pipeline — submit, schedule, subprocess</h3>
+<table>
+<thead><tr><th>Function</th><th>How it's implemented</th></tr></thead>
+<tbody>
+<tr><td><code>eval.py · start_eval_v2</code></td><td>endpoint: load graph, compute <code>shared_urls</code> (only <code>shared</code> nodesets), build spec with <code>active_workspace_dir</code>, <code>scheduler.submit</code></td></tr>
+<tr><td><code>eval.py · _load_graph_by_name</code></td><td><code>json.loads(path.read_text())</code> — overlay <code>graphs/{name}.json</code> first, frozen fallback → graph fresh every submit</td></tr>
+<tr><td><code>job_scheduler.py · _admit</code></td><td>admission tick: VRAM / exclusive-GPU checks → <code>_prepare_ephemerals</code> → <code>_spawn</code></td></tr>
+<tr><td><code>job_scheduler.py · _prepare_ephemerals</code></td><td>content-hash overlay vs frozen; if different, spawn a tagged ephemeral shared server from overlay and rewrite <code>shared_urls.json</code></td></tr>
+<tr><td><code>job_scheduler.py · _spawn</code></td><td><code>Popen([sys.executable, "-m", "app.eval_subprocess_main", …])</code>, inject <code>ACTIVE_WORKSPACE_DIR</code>, own session/pgid</td></tr>
+<tr><td><code>job_scheduler.py · _reap</code></td><td>reap finished subprocess, decrement <code>_shared_consumer_count</code>, tear down the run's ephemerals</td></tr>
+<tr><td><code>eval_subprocess_main.py · _build_local_registry_for_run</code></td><td>subprocess boot: <code>scan_all</code> (overlay-aware) → <code>register_remote_nodeset</code> for shared URLs → <code>ensure_nodesets_for_graph</code></td></tr>
+</tbody>
+</table>
+
+<h3 id="53-rest"><span class="num">5.3</span> Servers, manual reload, watchers, wiring</h3>
+<table>
+<thead><tr><th>Function</th><th>How it's implemented</th></tr></thead>
+<tbody>
+<tr><td><code>server/base_server.py · start</code> / <code>_wait_for_health</code></td><td>spawn the server subprocess, block polling <code>/health</code> until 200 (or timeout) — the readiness barrier</td></tr>
+<tr><td><code>server/auto_host.py</code> (<code>-m</code> entry)</td><td>load the nodeset class from <code>--file</code>/<code>--class</code> and serve its tools over HTTP — every local-as-server / replicated worker / shared / ephemeral server is one of these</td></tr>
+<tr><td><code>api/platform/components.py · reload_components</code></td><td>the manual reload endpoint: <code>shutdown_all → scan_all → initialize_all</code></td></tr>
+<tr><td><code>components/content_hash.py · hash_nodeset_tree</code> / <code>resolve_overlay_source</code></td><td>hash a nodeset's source tree; decide overlay-vs-frozen for the shared ephemeral</td></tr>
+<tr><td><code>services/graph_watcher.py · run_graph_watch_loop</code></td><td>mtime poll <code>graphs/</code> → broadcast <code>graphs_changed</code> (UI only, no code reload)</td></tr>
+<tr><td><code>services/nodeset_watcher.py · run_nodeset_watch_loop</code></td><td>mtime poll nodeset <code>.py</code> → <code>hot_reload_nodeset_sources</code> (automatic, debounced, canvas-guarded)</td></tr>
+<tr><td><code>main.py · lifespan</code></td><td>startup <code>scan_all</code> + <code>initialize_all</code>; start <code>JobScheduler</code> + both watchers</td></tr>
+<tr><td><code>config.py · Settings</code> · <code>state.py · ProcessServices</code>, <code>ExecutionGuard</code></td><td><code>workspace_dir</code> / <code>active_workspace_dir</code>; registry construction with <code>active_dir</code>; the exec lock the nodeset watcher respects</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-model">1. The mental model</a>
+      <a class="toc-h2" href="#2-code">2. How the code does it</a>
+      <a class="toc-h2" href="#3-active-ws">3. Active-workspace overlay</a>
+      <a class="toc-h2" href="#4-deviations">4. Where it deviates from the mental model</a>
+      <a class="toc-h2" href="#5-impl-map">5. Implementation map — which function does what</a>
+      <a class="toc-h3" href="#51-registry">5.1 Registry — discovery, import, load (app/components/registry.py)</a>
+      <a class="toc-h3" href="#52-eval">5.2 Eval pipeline — submit, schedule, subprocess</a>
+      <a class="toc-h3" href="#53-rest">5.3 Servers, manual reload, watchers, wiring</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

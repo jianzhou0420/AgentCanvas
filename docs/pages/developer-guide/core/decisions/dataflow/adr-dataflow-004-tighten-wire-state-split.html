@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-dataflow-004 — AgentCanvas</title>
+<meta name="description" content="Tighten the wire / state-container split">
+<meta property="og:title" content="ADR-dataflow-004 — AgentCanvas">
+<meta property="og:description" content="Tighten the wire / state-container split">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Dataflow</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-dataflow-004</span>
+  </div>
+  <div class="last-updated">2026-04-15 16:00</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-dataflow);">ADR-dataflow-004</h1>
+  <p class="tagline">Tighten the wire / state-container split</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-04-15 16:00</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>dataflow</code></a></dd>
+</dl>
+<dl class='adr-extra-meta'><dt>Old ID</dt><dd><code>ADR-026</code></dd></dl>
+
+
+
+<h2 id='context'>Context</h2>
+<p>ADR-dataflow-002 introduced the dual-wire architecture: data wires (typed, single-firing) and "state edges" (dashed violet lines that grant access to <code>StateContainer</code>s). The data-structure separation was clean, but four spots blurred the boundary in the code surface and made a reader reasonably ask whether the two systems were really distinct: (1) <code>STATE</code> was an overloaded identifier — the same string was both a wire type carrying a <code>{position, orientation}</code> pose dict on edges and a state-container value type used for memory slots; (2) "state edges" were named like edges and stored in <code>graph.state_edges</code>, but they carry no data and do not trigger firing — they are access grants, not wires; (3) the optional graph-level blackboard lived in a separate <code>GraphDefinition.graph_state</code> field and was auto-injected into every node by the executor, bypassing the access-grant model entirely; (4) <code>STATE_VALUE_TYPES</code> accepted raw wire payload types (<code>IMAGE</code>, <code>DEPTH</code>, <code>ACTION</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>), so a memory slot could silently be a raw frame buffer — the kind of thing that should never survive across iterations. The discussion behind this ADR (<code>.claude/notes/embodied-vs-coding-agent.md</code> §3–§4) concluded that when AgentCanvas starts supporting embodied agent-loops, <strong>wire</strong> and <strong>state container</strong> must serve two very different regimes — wire = workflow dataflow (static topology, strongly typed, single firing), state container = agent memory (multi-writer, cross-iteration, checkpointable, read does not trigger firing) — and that unifying them would be the wrong move. Tightening the existing split in code is the prerequisite for any later work on embodied agent-loop primitives (triggers, scopes, <code>BaseAgentLoopNode</code>).</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Four concrete renames/rules, all landed together so that the boundary becomes visible in identifiers, schema field names, and runtime rules — no new feature surface, no agent-loop primitives yet. (1) <strong><code>STATE</code> wire type → <code>POSE</code></strong> in <code>standard/wire_types.py</code>: renames the constant, validator (<code>is_valid_state</code> → <code>is_valid_pose</code>), and the <code>STEP_RESULT</code> inner key <code>"state"</code> → <code>"pose"</code>. Also adds <code>ANY</code> as an official wire type in <code>WIRE_TYPES</code> for unstructured research data. All builtin node ports carrying pose data (<code>LLMCallNode</code>, <code>BroadcastNode</code>, <code>IterInNode</code>, <code>IterOutNode</code>) rename both the port name (<code>"state"</code> → <code>"pose"</code>) and the wire type (<code>"STATE"</code> → <code>"POSE"</code>). All workspace nodesets (<code>habitat.py</code>, <code>matterport3d.py</code>, <code>opennav*.py</code>, <code>basic_agent.py</code>, <code>workspace/nodes/navgpt_ce.py</code>) follow the same rename. Workspace nodeset ports that were previously misusing <code>STATE</code> as a generic "any dict" wire type (Open-Nav candidate/tag/caption lists, MP3D trigger ports, etc.) migrate to <code>ANY</code>. (2) <strong><code>StateEdgeDef</code> → <code>AccessGrantDef</code></strong>, <code>graph.state_edges</code> → <code>graph.access_grants</code>, <code>_state_edge_index</code> → <code>_access_grant_index</code>, frontend edge component <code>StateEdge.tsx</code> → <code>AccessGrantEdge.tsx</code>, edge-type registry key <code>"stateEdge"</code> → <code>"accessGrant"</code>. The dashed violet visual is unchanged; only the identifiers in code, JSON, and the React Flow edge type string change. The class/field docstrings explicitly state that access grants are not edges — they carry no data and never trigger firing. (3) <strong>Drop the <code>graph.graph_state</code> field and its auto-inject loop</strong>. The optional graph-level blackboard is now a regular <code>ContainerDef</code> in <code>graph.containers</code> with the well-known id <code>"graph_state"</code>. Every node that wants to read it must hold an explicit <code>AccessGrantDef</code> to it. The convenience binding <code>ctx._graph_state</code> still works, but only for nodes whose access grant set contains <code>"graph_state"</code> — no auto-inject. <code>GraphDefinition.from_dict</code> retains a legacy upgrade path: if a loaded dict still has <code>state_edges</code> or a top-level <code>graph_state</code> key, the migration happens in-place on load (<code>state_edges</code> read as <code>access_grants</code>, top-level <code>graph_state</code> lifted into <code>containers</code> + one synthesised <code>AccessGrantDef</code> per node) so third-party graphs keep working. (4) <strong>Constrain <code>STATE_VALUE_TYPES</code></strong> to <code>{TEXT, BOOL, METRICS, POSE, POINTCLOUD, OCCUPANCY_MAP, EMBEDDING, EPISODE_CONTEXT, ANY}</code>. Raw wire payload types (<code>IMAGE</code>, <code>DEPTH</code>, <code>ACTION</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>, the legacy <code>STATE</code>) are removed from the registry. <code>build_container</code> validates each slot's <code>value_type</code> at container-build time and raises a clear <code>ValueError</code> naming the container, the state slot, the removed type, and the allowed set — no silent coercion. The rule: memory is structured/aggregated data (captions, embeddings, scene graphs), not raw frame buffers. <code>ANY</code> is the escape hatch for prototyping. (5) <strong>Migration</strong>: <code>scripts/migrations/migrate_wire_state_split.py</code> rewrites all <code>workspace/graphs/*.json</code> in place — renames wire/port strings, migrates <code>state_edges</code> → <code>access_grants</code>, lifts <code>graph_state</code> into <code>containers</code> with synthesised grants, and hard-aborts on any container slot still holding a removed <code>value_type</code> (graph-specific fix-up — the script won't guess). Backend <code>from_dict</code> has a dual-read path so even un-migrated legacy graphs load. Frontend <code>useFlowStore</code> splits the <code>"graph_state"</code> container out of <code>graph.containers</code> into the frontend-only <code>tab.graphState</code> slice on load, and merges it back as <code>id: "graph_state"</code> on save/execute, so <code>GraphStateBanner</code> / <code>StatePanel</code> / composite subgraph navigation keep working with the well-known id instead of a special top-level field.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Unify wire and state container into a single "blackboard channel" primitive</strong> — rejected: the two systems serve genuinely different regimes (single-firing dataflow vs cross-iteration memory) and collapsing them would force one of the two to bear the other's constraints, blurring exactly what the discussion concluded should be sharpened. The <code>.claude/notes/embodied-vs-coding-agent.md</code> §4.3 conclusion is explicit: "don't unify, tighten the division of labor". (b) <strong>Leave <code>STATE</code> as an overloaded identifier, keep <code>state_edges</code> as a schema field</strong> — rejected: these are the two spots a reader scanning <code>graph_def.py</code> or a saved JSON file first hits; every new contributor has to re-derive that <code>state_edges</code> aren't really edges. Rename cost is once. (c) <strong>Keep the <code>graph.graph_state</code> field and its auto-inject</strong> — rejected: the auto-inject is the only place in the executor where a node can read state it never declared access to, which contradicts ADR-dataflow-002's dual-wire model. Making the "graph_state" container an ordinary container + explicit grants removes a special case from <code>graph_executor.py</code> and makes the access visible in the JSON. (d) <strong>Pure-additive rename (new names alongside legacy)</strong> — rejected for in-tree workspace: in-tree graphs are git-tracked and can be migrated as part of the same commit. Leaving dual names would just delay the cleanup without saving anything. Legacy <code>from_dict</code> reads remain as a safety net for third-party graphs. (e) <strong>Add new scope/trigger/agent-loop primitives in the same change</strong> — rejected: out of scope. This ADR is strictly about sharpening existing boundaries; the embodied agent-loop primitives (multi-scope containers, <code>fire_when</code> gating, <code>BaseAgentLoopNode</code>) are deferred to a future ADR that will land on top of this cleanup.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The claim is small, not ambitious: make the wire/state-container boundary visible in code. After this change the rule a reader can apply is "if it fires a node, it's a wire; if it survives across firings, it's state; if it's in <code>graph.access_grants</code>, it's permission, not data." <code>POSE</code> honestly names what the wire was carrying all along (<code>{position, orientation}</code> — the original <code>STATE</code> name was a historical accident, never a pose taxonomy). <code>AccessGrantDef</code> honestly names what that dashed violet line is — authorisation, not transport. Dropping <code>graph_state</code> as a special field is the biggest clean-up of the four: the executor's auto-inject loop is the only spot in <code>graph_executor.py</code> where a node could read state without a declared grant, and deleting it makes the access-grant model universal. Constraining <code>STATE_VALUE_TYPES</code> is the rule that enforces the semantic: memory is not a frame buffer; if you want to remember an image, you remember its caption, its embedding, or its scene graph, not its pixels. <code>ANY</code> stays as the escape hatch so that prototyping isn't blocked on picking the right structured type. The rename's blast radius is wide (~20 files + 5 workspace graphs + 7 workspace nodesets + 15 frontend files) but the individual edits are mechanical, and the one-shot migration script handles the JSON side in place with a hard-abort validator for the one case (<code>action_history</code> in <code>navgpt_ce.json</code> declaring <code>value_type: ACTION</code>) where the right replacement is graph-specific.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>design-docs/state-containers.md, design-docs/wire-types.md, design-docs/graph-executor.md, core/architecture.md, core/glossary.md, core/blueprint.md, core/codebase-map.md, .claude/PROJECT_OVERVIEW.md, scripts/migrations/migrate_wire_state_split.py (new)</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

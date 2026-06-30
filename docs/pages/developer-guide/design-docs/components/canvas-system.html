@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas System — AgentCanvas</title>
+<meta name="description" content="The system view — how a Python node spec becomes a rendered, navigable node">
+<meta property="og:title" content="Canvas System — AgentCanvas">
+<meta property="og:description" content="The system view — how a Python node spec becomes a rendered, navigable node">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/components/canvas-system.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="cs-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#csa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/components/canvas-system.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">Canvas System</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Canvas System</h1>
+  <p class="tagline">The system view — how a Python node spec becomes a rendered, navigable node</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="csa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">A node is defined once, in Python, and appears on the canvas with no per-node TypeScript. The canvas system is the machinery that makes that true: one registry that discovers nodes, one endpoint that publishes their specs, and one generic renderer that draws any node from its spec. This page is the <em>system</em> view — discovery, schema, rendering, and the navigation around composites. The node <em>class</em> you implement is <a href="base-canvas-node.html">Base Canvas Node</a>; the graph <em>artifact</em> it builds (schema, storage, composition, the run handoff) is <a href="../graph/graph-system.html">Graph System</a>.</p>
+
+<hr>
+
+<h2 id="1-what-it-is"><span class="num">1.</span> What the canvas system is</h2>
+
+<p>One unified editor (<code>UnifiedGraphEditor</code> on <code>CanvasPage</code>), one node registry, one catalog. Every element — built-in nodes, nodeset tools, composites, state containers — is a <code>BaseCanvasNode</code> served through the same pipeline, so there is no special-case rendering path per node family. The job of this system is purely <em>presentation and authoring</em>: it discovers what nodes exist, hands their specs to the frontend, draws them, and lets you compose and navigate them. Execution and storage live elsewhere (Graph System / Graph Executor).</p>
+
+<h2 id="2-pipeline"><span class="num">2.</span> The node-spec → rendered-node pipeline</h2>
+
+<p>This is the spine of the whole system. A node's appearance flows from its Python <code>ui_config</code> to the rendered handle in four hops, with no node-specific code on the frontend:</p>
+
+<svg class="rxsvg" viewBox="0 0 720 130" role="img" aria-label="The pipeline: a Python BaseCanvasNode with a ui_config is discovered by the WorkspaceComponentRegistry into NODE_HANDLERS; GET /api/components/node-schemas serialises every node to JSON; the frontend proxiedNodeTypes routes every type to GenericBlockRenderer; which dispatches to a layout (block, strip, viewer, imageGrid, note) to draw the node.">
+  <rect x="6" y="44" width="150" height="44" rx="7" class="box"/><text x="81" y="62" text-anchor="middle">Python node</text><text x="81" y="78" text-anchor="middle" class="dim">ui_config</text>
+  <rect x="186" y="44" width="150" height="44" rx="7" class="box"/><text x="261" y="62" text-anchor="middle" class="mono">node-schemas</text><text x="261" y="78" text-anchor="middle" class="dim">registry → JSON</text>
+  <rect x="366" y="44" width="160" height="44" rx="7" class="accent"/><text x="446" y="62" text-anchor="middle" class="at mono">GenericBlockRenderer</text><text x="446" y="78" text-anchor="middle" class="dim">via Proxy</text>
+  <rect x="556" y="44" width="158" height="44" rx="7" class="box"/><text x="635" y="62" text-anchor="middle">layout</text><text x="635" y="78" text-anchor="middle" class="dim">block/strip/viewer/grid/note</text>
+  <path class="edge" d="M156,66 H186"/><path class="edge" d="M336,66 H366"/><path class="edge" d="M526,66 H556"/>
+  <text x="261" y="28" text-anchor="middle" class="dim">§4</text><text x="446" y="28" text-anchor="middle" class="dim">§5</text>
+</svg>
+
+<p>§4 covers discovery and the schema endpoint; §5 covers the renderer and layouts. The point to hold onto: <strong>add a node in Python, it appears on the canvas</strong> — the frontend never learns its name.</p>
+
+<h2 id="3-catalog"><span class="num">3.</span> The catalog at a glance</h2>
+
+<p>The catalog is everything you can drop on the canvas, grouped by <code>category</code>. The 14 built-ins (<a href="../graph/graph-system.html#3-vocabulary">Graph System §3</a> lists them) sit alongside the tools of every loaded nodeset (<code>${nodeset}__${node}</code>) and any saved graph nodes. A handle's colour is its wire type (<a href="../graph/wire-types.html#9-colours">Wire Types §9</a>); a node frame's tint is its <code>category</code> — don't conflate the two. The categories: <code>environment</code>, <code>llm</code>, <code>prompt</code>, <code>policy</code>, <code>perception</code>, <code>processing</code>, <code>decision</code>, <code>tool</code>, <code>skill</code>, <code>agent</code>, <code>control</code>, <code>boundary</code>, <code>server</code>, <code>output</code>, <code>example</code>, <code>custom</code>.</p>
+
+<h2 id="4-registry"><span class="num">4.</span> Registry &amp; the schema endpoint</h2>
+
+<p><code>WorkspaceComponentRegistry</code> (<code>components/registry.py</code>) scans <code>workspace/</code> at startup, discovering nodesets and nodes; built-ins are registered into <code>NODE_HANDLERS</code> by <code>builtin_nodes.py</code>, and workspace nodes by <code>register_node()</code> (last-write-wins on <code>node_type</code>). Whatever ends up in <code>NODE_HANDLERS</code> is published by one endpoint — <code>GET /api/components/node-schemas</code> — which emits, per node, <code>{type, display_name, description, category, icon, kind, ports_mode, config_schema, default_config, ui_config, input_ports[], output_ports[]}</code> (the exact shape is <a href="base-canvas-node.html#9-schema-endpoint">Base Canvas Node §9</a>). Sibling endpoints list and load nodesets (<a href="nodesets.html#10-registry-rest">NodeSets §10</a>). That JSON <em>is</em> the catalog feed; nothing about a node is hard-coded on the client.</p>
+
+<h2 id="5-rendering"><span class="num">5.</span> Frontend rendering</h2>
+
+<p>The frontend registers exactly two custom node components; everything else is generic:</p>
+
+<pre class="hl">
+<span class="c1">// unifiedNodeTypes.ts — only TWO node types need a custom component.</span>
+<span class="k">export</span><span class="w"> </span><span class="kd">const</span><span class="w"> </span><span class="nx">unifiedNodeTypes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">compositeNode</span><span class="o">:</span><span class="w">  </span><span class="kt">CompositeCanvasNode</span><span class="p">,</span><span class="w">   </span><span class="c1">// nested-graph shell</span>
+<span class="w">  </span><span class="nx">stateContainer</span><span class="o">:</span><span class="w"> </span><span class="kt">StateContainerNode</span><span class="p">,</span><span class="w">    </span><span class="c1">// shared-memory box</span>
+<span class="w">  </span><span class="nx">_generic</span><span class="o">:</span><span class="w">       </span><span class="kt">GenericBlockRenderer</span><span class="p">,</span><span class="w">   </span><span class="c1">// everything else, driven by ui_config</span>
+<span class="p">}</span><span class="p">;</span>
+<span class="c1">// every other node_type falls through this Proxy to GenericBlockRenderer:</span>
+<span class="k">export</span><span class="w"> </span><span class="kd">const</span><span class="w"> </span><span class="nx">proxiedNodeTypes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nb">Proxy</span><span class="p">(</span><span class="nx">unifiedNodeTypes</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">get</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">target</span><span class="p">,</span><span class="w"> </span><span class="nx">prop</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">target</span><span class="p">[</span><span class="nx">prop</span><span class="p">]</span><span class="w"> </span><span class="o">??</span><span class="w"> </span><span class="nx">GenericBlockRenderer</span><span class="p">,</span>
+<span class="p">}</span><span class="p">)</span><span class="p">;</span>
+</pre>
+
+<p><code>GenericBlockRenderer</code> reads a node's <code>ui_config.layout</code> and dispatches to one of five layouts: <strong>BlockLayout</strong> (standard rectangle), <strong>StripLayout</strong> (narrow vertical gate — iterIn/iterOut), <strong>ViewerLayout</strong> (read-only runtime widgets), <strong>ImageGridViewerLayout</strong> (the configurable RGB/depth grid), and <strong>NoteLayout</strong> (the markdown <code>note</code> annotation). Ports are placed by <code>portResolution.ts</code> (<code>resolveInstancePorts</code>), which mirrors the backend's <code>_resolve_ports</code> + <code>ports_mode</code> so dynamic-port nodes render the same instance ports the executor will see; a <code>LIST[T]</code> handle gets a doubled outer ring. Inline <code>ConfigField</code> widgets and read-only <code>DisplayField</code> widgets come straight from <code>ui_config</code> (<a href="base-canvas-node.html#7-ui">Base Canvas Node §7</a>).</p>
+
+<h2 id="6-composite-nav"><span class="num">6.</span> Composite navigation</h2>
+
+<p>A composite renders as a <code>compositeNode</code> whose input/output handles are derived from the <code>graphIn</code>/<code>graphOut</code> nodes inside its subgraph (<code>CompositeNodeView</code>). “Edit subgraph” drills in. Navigation is tab-aware: <code>useFlowStore</code> gives each tab its own <code>canvasStack</code>, and <code>pushCanvas</code>/<code>popCanvas</code>/<code>goToDepth</code> move up and down the breadcrumb as you enter and leave nested graphs. The <code>ExplorerPanel</code> sidebar is the catalog of saved graphs and graph nodes — double-click opens a graph in a tab, drag a graph node onto the canvas to drop a composite. The <em>storage</em> behind all this (the two kinds, save/load, flatten) is <a href="../graph/graph-system.html#6-storage">Graph System §6</a>; this page covers only the navigation UX.</p>
+
+<h2 id="7-chrome"><span class="num">7.</span> Canvas chrome &amp; toggles</h2>
+
+<p>Around the graph sit a few controls. The <code>ExecutionToolbar</code> carries the run controls plus two render-only filters — a <strong>State toggle</strong> (hide/show state-container nodes and their dashed access-grant lines) and a <strong>Viewer toggle</strong> (hide edges into viewer sinks) — neither touches <code>graph.edges</code>. The <code>EnvPanel</code> renders the active env nodeset's control surface (<a href="env-panels.html">Env Panels</a>). Access grants attach to every node's bottom-center <code>__state__</code> handle and render as dashed violet lines, distinct from data edges (<a href="../graph/state-containers.html#2-grants-not-wires">State Containers §2</a>).</p>
+
+<h2 id="8-known-tensions"><span class="num">8.</span> Known tensions</h2>
+
+<ul>
+  <li><strong>Catalog scale</strong> — as nodeset count grows, the flat category grouping will need search/filter beyond what the sidebar offers today.</li>
+  <li><strong>Multi-agent layouts</strong> — the auto-layout (<code>POST /api/graphs/layout</code>) is tuned for a single agent loop; deeply nested or multi-scope graphs can still need manual nudging.</li>
+  <li><strong>Execution visualisation</strong> — live state is shown per-node via <code>viewer_data</code>; a consolidated run timeline across nodes is not yet a first-class view.</li>
+</ul>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: §2 figure + §5 — &ldquo;four layouts&rdquo; → <strong>five</strong>: <code>GenericBlockRenderer</code> also dispatches <code>NoteLayout</code> (the <code>note</code> builtin). Code-faithfulness pass; the 16-category list, the 2-custom-types + Proxy fallback, <code>resolveInstancePorts</code>, and the <code>__state__</code> handle all re-verified accurate.</li>
+<li>2026-06-13 14:08: <strong>Full rewrite — refocused on the system view, deduplicated against Graph System.</strong> The page had grown to ~900 lines, half of it duplicating the freshly-rewritten <a href="../graph/graph-system.html">Graph System</a> (storage/kinds, flatten, the <code>GraphDefinition</code> interface, presets, save/CRUD/run-handoff, graph_state design) — all removed and cross-linked. What remains is the unique system view: the node-spec → rendered-node pipeline (§2), the registry + <code>GET /api/components/node-schemas</code> catalog feed (§4, previously unmentioned), the <code>GenericBlockRenderer</code> + four-layout dispatch (§5), composite navigation UX (§6), and chrome/toggles (§7). Staleness fixed: removed/renamed node types corrected (PortIn/PortOut → graphIn/graphOut; <code>decision</code>/<code>historyTracker</code>/<code>termination</code>/<code>outputPort</code> dropped — the live set is the 14 in <code>builtin_nodes.py</code>); <code>presets.ts</code> reference removed; the three-pivot / init-band auto-layout narrative dropped. All code via the Pygments pipeline.</li>
+<li>2026-06-11 13:35: §5.1 iterIn/iterOut rewritten to the two-sided contract; “seed node” → “entry node”.</li>
+<li>2026-06-10 10:45: <code>initialize</code> removed from the built-in set; pivot wording triples → pairs.</li>
+<li>2026-05-18: post-ADR sync — fixed dead <code>graph_executor.py</code> reference; corrected node-type list; dual-storage shape; flatten id-map; storage/run-endpoint split.</li>
+<li>2026-04-20: Canvas system audit — viewer split (imageGrid/textViewer/textScroll), <code>DisplayField</code>, 7-widget <code>ConfigField</code> + <code>PortListEditor</code>, <code>ports_mode</code> 4 modes, access-grant <code>__state__</code> handle, <code>GenericBlockRenderer</code> dispatch table.</li>
+<li>2026-04-19 18:11: style compliance retrofit — added ToC + numbered sections.</li>
+<li>2026-04-10 20:41: corrected built-in handler count to 14; removed phantom nodes; frontend registry = 2 custom + GenericBlockRenderer fallback.</li>
+<li>2026-04-03 22:38: Python-driven node UI (ADR-components-004) — ui_config handler architecture, 6 custom → GenericBlockRenderer.</li>
+<li>2026-03-31 19:19: state container nodes, access grants, graph state (ADR-dataflow-002).</li>
+<li>2026-03-29 13:46: presets to JSON, auto-load nodesets on graph open (ADR-components-003).</li>
+<li>2026-03-28 11:31: unified canvas paradigm (ADR-canvas-002) — single editor/registry/catalog.</li>
+<li>2026-03-26: merged canvas-layers + canvas-node-design into canvas-system (ADR-dataflow-001).</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What the canvas system is</a>
+      <a class="toc-h2" href="#2-pipeline">2. The node-spec → rendered-node pipeline</a>
+      <a class="toc-h2" href="#3-catalog">3. The catalog at a glance</a>
+      <a class="toc-h2" href="#4-registry">4. Registry &amp; the schema endpoint</a>
+      <a class="toc-h2" href="#5-rendering">5. Frontend rendering</a>
+      <a class="toc-h2" href="#6-composite-nav">6. Composite navigation</a>
+      <a class="toc-h2" href="#7-chrome">7. Canvas chrome &amp; toggles</a>
+      <a class="toc-h2" href="#8-known-tensions">8. Known tensions</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search Operator API (RFC) — AgentCanvas</title>
+<meta name="description" content="RFC — not yet built. Every Python class, function, and CLI invocation in this document is the planned developer experience for a future Python-plugin Agent Architecture Search (AAS) surface. The…">
+<meta property="og:title" content="Search Operator API (RFC) — AgentCanvas">
+<meta property="og:description" content="RFC — not yet built. Every Python class, function, and CLI invocation in this document is the planned developer experience for a future Python-plugin Agent Architecture Search (AAS) surface. The…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/surfaces/search-operator-api.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="soa-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:560px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#soaa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/surfaces/search-operator-api.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Surfaces</a>
+    <span class="sep">/</span>
+    <span class="here">Search Operator API (RFC)</span>
+  </div>
+  <div class="last-updated">2026-06-13 17:50</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Search Operator API (RFC)</h1>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="soaa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<aside class="callout warning">
+  <strong>RFC — not yet built.</strong> Every Python class, function, and
+  CLI invocation in this document is the <em>planned</em> developer
+  experience for a future Python-plugin Agent Architecture Search (AAS)
+  surface. The <strong>F8–F12</strong> ids used below are this RFC's own
+  proposed block — they are <em>not yet</em> in the authoritative
+  engineering backlog (<a href="../../core/roadmap.html">core/roadmap</a>,
+  which currently stops at F7), so treat them as a numbering proposal, not
+  a commitment. <strong>No code in this document exists today.</strong>
+  Read it as design intent.
+  <br><br>
+  <strong>For AAS that works <em>today</em>, use the
+  <code>/architect:&lt;variant&gt;:loop</code> slash-skill family</strong> —
+  see <a href="../../tutorials/writing-a-search-operator.html">tutorial:
+  Running an Architecture Search</a>. The variant family covers the same
+  use cases (ADAS-style, MCTS, evolutionary, knowledge-distillation) via
+  Claude-conversation drivers instead of Python plugins. The two
+  surfaces are intended to coexist: variants are the agile, today path;
+  the Python plugin API is the long-term packaged path with tighter
+  artifact contracts.
+</aside>
+
+<p class="lede">Agent Architecture Search (AAS) — searching over the space of agent
+architectures to find high-performing configurations — is the <strong>killer use
+case</strong> of AgentCanvas. Every architectural decision in the framework has
+been made with AAS in mind: <code>GraphDefinition</code> JSON is a serializable
+search-space element, the graph executor can run any valid graph
+without code generation, <code>WorkspaceComponentRegistry</code> provides an auto-enumerable
+set of primitives, and the two-layer execution logging collects fitness
+signals for free. This document describes the planned plugin API that
+will turn those building blocks into a platform-native Python-callable
+AAS operation.</p>
+
+<hr>
+
+<h2 id="1-why-a-platform-native-aas-api"><span class="num">1.</span> Why a platform-native AAS API?</h2>
+<p>Every AAS paper today reimplements the same infrastructure:</p>
+<ol>
+<li>A search space representation (usually a custom Python dataclass)</li>
+<li>A search loop (usually 200–500 lines of boilerplate)</li>
+<li>An evaluation harness (simulator integration, metric collection, seed management)</li>
+<li>A mutation / crossover / proposal mechanism</li>
+<li>Logging, checkpointing, and reproducibility plumbing</li>
+</ol>
+<p>Recent papers — <a href="https://arxiv.org/abs/2410.10762">AFlow</a>
+(24.10), <a href="https://arxiv.org/abs/2408.08435">ADAS</a> (24.08),
+<a href="https://arxiv.org/abs/2502.04180">MaAS</a> (25.02),
+AgentSquare,
+EvoAgentX
+— each rebuild items 1–5 from scratch because their internal
+representations differ. This is a structural inefficiency: the search
+<em>method</em> is the research contribution, but the research code is
+dominated by the infrastructure around it.</p>
+<p>AgentCanvas's bet is that <strong>if you accept <code>GraphDefinition</code> as the
+search-space representation</strong>, items 1–5 can all be provided by the
+platform, and the research contribution becomes a ~200-line plugin — a
+<code>BaseSearchOperator</code> subclass. This is analogous to how PyTorch's
+<code>nn.Module</code> made neural network research be about the math, not about
+autograd plumbing.</p>
+
+<hr>
+
+<h2 id="2-design-overview"><span class="num">2.</span> Design overview</h2>
+<p>The planned AAS system has <strong>four parts</strong>, each addressing one of the
+five reimplementation costs above:</p>
+<table>
+<thead><tr><th>Part</th><th>Provided by</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><strong>Search space</strong></td>
+    <td><code>GraphDefinition</code> (existing) + Graph Mutation API (F8)</td>
+    <td>Every graph is an element of the search space; mutations produce new elements</td></tr>
+<tr><td><strong>Search loop</strong></td>
+    <td><code>SearchLoop</code> orchestrator (F9)</td>
+    <td>Generic outer loop: propose → evaluate → update → terminate</td></tr>
+<tr><td><strong>Evaluation harness</strong></td>
+    <td><code>JobScheduler</code> (ADR-eval-001, existing)</td>
+    <td>Already handles batch evaluation against Habitat, MP3D, etc.</td></tr>
+<tr><td><strong>Fitness aggregation</strong></td>
+    <td><code>FitnessNode</code> / <code>fitness.py</code> helper (F9)</td>
+    <td>Reads fitness scalars from state containers at end of eval</td></tr>
+<tr><td><strong>Search method</strong></td>
+    <td><strong>your plugin</strong></td>
+    <td><code>BaseSearchOperator</code> subclass — <code>propose()</code>, <code>update()</code>, <code>is_done()</code></td></tr>
+</tbody>
+</table>
+<svg class="rxsvg" viewBox="0 0 560 150" role="img" aria-label="The planned SearchLoop cycle. Your plugin's propose() emits candidate graphs; the platform evaluates them via the JobScheduler and aggregates fitness; your plugin's update() folds the results back into its state; the loop repeats until is_done() returns true. Only propose() and update() are yours to write — evaluate is platform.">
+  <text class="dim" x="83" y="24" text-anchor="middle">your plugin</text>
+  <text class="dim" x="262" y="24" text-anchor="middle">platform</text>
+  <text class="dim" x="439" y="24" text-anchor="middle">your plugin</text>
+
+  <rect class="accent" x="24" y="36" width="118" height="40" rx="8"/>
+  <text class="at" x="83" y="60" text-anchor="middle">propose()</text>
+  <path class="edge" d="M142,56 L180,56"/>
+
+  <rect class="box" x="180" y="36" width="164" height="40" rx="8"/>
+  <text x="262" y="54" text-anchor="middle">evaluate</text>
+  <text class="dim" x="262" y="70" text-anchor="middle">JobScheduler · fitness</text>
+  <path class="edge" d="M344,56 L382,56"/>
+
+  <rect class="accent" x="382" y="36" width="118" height="40" rx="8"/>
+  <text class="at" x="441" y="60" text-anchor="middle">update()</text>
+
+  <path class="edge" d="M441,76 C441,124 83,124 83,76"/>
+  <text class="dim" x="262" y="116" text-anchor="middle">loop until is_done()</text>
+</svg>
+<p>The thing <strong>you write</strong> as an AAS researcher is just the bottom row:
+a single Python file in <code>workspace/search_operators/</code> implementing your
+search algorithm. Everything else is platform.</p>
+
+<hr>
+
+<h2 id="3-the-basesearchoperator-interface"><span class="num">3.</span> The <code>BaseSearchOperator</code> interface</h2>
+<pre class="hl"># PLANNED interface — does not exist yet (roadmap F9).
+
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import ClassVar
+
+from app.graph_def import GraphDefinition
+
+
+class FitnessResult:
+    """Result of evaluating one candidate graph."""
+    graph: GraphDefinition
+    fitness: float              # scalar to maximize (or minimize, via .direction)
+    metrics: dict[str, float]   # per-metric breakdown from state containers
+    trace_id: str               # pointer to execution log for debugging
+    wall_time_s: float
+    crashed: bool
+    error: str | None
+
+
+class BaseSearchOperator(ABC):
+    """Plugin base class for Agent Architecture Search algorithms.
+
+    Subclass this to implement your search method. Place the file in
+    workspace/search_operators/ — it will be auto-discovered by WorkspaceComponentRegistry
+    analogous to how nodesets are discovered.
+    """
+
+    # Plugin metadata (required, like BaseNodeSet)
+    name: ClassVar[str]                  # unique identifier, e.g. "evolutionary"
+    display_name: ClassVar[str]          # human-readable, e.g. "Evolutionary Search"
+    description: ClassVar[str]
+
+    # Configuration (optional — drives a config panel in the UI)
+    config_fields: ClassVar[list] = []   # list of ConfigField, like BaseCanvasNode
+
+    # Direction of fitness: "maximize" or "minimize"
+    direction: ClassVar[str] = "maximize"
+
+    # Selection mode — see § 8.4.5 for the Voyager-driven amendment
+    selection_mode: ClassVar[str] = "best_fitness"   # "best_fitness" | "latest" | "pareto"
+
+    # Lifecycle
+    def setup(self, seed_graph: GraphDefinition, config: dict) -> None:
+        """Called once at the start of a search run. Store seed and config."""
+        self.seed_graph = seed_graph
+        self.config = config
+
+    @abstractmethod
+    def propose(self) -> GraphDefinition:
+        """Generate the next candidate graph to evaluate.
+
+        Called repeatedly by SearchLoop. Must return a valid GraphDefinition
+        that can be flattened and executed by the graph executor. Typically
+        implemented using the Graph Mutation API (F8) to derive candidates
+        from the seed graph, previously-evaluated candidates, or a population.
+        """
+        ...
+
+    @abstractmethod
+    def update(self, result: FitnessResult) -> None:
+        """Record the result of evaluating a proposed candidate.
+
+        Called once per candidate after evaluation. The operator uses this
+        feedback to guide future proposals (e.g. population updates, MCTS
+        backpropagation, gradient steps for learned operators).
+        """
+        ...
+
+    @abstractmethod
+    def is_done(self) -> bool:
+        """Termination check. Called before each propose().
+
+        Return True to stop the search. Typical termination criteria:
+        budget exhausted, fitness plateau, explicit max_iterations reached,
+        or user pressed Stop.
+        """
+        ...
+
+    def best(self) -> FitnessResult | None:
+        """Return the best candidate found so far, or None if empty.
+
+        Default implementation tracks max/min over all update() calls.
+        Override if your operator has a richer notion of "best" (e.g.
+        Pareto frontier for multi-objective search, or "latest" for
+        accumulative self-evolve operators — see § 8.4).
+        """
+        return getattr(self, "_best", None)
+</pre>
+
+<h3 id="31-why-only-3-abstract-methods"><span class="num">3.1</span> Why only 3 abstract methods?</h3>
+<p>The interface is deliberately minimal. All AAS algorithms we surveyed
+reduce to a <code>propose → evaluate → update → terminate</code> loop, differing
+only in how each step is implemented:</p>
+<ul>
+<li><strong>Random search</strong> proposes uniform mutations, updates by doing nothing, terminates on budget</li>
+<li><strong>Evolutionary search</strong> proposes via tournament selection + crossover + mutation, updates by replacing population weakest, terminates on generation count</li>
+<li><strong>MCTS</strong> proposes by tree-policy UCB, updates by backpropagating reward, terminates on simulation budget</li>
+<li><strong>Policy-gradient / learned operators</strong> propose via a learned sampler, update by gradient step, terminates on gradient budget</li>
+</ul>
+<p>Richer operators can store additional state on the instance — the framework
+does not impose a specific representation for populations, trees, or
+learned parameters.</p>
+
+<h3 id="32-what-the-framework-guarantees"><span class="num">3.2</span> What the framework guarantees</h3>
+<p>When <code>SearchLoop</code> calls your operator:</p>
+<ol>
+<li><code>setup()</code> is called exactly once with the seed graph and user config</li>
+<li><code>propose()</code> is called repeatedly — the returned graph is validated, flattened, and evaluated</li>
+<li><code>update()</code> is called exactly once per <code>propose()</code> with the corresponding <code>FitnessResult</code></li>
+<li><code>is_done()</code> is called before each <code>propose()</code> — if True, the loop terminates gracefully</li>
+<li>The evaluation harness, logging, checkpointing, and simulator integration are all provided by <code>SearchLoop</code> — your operator does not touch them</li>
+</ol>
+<p>If <code>propose()</code> returns an invalid graph (dangling edge, port type mismatch),
+<code>SearchLoop</code> will skip evaluation and call <code>update()</code> with a
+<code>FitnessResult(crashed=True, error="validation failed")</code>. Your operator is
+expected to handle crash results in <code>update()</code> — typical strategy is to
+assign worst-case fitness to discourage similar proposals.</p>
+
+<hr>
+
+<h2 id="4-the-searchloop-orchestrator"><span class="num">4.</span> The <code>SearchLoop</code> orchestrator</h2>
+<pre class="hl"># Planned API — tracked as roadmap F9.
+# Users typically don't call this directly; they use the UI "Search" button
+# or the CLI. Shown here for transparency.
+
+class SearchLoop:
+    def __init__(
+        self,
+        operator: BaseSearchOperator,
+        seed_graph: GraphDefinition,
+        fitness_fn: FitnessFunction,
+        eval_config: EvalConfig,
+        operator_config: dict | None = None,
+        checkpoint_dir: Path | None = None,
+    ): ...
+
+    async def run(self) -&gt; SearchRunResult:
+        """Execute the search loop to completion.
+
+        Returns:
+            SearchRunResult with the best candidate, full history, and
+            per-candidate execution traces.
+        """
+        ...
+</pre>
+<p>The orchestrator handles:</p>
+<ul>
+<li>Calling <code>operator.setup()</code> once</li>
+<li>The propose → evaluate → update loop</li>
+<li>Integration with <code>JobScheduler</code> for multi-episode evaluation</li>
+<li>Checkpoint persistence (resumable searches after crashes)</li>
+<li>WebSocket events for the frontend search visualization (<code>search_data</code> events)</li>
+<li>Graceful shutdown on user Stop signal</li>
+</ul>
+<p><strong>It does not dictate</strong>: population sizes, mutation strategies,
+selection pressure, tree policies, or any search-specific logic. Those
+live in your operator.</p>
+
+<hr>
+
+<h2 id="5-graph-mutation-api"><span class="num">5.</span> Graph Mutation API</h2>
+<p>Mutation operators are pure functions that take a <code>GraphDefinition</code> and
+return a new one — never mutating the input:</p>
+<pre class="hl"># Planned API — tracked as roadmap F8.
+# Module: agentcanvas/backend/app/search/mutations.py
+
+from app.graph_def import GraphDefinition, NodeDef, EdgeDef
+from app.search import mutations
+
+g2 = mutations.add_node(graph, NodeDef(id="new1", type="basic_agent__note_write", config={}),
+                        incoming_edges=[...], outgoing_edges=[...])
+
+g3 = mutations.remove_node(graph, node_id="llm_planner")
+
+g4 = mutations.swap_node(graph, node_id="llm_planner",
+                         new_type="llmCall", new_config={"model": "gpt-4o"})
+
+g5 = mutations.rewire_edge(graph, edge_id="e1", new_source="observe", new_target="planner")
+
+g6 = mutations.change_config(graph, node_id="planner",
+                             config_patch={"temperature": 0.2})
+
+g7 = mutations.mutate_port_config(graph, node_id="iter1", ports={"input_ports": [...]})
+</pre>
+
+<h3 id="51-validity-preservation"><span class="num">5.1</span> Validity preservation</h3>
+<p>Every mutation either returns a valid graph or raises <code>InvalidMutationError</code>.
+Validity means:</p>
+<ul>
+<li>No dangling edges (source and target both exist)</li>
+<li>No port type mismatches (wire types line up)</li>
+<li>No cycles except through <code>IterIn</code> / <code>IterOut</code> pairs</li>
+<li>All required ports are wired</li>
+</ul>
+<p>This means your <code>propose()</code> implementation doesn't need to re-validate —
+if a mutation returns normally, the graph is runnable. If it raises, you
+can handle the error (typically by trying a different mutation).</p>
+
+<h3 id="52-composition"><span class="num">5.2</span> Composition</h3>
+<p>Mutations compose naturally because they are pure functions:</p>
+<pre class="hl">g = seed_graph
+for _ in range(mutation_budget):
+    op = random.choice([mutations.swap_node, mutations.change_config, mutations.add_node])
+    try:
+        g = op(g, **random_args_for(op, g))
+    except InvalidMutationError:
+        continue  # try a different random op
+return g
+</pre>
+<p>This 8-line snippet is essentially a complete <code>propose()</code> for a random
+search operator.</p>
+
+<hr>
+
+<h2 id="6-fitness-functions"><span class="num">6.</span> Fitness functions</h2>
+<p>A fitness function reads scalar metrics from state containers at the end
+of evaluation and aggregates them into a single number (for
+single-objective search) or vector (for multi-objective).</p>
+<pre class="hl"># Planned API — tracked as roadmap F9.
+# Module: agentcanvas/backend/app/search/fitness.py
+
+from app.search.fitness import FitnessFunction, metric, weighted_sum
+
+# Simple: read a single state container metric
+success_rate = FitnessFunction(lambda state: state["eval_summary"]["success_rate"])
+
+# Weighted combination
+fn = weighted_sum({
+    "success_rate": 0.7,
+    "spl": 0.2,
+    "neg_path_length": 0.1,   # prefer shorter paths (negated to maximize)
+})
+</pre>
+<p>For most VLN / embodied benchmarks, fitness is a built-in metric from the
+<code>JobScheduler</code> output, so you rarely need to write a custom
+fitness function.</p>
+
+<hr>
+
+<h2 id="7-reference-operators"><span class="num">7.</span> Reference operators (planned in F10)</h2>
+
+<h3 id="71-randomsearch"><span class="num">7.1</span> <code>RandomSearch</code></h3>
+<p>The simplest possible search operator — uniform random mutations, no
+memory, fixed budget. Once F10 lands at
+<code>workspace/search_operators/random_search.py</code>:</p>
+<pre class="hl">from app.components import ConfigField
+from app.search import BaseSearchOperator, FitnessResult
+from app.search.mutations import swap_node, change_config, InvalidMutationError
+from app.graph_def import GraphDefinition
+
+
+class RandomSearch(BaseSearchOperator):
+    name = "random_search"
+    display_name = "Random Search"
+    description = "Uniform random mutations from the seed graph"
+    direction = "maximize"
+
+    config_fields: ClassVar[list] = [
+        ConfigField("budget", "slider", label="Candidate budget", default=100),
+        ConfigField("mutations_per_candidate", "slider", label="Mutations per candidate", default=3),
+    ]
+
+    def setup(self, seed_graph, config):
+        super().setup(seed_graph, config)
+        self.budget = config.get("budget", 100)
+        self.n_mutations = config.get("mutations_per_candidate", 3)
+        self.n_evaluated = 0
+        self._best: FitnessResult | None = None
+
+    def propose(self) -&gt; GraphDefinition:
+        g = self.seed_graph
+        for _ in range(self.n_mutations):
+            op = random.choice([swap_node, change_config])
+            try:
+                g = op(g, **self._random_args(op, g))
+            except InvalidMutationError:
+                continue
+        return g
+
+    def update(self, result: FitnessResult) -&gt; None:
+        self.n_evaluated += 1
+        if not result.crashed:
+            if self._best is None or result.fitness &gt; self._best.fitness:
+                self._best = result
+
+    def is_done(self) -&gt; bool:
+        return self.n_evaluated &gt;= self.budget
+</pre>
+<p><strong>~50 lines</strong> for a complete operator. The author writes the search method;
+the platform handles everything else.</p>
+
+<h3 id="72-evolutionarysearch"><span class="num">7.2</span> <code>EvolutionarySearch</code></h3>
+<p>Slightly richer — maintains a population, does tournament selection,
+crossover, mutation:</p>
+<pre class="hl">class EvolutionarySearch(BaseSearchOperator):
+    name = "evolutionary"
+    display_name = "Evolutionary Search"
+    description = "Population-based search with tournament selection, crossover, and mutation"
+    direction = "maximize"
+
+    config_fields: ClassVar[list] = [
+        ConfigField("population_size", "slider", label="Population size", default=20),
+        ConfigField("generations", "slider", label="Generations", default=10),
+        ConfigField("tournament_size", "slider", label="Tournament size", default=3),
+        ConfigField("mutation_rate", "slider", label="Mutation rate", default=0.3),
+    ]
+
+    def setup(self, seed_graph, config):
+        super().setup(seed_graph, config)
+        self.pop_size = config["population_size"]
+        self.generations = config["generations"]
+        self.tournament_size = config["tournament_size"]
+        self.mutation_rate = config["mutation_rate"]
+        self.population: list[FitnessResult] = []
+        self.current_gen = 0
+        self._pending: list[GraphDefinition] = [seed_graph] * self.pop_size
+        self._best: FitnessResult | None = None
+
+    def propose(self) -&gt; GraphDefinition:
+        if self._pending:
+            return self._pending.pop()
+        self._next_generation()
+        return self._pending.pop()
+
+    def update(self, result: FitnessResult) -&gt; None:
+        self.population.append(result)
+        # … best-tracking + generation-rollover bookkeeping …
+
+    def is_done(self) -&gt; bool:
+        return self.current_gen &gt;= self.generations
+
+    def _next_generation(self) -&gt; None:
+        new_pop = []
+        for _ in range(self.pop_size):
+            parent_a = self._tournament_select()
+            parent_b = self._tournament_select()
+            child = self._crossover(parent_a.graph, parent_b.graph)
+            if random.random() &lt; self.mutation_rate:
+                child = self._mutate(child)
+            new_pop.append(child)
+        self.population = []
+        self._pending = new_pop
+
+    def _crossover(self, a, b) -&gt; GraphDefinition:
+        # The interesting research part — graph crossover via subgraph splice
+        ...
+</pre>
+<p><strong>~80 lines</strong>. The "interesting part" — the crossover operator — is where
+the research lives. Everything else is boilerplate that looks the same
+across every operator, and that's the point.</p>
+
+<hr>
+
+<h2 id="8-algorithm-compatibility"><span class="num">8.</span> Algorithm compatibility: hosting published methods</h2>
+<p>The interface in § 3 is small (3 abstract methods) by design — but small
+interfaces only matter if they actually fit real algorithms. This section
+walks through 4 published methods, mapping each onto <code>BaseSearchOperator</code>.
+Any algorithm that doesn't fit cleanly identifies an interface gap that
+needs to be addressed before F9 freezes.</p>
+<table>
+<thead><tr>
+  <th>#</th><th>Algorithm</th><th>Class</th><th>Verdict</th>
+  <th style="text-align: right;">Estimated LOC</th>
+</tr></thead>
+<tbody>
+<tr><td>8.1</td>
+    <td><a href="https://arxiv.org/abs/2408.08435">ADAS</a> (24.08) Meta Agent Search</td>
+    <td>dev-time AAS, archive-based</td>
+    <td>✅ fits cleanly</td>
+    <td style="text-align: right;">~200</td></tr>
+<tr><td>8.2</td>
+    <td><a href="https://arxiv.org/abs/2410.10762">AFlow</a> (24.10) MCTS over code</td>
+    <td>dev-time AAS, tree search</td>
+    <td>✅ fits cleanly</td>
+    <td style="text-align: right;">~250</td></tr>
+<tr><td>8.3</td>
+    <td><a href="https://arxiv.org/abs/2507.03616">EvoAgentX</a> (25.07) TextGrad / SEW</td>
+    <td>dev-time AAS, prompt/topology gradient</td>
+    <td>✅ fits cleanly</td>
+    <td style="text-align: right;">~200 (per optimiser)</td></tr>
+<tr><td>8.4</td>
+    <td><a href="https://arxiv.org/abs/2305.16291">Voyager</a> (23.05) skill library</td>
+    <td>mechanism-self-evolve, accumulation</td>
+    <td>⚠️ fits with semantic shift — see § 8.4.5</td>
+    <td style="text-align: right;">~250</td></tr>
+</tbody>
+</table>
+
+<h3 id="81-adas"><span class="num">8.1</span> Hosting ADAS (Meta Agent Search)</h3>
+<p>ADAS's loop is roughly:</p>
+<pre><code>seed_agents = [hand_designed_baselines]
+archive = seed_agents.copy()
+while budget &gt; 0:
+    parents = sample_top_k(archive, k)         # contextual sampling
+    new_code = LLM(propose_new_agent_prompt, parents)
+    new_agent = compile(new_code)               # may fail
+    score = eval_on_benchmark(new_agent)
+    archive.append((new_agent, score))
+    budget -= 1
+return best(archive)
+</code></pre>
+<p>Maps onto <code>BaseSearchOperator</code> with the archive held on the operator
+instance: <code>propose()</code> samples top-K parents and asks a meta-LLM to emit a
+new <code>GraphDefinition</code> JSON; <code>update()</code> appends results; <code>is_done()</code>
+checks budget. <strong>~200 lines</strong> fully fleshed out.</p>
+<p><strong>Verdict</strong>: ✅ clean fit — ADAS is the canonical case the interface was
+designed for. The one representation port: ADAS's original outputs Python
+code; the port outputs <code>GraphDefinition</code> JSON. <strong>Faithfulness defence</strong>:
+algorithm preserved (archive + top-K sampling + LLM proposal); only the
+proposal output format changes; original mutation prompt template is
+reproducible verbatim from the paper appendix.</p>
+
+<h3 id="82-aflow"><span class="num">8.2</span> Hosting AFlow (MCTS over workflows)</h3>
+<p>AFlow's loop is MCTS with UCB tree policy + backpropagation. The MCTS tree
+lives entirely on the operator instance — the framework treats it as
+opaque state. UCB selection happens inside <code>propose()</code>, backpropagation
+inside <code>update()</code>. <code>propose()</code> and <code>update()</code> share state via
+<code>self._current_node</code> (the framework calls them in pairs); this is
+well-defined per § 3.2 guarantees. <strong>~250 lines</strong>.</p>
+<p><strong>Verdict</strong>: ✅ clean fit. <strong>Faithfulness defence</strong>: MCTS algorithm
+preserved verbatim (tree policy, backprop, UCB). Operator set must be
+ported from AFlow's repo (Ensemble / Review / Revise / etc. → equivalent
+<code>GraphDefinition</code> mutations) — operator definitions are the only
+handcrafted part; F8's mutation API provides the primitives.</p>
+
+<h3 id="83-evoagentx"><span class="num">8.3</span> Hosting EvoAgentX optimisers (TextGrad / SEW)</h3>
+<p>EvoAgentX bundles 5 optimisers. The two most distinct are TextGrad
+(textual gradient on prompts) and SEW (LLM mutation on workflow
+representation). Both have the same outer-loop shape — only the proposal
+step differs. TextGrad has <strong>population = 1</strong> (single graph, repeatedly
+updated) — the same shape as today's <code>/architect:&lt;variant&gt;:loop</code>
+trajectories. SEW is structurally identical with a different rewriting
+prompt library. <strong>~200 lines</strong> per optimiser.</p>
+<p><strong>Verdict</strong>: ✅ clean fit, population=1 is a sub-case.
+<strong>Implication for the EvoAgentX comparison</strong>: porting one EvoAgentX optimiser proves the F9 interface absorbs
+EvoAgentX's algorithm shape, defending against the "you're just EvoAgentX
+renamed" attack without requiring a full benchmark port.</p>
+
+<h3 id="84-voyager-stub"><span class="num">8.4</span> Hosting a Voyager-stub (mechanism-self-evolve)</h3>
+<p><a href="https://arxiv.org/abs/2305.16291">Voyager</a> (23.05) is <strong>not AAS</strong>
+— it doesn't search over architectures. It accumulates a <em>skill library</em>
+(Python functions) within a single Minecraft agent's lifetime. The
+agent's <strong>architecture is fixed</strong>; what changes is the skill library — a
+<code>StateContainer</code> in AgentCanvas terms.</p>
+<p>This is the "Voyager-as-baseline trap" we defuse on the embodied side: by
+hosting at least a Voyager-stub on F9, the platform claim "supports both
+AAS and self-evolve operators" becomes provable rather than aspirational.</p>
+
+<h4 id="841-loop-shape">8.4.1 Voyager's loop shape</h4>
+<pre><code>agent = seed_agent_with_empty_skill_library
+for episode in episodes:
+    task = sample_task()
+    relevant_skills = retrieve_skills_for(task, agent.library)
+    if any(relevant_skills):
+        agent.forward(task, using=relevant_skills)
+    else:
+        new_skill_code = LLM(write_skill_prompt, task, env_state)
+        success = agent.try_skill(new_skill_code, task)
+        if success:
+            agent.library.add(new_skill_code)
+</code></pre>
+
+<h4 id="842-mapping">8.4.2 Mapping to <code>BaseSearchOperator</code></h4>
+<p>The operator wires a persistent <code>StateContainer</code> (skill library) into
+the seed graph once during <code>setup()</code>. Then <code>propose()</code> returns the
+<em>same</em> graph each call, modulo injecting the accumulated library as
+initial state; <code>update()</code> reads the post-episode library from the
+execution log and absorbs any new skills the agent added. <strong>~250 lines</strong>.</p>
+
+<h4 id="843-whats-different">8.4.3 What's different from AAS operators</h4>
+<p>Three semantic shifts vs § 8.1–8.3:</p>
+<ol>
+<li><strong><code>propose()</code> returns essentially the same graph each call</strong> — modulo state injection. There is no architecture search.</li>
+<li><strong><code>update()</code> doesn't influence future <code>propose()</code> via algorithmic decision-making</strong> — it mechanically absorbs results into the agent's persistent state. The "search" is the agent's own lifetime trajectory.</li>
+<li><strong><code>best()</code> semantics shift</strong> — for AAS, "best" = highest-fitness candidate. For Voyager-style, "best" = the most-evolved agent (typically the latest) since evolution is monotone-additive.</li>
+</ol>
+
+<h4 id="844-why-the-interface-still-fits">8.4.4 Why the interface still fits</h4>
+<p>The 3 abstract methods (<code>propose / update / is_done</code>) are
+<strong>algorithmically agnostic</strong> — they describe the <em>control flow</em> of any
+search-or-evolution loop, not a specific algorithm class. AAS uses
+propose/update/is_done as a search-iteration cycle; Voyager-stub uses it
+as an episode cycle. Both compile to the same outer loop in
+<code>SearchLoop</code>.</p>
+
+<h4 id="845-interface-amendment">8.4.5 Interface verdict — fits with the <code>selection_mode</code> amendment</h4>
+<p>The Voyager-stub case surfaces <strong>one interface gap</strong>: the default
+<code>best()</code> impl assumes scalar-fitness max selection, which is wrong for
+accumulative operators. The amendment (already woven into § 3's
+<code>BaseSearchOperator</code> stub):</p>
+<pre class="hl">selection_mode: ClassVar[Literal["best_fitness", "latest", "pareto"]] = "best_fitness"
+</pre>
+<ul>
+<li><code>"best_fitness"</code> (default): standard AAS semantics — <code>best()</code> returns max-fitness <code>FitnessResult</code></li>
+<li><code>"latest"</code>: accumulative / self-evolve semantics — <code>best()</code> returns the latest non-crashed result</li>
+<li><code>"pareto"</code>: multi-objective — <code>best()</code> returns the Pareto frontier (tuple of <code>FitnessResult</code>)</li>
+</ul>
+<p>2-line addition, doesn't break any existing operator, explicitly admits
+self-evolve operators as first-class.</p>
+
+<h3 id="85-summary-verdict"><span class="num">8.5</span> Summary verdict</h3>
+<table>
+<thead><tr>
+  <th>Algorithm</th><th style="text-align: center;">Fits without amendments?</th>
+  <th>Interface gap</th><th style="text-align: right;">LOC</th>
+</tr></thead>
+<tbody>
+<tr><td>ADAS</td>
+    <td style="text-align: center;">✅</td>
+    <td>none</td>
+    <td style="text-align: right;">~200</td></tr>
+<tr><td>AFlow</td>
+    <td style="text-align: center;">✅</td>
+    <td>none (MCTS state lives on instance)</td>
+    <td style="text-align: right;">~250</td></tr>
+<tr><td>EvoAgentX TextGrad</td>
+    <td style="text-align: center;">✅</td>
+    <td>none (population=1 sub-case)</td>
+    <td style="text-align: right;">~200</td></tr>
+<tr><td>Voyager-stub</td>
+    <td style="text-align: center;">⚠️</td>
+    <td><code>best()</code> needs <code>selection_mode</code> ClassVar (2-line amendment)</td>
+    <td style="text-align: right;">~250</td></tr>
+</tbody>
+</table>
+<p><strong>Conclusion</strong>: the interface as specified in § 3 absorbs all 4
+published algorithms with at most a 2-line amendment (<code>selection_mode</code>),
+already adopted in this RFC. All four operator implementations come in
+under 300 lines each — substantially smaller than the original repos
+(ADAS: ~1500, AFlow: ~2000, Voyager: ~3000) because the platform absorbs
+the harness / logging / persistence / visualisation that those papers'
+codebases re-implement.</p>
+
+<hr>
+
+<h2 id="9-reproducibility-artifact-model"><span class="num">9.</span> Reproducibility and artifact model</h2>
+<p>AgentCanvas's bet is that <strong>every output of an AAS run is a first-class,
+shareable artifact</strong>:</p>
+<ul>
+<li>The <strong>search configuration</strong> is a JSON file (operator, seed graph, eval config, seeds)</li>
+<li>The <strong>search history</strong> is a JSONL file (one line per candidate, in evaluation order)</li>
+<li>The <strong>best candidate</strong> is a <code>GraphDefinition</code> JSON — the same format as any hand-authored graph</li>
+<li>The <strong>execution traces</strong> are JSONL files from the two-layer executor logging</li>
+</ul>
+<p>This means:</p>
+<ul>
+<li>You can <strong>cite</strong> a specific evolved agent by pointing at its <code>GraphDefinition</code> JSON commit</li>
+<li>You can <strong>replay</strong> any candidate by loading its JSON onto the canvas and pressing Play</li>
+<li>You can <strong>diff</strong> two evolved agents using any JSON diff tool</li>
+<li>You can <strong>share</strong> a search run as a zip of the output directory; anyone with AgentCanvas can reproduce it</li>
+</ul>
+<p>This is a direct advantage over code-represented workflows (AFlow) and
+hidden-state learned operators (MaAS), which require the author's full
+codebase to reproduce anything. The variant family in
+<a href="../../tutorials/writing-a-search-operator.html">tutorial: Running an
+Architecture Search</a> already inherits most of this contract via the
+<code>_common/files-contract.md</code> spec; the F9 Python API will make it
+load-bearing rather than convention-driven.</p>
+
+<hr>
+
+<h2 id="10-status-2026-05-18"><span class="num">10.</span> Current status</h2>
+<p>The Python plugin API in this RFC is <strong>not yet built</strong> (re-confirmed 2026-06-13: no <code>BaseSearchOperator</code>, <code>SearchLoop</code>, <code>app/search/</code>, or <code>workspace/search_operators/</code> in the tree). What AgentCanvas
+ships <em>today</em> is a parallel surface — the slash-skill variant family —
+that covers the same use cases via Claude-conversation drivers:</p>
+<table>
+<thead><tr><th>Plane</th><th>Status (2026-05-18)</th><th>Where to look</th></tr></thead>
+<tbody>
+<tr><td><strong>Variant family (today)</strong></td>
+    <td>3 variants live: <code>adas-subagent</code>,
+        <code>aflow</code>, <code>myloop</code>.
+        Run-dir layout standardised at
+        <code>outputs/design_runs/&lt;variant&gt;/&lt;graph&gt;/vN/iteration/iter_M/</code>
+        per <code>_common/files-contract.md</code>. Iter loop drives the
+        backend through <code>/experiment:run</code> (Mode A from
+        <a href="coding-agent-backend-surface.html">Coding-Agent Backend
+        Surface</a>).</td>
+    <td><a href="../../tutorials/writing-a-search-operator.html">tutorial:
+        Running an Architecture Search</a> · <code>.claude/commands/architect/</code></td></tr>
+<tr><td><strong>F8 Graph Mutation API</strong></td>
+    <td>not started — variants today do graph edits inline (slash-skill
+        <code>proposer.md</code> → patch dir → atomic apply via
+        <code>implementer.md</code>). No reusable pure-function mutation library yet.</td>
+    <td>roadmap F8</td></tr>
+<tr><td><strong>F9 <code>BaseSearchOperator</code> + <code>SearchLoop</code></strong></td>
+    <td>not started — this RFC is the design. § 8 compatibility check
+        (2026-05-05) validates the interface absorbs all surveyed
+        algorithms with the <code>selection_mode</code> amendment.</td>
+    <td>roadmap F9</td></tr>
+<tr><td><strong>F10 Reference operators</strong></td>
+    <td>not started — variants today serve as reference implementations
+        in the slash-skill plane (<code>adas-subagent</code> ≈ ADAS, <code>aflow</code> ≈
+        AFlow). The F10 Python ports would be 1:1 implementations of
+        these in <code>workspace/search_operators/</code>.</td>
+    <td>roadmap F10</td></tr>
+<tr><td><strong>F11 Search visualisation UI</strong></td>
+    <td>not started — backend WebSocket frame <code>search_data</code> is
+        unspecified. Variants today surface lineage / trace via
+        markdown files in the iter dir.</td>
+    <td>roadmap F11</td></tr>
+<tr><td><strong>F12 Reference paper re-implementation</strong></td>
+    <td>partial — <code>adas-subagent</code>, <code>aflow</code>, <code>myloop</code> are
+        coding-agent-era reframings of upstream methods. F12 in the
+        Python plane would re-implement them once F9 ships.</td>
+    <td>roadmap F12</td></tr>
+</tbody>
+</table>
+
+<p><strong>Coexistence model.</strong> Once F9 ships, both planes are intended to
+remain: variants for AAS that's iterating fast on prompts /
+orchestration / lineage shape (the agile path); Python operators for
+AAS that's ready to be packaged + cited + shared as a tight artifact
+(the long-term path). Migration from a stabilised variant to a Python
+operator is a one-time port — same iter-tree contract, same eval
+harness, same fitness signals.</p>
+
+<hr>
+
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-13 17:50: code-alignment + HTML-first pass. Fixed the one real correctness bug — <code>BatchEvalOrchestrator</code>/<code>BatchEvalConfig</code> (cited as an <em>existing</em> dependency) do not exist; replaced with the shipped <code>JobScheduler</code>/<code>EvalConfig</code>. Relabeled the dangling <strong>F8–F12</strong> roadmap ids as the RFC's own <em>proposed</em> block (the authoritative <code>core/roadmap</code> stops at F7), in the top callout. Changed the planned <code>ConfigField("number", …)</code> snippets to a real field type (<code>"slider"</code>). Added a <code>lede</code> + a SearchLoop-cycle SVG; converted all <code>div.highlight</code> code blocks to <code>pre.hl</code>; added the missing <code>last-updated</code>. RFC framing (planned-vs-built) was already honest and left intact.</li>
+<li>2026-05-18: New file — split out from
+  <code>tutorials/writing-a-search-operator.html</code> per the
+  RFC-vs-tutorial separation. Content of § 1-9 is faithfully lifted
+  from the prior tutorial (last edited 2026-05-05); § 10 status
+  rewritten to acknowledge the slash-skill variant family that has
+  shipped in the interim, and to frame the two planes as
+  coexisting rather than as future-replacement-for-current.
+  <code>selection_mode</code> ClassVar woven into § 3 stub (was only in § 8
+  amendment) for clarity. The split: tutorial now documents the
+  variant family as today's working AAS surface; this design-doc
+  retains the Python plugin RFC.</li>
+<li>2026-05-05: Added algorithm-compatibility walkthrough — ADAS /
+  AFlow / EvoAgentX TextGrad / Voyager-stub mappings, surfaced the
+  <code>selection_mode</code> ClassVar amendment, validates the
+  interface absorbs published methods with at most a 2-line change.</li>
+<li>2026-04-12: Initial RFC — <code>BaseSearchOperator</code>,
+  <code>SearchLoop</code>, Graph Mutation API, reference operators. No code
+  exists yet — document describes the developer experience the
+  project commits to build (roadmap F8–F12).</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-why-a-platform-native-aas-api">1. Why a platform-native AAS API?</a>
+      <a class="toc-h2" href="#2-design-overview">2. Design overview</a>
+      <a class="toc-h2" href="#3-the-basesearchoperator-interface">3. The BaseSearchOperator interface</a>
+      <a class="toc-h3" href="#31-why-only-3-abstract-methods">3.1 Why only 3 abstract methods?</a>
+      <a class="toc-h3" href="#32-what-the-framework-guarantees">3.2 What the framework guarantees</a>
+      <a class="toc-h2" href="#4-the-searchloop-orchestrator">4. The SearchLoop orchestrator</a>
+      <a class="toc-h2" href="#5-graph-mutation-api">5. Graph Mutation API</a>
+      <a class="toc-h3" href="#51-validity-preservation">5.1 Validity preservation</a>
+      <a class="toc-h3" href="#52-composition">5.2 Composition</a>
+      <a class="toc-h2" href="#6-fitness-functions">6. Fitness functions</a>
+      <a class="toc-h2" href="#7-reference-operators">7. Reference operators (planned in F10)</a>
+      <a class="toc-h3" href="#71-randomsearch">7.1 RandomSearch</a>
+      <a class="toc-h3" href="#72-evolutionarysearch">7.2 EvolutionarySearch</a>
+      <a class="toc-h2" href="#8-algorithm-compatibility">8. Algorithm compatibility: hosting published methods</a>
+      <a class="toc-h3" href="#81-adas">8.1 Hosting ADAS (Meta Agent Search)</a>
+      <a class="toc-h3" href="#82-aflow">8.2 Hosting AFlow (MCTS over workflows)</a>
+      <a class="toc-h3" href="#83-evoagentx">8.3 Hosting EvoAgentX optimisers (TextGrad / SEW)</a>
+      <a class="toc-h3" href="#84-voyager-stub">8.4 Hosting a Voyager-stub (mechanism-self-evolve)</a>
+      <a class="toc-h3" href="#85-summary-verdict">8.5 Summary verdict</a>
+      <a class="toc-h2" href="#9-reproducibility-artifact-model">9. Reproducibility and artifact model</a>
+      <a class="toc-h2" href="#10-status-2026-05-18">10. Current status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

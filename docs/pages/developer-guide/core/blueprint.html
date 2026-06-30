@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blueprint — AgentCanvas</title>
+<meta name="description" content="What AgentCanvas is, the nine capabilities, design principles, and what&#x27;s shipped vs in-flight.">
+<meta property="og:title" content="Blueprint — AgentCanvas">
+<meta property="og:description" content="What AgentCanvas is, the nine capabilities, design principles, and what&#x27;s shipped vs in-flight.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/blueprint.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/blueprint.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body blueprint">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Core</a>
+    <span class="sep">/</span>
+    <span class="here">Blueprint</span>
+  </div>
+</div>
+  <header class="page-header blueprint">
+  <h1>Blueprint</h1>
+  <p class="tagline">What AgentCanvas is, the nine capabilities, design principles, and what's shipped vs in-flight.</p>
+</header>
+
+<div class="lede blueprint">
+  AgentCanvas is a <strong>visual agent design platform</strong>: researchers
+  prototype embodied AI agents by drawing node graphs that execute in real-time
+  against simulators or real-world setups. This page covers what the platform
+  <em>is</em> and <em>offers</em> — capabilities, design principles, core components.
+  For phasing see <a href="roadmap.html">roadmap</a>;
+  closed architectural decisions in <a href="decisions/index.html">decisions/</a>;
+  codebase layout in <a href="codebase-map.html">codebase-map</a>.
+</div>
+
+<nav class="toc-strip" aria-label="In-page navigation">
+  <span class="toc-label">on this page</span>
+  <a href="#problem">§1 Problem</a><span class="toc-sep">·</span>
+  <a href="#capabilities">§2 Capabilities</a><span class="toc-sep">·</span>
+  <a href="#principles">§3 Principles</a><span class="toc-sep">·</span>
+  <a href="#components">§4 Components</a><span class="toc-sep">·</span>
+  <a href="#features">§5 Features</a><span class="toc-sep">·</span>
+  <a href="#differentiation">§6 Differentiation</a><span class="toc-sep">·</span>
+  <a href="#open">§7 Open</a><span class="toc-sep">·</span>
+  <a href="#status">§8 Status</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="problem"><span class="num">§1</span>Problem Statement</h2>
+
+<p class="muted" style="margin-bottom:1rem;">The lede above says <em>what</em> AgentCanvas is; this section is the <em>why</em>. Skip to <a href="#capabilities">§2 Capabilities</a> for what it does.</p>
+
+<p>Embodied AI agent research — spanning <strong>VLN</strong> (Vision-and-Language Navigation),
+<strong>EQA</strong> (Embodied Question Answering), and <strong>VLA</strong>
+(Vision-Language-Action) — increasingly builds agents by composing foundation models
+with perception, mapping, memory, planning, and control. Because that architecture is
+<em>explicit</em> and editable (unlike end-to-end policies, whose structure is absorbed
+into weights), it raises the question this platform is built around: <strong>can agent
+design be searched rather than hand-built?</strong> Three motivations follow — the
+primary one (<strong>A</strong>): the design space is hand-made and unsearchable, which
+AgentCanvas exists to open up; plus two long-standing research pains it must also solve
+along the way — (<strong>B</strong>) general AI/ML problems amplified in embodied, and
+(<strong>C</strong>) embodied-specific problems.</p>
+
+<h3 id="problem-aas">A. Agent architecture is hand-designed — and should be searchable</h3>
+
+<ol class="numbered-list">
+  <li>
+    <strong>Explicit architecture, hand-made choices</strong>
+    Each embodied agent fixes choices about sensor abstractions, map representations,
+    memory state, prompt structure, planner topology, model placement, and action
+    interfaces. These are exposed and editable — but made by hand for a single benchmark.
+  </li>
+  <li>
+    <strong>Manual iteration doesn't scale</strong>
+    As foundation models and embodied tools multiply, the space of plausible
+    architectures grows faster than hand-iteration can cover. The natural question is
+    whether architecture design itself can be automated.
+  </li>
+  <li>
+    <strong>Embodied AAS needs a graph substrate</strong>
+    Agent Architecture Search (AAS) automates this for text agents, but embodied
+    transfer is hard: stateful simulators, noisy multi-episode evaluations, long
+    perception/action traces, and no small palette of primitives — searches are
+    <em>method-seeded</em> from published systems (MapGPT, ExploreEQA, VoxPoser). To
+    search graph-level edits at all, an embodied agent must first <em>be</em> a typed,
+    editable, executable, loggable graph.
+  </li>
+</ol>
+
+<div class="callout success">
+  <strong>This is why AgentCanvas exists</strong>
+  Externalising agent topology as a typed, inspectable graph (<a href="#differentiation">§6</a>)
+  turns "design a better agent" from a manual rewrite into a search over a structured
+  space. AgentCanvas is the <strong>executor substrate for Agent Architecture Search
+  (AAS)</strong>: a coding-agent harness edits the graph through typed, API-level
+  operations and hill-climbs on eval metrics. The AAS work itself — the optimizer and
+  its ADAS / AFlow baselines, and the cross-task results — is written up
+  separately.
+</div>
+
+<h3 id="problem-common">B. Common AI research pain points, amplified in embodied</h3>
+
+<ol class="numbered-list" style="counter-reset: nlist 3;">
+  <li>
+    <strong>Non-reproducible implementations</strong>
+    Every paper builds its agent from scratch with a different codebase.
+    Comparing methods fairly or reproducing results is painful.
+  </li>
+  <li>
+    <strong>Paper ≠ code</strong>
+    Papers show clean flow diagrams, but the actual code diverges in
+    undocumented ways. Reproducing a paper means reverse-engineering its
+    implementation.
+  </li>
+  <li>
+    <strong>Tightly coupled code</strong>
+    Domain logic (prompts, tools, policies) is tangled with infrastructure.
+    Swapping one component means rewriting the pipeline.
+  </li>
+</ol>
+
+<h3 id="problem-embodied">C. Embodied-specific pain points</h3>
+
+<ol class="numbered-list" style="counter-reset: nlist 6;">
+  <li>
+    <strong>Modern embodied stack is thick</strong>
+    A working embodied agent needs LLM reasoning, tool use, simulator coupling,
+    and spatial tools — all wired together. Building this from scratch for each
+    project is prohibitively costly.
+  </li>
+  <li>
+    <strong>Hidden ground-truth dependencies</strong>
+    Many methods (e.g., VoxPoser) quietly rely on simulator-provided ground
+    truth — object poses, semantic labels, navigability — rather than real
+    perception. They don't transfer to real robots, and comparisons against
+    perception-grounded methods are skewed.
+  </li>
+</ol>
+
+<div class="callout note">
+  <strong>Who it affects</strong>
+  Researchers who want to rapidly prototype, compare, and build on embodied
+  agent architectures without reinventing the execution stack each time.
+</div>
+
+<h3 id="problem-shipped">What the platform has to demonstrate as built &amp; shipped</h3>
+
+<ul>
+  <li>~25 node types auto-discovered from <code>workspace/</code> at startup; new types drop-in via Python files without framework edits.</li>
+  <li>Dataflow executor handling cyclic agent loops natively via IterIn/IterOut gates, with playback controls (play / pause / step / stop).</li>
+  <li>Server-mode nodesets running in their own Python interpreters (Habitat 0.1.7 in <code>ac-vlnce</code> env, ROS-stack in its own env), auto-generated proxy nodes from declared port surfaces.</li>
+  <li>Real-time WebSocket streaming of observations / reasoning / actions / metrics, routed by <code>execution_id</code> for concurrent runs.</li>
+  <li>Multi-episode batch eval harness (<code>POST /api/eval/v2/start</code> → backend-owned <code>JobScheduler</code> spawns a subprocess-per-run <code>BatchEvalRunner</code> + <code>EnvWorkerPool</code>) replacing the retired <code>vlnworkspace.eval</code> Hydra CLI.</li>
+  <li>Hot reload (<code>POST /api/components/reload</code>) for new node types without server restart.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="capabilities"><span class="num">§2</span>Capabilities</h2>
+
+<p>AgentCanvas is a <strong>visual agent design platform</strong> where
+researchers rapidly prototype embodied AI agents by drawing node graphs on a
+canvas. Graphs execute in real-time against simulator environments (Habitat,
+AI2-THOR) or real-world setups — no pipeline code required.</p>
+
+<div class="callout success">
+  <strong>The key idea</strong>
+  <strong>One JSON = one agent = one graph.</strong> Agent behavior is defined
+  as a dataflow graph, not imperative code. The graph is the source of truth —
+  saved as a single JSON file, loaded as a complete agent, and executed directly.
+</div>
+
+<p>Nine capabilities make this work. Each card opens its implementation detail.</p>
+
+<div class="cards cols-2">
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.1</span> Graph-Expressible Agents</h3>
+    <p>The canvas supports workflow DAGs, cyclic agent loops (observe → reason → act → repeat via IterIn/IterOut), and compositions of both. Researchers pick the pattern that fits their method.</p>
+    <details class="how">
+      <summary>How</summary>
+      The <code>GraphExecutor</code> treats every graph uniformly — nodes fire when inputs arrive. Cycles are handled by <strong>IterIn/IterOut gate nodes</strong>: when IterOut fires, it increments the step counter and transfers its outputs back to the paired IterIn, re-entering the loop. For pure DAGs, the same executor runs a single forward pass with no iteration. Both patterns coexist on one canvas — a workflow DAG can contain an inner agent loop, or vice versa.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.2</span> Customizable node system</h3>
+    <p>New nodes are Python classes inheriting <code>BaseCanvasNode</code> or <code>BaseNodeSet</code>. Drop the file into <code>workspace/</code>, the platform auto-discovers it at runtime. No framework changes needed.</p>
+    <details class="how">
+      <summary>How</summary>
+      Authors subclass <code>BaseCanvasNode</code> and declare <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, <code>category</code>, <code>icon</code>, and <code>ui_config</code> as class variables, then implement <code>async forward(inputs, ctx) → dict</code>. The <code>WorkspaceComponentRegistry</code> scans <code>workspace/</code> subdirectories at startup (and on hot-reload via <code>POST /api/components/reload</code>), imports every <code>.py</code> file, collects concrete <code>BaseCanvasNode</code> subclasses, and registers them in <code>NODE_HANDLERS</code>. The frontend's <code>GenericBlockRenderer</code> renders any registered node automatically from its port and UI metadata — no custom <code>.tsx</code> component needed. For groups of related tools, authors subclass <code>BaseNodeSet</code> instead — a nodeset bundles multiple tools under shared <code>initialize()</code> / <code>shutdown()</code> lifecycle.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.3</span> Isolated runtime environments</h3>
+    <p>Research tools often require conflicting Python environments (Habitat needs 3.8, SLAM needs ROS). Any <code>BaseNodeSet</code> can run in <strong>server mode</strong> in its own interpreter — zero extra server code.</p>
+    <details class="how">
+      <summary>How</summary>
+      When a nodeset is loaded with <code>mode="server"</code>, the <code>WorkspaceComponentRegistry</code> launches a subprocess using the nodeset's <code>server_python</code> interpreter. The subprocess runs <code>AutoServerApp</code>, which introspects the nodeset's tools — reading their <code>input_ports</code> and <code>output_ports</code> — and auto-generates an HTTP server with one endpoint per tool. The framework then fetches the server's manifest, generates <strong>proxy canvas nodes</strong> from it, and registers them in <code>NODE_HANDLERS</code>. From the canvas perspective, proxy nodes behave identically to local nodes — the researcher doesn't need to know whether a node runs in-process or in a remote subprocess.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.4</span> Nested graph system</h3>
+    <p>Any canvas graph can be saved as a <strong>graph node</strong> and dragged onto another canvas as a reusable block. Enables hierarchical agents — a high-level planner containing sub-agent graph nodes.</p>
+    <details class="how">
+      <summary>How</summary>
+      A <code>GraphDefinition</code> can contain nodes whose <code>.subgraph</code> field holds another <code>GraphDefinition</code>. <strong>PortIn / PortOut</strong> boundary nodes define the composite's input/output interface. Before execution, <code>flatten.py</code> recursively expands all composites into a single flat graph — prefixing inner node IDs for uniqueness and rewiring parent edges through the PortIn/PortOut boundaries. The executor only sees flat nodes. Graph nodes are stored as JSON in <code>workspace/graph_nodes/</code> with snapshot semantics — editing the source graph doesn't affect existing graph node instances.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.5</span> Dataflow execution engine</h3>
+    <p>Nodes fire when inputs arrive, not in a fixed order. Supports cycles natively, enables real-time streaming, opens the door for future parallelism.</p>
+    <details class="how">
+      <summary>How</summary>
+      The <code>GraphExecutor</code> maintains a ready queue. <strong>Entry nodes</strong> (no required inputs, no incoming edges) fire first. When a node fires, its outputs propagate along edges into downstream nodes' <code>pending_inputs</code>. A downstream node enters the ready queue once all its required ports have data. State is persistent across firings via <code>_NodeStateProxy</code>, and state containers (shared mutable state) are injected into nodes connected by state edges. A <code>StopExecution</code> exception from a termination node cleanly ends the loop.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.6</span> Real-time observability</h3>
+    <p>Every step streams observations, reasoning, actions, and metrics via WebSocket. Researchers see what the agent sees, read what it thinks, and can pause/step/resume.</p>
+    <details class="how">
+      <summary>How</summary>
+      Output viewer nodes (<code>imageViewer</code>, <code>thinkingLog</code>, <code>actionLog</code>, <code>metrics</code>, etc.) store their latest inputs. At each iteration boundary (when IterOut fires), <code>_broadcast_step</code> consolidates all output viewer data into a single <code>nav_step</code> WebSocket event — including base64-encoded RGB/depth images, action names, LLM responses, state container snapshots, and metrics. The frontend renders these in real-time panels. An <code>execution_id</code> routes events to the correct client, enabling multiple concurrent agent runs with isolated output streams.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.7</span> Hook system</h3>
+    <p>Shell commands fire before/after each node execution and at graph lifecycle boundaries. Hooks can validate inputs, log outputs, block nodes, or modify data — all without changing the graph nodes themselves. Fail-open: hook errors never crash graph execution.</p>
+    <details class="how">
+      <summary>How</summary>
+      Hooks are configured per-graph (<code>.canvas/hooks.json</code>) or per-node (<code>ui_config.hooks</code>). The executor's <code>HookRunner</code> matches lifecycle events (<code>PreNodeExecute</code> / <code>PostNodeExecute</code> / <code>OnIterationStart</code> / <code>OnIterationEnd</code> / <code>OnGraphStart</code> / <code>OnGraphComplete</code>) against the hook config, runs each matched hook as a subprocess with JSON-encoded event data on stdin, and accepts exit-code signals (<code>0</code> pass, <code>1</code> block, <code>2</code> modify-stdout). Fail-open by design: hook errors never crash graph execution — they are logged and the executor continues with the original input, preserving graph reliability across user-supplied automation.
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.8</span> Batch evaluation &amp; job queue</h3>
+    <p>The same graph that runs on the canvas can be submitted as an eval job that scores it over hundreds of episodes. A backend-owned <code>JobScheduler</code> gates admission against a VRAM budget shared across all sessions; each admitted run is its own subprocess so backend restarts don't kill in-flight evals; per-episode logs and assets are self-contained on disk so a teammate can replay any single episode without re-running.</p>
+    <details class="how">
+      <summary>How</summary>
+      Two stacked layers (see <a href="../capabilities/batch-evaluation-job-queue.html">capability page</a>): Layer A is <code>JobScheduler</code> — singleton with a per-second <code>tick()</code> that admits queued jobs when <code>Σ active.marginal_vram_mb ≤ usable_vram_mb</code> and canvas Play isn't holding the exclusive lock; spawns the admitted job as <code>python -m app.eval_subprocess_main --run-dir …</code> with <code>PR_SET_PDEATHSIG</code> so the kernel reaps orphans. Layer B is <code>BatchEvalRunner</code> in the subprocess — reads <code>spec.json</code>/<code>shared_urls.json</code>, attaches to the parent backend's shared singletons via <code>register_remote_nodeset</code> (no duplicate VRAM), iterates the episode list through fresh <code>LoopRunner</code> instances, leases <code>EnvWorkerPool.WorkerHandle</code>s when <code>worker_count &gt; 1</code>, and writes self-contained <code>episodes/ep{NNNN}/{log.jsonl, assets/, episode.json}</code>. Shared singletons are refcounted across consuming jobs; the scheduler auto-unloads only those it loaded itself, so canvas-loaded copies stay (ADR-eval-001/002/003/004 + ADR-server-003).
+    </details>
+  </div>
+
+  <div class="card blueprint">
+    <h3><span class="num" style="font-family:'SF Mono',Menlo,monospace;color:var(--muted);font-size:.75em;">§2.9</span> Visual canvas editor</h3>
+    <p>The surface researchers actually touch: a React Flow editor where you drop nodes from a live backend catalog, wire typed ports, configure each node from an auto-rendered form, and watch every port update as the graph runs. The same component handles root canvas and composite drill-down — no mode switching between design and observe.</p>
+    <details class="how">
+      <summary>How</summary>
+      Three layers stacked over one WebSocket (see <a href="../capabilities/visual-canvas-editor.html">capability page</a>): ReactFlow (<code>@xyflow/react</code>) owns geometry; a tab-aware Zustand store (<code>useFlowStore</code>) owns graph semantics + per-node live <code>nodeOutputs</code>; a singleton <code>WSManager</code> with auto-reconnect carries <code>nav_status</code> (run state), <code>nav_step</code> (consolidated per-step bundle from <code>graphOut</code> sinks), <code>viewer_data</code> (per-sink-node <code>{node_id, step, fields}</code>), and <code>error_event</code> (<code>ErrorBus</code> envelopes). <code>UnifiedGraphEditor</code> reuses one component for <code>mode="root"</code> (live Zustand) and <code>mode="subgraph"</code> (local state + explicit save back to the parent composite's <code>NodeDef.subgraph</code>). <code>PropertiesPanel</code> auto-renders config forms from each node's <code>ui_config.config_fields</code> — adding a new node type means adding its Python <code>configSchema</code>, not writing a panel. Typed-wire compatibility is checked client-side in <code>useFlowStore.onConnect</code> before the edge enters the store, so the canvas can never reach the backend in a state only <code>validate_graph_connectivity</code> would catch. The same store/WS also drives the Eval, Replay, and Log-viewer pages.
+    </details>
+  </div>
+
+</div>
+
+<!-- ============================================================ -->
+<h2 id="principles"><span class="num">§3</span>Design Principles</h2>
+
+<ol class="numbered-list">
+  <li>
+    <strong>Framework has zero domain knowledge</strong>
+    <code>agentcanvas/backend/app/</code> is a pure execution engine. All domain-specific code (policies, prompts, tools, environments) lives in <code>workspace/</code>. The framework never imports domain code directly — it discovers and bridges components at runtime.
+  </li>
+  <li>
+    <strong>Graph, not script</strong>
+    Agent behavior is defined as a dataflow graph, not imperative code. This makes architectures visual, composable, and inspectable. The graph is the source of truth — not a visualization of code, but the code itself.
+  </li>
+  <li>
+    <strong>Dataflow execution</strong>
+    Nodes fire when their inputs arrive, not in a fixed order. Naturally supports cyclic agent loops (observe → think → act → repeat) and enables future parallelism and branching.
+  </li>
+  <li>
+    <strong>Composability via nesting</strong>
+    Composites let researchers group nodes into reusable sub-graphs at any depth. Execution always flattens to a single dataflow graph — no outer/inner split at runtime. Keeps the executor simple while enabling arbitrarily deep hierarchical agent architectures.
+  </li>
+  <li>
+    <strong>Real-time observability</strong>
+    Every step streams observations, reasoning, actions, and metrics via WebSocket. Researchers see what the agent sees, read what it thinks, and can pause/step/resume at any point.
+  </li>
+  <li>
+    <strong>Extend, don't fork</strong>
+    New capabilities are added by dropping Python files into <code>workspace/</code>, not by modifying framework code. The component system auto-discovers new tools, skills, agents, environments, policies, and node handlers.
+  </li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="components"><span class="num">§4</span>Core Components</h2>
+
+<table>
+  <tr>
+    <th>Component</th>
+    <th>Location</th>
+    <th>Role</th>
+  </tr>
+  <tr>
+    <td><strong>Canvas Editor</strong></td>
+    <td><code>agentcanvas/frontend/</code></td>
+    <td>Visual graph editor (React Flow + Zustand)</td>
+  </tr>
+  <tr>
+    <td><strong>Graph Executor</strong></td>
+    <td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+    <td>Single data-driven executor — fires nodes on input arrival; handles both DAG workflows and cyclic loops via IterIn/IterOut gates (no separate DAG executor)</td>
+  </tr>
+  <tr>
+    <td><strong>Loop Runner</strong></td>
+    <td><code>agentcanvas/backend/app/agent_loop/loop_runner.py</code></td>
+    <td>Singleton that manages pause/stop/resume lifecycle</td>
+  </tr>
+  <tr>
+    <td><strong>Component Registry</strong></td>
+    <td><code>agentcanvas/backend/app/components/registry.py</code></td>
+    <td>Auto-discovers <code>workspace/</code> components, bridges into runtime</td>
+  </tr>
+  <tr>
+    <td><strong>Wire Type System</strong></td>
+    <td><code>agentcanvas/backend/app/standard/wire_types.py</code></td>
+    <td>10 typed edges (IMAGE, DEPTH, ACTION, POSE, TEXT, BOOL, METRICS, OBSERVATION, STEP_RESULT, ANY) + <code>LIST[T]</code> modifier</td>
+  </tr>
+  <tr>
+    <td><strong>Node Handlers</strong></td>
+    <td><code>agentcanvas/backend/app/standard/node_io.py</code> + <code>workspace/nodes/</code></td>
+    <td>12 built-in + user-defined node execution logic</td>
+  </tr>
+  <tr>
+    <td><strong>Environment Abstraction</strong></td>
+    <td><code>agentcanvas/backend/app/env/base.py</code> + <code>workspace/envs/</code></td>
+    <td>BaseEnvManager interface (Habitat, Mock implementations)</td>
+  </tr>
+  <tr>
+    <td><strong>Eval Harness</strong> (WIP)</td>
+    <td><code>app/services/job_scheduler.py</code> + <code>agent_loop/eval_batch.py</code> (<code>BatchEvalRunner</code>) + <code>env_worker_pool.py</code> + <code>POST /api/eval/v2</code> + frontend Eval page</td>
+    <td>Subprocess-per-run <code>JobScheduler</code> with cross-session VRAM admission, worker-pool + batched-inference (ADR-eval-002/003/004). Replaces the retired <code>vlnworkspace.eval</code> Hydra CLI — Eval UI is still being built (Feature TODO F5).</td>
+  </tr>
+  <tr>
+    <td><strong>User Workspace</strong></td>
+    <td><code>workspace/</code></td>
+    <td>All domain components: tools, skills, agents, envs, policies, nodes</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="features"><span class="num">§5</span>Core Features</h2>
+
+<h3 id="features-composition">Visual agent composition</h3>
+<ul>
+  <li><strong>Unified canvas paradigm</strong> (<a href="decisions/canvas/adr-canvas-002.html">ADR-canvas-002</a>): one editor, one node registry (~25 types), one catalog at every graph level — root canvas and subgraphs use identical tools</li>
+  <li><strong>Flat workspace</strong> (<a href="decisions/canvas/adr-canvas-001.html">ADR-canvas-001</a>): all node types on one canvas — no outer/inner layer split</li>
+  <li>Drag-drop node editor with optional recursive composite nodes (<a href="decisions/dataflow/adr-dataflow-001.html">ADR-dataflow-001</a>)</li>
+  <li>Pre-built graph templates (Straightforward CMA, NavGPT-CE) — loaded as flat workspace JSON</li>
+  <li>Type-checked wiring with 10 wire types and color-coded handles</li>
+  <li><strong>Unified sidebar catalog</strong>: Environment, LLM, Prompt, Loop Control, Output, Composite, Agent Presets, Saved Graphs</li>
+  <li><strong>Graph save/load</strong>: two kinds — <strong>Graphs</strong> (editable templates in <code>workspace/graphs/</code>, open in tabs) and <strong>Graph Nodes</strong> (frozen composites in <code>workspace/graph_nodes/</code>, drag onto canvas as reusable blocks with snapshot semantics). Explorer sidebar shows both as separate sections with VS Code-style tree expansion (<a href="decisions/canvas/adr-canvas-003.html">ADR-canvas-003</a>)</li>
+  <li><strong>Composite nodes</strong>: optionally group nodes into reusable composites with PortIn/PortOut</li>
+  <li><strong>Execution toolbar</strong>: Play/Pause/Stop/Step/Reset controls at page level (no AgentLoop wrapper needed)</li>
+</ul>
+
+<h3 id="features-nodeset">NodeSet manager</h3>
+<ul>
+  <li>Dedicated page for managing NodeSets, server-mode nodesets, and environments — separate from canvas</li>
+  <li>Load/unload NodeSets: activation makes tools appear in canvas sidebar, deactivation removes them</li>
+  <li>Start/stop/restart server-mode nodesets (Habitat, SLAM, etc.)</li>
+  <li>Rescan <code>workspace/</code> for new components</li>
+  <li><strong>Auto-hosted deployment</strong> (<a href="decisions/server/adr-server-001.html">ADR-server-001</a>): any BaseNodeSet can be loaded in server mode — framework auto-generates the server from tool port definitions, zero extra code</li>
+</ul>
+
+<h3 id="features-streaming">Real-time execution &amp; streaming</h3>
+<ul>
+  <li>Single <code>/run</code> endpoint: send graph definition + execution_id, get WebSocket events</li>
+  <li>8 WebSocket event types: <code>nav_step</code>, <code>nav_llm_step</code>, <code>nav_status</code>, <code>nav_complete</code>, and more</li>
+  <li>Playback controls: play, pause, resume, step, stop</li>
+  <li><code>execution_id</code> routing: multiple concurrent agent runs with isolated output streams</li>
+</ul>
+
+<h3 id="features-iteration">Iteration &amp; cycles</h3>
+<ul>
+  <li>Two-sided IterIn/IterOut gates for clean cyclic graphs (no back-edges) — IterIn captures run-start seeds on its left side; IterOut carries loop state and a <code>stop</code> input that halts the loop</li>
+  <li>Configurable step budget (default 500)</li>
+  <li>Loop ends when the IterOut <code>stop</code> port goes true, the budget is exhausted, or the user stops — the verdict stage runs once on the after-loop band (the former Termination node was removed; see <a href="glossary.html#s6">glossary §6</a>)</li>
+</ul>
+
+<h3 id="features-extensibility">Extensible component system</h3>
+<ul>
+  <li>2 base classes: <code>BaseCanvasNode</code>, <code>BaseNodeSet</code></li>
+  <li>Auto-discovery: drop a Python file in <code>workspace/</code>, reload, it's available</li>
+  <li>Lifecycle hooks: async <code>initialize()</code> / <code>shutdown()</code></li>
+  <li>Hot reload: <code>POST /api/components/reload</code></li>
+  <li>Saved composite graphs via <code>/api/graphs</code> (CRUD for <code>workspace/graphs/*.json</code>)</li>
+</ul>
+
+<h3 id="features-state">State container system (<a href="decisions/dataflow/adr-dataflow-002.html">ADR-dataflow-002</a>)</h3>
+<ul>
+  <li><strong>Dual-wire architecture</strong>: data edges (typed dataflow) + state edges (access grants to shared state containers) coexist on canvas</li>
+  <li><strong>StateContainer</strong>: dict of named <code>BaseState</code> entries — each with a reducer (accumulator, lastWrite, counter), a value type from an extensible registry, and a <code>lifetime</code> field (forever / step / episode / run / custom) that subscribes the state to framework signals for declarative clearing</li>
+  <li><strong>State value types</strong>: superset of wire types — includes TEXT, ACTION, IMAGE + domain types (POINTCLOUD, OCCUPANCY_MAP, EMBEDDING)</li>
+  <li><strong>State edges</strong>: separate wire system — dashed violet lines granting read/write access, toggled via toolbar button, <code>__state__</code> port on every node</li>
+  <li><strong>graph_state</strong>: optional graph-level container auto-accessible by all nodes — displayed in State tab of bottom panel</li>
+  <li><strong>Node decomposition</strong>: "fancy" nodes (HistoryTracker, NavGPTReason) can be decomposed into composite graphs with visible internal state</li>
+  <li><strong>Checkpointable</strong>: each state implements checkpoint/restore for persistence and replay</li>
+</ul>
+
+<h3 id="features-vlnce">VLN-CE evaluation</h3>
+<ul>
+  <li>Native path: Habitat policies with <code>.act()</code> interface</li>
+  <li>External path: custom models with <code>.predict_action()</code> interface</li>
+  <li>Metrics: SPL (primary), SR, nDTW, SDTW + per-episode breakdown</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="differentiation"><span class="num">§6</span>Differentiation</h2>
+
+<p>AgentCanvas combines three structural features that are
+collectively absent from current agent frameworks:</p>
+
+<table class="compare-table">
+  <tr>
+    <th>Framework</th>
+    <th>Externalised topology</th>
+    <th>Typed ports</th>
+    <th>Nodeset boundaries</th>
+    <th>All three?</th>
+  </tr>
+  <tr>
+    <td><strong>AgentCanvas</strong></td>
+    <td><span class="yes">✓</span> Graph JSON</td>
+    <td><span class="yes">✓</span> IMAGE / DEPTH / ACTION / POSE / TEXT / METRICS / …</td>
+    <td><span class="yes">✓</span> Loadable nodesets with declared tool surface</td>
+    <td><span class="yes">✓</span></td>
+  </tr>
+  <tr>
+    <td><strong>LangGraph</strong></td>
+    <td><span class="mid">~</span> Topology built imperatively via Python <code>add_node</code> / <code>add_edge</code>; not externalised as a single artefact</td>
+    <td><span class="no">✗</span> Edges carry arbitrary Python state objects</td>
+    <td><span class="mid">~</span> Tool registries exist but no declared-equivalence semantics</td>
+    <td><span class="no">✗</span></td>
+  </tr>
+  <tr>
+    <td><strong>dspy</strong></td>
+    <td><span class="no">✗</span> Compute graph is implicit in the optimised Module program</td>
+    <td><span class="mid">~</span> Signatures type the I/O of one module, not the inter-module wires</td>
+    <td><span class="no">✗</span> No nodeset analogue</td>
+    <td><span class="no">✗</span></td>
+  </tr>
+  <tr>
+    <td><strong>PocketFlow</strong></td>
+    <td><span class="yes">✓</span> Flow JSON exists</td>
+    <td><span class="no">✗</span> Ports are untyped (any Python object)</td>
+    <td><span class="no">✗</span> No nodeset analogue</td>
+    <td><span class="no">✗</span></td>
+  </tr>
+  <tr>
+    <td><strong>Ad-hoc Python harness</strong> (typical paper repo)</td>
+    <td><span class="no">✗</span> Topology = the source code</td>
+    <td><span class="no">✗</span> Untyped function signatures</td>
+    <td><span class="no">✗</span> Tools are imports</td>
+    <td><span class="no">✗</span></td>
+  </tr>
+</table>
+
+<p>The triple matters because it makes the platform's content (graphs)
+<strong>structurally inspectable</strong>: graph topology is a JSON artefact,
+port types are declarable and checkable, and tool boundaries are explicit
+nodeset surfaces. This is what makes AgentCanvas a viable substrate for
+downstream automation — for example, an automated faithfulness audit can
+reduce its rules to JSON-checkable structural questions only
+because of these surfaces. Without all three, audit cost dominates run cost.</p>
+
+<div class="callout warn">
+  <strong>What this is NOT claiming</strong>
+  <ul style="margin: 0; padding-left: 1.2rem;">
+    <li><strong>Not</strong> that other frameworks are inferior for every use case — LangGraph offers stronger imperative flexibility, dspy stronger compiler-level optimisation. AgentCanvas trades imperative flexibility for declarative auditability.</li>
+    <li><strong>Not</strong> that AgentCanvas is feature-complete vs the LangChain ecosystem — LangChain has hundreds of pre-built integrations; AgentCanvas has ~25 node types in v1.</li>
+    <li><strong>Not</strong> that the triple is uniquely sufficient for any agent design task — only necessary for tasks that benefit from structural inspectability (auditing, search, transfer benchmarking).</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="open"><span class="num">§7</span>Open Questions</h2>
+
+<ul>
+  <li><strong>Streaming graph mutations</strong> — runtime in-graph mutations (add/remove/rewire nodes mid-execution) vs current snapshot-and-reload model. Latter is simpler and what the AAS architecture-search loop currently uses; former unlocks self-modifying agents but multiplies executor complexity.</li>
+  <li><strong>State container reducer DSL</strong> — Python callable per reducer (current) vs declarative DSL (e.g. JSON spec → reducer factory). Latter would let reducers ride in graph JSON for full self-containment; former is more flexible.</li>
+  <li><strong>Multi-tenant execution</strong> — single global executor (current; single-user assumption) vs per-user executor pool with isolation. Becomes load-bearing only if AgentCanvas ships as a hosted service.</li>
+  <li><strong>Graph node snapshot semantics</strong> — copy-on-save (current; immutable graph nodes) vs reference (live updates propagate from source graph). Current is safer; reference would feel more git-like and reduce stale-snapshot drift.</li>
+  <li><strong>PortIn/PortOut arity</strong> — fixed 1-port boundary (current) vs N-port boundary (multiple inputs/outputs per composite). Fixed simplifies the flatten algorithm; N-port matches researcher mental model better.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="status"><span class="num">§8</span>Status</h2>
+
+<div class="callout success">
+  <strong>Maturity</strong>
+  <code>shipped</code> (main platform) · <code>drafting</code> (Eval harness UI — Feature TODO F5)
+</div>
+
+<p>Core platform stable: graph executor, IterIn/IterOut iteration, ~25 node
+types, server-mode nodesets (Habitat / SIMPLER / Prismatic), WebSocket
+streaming, NodeSet Manager, hook system. <strong>Bottleneck:</strong> Eval
+harness frontend (Feature TODO F5) is incomplete — backend works but the Eval
+page in <code>agentcanvas/frontend/src/eval/</code> still has gaps. Runtime
+graph mutation — letting the AAS search loop edit graphs through typed
+operations rather than ad-hoc file rewrites — is the headline
+<a href="major-versions.html#v2">v2 (Topology-Growing Canvas)</a> capability,
+out of scope for the v1 bounded-topology paradigm.
+<strong>Next:</strong> finish F5 frontend.</p>
+
+<footer>
+  Hand-authored HTML · style: <a href="../assets/style.css">style.css</a>
+</footer>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#problem">§1Problem Statement</a>
+      <a class="toc-h3" href="#problem-aas">A. Agent architecture is hand-designed — and should be searchable</a>
+      <a class="toc-h3" href="#problem-common">B. Common AI research pain points, amplified in embodied</a>
+      <a class="toc-h3" href="#problem-embodied">C. Embodied-specific pain points</a>
+      <a class="toc-h3" href="#problem-shipped">What the platform has to demonstrate as built &amp; shipped</a>
+      <a class="toc-h2" href="#capabilities">§2Capabilities</a>
+      <a class="toc-h2" href="#principles">§3Design Principles</a>
+      <a class="toc-h2" href="#components">§4Core Components</a>
+      <a class="toc-h2" href="#features">§5Core Features</a>
+      <a class="toc-h3" href="#features-composition">Visual agent composition</a>
+      <a class="toc-h3" href="#features-nodeset">NodeSet manager</a>
+      <a class="toc-h3" href="#features-streaming">Real-time execution &amp; streaming</a>
+      <a class="toc-h3" href="#features-iteration">Iteration &amp; cycles</a>
+      <a class="toc-h3" href="#features-extensibility">Extensible component system</a>
+      <a class="toc-h3" href="#features-state">State container system (ADR-dataflow-002)</a>
+      <a class="toc-h3" href="#features-vlnce">VLN-CE evaluation</a>
+      <a class="toc-h2" href="#differentiation">§6Differentiation</a>
+      <a class="toc-h2" href="#open">§7Open Questions</a>
+      <a class="toc-h2" href="#status">§8Status</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

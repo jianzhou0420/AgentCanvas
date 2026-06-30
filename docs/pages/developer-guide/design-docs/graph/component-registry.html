@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why a Component Registry — AgentCanvas</title>
+<meta name="description" content="WorkspaceComponentRegistry, NODE_HANDLERS, scan_all, ensure_nodesets_for_graph — what binds a graph&#x27;s node-type strings to runnable code and owns the env servers, and why batch eval can&#x27;t skip it">
+<meta property="og:title" content="Why a Component Registry — AgentCanvas">
+<meta property="og:description" content="WorkspaceComponentRegistry, NODE_HANDLERS, scan_all, ensure_nodesets_for_graph — what binds a graph&#x27;s node-type strings to runnable code and owns the env servers, and why batch eval can&#x27;t skip it">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/graph/component-registry.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="cr-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:760px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .dead { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; stroke-dasharray:3 3; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#cra); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/graph/component-registry.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Why a Component Registry</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Why a Component Registry</h1>
+  <p class="tagline">WorkspaceComponentRegistry, NODE_HANDLERS, scan_all, ensure_nodesets_for_graph — what binds a graph's node-type strings to runnable code and owns the env servers, and why batch eval can't skip it</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="cra" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">A graph is just JSON, and a node type is just a string — <code>env_habitat__step</code>. Something has to turn that string into runnable code, and start the GPU server sitting behind it. That something is the <code>WorkspaceComponentRegistry</code>. This page argues, from the code, <strong>why batch eval cannot skip it</strong>: two of its three jobs — <em>bind name→code</em> and <em>own the env servers</em> — are exactly what an eval run needs; only the per-process re-scan is incidental tax. The hard fact: <strong>delete it and the executor fires nothing — every episode "completes" at <code>step_count = 0</code></strong>. For the wider object map see <a href="backend-overview.html">backend-overview</a>; for why env servers are split shared/replicated see <a href="../../core/decisions/server/index.html">ADR-server-003</a>.</p>
+
+<p class="diagram-label"><strong>What the <code>GraphExecutor</code> sees — without the registry vs with it.</strong> Same one-node graph, two outcomes. The registry is the only thing that fills <code>NODE_HANDLERS</code> for a workspace node type <em>and</em> brings up the server it proxies to. Remove it and the lookup returns <code>None</code>; the node becomes a silent no-op.</p>
+<svg class="rxsvg" viewBox="0 0 720 372" role="img" aria-label="A counterfactual, two columns, same one-node graph whose node type is env_habitat__step. Left column, without the registry: the NODE_HANDLERS table has no entry for the workspace node type, so _fire_node does NODE_HANDLERS.get(type) which returns None, logs No handler, and returns an empty dict; the episode completes with step_count zero. Right column, with the registry: WorkspaceComponentRegistry.scan_all fills the table with a proxy class and ensure_nodesets_for_graph spawns or attaches the env_habitat server; now NODE_HANDLERS.get(type) returns the class, _fire_node calls forward, which calls the auto_host server over HTTP and produces a real step. Conclusion: the registry is what makes the lookup succeed and the server exist.">
+  <text x="180" y="16" text-anchor="middle" font-size="12" class="at" fill="var(--muted)">Without the registry</text>
+  <text x="540" y="16" text-anchor="middle" font-size="12" class="at">With the registry — the real path</text>
+  <line x1="360" y1="26" x2="360" y2="360" class="ghost"/>
+
+  <!-- shared top: the graph node -->
+  <!-- LEFT column -->
+  <rect class="box" x="30" y="28" width="300" height="46" rx="6"/>
+  <text x="180" y="48" text-anchor="middle" font-size="12">graph node — type <tspan class="at" font-family="SF Mono,Menlo,monospace">env_habitat__step</tspan></text>
+  <text class="dim" x="180" y="65" text-anchor="middle">just a string in graph JSON</text>
+  <path class="edge" d="M180,74 L180,104"/>
+
+  <rect class="dead" x="30" y="104" width="300" height="46" rx="6"/>
+  <text class="mono" x="180" y="124" text-anchor="middle">NODE_HANDLERS.get("env_habitat__step")</text>
+  <text class="dim" x="180" y="141" text-anchor="middle">no entry for the workspace type → None</text>
+  <path class="edge" d="M180,150 L180,180"/>
+
+  <rect class="dead" x="30" y="180" width="300" height="46" rx="6"/>
+  <text x="180" y="200" text-anchor="middle" font-size="12">_fire_node: handler is None</text>
+  <text class="dim" x="180" y="217" text-anchor="middle">log "No handler" · return {}</text>
+  <path class="edge" d="M180,226 L180,256"/>
+
+  <rect class="dead" x="30" y="256" width="300" height="50" rx="6"/>
+  <text x="180" y="277" text-anchor="middle" font-size="12">node does nothing</text>
+  <text class="dim" x="180" y="294" text-anchor="middle">episode "completes" · step_count = 0</text>
+
+  <!-- RIGHT column -->
+  <rect class="accent" x="390" y="28" width="300" height="46" rx="6"/>
+  <text class="at" x="540" y="46" text-anchor="middle">WorkspaceComponentRegistry</text>
+  <text class="dim" x="540" y="63" text-anchor="middle">scan_all fills table · ensure_nodesets_for_graph starts server</text>
+  <path class="edge" d="M540,74 L540,104"/>
+
+  <rect class="box" x="390" y="104" width="300" height="46" rx="6"/>
+  <text class="mono" x="540" y="124" text-anchor="middle">NODE_HANDLERS.get("env_habitat__step")</text>
+  <text class="dim" x="540" y="141" text-anchor="middle">→ proxy class (registered by the registry)</text>
+  <path class="edge" d="M540,150 L540,180"/>
+
+  <rect class="box" x="390" y="180" width="300" height="46" rx="6"/>
+  <text x="540" y="200" text-anchor="middle" font-size="12">_fire_node: instance.forward()</text>
+  <text class="dim" x="540" y="217" text-anchor="middle">proxy node calls out over HTTP</text>
+  <path class="edge" d="M540,226 L540,256"/>
+
+  <rect class="ghost" x="390" y="256" width="300" height="50" rx="6"/>
+  <text x="540" y="277" text-anchor="middle" font-size="12">auto_host server → real env step</text>
+  <text class="dim" x="540" y="294" text-anchor="middle">separate process · owned by the registry</text>
+
+  <text class="dim" x="360" y="344" text-anchor="middle">Left: graph_executor.py · _fire_node (handler None → {}); eval_subprocess_main.py:126-132 (0-step).</text>
+  <text class="dim" x="360" y="360" text-anchor="middle">Right: registry.py · scan_all + ensure_nodesets_for_graph; builtin_nodes.py · NODE_HANDLERS.</text>
+</svg>
+<hr>
+
+<h2 id="1-what"><span class="num">1.</span> What it does (and the pattern it is)</h2>
+<p>The <code>WorkspaceComponentRegistry</code> is the backend's <strong>plugin loader + dispatch registry</strong>: it discovers domain code in <code>workspace/</code>, binds each node type to a class, and owns the subprocess servers some of those classes need. As a running object it does three things, and that is the whole argument of this page:</p>
+<ol>
+<li><strong>Bind name → code.</strong> <code>scan_all()</code> walks <code>workspace/</code>, imports the nodesets/nodes it finds, and <strong>writes the global table <code>NODE_HANDLERS</code></strong> (<code>node_type → BaseCanvasNode</code> class). That table is the only place the executor looks up a handler.</li>
+<li><strong>Own the env servers.</strong> <code>ensure_nodesets_for_graph()</code> brings up the server-mode nodesets a graph needs — <em>attach</em> a stateless shared one, or <em>spawn</em> N copies of a stateful replicated one — and <code>shutdown_all()</code> reaps them.</li>
+<li><strong>Keep them fresh.</strong> Hot-reload / unload mutate the same table in place (out of scope here; see <a href="../operations/reload-and-code-freshness.html">reload-and-code-freshness</a>).</li>
+</ol>
+<p>In design-pattern terms it is the <em>Registry</em> + <em>plugin-loader</em> shape (the <code>-Registry</code> suffix is the tell), held as a field on the per-process <code>ProcessServices</code> service locator. The pattern matters less than the consequence: <strong>jobs 1 and 2 are not eval overhead — they are the two things a batch-eval run most needs.</strong> The rest of the page proves each, then names the one part that <em>is</em> incidental (§5).</p>
+
+<h3 id="smallest">The smallest graph that needs it</h3>
+<p>A one-node graph whose node type carries a <code>__</code> — e.g. <code>env_habitat__step</code> — already needs the full registry. The <code>__</code> convention says the prefix (<code>env_habitat</code>) is a nodeset (<code>registry.py · ensure_nodesets_for_graph</code>), so running this single node requires the registry to (a) put <code>env_habitat__step</code> in <code>NODE_HANDLERS</code> via <code>scan_all</code>, and (b) have the <code>env_habitat</code> server running. Neither happens by itself. (Pure built-in node types are the exception — see §5.)</p>
+
+<h2 id="2-bind"><span class="num">2.</span> Reason 1 — bind name→code is irreducible</h2>
+<p><strong>Without the table filled, the executor fires nothing — this is mechanical, not a quality issue.</strong> The firing engine resolves every node through one lookup (<code>graph_executor.py · _fire_node</code>):</p>
+<pre class="hl">
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_fire_node</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">:</span> <span class="n">NodeInstance</span><span class="p">,</span> <span class="n">session</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Execute a node&#x27;s handler with its pending inputs and persistent state.&quot;&quot;&quot;</span>
+    <span class="n">node_cls</span> <span class="o">=</span> <span class="n">NODE_HANDLERS</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">node_cls</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">No handler for node type: </span><span class="si">%s</span><span class="s2"> (id=</span><span class="si">%s</span><span class="s2">)</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">{</span><span class="p">}</span>
+</pre>
+<p>A node type missing from <code>NODE_HANDLERS</code> doesn't error — it returns an empty dict and the run rolls on. Across a graph of such nodes, the episode "completes" having done nothing. Built-in node types are present in the table at import (<code>builtin_nodes.py:1334</code>, <code>NODE_HANDLERS = {cls.node_type: cls for cls in _BUILTIN_NODES}</code>), but <strong>every workspace node type is registered only by <code>scan_all</code></strong> (<code>register_node()</code> mutates the table — <code>builtin_nodes.py:1337</code>). No scan ⇒ no workspace handlers ⇒ the executor fires nothing.</p>
+<p>The eval subprocess proves this is load-bearing in its own comment. Because each process has its own <code>ProcessServices</code> (and therefore its own empty <code>NODE_HANDLERS</code>), the eval runner must re-scan before it can run anything (<code>eval_subprocess_main.py:126-132</code>):</p>
+<pre class="hl">
+<span class="c1"># Subprocess starts with a fresh ProcessServices (in-process singleton not</span>
+<span class="c1"># shared across PIDs). The parent backend ran scan_all in lifespan;</span>
+<span class="c1"># we have to redo it here so workspace nodesets are discovered before</span>
+<span class="c1"># ensure_nodesets_for_graph can load them. Otherwise nodesets fall</span>
+<span class="c1"># into the silent &quot;unknown&quot; bucket and the run &quot;completes&quot; with 0</span>
+<span class="c1"># steps because no handlers are registered for the graph&#x27;s node types.</span>
+<span class="n">registry</span><span class="o">.</span><span class="n">scan_all</span><span class="p">(</span><span class="p">)</span>
+</pre>
+<p>That is the left column of the opening diagram, in the code's own words. Whatever you call the loader, batch eval needs <em>some</em> object that fills this table — and that object is the registry.</p>
+
+<h2 id="3-servers"><span class="num">3.</span> Reason 2 — owning the env servers <em>is</em> batch eval's reason</h2>
+<p><strong>The part that looks like overhead is the part that exists for eval.</strong> Batch eval is the path that runs many episodes in parallel on the GPU; that demands exactly what <code>ensure_nodesets_for_graph(worker_count=N)</code> does — and it dispatches on each nodeset's declared parallelism contract (<a href="../../core/decisions/server/index.html">ADR-server-003</a>, <code>registry.py · ensure_nodesets_for_graph</code>):</p>
+<table>
+<thead><tr><th>Parallelism</th><th>What the registry does</th><th>Why eval needs it</th></tr></thead>
+<tbody>
+<tr><td><code>shared</code> (stateless model)</td><td><strong>Attach</strong> one copy — <code>register_remote_nodeset(name, url)</code> borrows the parent backend's already-running server (a <code>_RemoteAutoServerShim</code> whose <code>stop()</code> is a no-op).</td><td>N workers coalesce through one <code>BatchedInferenceServer</code> instead of loading the model N times — no duplicated VRAM.</td></tr>
+<tr><td><code>replicated</code> (stateful env)</td><td><strong>Spawn</strong> N tagged copies — <code>_load_nodeset_as_server(worker_count=N)</code> → <code>BaseServer.start()</code> → <code>Popen(python -m app.server.auto_host)</code>, registering N proxies under <code>name#k</code>.</td><td>A stateful simulator can't be shared across workers; each parallel worker needs its own env process.</td></tr>
+</tbody>
+</table>
+<p>Both ends are owned by the registry: it brings the servers up at run init and tears them down in <code>shutdown_all()</code> (<code>registry.py:217</code>) — which the eval subprocess calls in its <code>finally</code> precisely because nothing else will reap those env processes. <strong>Canvas Play barely touches this layer</strong> (single process, <code>worker_count=1</code>); it is batch eval that uses it to the hilt. So the server machinery isn't a tax eval inherited from the canvas — it is the mechanism that lets eval be parallel and VRAM-safe at all.</p>
+
+<h2 id="4-one-loader"><span class="num">4.</span> Reason 3 — one loader, both paths, one source of truth</h2>
+<p><strong>Canvas Play and batch eval run the same graphs against the same node types — so they must share one loader, or behaviour drifts.</strong> <code>ensure_nodesets_for_graph</code> is documented as "shared by both canvas execution and eval batch execution" (<code>registry.py:1117</code>); the only difference is where it is driven from:</p>
+<table>
+<thead><tr><th>Path</th><th>Who drives the registry</th><th>worker_count</th></tr></thead>
+<tbody>
+<tr><td>Canvas Play</td><td><code>main.py · lifespan</code> calls <code>scan_all()</code> + <code>initialize_all()</code> once at startup; <code>run.py · run_loop</code> calls <code>ensure_nodesets_for_graph()</code> per run.</td><td>1</td></tr>
+<tr><td>Batch eval</td><td><code>eval_subprocess_main · _build_local_registry_for_run</code> re-scans in the subprocess, then calls <code>ensure_nodesets_for_graph(worker_count=N)</code>.</td><td>N</td></tr>
+</tbody>
+</table>
+<p>A node behaves identically in Play and in eval because <em>the same</em> discovery, registration, and server-bring-up code ran for both. A bespoke eval-only loader would be a second implementation of "how do I find and start nodeset X" that has to be kept in lock-step with the canvas one forever — the classic source of "works in the canvas, 0 steps in eval" drift. Reusing the registry is what makes that bug-class structurally impossible.</p>
+
+<h2 id="5-overhead"><span class="num">5.</span> Where the argument has caveats (the honest part)</h2>
+<p>The clean claim is "the registry is essential." Two places that is too strong — and naming them is the point, because they show <em>what</em> is removable (and what isn't).</p>
+
+<div class="callout warn">
+<strong>The per-process re-scan is incidental, not intrinsic.</strong> The eval subprocess re-runs <code>scan_all()</code> only because <code>ProcessServices</code> is a per-PID singleton — the parent's already-discovered table can't be seen across the process boundary (<code>eval_subprocess_main.py:126-132</code>). That cost belongs to the <em>per-process model</em>, not to "needing a registry": in principle the parent's discovery could be serialized and shipped to the child instead of re-scanned. So if anything here is worth optimizing, it is the re-scan — <strong>not</strong> the registry itself.
+</div>
+
+<div class="callout warn">
+<strong>A pure-builtin, GPU-free graph needs neither job.</strong> Built-in node types are in <code>NODE_HANDLERS</code> at import (<code>builtin_nodes.py:1334</code>), and a graph with no <code>__</code>-prefixed nodes triggers no server spawn (<code>ensure_nodesets_for_graph</code> only acts on nodeset prefixes). For such a graph the registry's two main jobs are genuinely idle — it is sized for the heavy parallel-env case and a trivial graph still pays the scan. But batch eval does not run those graphs: a VLN/embodied eval is, by definition, an env-backed graph, which is exactly the case the registry exists for.
+</div>
+
+<p><strong>Bottom line.</strong> "Too complex for batch eval" inverts the dependency: jobs 1 and 2 are what makes a parallel, VRAM-safe, drift-free eval possible, and the executor is mechanically a no-op without job 1. The removable complexity is the cross-process re-scan, not the <code>WorkspaceComponentRegistry</code>. Delete the registry and you must either hard-code node types (lose plugins) or hand-roll a second loader and leak env processes — strictly worse than the object you have.</p>
+
+<h2 id="6-deeper"><span class="num">6.</span> Where to go deeper</h2>
+<table>
+<thead><tr><th>You want…</th><th>Read</th></tr></thead>
+<tbody>
+<tr><td>The whole backend object map — who owns whom</td><td><a href="backend-overview.html">backend-overview</a></td></tr>
+<tr><td>Both run paths class-by-class (canvas / eval)</td><td><a href="execution-paths.html">execution-paths</a></td></tr>
+<tr><td>Batch eval internals — workers, parallelism, persistence</td><td><a href="batch-eval.html">batch-eval</a></td></tr>
+<tr><td>The server subprocesses themselves — auto_host, manifest, lifecycle</td><td><a href="../operations/server-mode.html">server-mode</a></td></tr>
+<tr><td>Why the table re-scans cold per eval (per-process model)</td><td><a href="../operations/reload-and-code-freshness.html">reload-and-code-freshness</a></td></tr>
+<tr><td>How a node author plugs into <code>NODE_HANDLERS</code></td><td><a href="../components/base-canvas-node.html">base-canvas-node</a> · <a href="../components/nodesets.html">nodesets</a></td></tr>
+</tbody>
+</table>
+
+<nav class="page-nav">
+  <p><a href="backend-overview.html">↑ Backend Overview</a> · <a href="execution-paths.html">Execution Paths →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what">1. What it does (and the pattern it is)</a>
+      <a class="toc-h3" href="#smallest">The smallest graph that needs it</a>
+      <a class="toc-h2" href="#2-bind">2. Reason 1 — bind name→code is irreducible</a>
+      <a class="toc-h2" href="#3-servers">3. Reason 2 — owning the env servers is batch eval's reason</a>
+      <a class="toc-h2" href="#4-one-loader">4. Reason 3 — one loader, both paths, one source of truth</a>
+      <a class="toc-h2" href="#5-overhead">5. Where the argument has caveats (the honest part)</a>
+      <a class="toc-h2" href="#6-deeper">6. Where to go deeper</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

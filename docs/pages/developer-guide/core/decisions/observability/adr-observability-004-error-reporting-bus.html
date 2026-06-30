@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-observability-004 — AgentCanvas</title>
+<meta name="description" content="Unified error reporting bus — `ErrorBus`, `ErrorEnvelope`, `error_event` WS frame, Report tab">
+<meta property="og:title" content="ADR-observability-004 — AgentCanvas">
+<meta property="og:description" content="Unified error reporting bus — `ErrorBus`, `ErrorEnvelope`, `error_event` WS frame, Report tab">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/observability/adr-observability-004-error-reporting-bus.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/observability/adr-observability-004-error-reporting-bus.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Observability</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-observability-004</span>
+  </div>
+  <div class="last-updated">2026-05-04</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-observability);">ADR-observability-004</h1>
+  <p class="tagline">Unified error reporting bus — `ErrorBus`, `ErrorEnvelope`, `error_event` WS frame, Report tab</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-04</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>observability</code></a></dd>
+</dl>
+
+
+
+
+<h2 id='context'>Context</h2>
+<p>Errors raised during task execution disappeared into one of three holes: (a) per-node exceptions in <code>graph_executor.py:337</code> were caught, written to <code>log.exception</code>, and stuffed into the node's output dict as <code>{"error": str(e)}</code> — never surfaced to the UI; (b) graph-level crashes at <code>graph_executor.py:518</code> did broadcast <code>nav_status {error: …}</code> over WebSocket, but the frontend <code>store.ts:267</code> handler read only <code>status</code> and dropped <code>error</code>; (c) every HTTP API failure (save, load, eval, plugin lifecycle, frontend React crashes) was handled with a local <code>console.error</code> that never reached the user. The frontend had <strong>no notification primitive</strong> — no toast, no panel, no badge — only a single red 10-px "error" word in the <code>ExecutionToolbar</code>. The user described this as "even when the backend hits a bug, the user has no idea". <code>ExecutionLogger</code> (ADR-observability-003) covers structured per-node I/O, not surfacing of failures.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Introduce one <strong>bus + envelope</strong> pipeline that every subsystem publishes to and that surfaces in <strong>four UI layers</strong>.
+(1) <strong><code>ErrorEnvelope</code></strong> dataclass (<code>agentcanvas/backend/app/errors.py</code>) — canonical schema with <code>id, ts, severity, source, code, title, message, scope, details, hint</code>. Mirrored verbatim in <code>agentcanvas/frontend/src/errors.ts</code>.
+(2) <strong><code>ErrorBus</code></strong> singleton — in-process pub/sub with a 200-entry ring buffer + a 500-deep async dispatch queue. <code>publish()</code> is thread-safe and loop-agnostic (uses <code>loop.call_soon_threadsafe</code>); subscribers are async, drained by a single dispatcher coroutine started in the FastAPI lifespan.
+(3) <strong>Producers</strong> — <code>bus.from_exception(...)</code> (auto-fills traceback) and <code>bus.emit(...)</code> (non-exception). Three call sites refactored: per-node executor catch, graph-level executor catch, FastAPI global <code>Exception</code> handler (returns 500 with envelope as JSON body so the frontend HTTP layer can pick it up).
+(4) <strong><code>LogBridgeHandler</code></strong> — <code>logging.Handler</code> subclass installed on the root logger at INFO+, converts every Python log record into an envelope with <code>source="log"</code>. Skips <code>agentcanvas.errors</code>, <code>uvicorn.*</code>, <code>httpx.*</code>, <code>httpcore.*</code>, <code>watchfiles.*</code>, <code>asyncio</code> to prevent feedback loops and keep volume sane. Makes the frontend Report tab a true overall developer console without touching individual log sites.
+(5) <strong><code>error_event</code> WS frame</strong> — bus subscriber at startup broadcasts every envelope as <code>WSMessage(type="error_event", data=envelope.to_dict())</code> over the existing <code>/ws</code> channel.
+(6) <strong>REST backfill</strong> — <code>GET /api/errors</code> returns the ring buffer; frontend calls it on every WS (re)connect to recover events missed during disconnect. <code>DELETE /api/errors</code> clears, <code>DELETE /api/errors/{id}</code> dismisses one.
+(7) <strong>Frontend</strong> — Zustand <code>useErrorStore</code> (200-entry cap, dedup by id, <code>unreadCount</code>, <code>focusReportTick</code> signal); <code>api.ts</code> wraps <code>fetch/post/put/delete</code> so 4xx/5xx and network failures auto-ingest, recognising backend-supplied envelopes when present in the body; <code>CanvasErrorBoundary.componentDidCatch</code> reports React crashes into the same store.
+(8) <strong>UI surfaces</strong> — (i) <strong>Toast layer</strong> (<code>components/ErrorToast.tsx</code>) mounted at App root, max 3 visible, auto-dismiss 6 s for <code>error</code> / 4 s for <code>warning</code>, info/debug never toast; click → opens Report. (ii) <strong><code>ReportPanel</code></strong> as a fourth tab in the bottom <code>OutputDrawer</code> with severity filter chips, source pill, click-to-expand details/scope/traceback, pin/dismiss/clear, unread-count badge on the tab. (iii) <strong><code>ResizableBottomPanel</code></strong> auto-expands on <code>focusReportTick</code>. (iv) <strong><code>ReportBell</code></strong> in <code>ExecutionToolbar</code> with red unread badge; click triggers <code>focusReportTick</code>.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Read <code>d.error</code> from <code>nav_status</code> and add a toast</strong> — the minimum patch. Rejected: only covers graph-level crashes; per-node failures, API errors, frontend crashes still invisible; "complete refactor" was the explicit ask. (b) <strong>Reuse <code>exec_log</code> (ADR-observability-003)</strong> — extend its frontend handler to surface entries with non-null <code>error</code>. Rejected: <code>exec_log</code> is per-node-firing structured I/O capture (suppressed under <code>ExecutionPrinciples.suppress_ws</code> in batch eval), not a general user-visible event channel; conflating the two would either flood the user with non-error firings or force a second filter layer; also doesn't cover API/frontend/log producers. (c) <strong>Sentry / OpenTelemetry</strong> — external error tracking. Rejected: research tool; adds external dependency; user wants events visible <em>in the canvas UI</em> during the run, not in a separate dashboard. (d) <strong>Sync subscribers + per-call await</strong> instead of a dispatcher queue — simpler. Rejected: the Python <code>logging.Handler</code> bridge fires from worker threads; <code>loop.call_soon_threadsafe(queue.put_nowait, env)</code> is the cleanest cross-thread bridge and keeps the publish hot path lock-free except for the ring-buffer append. (e) <strong>Persist envelopes to disk</strong> like <code>ExecutionLogger</code> does. Rejected for now: <code>logging</code> already covers audit trail in stderr; ring buffer is enough for in-session use; revisit if pinned events need to survive reload (deferred to Phase 3).</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>One pipeline means one place for every producer to publish and one place for every UI surface to subscribe — no per-site error handling, no half-built notification systems competing. The envelope schema is the contract: <code>severity</code> drives whether to toast or just append; <code>source</code> drives the filter pills; <code>scope.{node_id, step, execution_id}</code> is what makes the eventual "jump to failed node" feature trivial in Phase 2; <code>details.traceback</code> is what makes the developer-console use case real. Bus dispatch is async over a queue so the publish path stays cheap (single ring-buffer append + one threadsafe call) — important because the <code>logging.Handler</code> bridge can fire from any thread (executor coroutines, server-mode subprocess proxies, batch eval workers). Re-using the existing <code>/ws</code> channel means zero new transport — the same connection, message envelope (<code>WSMessage</code>), and <code>wsManager.on(type, handler)</code> routing already used by <code>nav_step</code> / <code>viewer_data</code> / <code>exec_log</code>. The "Report" tab name keeps it distinct from the existing "Logs" tab (per-node execution trace structured by graph step), so the two never visually conflict.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>glossary.md, real-time-observability.md, roadmap.md, decisions/observability/index.md, decisions/index.md</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

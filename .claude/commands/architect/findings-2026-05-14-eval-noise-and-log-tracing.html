@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Findings — eval noise floor &amp; log-tracing weakness</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1a1a1a; --muted: #6b6b6b;
+    --accent: #1e5a8a; --accent-bg: #e6f0f8;
+    --frame: #d4d4d0; --frame-strong: #1a1a1a;
+    --box: #ffffff; --warn: #a52a00; --warn-bg: #fbeee8;
+    --good: #2d8a4e; --good-bg: #e8f4ec;
+    --code-bg: #f0efe9;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+    max-width: 920px; margin: 2.5rem auto; padding: 0 1.5rem;
+    line-height: 1.55;
+  }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid var(--frame-strong); padding-bottom: .35rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2.2rem; border-bottom: 1px solid var(--frame); padding-bottom: .2rem; }
+  h3 { font-size: 1.0rem; margin-top: 1.4rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; font-size: .95rem; }
+  .badge {
+    display: inline-block;
+    background: var(--accent-bg); color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: .05rem .5rem; border-radius: 3px; font-size: .8rem;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  table { border-collapse: collapse; width: 100%; margin-top: .6rem; font-size: .9rem; }
+  th, td { border: 1px solid var(--frame); padding: .4rem .55rem; text-align: left; vertical-align: top; }
+  th { background: #f0efe9; font-weight: 600; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .05rem .35rem; border-radius: 2px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); padding: .7rem .9rem; border-radius: 3px;
+    overflow-x: auto; font-size: .85rem; border-left: 3px solid var(--accent);
+  }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin-bottom: .25rem; }
+  .box { background: var(--box); border: 1px solid var(--frame); border-radius: 4px; padding: 1rem 1.1rem; margin: 1rem 0; }
+  .callout { border-left: 4px solid var(--warn); background: var(--warn-bg); padding: .7rem 1rem; margin: 1rem 0; border-radius: 0 3px 3px 0; }
+  .callout.good { border-left-color: var(--good); background: var(--good-bg); }
+  .callout p { margin: .3rem 0; }
+  .tldr { background: var(--accent-bg); border: 1px solid var(--accent); border-radius: 4px; padding: .8rem 1.1rem; margin: 1.2rem 0; }
+  .tldr p { margin: .35rem 0; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .up { color: var(--good); font-weight: 600; }
+  .down { color: var(--warn); font-weight: 600; }
+  .muted { color: var(--muted); }
+  figure { margin: 1rem 0; }
+  figcaption { font-size: .82rem; color: var(--muted); margin-top: .3rem; }
+</style>
+</head>
+<body>
+
+<h1>Eval noise floor &amp; the log-tracing weakness</h1>
+<p class="subtitle">
+  Findings — 2026-05-14. Triggered by a byte-identical reproduction of the archived
+  <code>adas-subagent</code> <code>v0</code> run on
+  <code>mapgpt_mp3d</code>. What looked like a clean evolutionary success turned
+  out to be a walk on noise — and the investigation surfaced a structural gap in
+  how the architect pipeline reads experiment logs.
+</p>
+
+<p>
+  <span class="badge">scope</span> all architect variants
+  &nbsp;
+  <span class="badge">graph</span> mapgpt_mp3d
+  &nbsp;
+  <span class="badge">model</span> gpt-5-mini-2025-08-07
+  &nbsp;
+  <span class="badge">eval</span> MapGPT72 / 216 ep
+</p>
+
+<div class="tldr">
+  <p><strong>TL;DR — three findings, one chain of causation.</strong></p>
+  <p><strong>1.</strong> The original archive's "beautiful monotonic chase"
+    (iter_0 0.435 &rarr; iter_5 0.540, +0.105 SR) does <strong>not reproduce</strong>.
+    Byte-identical reruns give iter_0 = 0.472 and iter_5 = 0.468 &mdash; the entire
+    staircase is within the single-run noise band.</p>
+  <p><strong>2.</strong> <code>log.jsonl</code> cannot be robustly reconstructed
+    per-episode. Only 23&nbsp;% of events carry any episode-identifying text;
+    there is no <code>episode_index</code> / <code>worker_id</code> field.</p>
+  <p><strong>3.</strong> No code in the architect pipeline parses
+    <code>log.jsonl</code>. "Analyse the trajectory log" is a prose instruction
+    handed to an LLM sub-agent, which improvises the same fragile reconstruction
+    on a sample of ~8 of 216 episodes.</p>
+  <p>Together: the search hill-climbs on a fitness signal whose noise
+    (&plusmn;0.07&ndash;0.10) exceeds every per-step gain it ever recorded, and
+    its failure-mode "analysis" is built on a thin, fragile, sampled view of the
+    logs.</p>
+</div>
+
+<h2>1. The reproduction that started it</h2>
+
+<p>
+  The archived <code>adas-subagent v0</code> run on <code>mapgpt_mp3d</code> showed an
+  almost-monotonic SR climb across 5 evolved iterations. The full chain only ever
+  edited two fields of <code>mapgpt_mp3d.json</code> &mdash;
+  <code>plan_step.stop_after</code> (an integer, 3&rarr;4&rarr;4&rarr;5&rarr;5&rarr;5)
+  and <code>planner_llm.system_prompt</code> (prose STOP-rule additions). No
+  topology change, no nodeset code touched.
+</p>
+
+<p>
+  We reproduced iter_0 (baseline) and iter_5 (best) byte-identically: copied each
+  iter's <code>active_workspace/</code> from the archive, pinned the planner to
+  <code>profile: "gpt-5-mini"</code> explicitly (verified in
+  <code>log.jsonl</code> as <code>gpt-5-mini-2025-08-07</code>), same MapGPT72
+  216-episode split, same backend overlay path.
+</p>
+
+<table>
+  <tr>
+    <th>iter</th><th>config</th>
+    <th class="num">original SR</th><th class="num">repro SR</th><th class="num">&Delta;</th>
+  </tr>
+  <tr>
+    <td>iter_0</td><td>baseline &mdash; <code>stop_after=3</code>, no prompt mods</td>
+    <td class="num">0.435</td><td class="num">0.472</td><td class="num up">+0.037</td>
+  </tr>
+  <tr>
+    <td>iter_5</td><td><code>stop_after=5</code> + DESTINATION SIGNATURE + STOP GATE</td>
+    <td class="num">0.540</td><td class="num">0.468</td><td class="num down">&minus;0.072</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <p><strong>The staircase evaporated.</strong> Reproduced iter_0 (0.472) and
+  reproduced iter_5 (0.468) are statistically indistinguishable. The original
+  +0.105 climb was <em>iter_0 rolling its lower tail</em> plus
+  <em>iter_5 rolling its upper tail</em>, with the four intermediate iters filling
+  a plausible-looking ramp.</p>
+  <p>One repro went up, the other went down &mdash; which also <strong>rules out
+  a systematic time-of-day / API-load effect</strong> (that would push both the
+  same direction). It is symmetric sampling noise.</p>
+</div>
+
+<h2>2. The changes were real &mdash; they just net to zero</h2>
+
+<p>
+  Per-episode comparison of the two reproductions (216 common episodes, keyed by
+  instruction):
+</p>
+
+<table>
+  <tr><th>metric</th><th>value</th><th>reading</th></tr>
+  <tr>
+    <td>Cohen's &kappa; (per-episode success agreement)</td>
+    <td class="num">0.415</td>
+    <td>far from 1.0 (identical behaviour) &mdash; the graphs genuinely differ</td>
+  </tr>
+  <tr>
+    <td>episodes that flipped outcome</td>
+    <td class="num">63 / 216 (29 %)</td>
+    <td>32 success&rarr;fail, 31 fail&rarr;success &mdash; near-symmetric</td>
+  </tr>
+  <tr>
+    <td>aggregate SR</td>
+    <td class="num">0.472 vs 0.468</td>
+    <td>net change &asymp; 0</td>
+  </tr>
+</table>
+
+<p>
+  The <code>step_count</code> histogram confirms the structural change took
+  effect: iter_0 stops at steps 4/5/6; iter_5 has <strong>zero</strong> stops at
+  steps 4&ndash;5 (the <code>stop_after=5</code> gate is physically enforced) and
+  64 episodes pile up at step 6, the first legal stop. iter_5 also walks further
+  (<code>traj_len</code> 16.0&rarr;18.5) and reaches the goal region more often
+  (<code>oracle_success</code> 0.602&rarr;0.634).
+</p>
+
+<div class="box">
+  <p><strong>The zero-sum mechanism.</strong> The STOP GATE / <code>stop_after=5</code>
+  changes induce two opposing effects that cancel:</p>
+  <ul>
+    <li><span class="up">+</span> no early stop &rarr; longer exploration &rarr;
+      reaches the goal area more often (<code>oracle_success</code> +0.03)</li>
+    <li><span class="down">&minus;</span> the two-gate interrogation makes the
+      agent second-guess at the goal &rarr; worse final stop decision
+      ("reached goal area but failed": 28 &rarr; 36)</li>
+  </ul>
+  <p>coverage&uarr; &minus; stop-precision&darr; &asymp; net-zero SR. Every
+  prompt-engineering iter in the original chain changed agent behaviour &mdash;
+  it just traded coverage against stop-precision without moving the success rate.</p>
+</div>
+
+<h2>3. Quantifying the noise floor</h2>
+
+<table>
+  <tr><th>quantity</th><th class="num">value</th></tr>
+  <tr><td>pure binomial SD of a single 216-ep run at p&asymp;0.47</td>
+      <td class="num">&radic;(0.47&middot;0.53/216) &asymp; 0.034</td></tr>
+  <tr><td>observed repro range (iter_0: 0.037, iter_5: 0.072)</td>
+      <td class="num">effective SD &asymp; 0.035&ndash;0.05</td></tr>
+  <tr><td>single-run 95 % CI half-width</td>
+      <td class="num">&plusmn;0.07&ndash;0.10</td></tr>
+</table>
+
+<p>
+  The LLM's temperature-1 sampling stochasticity stacks <em>on top of</em> the
+  binomial noise, roughly doubling the effective SD. The gpt-5 family
+  <strong>requires</strong> <code>temperature=1</code> &mdash; there is no knob to
+  turn this down without leaving the family.
+</p>
+
+<div class="callout">
+  <p><strong>Consequence for the search.</strong> Every per-step "gain" in the
+  archived chain was &lt; 0.10. The noise floor is &ge; &plusmn;0.07. The architect
+  loop was hill-climbing on a signal it cannot actually resolve. This is the root
+  cause of the "why does our evolution chase noise" question.</p>
+</div>
+
+<h2>4. <code>log.jsonl</code> is not robustly per-episode reconstructable</h2>
+
+<p>
+  A 216-ep run's <code>log.jsonl</code> is ~29,200 events from 40 workers
+  interleaved into one file. There is <strong>no <code>episode_index</code>,
+  <code>episode_id</code>, or <code>worker_id</code> field on the events</strong>
+  &mdash; only a <code>step</code> counter. The only episode-identifying
+  information is the instruction text embedded in some node prompts.
+</p>
+
+<table>
+  <tr><th>carries instruction text</th><th>does not</th></tr>
+  <tr>
+    <td><code>planner_llm</code>, <code>plan_step</code>, <code>step</code>,
+        <code>reset</code>, <code>init</code> &mdash; 100 %</td>
+    <td><code>iter_in</code> / <code>iter_out</code>, <code>image_budget</code>,
+        <code>evaluate</code>, <code>parse_action</code>,
+        <code>update_history</code>, all <code>viewer_*</code></td>
+  </tr>
+  <tr>
+    <td colspan="2" class="muted">
+      Total: <strong>6,834 / 29,219 events = 23 %</strong> can be keyed to an
+      episode. The other 77 % have no episode-identifying field at all.
+    </td>
+  </tr>
+</table>
+
+<p>
+  Instruction-as-key works <em>losslessly</em> for the planner-reasoning subset
+  (every R2R instruction is unique &mdash; verified 216/216 distinct on MapGPT72),
+  so the "what the agent thought and where it moved" trace can be fully rebuilt.
+  But a complete 14-node-type per-episode log <strong>cannot</strong> &mdash; and
+  the trick relies on a dataset accident (unique instructions), not on the log
+  schema guaranteeing anything.
+</p>
+
+<h2>5. The pipeline does not "trace" logs &mdash; it improvises</h2>
+
+<p>
+  The decisive finding. We grepped every <code>lib/*.py</code> across all
+  architect variants:
+</p>
+
+<pre>grep -rln 'log.jsonl' .claude/commands/architect/*/lib/*.py  &rarr;  zero hits</pre>
+
+<p>
+  No structured parser exists. The evaluation helpers in
+  <code>lib/helpers.py</code> only touch <code>export.json</code> (which
+  <em>is</em> a clean per-episode structure) for the bootstrap CI. The
+  <code>log.jsonl</code> trajectory analysis is a <strong>prose instruction</strong>
+  in <code>proposer.md</code>:
+</p>
+
+<pre>Read outputs/eval_runs/{run_id}/log.jsonl for trajectory log
+(downsample if &gt; 1 MB). Generate a textual analysis_summary
+describing dominant failure modes.</pre>
+
+<p>
+  That instruction, plus the log path, is handed to a general-purpose Claude
+  sub-agent which improvises the parsing. The only written-down reconstruction
+  recipe (<code>myloop/analyze.md</code>) is exactly the instruction-as-key method
+  &mdash; <em>plus</em> a fragile heuristic to recover the 77 % of unkeyed events:
+</p>
+
+<div class="box">
+  <p><strong>From <code>myloop/analyze.md</code>, step 3:</strong> for tool rows
+  with no instruction, "pair them with the immediately preceding
+  <code>orchestrator_llm</code> row at the same <code>step</code> &mdash;
+  timestamp ordering within ~1 second is reliable."</p>
+  <p class="muted">With 40 workers interleaving, "the immediately preceding row"
+  guessed from &plusmn;1 s timestamps is <em>not</em> reliable.</p>
+</div>
+
+<p>
+  And it does not even read the whole run. <code>analyze.md</code> explicitly
+  says: <em>"Don't read all rows. After grouping by episode_id, sample 3 high +
+  5 failed episodes."</em> The failure-mode analysis that drives the next
+  proposal is built on <strong>~8 of 216 episodes</strong>.
+</p>
+
+<h2>6. The full causal chain</h2>
+
+<div class="callout">
+  <p>This is why the evolution chases noise &mdash; it is not one bug, it is a
+  pipeline of lossy stages:</p>
+  <pre>216-ep full trajectories
+  &rarr; sample only ~8 episodes
+  &rarr; instruction-key reconstruction (77 % of events unattributable,
+       recovered by &plusmn;1 s timestamp guessing)
+  &rarr; feed to a temperature-1 LLM to "find the dominant failure mode"
+  &rarr; LLM emits an analysis_summary
+  &rarr; next proposal is conditioned on that summary
+  &rarr; fitness measured with &plusmn;0.07&ndash;0.10 noise
+  &rarr; archive commits the result as if it were signal</pre>
+  <p>Every stage discards information or injects noise. The proposer's view of
+  "why the last iter failed" may itself be sampling bias + reconstruction error +
+  LLM hallucination &mdash; and the fitness number that judges its fix cannot
+  resolve gains below 0.10 anyway.</p>
+</div>
+
+<h2>7. Recommendations</h2>
+
+<table>
+  <tr><th>#</th><th>fix</th><th>addresses</th></tr>
+  <tr>
+    <td>R1</td>
+    <td>Add <code>episode_index</code> (and ideally <code>worker_id</code>) to
+      every <code>ExecutionLogger</code> event, or have the eval runner split
+      <code>log.jsonl</code> per episode under
+      <code>assets/&lt;episode_index&gt;/</code>.</td>
+    <td>Finding 4 &mdash; makes per-episode reconstruction an O(1) group-by
+      instead of a dataset-dependent accident.</td>
+  </tr>
+  <tr>
+    <td>R2</td>
+    <td>Write a real <code>log.jsonl</code> parser into the architect
+      <code>lib/</code>: deterministic per-episode reconstruction over
+      <em>all</em> 216 episodes, emitting structured stats (fail-step
+      distribution, STOP-decision confusion matrix, loop detection). The LLM then
+      <em>interprets</em> statistics instead of <em>improvising</em> them.</td>
+    <td>Finding 5 &amp; 6 &mdash; removes the sampling + improvisation + &plusmn;1 s
+      heuristic from the signal path.</td>
+  </tr>
+  <tr>
+    <td>R3</td>
+    <td>Either run N&nbsp;&ge;&nbsp;3 evals per iter and compare means, or move
+      off the gpt-5 family to one that allows <code>temperature=0</code> for the
+      evaluated agent. Treat any &Delta;SR &lt; ~0.10 on a single run as noise,
+      not signal.</td>
+    <td>Findings 1&ndash;3 &mdash; makes the fitness signal actually resolvable.</td>
+  </tr>
+</table>
+
+<h2>Appendix — run IDs</h2>
+
+<table>
+  <tr><th>run_id</th><th>what</th><th class="num">SR</th></tr>
+  <tr><td><code>f1378010</code></td><td>iter_0 baseline reproduction #1</td><td class="num">0.472</td></tr>
+  <tr><td><code>58432349</code></td><td>iter_5 reproduction #1</td><td class="num">0.468</td></tr>
+  <tr><td><code>3477fb02</code></td><td>iter_0 baseline reproduction #2</td><td class="num muted">in flight</td></tr>
+  <tr><td><code>96c76df9</code></td><td>iter_5 reproduction #2</td><td class="num muted">queued</td></tr>
+  <tr><td colspan="3" class="muted">
+    Originals: archived under
+    <code>outputs/design_runs/mapgpt_mp3d/_archive/v0_2026_05_10_adasv3_it_works/</code>
+    &mdash; iter_0 run <code>2dcd8233</code> (0.435), iter_5 run <code>095de8d5</code> (0.540).
+  </td></tr>
+</table>
+
+</body>
+</html>

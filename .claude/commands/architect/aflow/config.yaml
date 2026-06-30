@@ -1,0 +1,157 @@
+variant_name:  aflow
+variant_label: "aflow — AFlow-style search (per-parent anti-replay)"
+
+understand:
+  archive_path:          outputs/design_runs/aflow/{graph}/v{N}/archive.jsonl
+  archive_entry_types:   [initial, evolved]
+  archive_preview:       extended
+  exp_yaml_required:     ["smoke_<graph>", "perf_<graph>"]
+  exp_yaml_extra_blocks: ["aflow"]
+  layer1_emphasis: |
+    AFlow Section 1 invariants — meta-LLM and loop must respect:
+
+    1. Parent selection = p = λ·uniform + (1−λ)·softmax(α·score) over
+       get_top_rounds(K). round_1 (iter_0) always in top-K.
+       Defaults α=0.2, λ=0.3, K=4 — these follow upstream CODE
+       (data_utils.py DEFAULT_ALPHA / DEFAULT_LAMBDA). Note: paper
+       Eq.3 states α=0.4, λ=0.2; upstream paper and code disagree,
+       and this port follows the code.
+    2. Anti-replay is per-parent — only the chosen parent's experience
+       list is checked. A modification rejected against parent_A may be
+       allowed against parent_B.
+    3. Convergence predicate = top-3 mean stability over 5 consecutive
+       rounds within z·σ. Under F3 (validation_rounds=1) every
+       per-round σ is 0, so the predicate reduces to EXACT top-3-mean
+       equality regardless of z — the convergence_z tunable is inert
+       and convergence is advisory only. Rely on max_iters / STOP /
+       consecutive_skips as the real stopping conditions.
+    4. Failed iters (proposer SKIP / implementer SKIP / evaluator infra
+       fail) do NOT append to archive. Verbatim upstream
+       optimizer.py:96, 105.
+  bootstrap_hint:        "/architect:aflow:loop --skip-understand"
+
+evaluator:
+  profile_key:  "perf_<graph>"
+  artifacts:    []
+  # profile_key is perf_<graph> — aflow is two-tier (post 2026-05-25,
+  # reverted from the 2026-05-20 three-tier search_/perf_ split). The
+  # search_ 30-ep subset misled the v0 run (iter_6 +13pp on search but
+  # -4pp on perf — see outputs/design_runs/aflow/mapgpt_mp3d/v0/
+  # final_report.md). Every iter now ranks on perf_ directly; binomial
+  # SE drops 9pp → 3.4pp at N=216, recovering enough signal to detect
+  # the ~10pp gains aflow tries to find. Cost: ~5× per-iter $$, but
+  # wall is similar (perf already paid 2× post-loop in the old design).
+  # The evaluator skill is tier-agnostic: it just runs whatever
+  # profile_key points to.
+  # Note: aflow's `fitness_str` + bare numeric `score` (= bootstrap_median,
+  # consumed by select_round softmax sampling) are computed in loop.md's
+  # Atomic Writer, not here. The evaluator writes neutral metrics only.
+  # F3 deviation (validation_rounds=1 vs upstream 5) still applies — the
+  # 1× perf eval per iter does not cover LLM run-to-run stochasticity.
+  # See README.md § "Two structural contracts" / algorithm.html.
+
+implementer:
+  smoke_profile_key:    "smoke_<graph>"
+  retry_executor:       subagent_spawn
+  retry_max:            3
+  artifacts:            []
+  # No patch_applier — patch DSL retired 2026-05-20. The implementer
+  # sub-agent edits the overlay natively; seeding goes through the
+  # fixed shared helper _common/lib/overlay.py.
+
+# === FILES MANIFEST (per _common/files-contract.md § 4) ===
+# Verified 2026-05-20 against loop.md / proposer.md / _common/implementer.md
+# / _common/evaluator.md (file set + writers read straight from skill bodies).
+manifest:
+
+  lineage:
+    model: parent_pointer
+    pointer: "proposal.md:parent_iter_id"   # parent is softmax-sampled (ANY prior
+                                            # iter, not iter_{n-1}); recorded as a
+                                            # frontmatter field in proposal.md.
+                                            # aflow writes NO standalone parent.txt.
+
+  metrics_payload: metrics.json       # eval-output; loop's Atomic Writer adds fitness_str + numeric score
+
+  files:
+    # --- vN-scoped ---
+    archive.jsonl:
+      type: working-memory
+      purpose: "Per-vN append-only archive; entries carry parent_iter_id + modification + score for per-parent anti-replay and select_round softmax."
+      mutation: append-only
+      written_by: [loop]
+      read_by: [proposer, understand]
+    trace.md:
+      type: rollup
+      purpose: "One row per committed iter — metrics table (includes parent_iter_id column)."
+      mutation: append-only
+      written_by: [loop]
+      read_by: [understand]
+    lineage.md:
+      type: rollup
+      purpose: "Narrative log, one section per committed iter."
+      mutation: append-only
+      written_by: [loop]
+      read_by: [understand]
+    final_report.md:
+      type: rollup
+      purpose: "Post-loop verification reruns (top-1 + top-2 each get ONE additional perf_<graph> eval) — calibrates the in-loop perf score against run-to-run LLM stochasticity. Headline numbers are the in-loop perf scores; verification reruns flag when the top iter was a lucky pass. Deliberately kept out of archive.jsonl."
+      written_by: [loop]
+      read_by: []
+
+    # --- per-iter ---
+    active_workspace/:
+      type: mutation
+      purpose: "This iter's workspace overlay — bootstrapped by loop's Workspace Checkout from the softmax-sampled parent, then patched by implementer."
+      written_by: [loop, implementer]
+      read_by: [loop, evaluator]
+    proposal.md:
+      type: phase-artifact
+      purpose: "Proposer single-call + anti-replay output; frontmatter carries parent_iter_id + modification (load-bearing for lineage + anti-replay)."
+      written_by: [proposer]
+      read_by: [implementer, loop]
+    debug_log.md:
+      type: phase-artifact
+      purpose: "Implementer native-edit + smoke + debug-retry history."
+      written_by: [implementer]
+      read_by: [loop]
+    graph.json:
+      type: phase-artifact
+      purpose: "Convenience copy of active_workspace/graphs/{graph}.json for analyze/report tooling."
+      written_by: [implementer]
+      read_by: [loop, understand]
+    "{graph}.yaml":
+      type: phase-artifact
+      purpose: "Convenience copy of the frozen eval profile, snapshotted in-iter for reproducibility."
+      written_by: [implementer]
+      read_by: [understand]
+    metrics.json:
+      type: eval-output
+      purpose: "perf_<graph> eval neutral metrics; loop's Atomic Writer adds fitness_str + numeric score. The metrics payload."
+      written_by: [evaluator, loop]
+      read_by: [loop, proposer, understand]
+    summary.csv:
+      type: eval-output
+      purpose: "Per-episode rows from the eval."
+      written_by: [evaluator]
+      read_by: []
+    export.json:
+      type: eval-output
+      purpose: "Full /api/eval/v2/export dump."
+      written_by: [evaluator]
+      read_by: [proposer]
+    eval_run_id.txt:
+      type: eval-output
+      purpose: "Backend run_id of the eval."
+      written_by: [evaluator]
+      read_by: []
+    eval_overrides.json:
+      type: phase-artifact
+      purpose: "Resolved eval-profile block handed to /experiment:run."
+      written_by: [evaluator]
+      read_by: []
+
+  phase_sentinels:
+    proposer:    { needs: null,         writes: proposal.md }
+    implementer: { needs: proposal.md,  writes: debug_log.md }
+    evaluator:   { needs: debug_log.md, writes: metrics.json }

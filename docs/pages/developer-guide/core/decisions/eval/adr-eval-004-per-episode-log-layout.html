@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-eval-004 — AgentCanvas</title>
+<meta name="description" content="Per-episode log storage and replay-parser ABC simplification">
+<meta property="og:title" content="ADR-eval-004 — AgentCanvas">
+<meta property="og:description" content="Per-episode log storage and replay-parser ABC simplification">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/eval/adr-eval-004-per-episode-log-layout.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/eval/adr-eval-004-per-episode-log-layout.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Eval</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-eval-004</span>
+  </div>
+  <div class="last-updated">2026-05-15 12:30</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-eval);">ADR-eval-004</h1>
+  <p class="tagline">Per-episode log storage and replay-parser ABC simplification</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-15 12:30</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>eval</code></a></dd>
+</dl>
+
+
+
+
+<h2 id='context'>Context</h2>
+<p>Batch eval persisted node-firing logs and image assets at run-level granularity: <code>outputs/eval_runs/{run_id}/log.jsonl</code> + <code>outputs/eval_runs/{run_id}/assets/</code>, both flat files / dirs shared across every episode and every worker. The mechanism was one <code>ExecutionLogger</code> per <code>BatchEvalRunner</code>, created once in <code>__init__</code> (<code>agent_loop/eval_batch.py</code>) and threaded through to every per-episode <code>LoopRunner</code> instance. Per-episode identity <em>did</em> exist — <code>LoopRunner._execution_id = f"{run_id}_ep{idx}_w{worker_id}"</code> was set at <code>eval_batch.py:522</code> for WS broadcast tagging — but it was <strong>never threaded into <code>ExecutionLogger.log_node()</code></strong>. Every persisted <code>NodeLogEntry</code> was stamped <code>execution_id = self._logger.execution_id = run_id</code>, the same value across every episode × worker. With <code>worker_count &gt; 1</code> the per-firing append order in <code>log.jsonl</code> interleaved by wall-clock, and the <code>step</code> field reset to 0 inside each episode but those resets overlapped between workers, so neither the <code>execution_id</code> field nor <code>step</code> could recover episode membership. Assets were flat under one <code>assets/</code> dir with names like <code>s{step}_f{firing_idx}_{label}__{port}.jpg</code> where <code>firing_idx</code> was the logger-global monotonic counter — unique on disk but with no episode prefix, so a 100-episode 3-worker run produced one bucket of ~thousands of files with no grouping. The downstream consequence: per-episode reconstruction from <code>outputs/eval_runs/{run_id}/</code> was effectively impossible. The replay subsystem made this concrete — <code>app/replay/interface.py:GenericReplayParser._split_episodes</code> walked the flat <code>log.jsonl</code> and cut at every <code>__reset</code> node firing to recover episode boundaries, and its own docstring (<code>interface.py:220-233</code>) admitted the failure mode: <em>"on multi-worker eval runs the log entries interleave, and <code>_split_episodes</code> cuts at every <code>__reset</code>. The first few episodes can collapse to 1 entry each while one downstream episode absorbs all the mixed step entries. That's a logger-side limitation (no worker_id tag)"</em>. The single-execution canvas path did not have this problem because <code>agent_loop/loop_runner.py:117-132</code> self-creates a per-execution <code>ExecutionLogger(persist_dir=outputs/runs/{execution_id}/)</code> when none is injected — every canvas run is self-contained. The eval batch path was the architectural regression: it injected a shared logger to amortize one ring buffer across many episodes, and that amortization broke per-episode addressability.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Make <code>ExecutionLogger</code> lifecycle per-episode in batch eval, mirroring what canvas single-run already does. The flat <code>log.jsonl</code> + <code>assets/</code> directly under the run dir cease to exist; each episode owns a self-contained subdir. Six rules.</p>
+<p>(1) <strong>Episode dir as the unit of log storage</strong>. Layout under <code>outputs/eval_runs/{run_id}/</code>:</p>
+<div class="highlight"><pre><span></span><code>spec.json  shared_urls.json  summary.json  stdout.log  stderr.log  _DONE
+graph.json                           # run-level snapshot
+episodes/
+  ep{idx:04d}/
+    log.jsonl                         # this episode&#39;s firings only
+    assets/                           # this episode&#39;s images only
+    episode.json                      # self-describing row from summary.json
+</code></pre></div>
+<p><code>graph.json</code>, <code>summary.json</code>, <code>spec.json</code>, <code>shared_urls.json</code>, <code>stdout.log</code>, <code>stderr.log</code>, <code>_DONE</code> stay at run level (one graph and one job spec for the whole run). Everything firing-level moves into the episode subdir. The four-digit zero-padded index (<code>ep0000</code>, <code>ep0001</code>, …) makes lexicographic sort match numeric sort up to 10000 episodes.</p>
+<p>(2) <strong>Per-episode <code>ExecutionLogger</code> constructed in <code>_run_one_episode</code></strong> (<code>agent_loop/eval_batch.py:_run_one_episode</code>). The episode dir is created up front so even an early-failure episode (env on_load throws before the LoopRunner is built) gets an <code>episode.json</code> written at episode end. The logger's <code>execution_id</code> is the composite <code>{run_id}_ep{idx:04d}</code> — every <code>NodeLogEntry</code> in <code>log.jsonl</code> naturally carries this id without <code>log_node()</code> taking a new parameter. Asset filenames keep their existing shape (<code>s{step}_f{firing}_{label}__{port}.jpg</code>); the per-episode <code>firing</code> counter starts from 0 and is bounded by step_budget, so collisions are not a concern within an episode dir.</p>
+<p>(3) <strong><code>BatchEvalRunner</code> owns run-level artifacts only</strong>. <code>__init__</code> writes <code>graph.json</code> once; the deleted shared logger is not replaced. The per-LoopRunner <code>graph.json</code> write at <code>loop_runner.py:139-146</code> is gated to self-created (canvas) loggers — eval's injected logger sits in an episode dir, and dropping a run-level snapshot into every episode dir would be N-way redundancy. Canvas path is unchanged; eval path's graph.json now lives exactly once.</p>
+<p>(4) <strong><code>episode.json</code> per episode dir, written from <code>eval_storage.episode_to_dict(episode)</code></strong>. Schema: <code>episode_index, episode_id, scene_id, instruction, metrics, step_count, elapsed_sec, status, error, selectors, worker_id</code>. <code>run_to_dict</code> in <code>eval_storage.py</code> is refactored to call <code>episode_to_dict</code> so the per-episode file and the embedded <code>episodes[]</code> list in <code>summary.json</code> share one source of truth — changing the episode shape touches one function. A single episode dir is consumable by replay / debugging / architect tooling without joining back to run-level <code>summary.json</code>.</p>
+<p>(5) <strong><code>run_id</code> is a second-precision timestamp with filesystem-collision suffix</strong>. <code>JobScheduler._fresh_run_id()</code> returns <code>time.strftime("%Y%m%d_%H%M%S")</code> (e.g. <code>20260515_121636</code>); if the dir already exists, append <code>_2</code>, <code>_3</code>, … until unique. Replaces the previous <code>uuid.uuid4().hex[:8]</code>. Two motivations: (a) human-readable ordering — <code>ls outputs/eval_runs/</code> is chronological by name, no <code>stat</code> needed; (b) cheap external correlation — finding which run was running at a given wall-clock moment is now a string-prefix comparison.</p>
+<p>(6) <strong><code>BaseReplayParser.parse</code> ABC simplified to take a single-episode log path</strong>. New signature: <code>parse(self, episode_log_path: Path) -&gt; ReplayEpisode</code>. The <code>episode_index</code> parameter is gone — the file <em>is</em> the episode. Five methods are deleted from the ABC and <code>GenericReplayParser</code>: <code>_split_episodes</code>, <code>_iter_episode_boundaries</code>, <code>episode_count</code>, <code>episode_summaries</code>, <code>is_episode_start</code>. <code>_pick_frame</code>, <code>_collect_info</code>, <code>_is_short_value</code> (the per-step assembly logic) are unchanged. <code>get_smooth_frame</code> signature loses the <code>episode_index</code> parameter for the same reason. <code>replay/router.py:list_episodes</code> reads <code>summary.json</code> directly for the picker (no parser re-derivation, no possibility of disagreement). Replay payload gains an <code>execution_id: "{run_id}_ep{idx:04d}"</code> field so the frontend can build <code>/api/logs/{execution_id}/assets/{filename}</code> URLs through the existing logs endpoint — no new asset route, one addressing scheme for canvas and eval. Plugin parsers (one in tree: <code>workspace/nodesets/server/hmeqa_replay.py</code>) update to the new signature; out-of-tree parsers would break, but the workspace shipped exactly one.</p>
+<p><strong>Out of scope</strong> (deferred): (i) Migration of pre-2026-05-15 eval runs — old flat-layout runs remain on disk but are invisible to <code>/api/logs</code> listing and <code>/api/replay</code> (both scan <code>episodes/</code>). The user explicitly accepted this trade in exchange for not building a migration script. (ii) Collapsing the <code>outputs/eval_runs/</code> ↔ <code>outputs/design_runs/{graph}/vN/iter_M/</code> redundancy where architect iters copy episodes/summary into iter dirs — a separate contract refactor. (iii) <code>.exp.yaml</code>'s <code>step_budget</code> field unifying with the graph-internal <code>step_budget</code> (the drift surfaced again during the verification run for this ADR) — also separate. (iv) Batch-level <code>log.jsonl</code> — not preserved; a glob over <code>episodes/*/log.jsonl</code> reconstructs the "everything" view on demand, and nothing in the codebase consumes a true batch-merged stream.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Thread <code>execution_id</code> into <code>log_node()</code> and keep one shared logger</strong> writing to one flat <code>log.jsonl</code> — rejected: leaves the logger as a multi-writer multiplexer (N write queues keyed by execution_id), leaves <code>assets/</code> flat (still no episode grouping unless filenames get an episode prefix too), and doesn't recover the architectural symmetry with the canvas single-run path that already did per-execution dirs correctly. The simpler refactor is to <em>remove the regression</em>, not paper over it with a router. (b) <strong>Per-episode log files but keep a run-level merged <code>log.jsonl</code> as an additional artifact</strong> — rejected: no consumer needs the merged view, and writing it requires either a second logger or a post-run merge pass; both add code and disk for negative value. (c) <strong>Keep the flat layout and add <code>episode_index</code> + <code>worker_id</code> fields to <code>NodeLogEntry</code></strong> so consumers demux by filter — rejected: keeps <code>_split_episodes</code> machinery alive in the parser (which still has to scan the whole file to find the right episode's rows), still leaves assets ungrouped on disk, and tools that operate on episode dirs (architect's "copy iter_M's logs") still have nothing self-contained to copy. (d) <strong>Canvas-style execution_id-based path</strong> (<code>outputs/eval_runs/{execution_id}/{log.jsonl,assets,graph.json}</code> with one dir per episode at top level, no nesting) — rejected: loses the run-level grouping ("which episodes were in run X") that downstream tooling depends on; <code>summary.json</code> would need to point at sibling dirs by name, and the addressing scheme for run-level artifacts (<code>spec.json</code>, <code>summary.json</code>) breaks. The <code>run/{episode}</code> nesting is the natural fit. (e) <strong>UUID-with-timestamp-prefix <code>run_id</code></strong> (e.g. <code>20260515_121636_abcd1234</code>) — rejected: longer name with no information payoff once filesystem-collision suffix handles same-second submits. (f) <strong>Migrate old runs</strong> — rejected: the user opted out explicitly; old runs are historical artifacts, not active reference data, and a migration script would be ~50 lines of code for one-time use.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The root cause was lifecycle mismatch — <code>ExecutionLogger</code> was constructed at <em>batch</em> scope but the meaningful unit of reconstruction is the <em>episode</em>. Two consumers needed per-episode addressability: replay (cf. its own self-documented breakage) and the user's debugging workflow (the question that prompted this ADR). The decision realigns logger lifecycle with the consumption unit, and once that alignment is made, three things fall out for free: (i) the replay parser stops needing boundary-detection code (the file IS the episode, ~80 lines of <code>_split_episodes</code> machinery deletes); (ii) the canvas and eval log paths converge on one mental model — "one execution = one logger = one dir"; (iii) <code>assets/</code> collisions stop being a theoretical concern. The timestamp <code>run_id</code> (rule 5) is a small independent choice bundled here because the layout-touching ADR was the natural moment to make <code>ls outputs/eval_runs/</code> chronological — searching by <code>find -newer</code>-style probes was the friction it removes. The replay ABC break (rule 6) is a deliberate breaking change scoped to one workspace plugin; the trade-off was "preserve plugin contract but leave dead parameters" vs "clean signature, update one file" — the latter is the actual definition of "clean". Backward compatibility is the noisiest rejected alternative (f): the user's choice to skip migration is the correct one for a research codebase where eval runs are inputs to a specific paper question, not historical data that future analyses depend on; preserving them on disk under their original layout is sufficient for forensic recovery while not constraining the new code path.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<ul>
+<li><code>developer-guide/core/architecture.md</code> — eval log layout section</li>
+<li><code>developer-guide/core/codebase-map.md</code> — new file paths under <code>outputs/eval_runs/</code>, no source-file renames</li>
+<li><code>developer-guide/core/glossary.md</code> — new terms (episode dir, episode.json, per-episode logger)</li>
+<li><code>developer-guide/core/roadmap.md</code> — mark "per-episode log reconstruction" as Done</li>
+<li><code>developer-guide/core/decisions/eval/index.md</code> — table row</li>
+<li><code>developer-guide/core/decisions/index.md</code> — count bump</li>
+<li><code>developer-guide/capabilities/real-time-observability.md</code> — log layout narrative</li>
+<li><code>developer-guide/design-docs/batch-eval.md</code> — eval output layout</li>
+<li><code>developer-guide/design-docs/execution-logs.md</code> — log file location, replay parser shape</li>
+<li><code>developer-guide/tutorials/execution-logs.md</code> — tutorial paths</li>
+<li><code>developer-guide/tutorials/batch-eval.md</code> — tutorial output references</li>
+<li><code>.claude/PROJECT_OVERVIEW.md</code> — flag for next <code>/overview:update</code></li>
+</ul>
+<p><strong>Follow-up</strong>: A future ADR may collapse the <code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/</code> ↔ <code>outputs/design_runs/{graph}/vN/iter_M/episodes/</code> two-tree redundancy by switching architect skills from "copy into iter dir" to "pointer + read-through". A second future ADR may unify <code>.exp.yaml</code>'s <code>step_budget</code> with the graph-internal <code>step_budget</code> so <code>/experiment:run</code> and <code>/architect:*</code> agree on the cap. Neither is blocking — both surfaced during this work but are about different subsystems.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

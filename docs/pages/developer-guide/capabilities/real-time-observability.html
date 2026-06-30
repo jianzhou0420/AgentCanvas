@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6Real-Time Observability — AgentCanvas</title>
+<meta name="description" content="WebSocket broadcasts per-step node firings to the frontend; canvas reflects execution live.">
+<meta property="og:title" content="6Real-Time Observability — AgentCanvas">
+<meta property="og:description" content="WebSocket broadcasts per-step node firings to the frontend; canvas reflects execution live.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/real-time-observability.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/real-time-observability.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">6Real-Time Observability</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">6</span>Real-Time Observability</h1>
+  <p class="tagline">WebSocket broadcasts per-step node firings to the frontend; canvas reflects execution live.</p>
+</header>
+
+
+
+<p>Every step streams observations, reasoning, actions, and metrics via WebSocket. Researchers see what the agent sees, read what it thinks, and can pause/step/resume.</p>
+<p><em>Design doc: <a href="../design-docs/operations/execution-logs.html">Execution Logs</a></em></p>
+<hr>
+<h2 id="1-architecture"><span class="num">1.</span> Architecture</h2>
+<p>Two broadcast paths coexist (TODO #38 refactor, 2026-04-10):</p>
+<div class="highlight"><pre><span></span><code>GraphExecutor
+  │
+  ├─ (A) Viewer sinks self-emit per-node viewer_data events
+  │         (imageViewer, textViewer, textScroll, actionLog, metrics)
+  │           │
+  │           └─ _SinkBase.forward() → serialize_for_display() →
+  │                broadcast({type: &quot;viewer_data&quot;, node_id, step, fields})
+  │
+  ├─ (B) graphOut sinks buffer _last_inputs → IterOut fires →
+  │        _broadcast_step() consolidates into one nav_step event
+  │
+  ├─ Per-node firing → ExecutionLogger → exec_log event (ADR-observability-003)
+  ├─ Status changes → nav_status; loop end → nav_complete
+  └─ Batch eval → eval_progress + eval_episode_done (ADR-eval-002)
+           │
+           └─ broadcast() → WebSocket → all connected clients
+                                         │
+                                  ws.ts (WSManager)
+                                         │
+                           ┌──────────────┼──────────────┐
+                           ▼              ▼              ▼
+                      store.ts       per-node hook     UI panels
+                    (navSteps)      useNodeOutput      (render)
+                                   (execution_id
+                                    + node_id routing)
+</code></pre></div>
+<p>The old single-path consolidation (every viewer type was special-cased in <code>_broadcast_step</code>) is gone — viewer sinks now own their own serialization and broadcast directly, and the executor only consolidates <code>graphOut</code> for the global NavigatePage / EvalPage store. The <code>_OUTPUT_TYPES</code> registry in the executor was deleted with the refactor.</p>
+<h2 id="2-websocket-protocol"><span class="num">2.</span> WebSocket Protocol</h2>
+<p><strong>Endpoint</strong>: <code>ws://[host]/ws</code></p>
+<h3 id="21-message-envelope"><span class="num">2.1</span> Message Envelope</h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w">             </span><span class="c1">// Event type</span>
+<span class="w">  </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="kt">unknown</span><span class="p">,</span><span class="w">            </span><span class="c1">// Type-specific payload</span>
+<span class="w">  </span><span class="nx">timestamp</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w">        </span><span class="c1">// ISO 8601</span>
+<span class="w">  </span><span class="nx">execution_id?</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w">     </span><span class="c1">// Canvas execution routing</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="22-event-types"><span class="num">2.2</span> Event Types</h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>When</th>
+<th>Payload</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>viewer_data</code></td>
+<td>Viewer sink fires (per node)</td>
+<td><code>{ node_id, step, fields }</code> — serialized port payloads keyed by port name (ADR-components-006, TODO #38)</td>
+</tr>
+<tr>
+<td><code>nav_step</code></td>
+<td><code>iterOut</code> fires</td>
+<td>Consolidated snapshot from <code>graphOut</code> sinks — RGB/depth base64, action, position, state containers</td>
+</tr>
+<tr>
+<td><code>nav_status</code></td>
+<td>Execution state change</td>
+<td><code>{ status: "running" \| "paused" \| "done" \| "error", step }</code></td>
+</tr>
+<tr>
+<td><code>nav_complete</code></td>
+<td>Loop finished</td>
+<td><code>{ metrics: { SPL, SR, nDTW, SDTW }, step }</code></td>
+</tr>
+<tr>
+<td><code>exec_log</code></td>
+<td>Per-node firing (canvas mode)</td>
+<td><code>{ step, node_id, node_type, duration_ms, error }</code> — suppressed in batch eval (ADR-observability-003)</td>
+</tr>
+<tr>
+<td><code>eval_progress</code></td>
+<td>Episode queued / started</td>
+<td><code>{ run_id, worker_id, episode_index, done, total }</code> (ADR-eval-002)</td>
+</tr>
+<tr>
+<td><code>eval_episode_done</code></td>
+<td>Episode finished in batch</td>
+<td><code>{ run_id, worker_id, episode_index, result }</code> (ADR-eval-002)</td>
+</tr>
+<tr>
+<td><code>error_event</code></td>
+<td>Any envelope published to <code>ErrorBus</code></td>
+<td><code>ErrorEnvelope</code> — <code>{ id, ts, severity, source, code, title, message, scope, details, hint }</code> (ADR-observability-004)</td>
+</tr>
+<tr>
+<td><code>nav_llm_step</code></td>
+<td>—</td>
+<td><strong>Not emitted today</strong>; frontend still has a handler wired</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-nav_step-payload"><span class="num">2.3</span> nav_step Payload</h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nx">step</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">action</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">,</span><span class="w">                      </span><span class="c1">// 0-3</span>
+<span class="w">  </span><span class="nx">action_name</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w">                 </span><span class="c1">// &quot;FORWARD&quot;, &quot;LEFT&quot;, &quot;RIGHT&quot;, &quot;STOP&quot;</span>
+<span class="w">  </span><span class="nx">position</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="kt">number</span><span class="p">,</span><span class="w"> </span><span class="kt">number</span><span class="p">,</span><span class="w"> </span><span class="kt">number</span><span class="p">],</span>
+<span class="w">  </span><span class="nx">rgb_base64</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w">                  </span><span class="c1">// base64 PNG</span>
+<span class="w">  </span><span class="nx">depth_base64</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w">                </span><span class="c1">// base64 PNG</span>
+<span class="w">  </span><span class="nx">response</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w">                    </span><span class="c1">// LLM response text</span>
+<span class="w">  </span><span class="nx">done</span><span class="o">:</span><span class="w"> </span><span class="kt">boolean</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">metrics?</span><span class="o">:</span><span class="w"> </span><span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="kt">number</span><span class="o">&gt;</span><span class="p">,</span><span class="w">    </span><span class="c1">// only when done=true</span>
+<span class="w">  </span><span class="nx">containers?</span><span class="o">:</span><span class="w"> </span><span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w">        </span><span class="c1">// state container snapshots</span>
+<span class="w">    </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">states</span><span class="o">:</span><span class="w"> </span><span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="p">,</span><span class="w"> </span><span class="nx">value_type</span><span class="p">,</span><span class="w"> </span><span class="nx">size</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="nx">value</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="nx">preview</span><span class="o">?</span><span class="w"> </span><span class="p">}</span><span class="o">&gt;</span>
+<span class="w">  </span><span class="p">}</span><span class="o">&gt;</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="3-output-viewer-nodes"><span class="num">3.</span> Output Viewer Nodes</h2>
+<p>Output viewer nodes are canvas nodes that display data to the researcher. They don't produce outputs — they're sinks. All subclass <code>_SinkBase</code> in <code>agent_loop/builtin_nodes.py</code>, which walks each node's <code>display_fields</code>, runs <code>serialize_for_display()</code> on the wired inputs, and emits one <code>viewer_data</code> WS event per firing.</p>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Displays</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>imageViewer</code></td>
+<td>RGB / depth image grid</td>
+<td><strong>Configurable ports</strong> — <code>config.ports</code> declares one port per cell (<code>IMAGE</code> / <code>DEPTH</code>), plus <code>rows</code> / <code>cols</code> for grid layout (ADR-components-007). Replaced the fixed <code>observationViewer</code>.</td>
+</tr>
+<tr>
+<td><code>textViewer</code></td>
+<td>Latest TEXT (single block)</td>
+<td><code>text_viewer</code> display_type; scalar value (ADR-components-008).</td>
+</tr>
+<tr>
+<td><code>textScroll</code></td>
+<td>Accumulating TEXT history (scrollable stack)</td>
+<td>Shares the <code>text_viewer</code> renderer with <code>textViewer</code> — <code>accumulate=True</code> routes each write through <code>_SinkBase</code>'s <code>vacc_*</code> history path; frontend renders the array as stacked blocks with <code>+N earlier</code> trimming (ADR-components-008, replaced <code>thinkingLog</code>).</td>
+</tr>
+<tr>
+<td><code>actionLog</code></td>
+<td>Action history</td>
+<td><code>log_list</code> renderer; structured ACTION entries.</td>
+</tr>
+<tr>
+<td><code>metrics</code></td>
+<td>SPL / SR / nDTW / SDTW</td>
+<td><code>metric_table</code> renderer.</td>
+</tr>
+<tr>
+<td><code>graphOut</code></td>
+<td>Consolidated <code>nav_step</code> fields</td>
+<td>The only sink still consumed by <code>_broadcast_step</code>; feeds the global NavigatePage store and live nav status bar.</td>
+</tr>
+</tbody>
+</table>
+<p>Viewer sinks serialize and emit their own <code>viewer_data</code> events inside <code>forward()</code>. Only <code>graphOut</code> still buffers inputs in <code>node.state["_last_inputs"]</code> for the iteration-boundary <code>nav_step</code> consolidation. The legacy <code>_OUTPUT_TYPES</code> registry that special-cased every viewer in the executor has been deleted.</p>
+<h2 id="4-broadcast-paths"><span class="num">4.</span> Broadcast Paths</h2>
+<h3 id="41-per-node-viewer_data-primary-path"><span class="num">4.1</span> Per-node <code>viewer_data</code> (primary path)</h3>
+<p>Each viewer sink self-emits a <code>viewer_data</code> event at every firing. The frontend's <code>useNodeOutput(nodeId)</code> hook subscribes by <code>node_id</code>, so panels render independently of whether the upstream graph is still mid-iteration.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># _SinkBase.forward() — serialize wired inputs, accumulate if needed, broadcast</span>
+<span class="n">fields</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">serialize_for_display</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>          <span class="c1"># IMAGE/DEPTH → base64, etc.</span>
+<span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">accumulate</span><span class="p">:</span>                                 <span class="c1"># textScroll, actionLog</span>
+    <span class="n">history</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;vacc_</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="p">[])</span> <span class="o">+</span> <span class="p">[</span><span class="n">fields</span><span class="p">[</span><span class="n">key</span><span class="p">]]</span>
+    <span class="nb">setattr</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;vacc_</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">history</span><span class="p">)</span>
+    <span class="n">fields</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">history</span><span class="p">)</span>
+<span class="k">await</span> <span class="n">broadcast</span><span class="p">(</span><span class="n">ctx</span><span class="o">.</span><span class="n">session</span><span class="o">.</span><span class="n">_ws</span><span class="p">(</span><span class="s2">&quot;viewer_data&quot;</span><span class="p">,</span>
+    <span class="p">{</span><span class="s2">&quot;node_id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">node_id</span><span class="p">,</span> <span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="n">ctx</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="s2">&quot;fields&quot;</span><span class="p">:</span> <span class="n">fields</span><span class="p">}))</span>
+</code></pre></div>
+<h3 id="42-consolidated-nav_step-graphout-path"><span class="num">4.2</span> Consolidated <code>nav_step</code> (graphOut path)</h3>
+<p><code>_broadcast_step()</code> still fires at each <code>iterOut</code> boundary (two-pivot model, ADR-dataflow-008) but only scans <code>graphOut</code> sinks — it merges their <code>_last_inputs</code>, converts numpy arrays to base64, and emits one <code>nav_step</code> event for the global navigation store. Graphs without an <code>graphOut</code> sink produce no <code>nav_step</code> — they rely on <code>viewer_data</code> alone.</p>
+<h3 id="43-execution-logs-exec_log"><span class="num">4.3</span> Execution logs (<code>exec_log</code>)</h3>
+<p>The <code>ExecutionLogger</code> (ADR-observability-003) wraps every node firing: exterior I/O captured automatically, interior detail added via <code>self._self_log(key, value)</code> inside <code>forward()</code>. Each firing emits a short <code>exec_log</code> summary; full records stream to JSONL. Canvas runs persist to <code>outputs/runs/{execution_id}/log.jsonl</code>; batch eval persists per episode to <code>outputs/eval_runs/{run_id}/episodes/ep{idx:04d}/log.jsonl</code> and suppresses the WS event (<code>ExecutionPrinciples.suppress_nav_events</code>). See <a href="../core/decisions/eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a> for the per-episode layout rationale.</p>
+<h3 id="44-batch-eval-events"><span class="num">4.4</span> Batch eval events</h3>
+<p><code>BatchEvalRunner</code> (ADR-eval-002) emits <code>eval_progress</code> + <code>eval_episode_done</code> tagged with <code>worker_id</code> so the Eval page can render per-worker lanes. A <code>run_id</code> groups events into one batch.</p>
+<h3 id="45-error-reporting-error_event"><span class="num">4.5</span> Error reporting (<code>error_event</code>)</h3>
+<p>The <code>ErrorBus</code> (ADR-observability-004, <code>agentcanvas/backend/app/errors.py</code>) is the unified event channel for everything the user needs to <em>see</em> about a run going wrong — distinct from the structured per-firing capture that <code>exec_log</code> provides. Producers covered today:</p>
+<ul>
+<li><strong>Per-node executor catch</strong> (<code>graph_executor.py · _fire_node</code>) — wraps <code>_fire_node()</code>; envelope carries <code>scope = {node_id, node_type, origin, step, execution_id}</code>.</li>
+<li><strong>Graph-level executor catch</strong> (<code>graph_executor.py · run</code>) — top-level <code>try/except</code> around the run loop; envelope carries <code>scope = {step, execution_id}</code>.</li>
+<li><strong>FastAPI global <code>Exception</code> handler</strong> (<code>main.py</code>) — uncaught HTTP route exceptions; envelope carries <code>scope = {endpoint, method}</code> and is also returned as the 500 body so the frontend HTTP wrapper can recover the same <code>id</code>.</li>
+<li><strong><code>LogBridgeHandler</code></strong> — installed on the root logger at INFO+; every <code>log.info / warning / error / exception</code> becomes an envelope with <code>source="log"</code>. Skips <code>agentcanvas.errors</code> + uvicorn / httpx / httpcore / watchfiles / asyncio prefixes to avoid feedback loops + noise.</li>
+</ul>
+<p>Bus dispatch is async over a 500-deep queue: <code>publish()</code> does one ring-buffer append (lock-protected) + <code>loop.call_soon_threadsafe(queue.put_nowait, env)</code>, so producers stay loop-agnostic and thread-safe. A single dispatcher coroutine started in the FastAPI lifespan drains the queue and fans out to subscribers; the WS bridge subscriber emits each envelope as <code>{type: "error_event", data: envelope.to_dict()}</code> over <code>/ws</code>. The 200-entry ring buffer is exposed at <code>GET /api/errors</code> for backfill — the frontend calls it on every WS (re)connect to recover envelopes published while the socket was down.</p>
+<h2 id="5-execution-id-routing"><span class="num">5.</span> Execution ID Routing</h2>
+<p>Multiple agent graphs can run concurrently. The <code>execution_id</code> mechanism ensures events reach the correct output panels:</p>
+<ol>
+<li>Frontend generates an <code>exec_&lt;timestamp&gt;_&lt;random&gt;</code> id when the user clicks Play (not a UUID)</li>
+<li>The id is sent as <code>execution_id</code> in <code>POST /run</code></li>
+<li>Backend tags every WebSocket event with the same <code>execution_id</code></li>
+<li>Frontend filters events by <code>execution_id</code> and routes to the correct canvas nodes</li>
+</ol>
+<div class="highlight"><pre><span></span><code>Graph A (exec_id: &quot;aaa&quot;) → Output nodes see only &quot;aaa&quot; events
+Graph B (exec_id: &quot;bbb&quot;) → Output nodes see only &quot;bbb&quot; events
+</code></pre></div>
+<h2 id="6-frontend-wiring"><span class="num">6.</span> Frontend Wiring</h2>
+<h3 id="61-wsmanager-wsts"><span class="num">6.1</span> WSManager (<code>ws.ts</code>)</h3>
+<div class="highlight"><pre><span></span><code><span class="kd">class</span><span class="w"> </span><span class="nx">WSManager</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">connect</span><span class="p">()</span><span class="w">                          </span><span class="c1">// Auto-reconnect with exponential backoff</span>
+<span class="w">  </span><span class="nx">on</span><span class="p">(</span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">handler</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="nx">unsub</span><span class="w">   </span><span class="c1">// Subscribe to event type</span>
+<span class="w">  </span><span class="nx">on</span><span class="p">(</span><span class="s1">&#39;*&#39;</span><span class="p">,</span><span class="w"> </span><span class="nx">handler</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="nx">unsub</span><span class="w">            </span><span class="c1">// Wildcard: all events</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="62-zustand-store-storets"><span class="num">6.2</span> Zustand Store (<code>store.ts</code>)</h3>
+<p><code>subscribeWS()</code> wires WebSocket events to dataflow store updates:</p>
+<table>
+<thead>
+<tr>
+<th>WS Event</th>
+<th>Store Update</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nav_step</code></td>
+<td>Appends to <code>navSteps</code>, updates <code>navCurrentRgb/Depth</code> (driven by <code>graphOut</code>)</td>
+</tr>
+<tr>
+<td><code>nav_status</code></td>
+<td>Sets <code>navStatus</code></td>
+</tr>
+<tr>
+<td><code>nav_complete</code></td>
+<td>Sets <code>navMetrics</code>, <code>navStatus: 'done'</code></td>
+</tr>
+<tr>
+<td><code>viewer_data</code></td>
+<td>Dispatched via <code>useNodeOutput(nodeId)</code> hook — routed by <code>node_id</code>, bypasses the global store</td>
+</tr>
+<tr>
+<td><code>exec_log</code></td>
+<td>Feeds the LogPanel in the bottom OutputDrawer</td>
+</tr>
+<tr>
+<td><code>error_event</code></td>
+<td>Routed to <code>useErrorStore.ingest()</code> — drives the toast layer + Report tab + toolbar bell badge (ADR-observability-004)</td>
+</tr>
+<tr>
+<td><code>eval_progress</code> / <code>eval_episode_done</code></td>
+<td>Drives the Eval page (EvalProgressBar, EpisodesTable, per-worker grouping)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="63-playback-controls"><span class="num">6.3</span> Playback Controls</h3>
+<p>The frontend toolbar sends control commands:</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Endpoint</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Play</td>
+<td><code>POST /run</code></td>
+<td>Start execution</td>
+</tr>
+<tr>
+<td>Pause</td>
+<td><code>POST /run/pause</code></td>
+<td>Set pause event — executor blocks at next iteration</td>
+</tr>
+<tr>
+<td>Resume</td>
+<td><code>POST /run/pause</code> (toggle)</td>
+<td>Clear pause event</td>
+</tr>
+<tr>
+<td>Stop</td>
+<td><code>POST /run/stop</code></td>
+<td>Set stop event — executor exits loop</td>
+</tr>
+<tr>
+<td>Step</td>
+<td>Pause + single advance</td>
+<td>Execute one iteration</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7-key-files"><span class="num">7.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+<td><code>_broadcast_step()</code> (outputPort consolidation) + <code>exec_log</code> emission around each node firing</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
+<td><code>_SinkBase</code> + <code>ImageViewerSink</code> / <code>TextViewerSink</code> / <code>TextScrollSink</code> / <code>ActionLogSink</code> / <code>MetricsViewerSink</code> — self-emit <code>viewer_data</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/eval_batch.py</code></td>
+<td><code>eval_progress</code> / <code>eval_episode_done</code> emission</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/logging/logger.py</code></td>
+<td><code>ExecutionLogger</code> — JSONL persistence + <code>exec_log</code> envelope (ADR-observability-003)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/state.py</code></td>
+<td><code>broadcast()</code> — fan out a <code>WSMessage</code> to every connected client</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/api/execution/websocket.py</code></td>
+<td><code>/ws</code> endpoint — accepts connections, registers/unregisters clients</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/standard/wire_types.py</code></td>
+<td><code>serialize_for_display()</code>, <code>image_to_base64()</code>, <code>depth_to_base64()</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/loop_runner.py</code></td>
+<td>Pause / stop / resume event management</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/ws.ts</code></td>
+<td><code>WSManager</code> — auto-reconnect WebSocket client</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/store.ts</code></td>
+<td>Zustand store + <code>subscribeWS()</code> for <code>nav_*</code> and eval events</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/nodes/agentloop/inner/layouts/useNodeOutput.ts</code></td>
+<td>Per-node <code>viewer_data</code> hook</td>
+</tr>
+<tr>
+<td><code>agentcanvas/frontend/src/canvas/runPipeline.ts</code></td>
+<td>Canvas → API execution bridge</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-node-schema-api"><span class="num">8.</span> Node Schema API</h2>
+<p>The frontend fetches node rendering metadata at design time via a REST endpoint. This is distinct from the runtime WebSocket events above — it's a one-shot query used when the canvas loads to know how to render each node type.</p>
+<h3 id="81-endpoint"><span class="num">8.1</span> Endpoint</h3>
+<p><code>GET /api/components/node-schemas</code></p>
+<p>Returns all registered node types (built-in + loaded nodesets) with port metadata and <code>ui_config</code>.</p>
+<h3 id="82-response-shape"><span class="num">8.2</span> Response Shape</h3>
+<div class="highlight"><pre><span></span><code><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;env_habitat__observe&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;display_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Observe&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Get current RGB + depth observation&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;env&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;icon&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Eye&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;block&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;ports_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mirror&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;config_schema&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<span class="w">    </span><span class="nt">&quot;default_config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<span class="w">    </span><span class="nt">&quot;ui_config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;color&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;emerald&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;layout&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;block&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;width&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;min_height&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;rounding&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;min_width&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;max_width&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;config_fields&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">      </span><span class="nt">&quot;display_fields&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;input_ports&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;trigger&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;BOOL&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;optional&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;output_ports&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rgb&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wire_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;IMAGE&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;optional&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">]</span>
+</code></pre></div>
+<h3 id="83-ui_config-fields"><span class="num">8.3</span> <code>ui_config</code> Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>color</code></td>
+<td><code>string</code></td>
+<td>Tailwind color name for node chrome (e.g. <code>"emerald"</code>, <code>"orange"</code>, <code>"pink"</code>)</td>
+</tr>
+<tr>
+<td><code>layout</code></td>
+<td><code>string</code></td>
+<td>Rendering layout: <code>"block"</code> (default), <code>"strip"</code> (narrow gate), <code>"viewer"</code> (output display), <code>"imageGrid"</code> (image-panel grid), <code>"note"</code> (canvas sticky-note)</td>
+</tr>
+<tr>
+<td><code>width</code></td>
+<td><code>string</code></td>
+<td>CSS width override (e.g. <code>"40px"</code> for strip nodes)</td>
+</tr>
+<tr>
+<td><code>min_height</code></td>
+<td><code>string</code></td>
+<td>CSS min-height override</td>
+</tr>
+<tr>
+<td><code>min_width</code></td>
+<td><code>string</code></td>
+<td>CSS min-width override</td>
+</tr>
+<tr>
+<td><code>max_width</code></td>
+<td><code>string</code></td>
+<td>CSS max-width override</td>
+</tr>
+<tr>
+<td><code>rounding</code></td>
+<td><code>string</code></td>
+<td>Tailwind border-radius class (e.g. <code>"rounded-r-lg"</code>)</td>
+</tr>
+<tr>
+<td><code>config_fields</code></td>
+<td><code>list</code></td>
+<td>Editable fields shown in the node body (type, label, options, default)</td>
+</tr>
+<tr>
+<td><code>display_fields</code></td>
+<td><code>list</code></td>
+<td>Read-only display areas (type, label) — used by viewer-layout nodes</td>
+</tr>
+</tbody>
+</table>
+<p><code>config_fields</code> and <code>display_fields</code> are serialized from <code>ConfigField</code> and <code>DisplayField</code> dataclasses defined on each <code>BaseCanvasNode</code> subclass's <code>ui_config</code> ClassVar (ADR-components-004).</p>
+<h3 id="84-dynamic-option-injection"><span class="num">8.4</span> Dynamic Option Injection</h3>
+<p>Config fields with a <code>__DYNAMIC_PROFILES__</code> sentinel in their <code>options</code> list are replaced at response time with the live LLM profile list from <code>ProfileStore</code>. This enables the LLMCallNode's model selector dropdown to reflect the user's configured profiles without hardcoding.</p>
+<h3 id="85-key-files"><span class="num">8.5</span> Key Files</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/api/platform/components.py</code></td>
+<td><code>list_node_schemas()</code>, <code>_serialize_ui_config()</code>, <code>_inject_dynamic_options()</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/bases.py</code></td>
+<td><code>NodeUIConfig</code>, <code>ConfigField</code>, <code>DisplayField</code> dataclasses</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
+<td><code>NODE_HANDLERS</code> registry + built-in viewer sinks (<code>_SinkBase</code> + <code>ImageViewerSink</code> / <code>TextViewerSink</code> / <code>TextScrollSink</code> / <code>ActionLogSink</code> / <code>MetricsViewerSink</code>) + <code>OutputPortNode</code> — the retired <code>graph_executor.py</code> module's role folded in here</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>imageViewer</code> node</td>
+<td>Done</td>
+<td><code>ImageViewerSink</code> in <code>builtin_nodes.py</code>; configurable ports + <code>rows</code>/<code>cols</code> grid (ADR-components-007, replaced fixed <code>observationViewer</code>)</td>
+</tr>
+<tr>
+<td><code>textViewer</code> node</td>
+<td>Done</td>
+<td><code>TextViewerSink</code> in <code>builtin_nodes.py</code> (ADR-components-008)</td>
+</tr>
+<tr>
+<td><code>textScroll</code> node</td>
+<td>Done</td>
+<td><code>TextScrollSink</code> in <code>builtin_nodes.py</code>; shares <code>text_viewer</code> renderer with <code>textViewer</code> via <code>accumulate=True</code> (ADR-components-008, replaced <code>thinkingLog</code>)</td>
+</tr>
+<tr>
+<td><code>actionLog</code> node</td>
+<td>Done</td>
+<td><code>ActionLogSink</code> in <code>builtin_nodes.py</code></td>
+</tr>
+<tr>
+<td><code>metrics</code> node</td>
+<td>Done</td>
+<td><code>MetricsViewerSink</code> in <code>builtin_nodes.py</code></td>
+</tr>
+<tr>
+<td><code>graphOut</code> node</td>
+<td>Done</td>
+<td><code>GraphOutNode</code> — only sink still consumed by <code>_broadcast_step</code></td>
+</tr>
+<tr>
+<td><code>broadcast</code> node</td>
+<td>Removed</td>
+<td>No <code>broadcast</code> node type / <code>BroadcastNode</code> class in the tree anymore</td>
+</tr>
+<tr>
+<td><code>_OUTPUT_TYPES</code> registry</td>
+<td>Removed</td>
+<td>Deleted with the TODO #38 viewer refactor; viewers now own their own broadcast</td>
+</tr>
+<tr>
+<td><code>trajectory</code> node</td>
+<td>Deferred</td>
+<td>No longer in <code>_OUTPUT_TYPES</code>; no handler registered. Planned top-down map viewer</td>
+</tr>
+<tr>
+<td>Per-node <code>viewer_data</code> events</td>
+<td>Done</td>
+<td><code>_SinkBase.forward()</code> serializes + broadcasts; frontend routes by <code>node_id</code> via <code>useNodeOutput</code></td>
+</tr>
+<tr>
+<td><code>_last_inputs</code> buffering</td>
+<td>Done (outputPort only)</td>
+<td>Other viewer sinks do not use this field anymore</td>
+</tr>
+<tr>
+<td><code>_broadcast_step</code> consolidation</td>
+<td>Done</td>
+<td>Fires at <code>iterOut</code> under the two-pivot model (ADR-dataflow-008); only <code>graphOut</code> sinks contribute</td>
+</tr>
+<tr>
+<td><code>serialize_for_display</code></td>
+<td>Done</td>
+<td>Backs every <code>viewer_data</code> emission (<code>standard/wire_types.py</code>)</td>
+</tr>
+<tr>
+<td><code>image_to_base64</code> / <code>depth_to_base64</code></td>
+<td>Done</td>
+<td><code>standard/wire_types.py</code></td>
+</tr>
+<tr>
+<td>WebSocket <code>broadcast()</code></td>
+<td>Done</td>
+<td>Lives in <code>state.py</code> (moved from <code>api/websocket.py</code> during the <code>api/</code> domain split)</td>
+</tr>
+<tr>
+<td><code>/ws</code> endpoint</td>
+<td>Done</td>
+<td><code>api/execution/websocket.py</code> accepts + registers clients</td>
+</tr>
+<tr>
+<td>WSManager (auto-reconnect, <code>on()</code>, <code>connected</code>)</td>
+<td>Done</td>
+<td><code>ws.ts</code> with exponential backoff</td>
+</tr>
+<tr>
+<td><code>subscribeWS()</code> store wiring</td>
+<td>Done</td>
+<td><code>nav_step</code>, <code>nav_status</code>, <code>nav_complete</code>, <code>exec_log</code>, <code>eval_progress</code>, <code>eval_episode_done</code></td>
+</tr>
+<tr>
+<td><code>execution_id</code> routing</td>
+<td>Done</td>
+<td>End-to-end: backend tags events, frontend filters by ID</td>
+</tr>
+<tr>
+<td><code>nav_step</code> event</td>
+<td>Done</td>
+<td>Emitted at <code>iterOut</code> boundary</td>
+</tr>
+<tr>
+<td><code>nav_status</code> event</td>
+<td>Done</td>
+<td>Emitted on running / paused / done / error</td>
+</tr>
+<tr>
+<td><code>nav_complete</code> event</td>
+<td>Done</td>
+<td>Emitted with final metrics</td>
+</tr>
+<tr>
+<td><code>nav_llm_step</code> event</td>
+<td>Not emitted</td>
+<td>Frontend handler still wired; no backend producer today</td>
+</tr>
+<tr>
+<td><code>exec_log</code> event (ADR-observability-003)</td>
+<td>Done</td>
+<td>Per firing in canvas mode; suppressed under <code>ExecutionPrinciples.suppress_nav_events</code> in batch eval</td>
+</tr>
+<tr>
+<td>Execution log persistence</td>
+<td>Done</td>
+<td><code>ExecutionLogger</code> → JSONL at <code>outputs/runs/{execution_id}/</code> (canvas) / <code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/</code> (eval, per episode, ADR-eval-004)</td>
+</tr>
+<tr>
+<td><code>eval_progress</code> / <code>eval_episode_done</code> (ADR-eval-002)</td>
+<td>Done</td>
+<td>Carries <code>worker_id</code> for per-worker UI grouping</td>
+</tr>
+<tr>
+<td>Playback controls (pause / stop)</td>
+<td>Done</td>
+<td><code>POST /run/pause</code>, <code>POST /run/stop</code></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: Code-faithfulness pass (B3). Propagated the long-missed <code>outputPort</code> → <code>graphOut</code> rename across §1/§2.2/§3/§4.2/§6.2/§Status (the nav_step consolidation sink is node type <code>graphOut</code> / class <code>GraphOutNode</code>; no <code>outputPort</code> type exists). Removed the <code>broadcast</code> viewer node (§3 + Status) — no <code>broadcast</code> type / <code>BroadcastNode</code> class in the tree. <code>MetricsSink</code> → <code>MetricsViewerSink</code> (real class name). <strong>Corrected the WS-suppression flag <code>ExecutionPrinciples.suppress_ws</code> → <code>suppress_nav_events</code></strong> (the real field, on <code>loop_runner.py</code>; <code>suppress_ws</code> never existed). §4.5 ErrorBus line cites <code>:337</code>/<code>:518</code> → drift-proof <code>· _fire_node</code> / <code>· run</code> (real ~589/967). §8.3 layout values 3 → 5 (added imageGrid, note). §5 "UUID" → the real <code>exec_&lt;timestamp&gt;_&lt;random&gt;</code> id format. (Known omission left for later: an <code>eval_complete</code> WS event is also emitted but not yet in the §2.2 table.) ErrorEnvelope fields / ring-200 / queue-500 / <code>GET /api/errors</code> / event strings all re-verified CONFIRMED.</li>
+<li>2026-06-11 12:08: two-pivot terminology fix — §4.2 prose and the status table now cite the two-pivot model (ADR-dataflow-008) for the <code>_broadcast_step</code> iterOut boundary (was: three-pivot / ADR-dataflow-006).</li>
+<li>2026-05-18: §8.5 Key Files — <code>NODE_HANDLERS</code> registry consolidated into <code>agent_loop/builtin_nodes.py</code> (the row for the retired <code>graph_executor.py</code> module folded into the existing <code>builtin_nodes.py</code> row).</li>
+<li>2026-05-15 12:30: Execution-log persistence path updated for batch eval — now per-episode at <code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/log.jsonl</code> (each episode self-contained, no interleaving across workers). See ADR-eval-004.</li>
+<li>2026-05-04 12:15: Added <code>error_event</code> to the WS protocol table (§2.2) and to the frontend store routing table (§6.2); inserted §4.5 documenting the <code>ErrorBus</code> producer surface (per-node + graph-level executor catch, FastAPI exception handler, <code>LogBridgeHandler</code>), the async-queue dispatch model, and the <code>GET /api/errors</code> backfill path. Companion glossary terms added in §9. (see ADR-observability-004)</li>
+<li>2026-04-19 22:26: Catch-up pass since 2026-04-10 — documented TODO #38 viewer refactor (per-node <code>viewer_data</code> events, <code>_OUTPUT_TYPES</code> removed, <code>_SinkBase</code> self-serializes); added <code>exec_log</code> / <code>eval_progress</code> / <code>eval_episode_done</code> / <code>viewer_data</code> to the WS protocol table; noted ADR-components-007 configurable <code>imageViewer</code> (ports + grid), ADR-dataflow-006 three-pivot <code>iterOut</code> broadcast timing, and ADR-components-008 <code>textViewer</code> / <code>textScroll</code> shared <code>text_viewer</code> renderer; retargeted Key Files at new locations (<code>broadcast()</code> in <code>state.py</code>, <code>/ws</code> in <code>api/execution/websocket.py</code>, viewers in <code>builtin_nodes.py</code>); rewrote §4 as "Broadcast Paths" (viewer_data / outputPort / exec_log / eval); Status table refreshed</li>
+<li>2026-04-10 21:00: Added section 8 — Node Schema API (<code>GET /node-schemas</code> with <code>ui_config</code>, response shape, dynamic profile injection)</li>
+<li>2026-04-02 14:21: Added Status section</li>
+<li>2026-04-02 13:58: Initial content — WebSocket protocol, output viewers, broadcast consolidation, execution ID routing</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="graph-execution-engine.html">← 5. Graph Execution Engine</a> · <a href="index.html">↑ Capabilities index</a> · <a href="hook-system.html">7. Hook System →</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-architecture">1. Architecture</a>
+      <a class="toc-h2" href="#2-websocket-protocol">2. WebSocket Protocol</a>
+      <a class="toc-h3" href="#21-message-envelope">2.1 Message Envelope</a>
+      <a class="toc-h3" href="#22-event-types">2.2 Event Types</a>
+      <a class="toc-h3" href="#23-nav_step-payload">2.3 nav_step Payload</a>
+      <a class="toc-h2" href="#3-output-viewer-nodes">3. Output Viewer Nodes</a>
+      <a class="toc-h2" href="#4-broadcast-paths">4. Broadcast Paths</a>
+      <a class="toc-h3" href="#41-per-node-viewer_data-primary-path">4.1 Per-node viewer_data (primary path)</a>
+      <a class="toc-h3" href="#42-consolidated-nav_step-graphout-path">4.2 Consolidated nav_step (graphOut path)</a>
+      <a class="toc-h3" href="#43-execution-logs-exec_log">4.3 Execution logs (exec_log)</a>
+      <a class="toc-h3" href="#44-batch-eval-events">4.4 Batch eval events</a>
+      <a class="toc-h3" href="#45-error-reporting-error_event">4.5 Error reporting (error_event)</a>
+      <a class="toc-h2" href="#5-execution-id-routing">5. Execution ID Routing</a>
+      <a class="toc-h2" href="#6-frontend-wiring">6. Frontend Wiring</a>
+      <a class="toc-h3" href="#61-wsmanager-wsts">6.1 WSManager (ws.ts)</a>
+      <a class="toc-h3" href="#62-zustand-store-storets">6.2 Zustand Store (store.ts)</a>
+      <a class="toc-h3" href="#63-playback-controls">6.3 Playback Controls</a>
+      <a class="toc-h2" href="#7-key-files">7. Key Files</a>
+      <a class="toc-h2" href="#8-node-schema-api">8. Node Schema API</a>
+      <a class="toc-h3" href="#81-endpoint">8.1 Endpoint</a>
+      <a class="toc-h3" href="#82-response-shape">8.2 Response Shape</a>
+      <a class="toc-h3" href="#83-ui_config-fields">8.3 ui_config Fields</a>
+      <a class="toc-h3" href="#84-dynamic-option-injection">8.4 Dynamic Option Injection</a>
+      <a class="toc-h3" href="#85-key-files">8.5 Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

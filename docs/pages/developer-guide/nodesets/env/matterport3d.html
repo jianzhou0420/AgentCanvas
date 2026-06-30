@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matterport3D (MP3D) NodeSet — AgentCanvas</title>
+<meta name="description" content="The Matterport3D NodeSet ( EnvMP3DNodeSet , node prefix env_mp3d ) wraps MatterSim — the discrete panoramic navigation simulator behind R2R and its sibling VLN datasets — as a set of pure environment…">
+<meta property="og:title" content="Matterport3D (MP3D) NodeSet — AgentCanvas">
+<meta property="og:description" content="The Matterport3D NodeSet ( EnvMP3DNodeSet , node prefix env_mp3d ) wraps MatterSim — the discrete panoramic navigation simulator behind R2R and its sibling VLN datasets — as a set of pure environment…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/matterport3d.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Matterport3D">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/matterport3d.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">Matterport3D</span>
+  </div>
+  <div class="last-updated">2026-06-11 13:46</div>
+</div>
+  <header class="page-header guide">
+  <h1>Matterport3D (MP3D) NodeSet</h1>
+</header>
+
+<p class="lede">The <strong>Matterport3D NodeSet</strong> (<code>EnvMP3DNodeSet</code>, node prefix <code>env_mp3d</code>) wraps <strong>MatterSim</strong> — the discrete panoramic navigation simulator behind R2R and its sibling VLN datasets — as a set of <strong>pure environment tools</strong>. This page is about <em>how the environment is abstracted</em>: the decoupled env/method split, the three-tier env contract that lets agent graphs port across simulators, and the per-view image primitive that replaced the old composite panorama.</p>
+<hr>
+
+<h2 id="1-the-abstraction"><span class="num">1.</span> The abstraction in one picture</h2>
+<p>MatterSim is a stateful C++ simulator: it holds one scene mesh + one agent pose, renders a camera frame per <code>makeAction</code>, and exposes a connectivity graph of <em>viewpoints</em> per scene. AgentCanvas hides all of that behind a NodeSet whose job is deliberately narrow:</p>
+<ul>
+<li><strong>The env emits primitives, the method does the reasoning.</strong> <code>env_mp3d</code> renders pixels, lists navigable neighbours, teleports between viewpoints, and scores a trajectory. It does <em>no</em> prompt formatting, no LLM calls, no compass prose, no vision captioning. Those live in <em>method</em> nodesets (NavGPT-MP3D, MapGPT, DiscussNav, SpatialNav) that consume the env's primitives. This is the project's <code>decoupled_nodesets</code> rule — it is what lets the same MapGPT graph swap MP3D for a future env by renaming <code>node_type</code> prefixes.</li>
+<li><strong>Graph mode, not continuous control.</strong> R2R navigation is discrete: the agent picks one of the current viewpoint's navigable neighbours and "teleports" there along the connectivity graph. <code>env_mp3d</code> exposes exactly that — an <code>action</code> is a target <strong>viewpoint ID</strong> (or <code>"STOP"</code>), never a velocity/turn. A continuous-control tier once existed and was <strong>deleted</strong> as dead weight (see <a href="#7-changelog">Changelog</a>).</li>
+<li><strong>One nodeset, six dataset schemas.</strong> R2R · R4R · RxR · REVERIE · CVDN / NDH all ride the same MatterSim connectivity graph; they differ only in episode metadata. The nodeset surfaces them through a single <code>dataset → split → episode_index</code> cascade on <code>MP3DEnvPanel</code>.</li>
+</ul>
+
+<h3 id="manager-singleton">MP3DEnvManager singleton</h3>
+<p>Like every server-mode env, all simulator state lives in a process-wide singleton with a dedicated single-threaded executor (GL/sim thread affinity). Canvas nodes never touch MatterSim directly — they marshal blocking calls onto the executor:</p>
+<pre><code class="language-python">mgr = MP3DEnvManager.get()           # always the same instance
+pano = await loop.run_in_executor(mgr.executor, mgr.graph_render_panorama, n_headings)
+obs  = await loop.run_in_executor(mgr.executor, mgr.graph_get_observation)</code></pre>
+<p>Because the simulator is stateful (per-worker scene + agent pose), the nodeset declares <code>parallelism = "replicated"</code>: each eval worker gets its own subprocess + sim instance rather than sharing one.</p>
+<hr>
+
+<h2 id="2-env-contract"><span class="num">2.</span> The three-tier env contract</h2>
+<p>Every env NodeSet (Habitat, MP3D, future AI2-THOR) follows the same tiered shape so that agent graphs wired only to the required ports are env-portable. <code>env_mp3d</code> populates all three tiers:</p>
+<table>
+<thead><tr><th>Tier</th><th>Nodes</th><th>What it guarantees</th></tr></thead>
+<tbody>
+<tr>
+<td><strong>1 — Gym facade (required)</strong></td>
+<td><code>env_mp3d__reset</code>, <code>env_mp3d__step</code></td>
+<td>The canonical two-node interface. <code>reset</code> fires once at run start (no required input) and bundles the full initial observation; <code>step(action)</code> teleports to a viewpoint and emits the same-shaped bundle + <code>done</code>. Both carry the locked contract ports — <code>instruction</code> TEXT, <code>episode_id</code> TEXT, <code>observation</code> LIST[IMAGE], <code>pose</code> POSE — so a graph wired only to these is portable.</td>
+</tr>
+<tr>
+<td><strong>2 — Env-specific extras</strong></td>
+<td>(same two nodes)</td>
+<td>Alongside the contract ports, MP3D adds <code>scan_id</code>, <code>viewpoint_id</code>, <code>heading</code>, <code>navigable_json</code>, <code>dataset</code>, <code>extras_json</code>, and the per-view primitive (<code>views</code> / <code>view_meta</code> / <code>depth_views</code>). Discrete VLN methods read these; CE-portable graphs ignore them.</td>
+</tr>
+<tr>
+<td><strong>3 — Graph-tier primitives</strong></td>
+<td><code>episode_info</code>, <code>navigate_to</code>, <code>observation</code>, <code>graph_panorama</code>, <code>evaluate</code></td>
+<td>The decomposed building blocks the gym facade bundles internally. Wire these by hand when <code>reset</code>/<code>step</code> don't fit — e.g. re-using one render across two perception nodes, or a custom panorama cadence.</td>
+</tr>
+</tbody>
+</table>
+<p>The gym facade is sugar: <code>reset = episode_info + graph_panorama + observation</code>, and <code>step = navigate_to + graph_panorama + observation</code>, fused into one node so the downstream agent sees an identical observation shape at step 0 and every step after.</p>
+<hr>
+
+<h2 id="3-per-view-primitive"><span class="num">3.</span> The per-view image primitive</h2>
+<p>This is the load-bearing piece of the abstraction and the one most recently reshaped. MatterSim renders a panorama as <strong>N&nbsp;headings&nbsp;×&nbsp;3&nbsp;elevations</strong> discrete views (default <strong>12&nbsp;×&nbsp;3&nbsp;=&nbsp;36</strong>, reproducing the NavGPT sweep with elevations −30°/0°/+30°). The env now emits those views <em>as a list</em>, never as a stitched grid image:</p>
+<table>
+<thead><tr><th>Port</th><th>Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>views</code></td><td><code>LIST[IMAGE]</code></td><td>Per-view RGB, one image per rendered view, in render order.</td></tr>
+<tr><td><code>view_meta</code></td><td><code>TEXT</code> (JSON)</td><td>Aligned 1:1 with <code>views</code>: <code>[{view_index, heading_deg, elevation_deg, direction}, …]</code>. <code>view_index</code> is the native MatterSim 0–35 index.</td></tr>
+<tr><td><code>depth_views</code></td><td><code>LIST[DEPTH]</code></td><td>Per-view depth in metres, aligned with <code>views</code>; empty when depth is disabled.</td></tr>
+</tbody>
+</table>
+<p>The contract-required <code>observation</code> port is just <code>views</code> under its portable name. A built-in <code>imageViewer</code> renders <code>LIST[IMAGE]</code>/<code>LIST[DEPTH]</code> as a tiled strip, so the panorama is still inspectable on the canvas without the env building a composite.</p>
+
+<h3 id="why-not-composite">Why per-view instead of a composite panorama</h3>
+<p>The env used to stitch the 36 views into a single horizontal grid image (<code>composite</code> / <code>depth_composite</code>) plus a <code>directions</code> string. That pushed image-handling logic <em>back into every method</em>: MapGPT, the four NavGPT perception nodes, and DiscussNav each hard-coded the grid geometry (border, label height, tile layout) to crop the panorama apart again. The round-trip was lossy and contract-violating:</p>
+<ul>
+<li><strong>Elevation was thrown away</strong> — the composite was a single horizontal strip, so methods could only recover the 0° row and silently lost the up/down views.</li>
+<li><strong>Candidate→image was a heading-nearest crop</strong>, not an exact index, so a navigable neighbour could be matched to the wrong tile.</li>
+<li><strong>Stitch-then-crop introduced pixel drift</strong> and made every method brittle to the env's layout constants.</li>
+</ul>
+<p>Inverting the contract — env hands out primitives, methods index into them — deleted all three crop paths and let each candidate carry an exact <code>view_index</code> (see next section). This is the same env-emits-primitives principle from §1, applied to pixels.</p>
+
+<h3 id="candidate-view-index">Candidate → view_index mapping</h3>
+<p>On <code>reset</code>/<code>step</code>, every entry in <code>navigable_json</code> gains a <code>view_index</code> field: the rendered view whose <code>(heading, elevation)</code> is nearest that candidate's direction. With 36 views the match lands on the correct elevation row, so a method can pull the exact image for a candidate by index — no cropping, no heading guesswork. Graph-granularity methods that don't need per-candidate imagery (NavGPT-MP3D, SpatialNav) simply ignore the field.</p>
+<hr>
+
+<div class="callout warn"><strong>Interface migrated (2026-06-09).</strong> This nodeset now implements the <a href="template.html">gym-like env interface</a> — <code>reset</code> (metadata only), <code>step_*</code> (control signals, no observation), <code>observe_*</code> (pull perception), <code>evaluate</code>. The node list below predates the migration and may be stale; the template's migration map (§6) and capability matrix (§3) are authoritative.</div>
+<h2 id="4-canvas-nodes"><span class="num">4.</span> Canvas nodes</h2>
+<p><code>get_tools()</code> returns seven nodes — two gym-facade, five graph-tier primitives:</p>
+<table>
+<thead><tr><th>Node Type</th><th>Display</th><th>Key inputs</th><th>Key outputs</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>env_mp3d__reset</code></td><td>MP3D: Reset</td><td><code>trigger</code> (optional)</td><td>instruction, episode_id, observation, pose, navigable_json, views, view_meta, depth_views, …</td><td>Tier 1 — one-shot initial bundle.</td></tr>
+<tr><td><code>env_mp3d__step</code></td><td>MP3D: Step</td><td><code>action</code> (viewpoint ID or STOP)</td><td>same bundle as reset + <code>done</code></td><td>Tier 1 — teleport + post-step bundle.</td></tr>
+<tr><td><code>env_mp3d__episode_info</code></td><td>MP3D: Episode Info</td><td><code>trigger</code> (optional)</td><td>instruction, episode_id, scan_id</td><td>Tier 3 — entry node for the instruction.</td></tr>
+<tr><td><code>env_mp3d__navigate_to</code></td><td>MP3D: Navigate To</td><td><code>viewpoint_id</code></td><td>new_viewpoint, turned_angle, success, error, (done on STOP)</td><td>Tier 3 — graph teleport, writes <code>trajectory</code>.</td></tr>
+<tr><td><code>env_mp3d__observation</code></td><td>MP3D: Observation</td><td><code>trigger</code> (optional)</td><td>viewpoint_id, scan_id, heading, navigable_json, position_json</td><td>Tier 3 — raw structured state (no pixels, no prose).</td></tr>
+<tr><td><code>env_mp3d__graph_panorama</code></td><td>MP3D: Graph Panorama</td><td><code>trigger</code> (optional)</td><td>views, view_meta, depth_views, scan_id, viewpoint_id</td><td>Tier 3 — render the per-view primitive at the current viewpoint.</td></tr>
+<tr><td><code>env_mp3d__evaluate</code></td><td>MP3D: Evaluate</td><td><code>trigger</code> (optional)</td><td>metrics (JSON), success, spl</td><td>Tier 3 — R2R metrics from the accumulated trajectory.</td></tr>
+</tbody>
+</table>
+<p>Render granularity is a node config (<code>n_headings</code>: <code>8</code> → 24 views, or <code>12</code> → 36 views, default 12) on <code>reset</code>, <code>step</code>, and <code>graph_panorama</code>.</p>
+
+<h3 id="navigate-and-trajectory">Navigation &amp; trajectory accounting</h3>
+<p><code>navigate_to</code> is pure graph movement. An <em>adjacent</em> target is a single step; a <em>non-adjacent</em> target walks the shortest path and records every intermediate viewpoint. The full trajectory is written to <code>graph_state</code> under <code>trajectory</code> — that is what <code>evaluate</code> reads to compute SR / SPL / nDTW / SDTW / CLS / nav_error / oracle_success against the ground-truth path. One quirk worth knowing: the <code>done</code> output key is emitted <em>only</em> on <code>STOP</code>, to keep the executor's done-scan from terminating the episode mid-walk.</p>
+<hr>
+
+<h2 id="5-env panel-and-datasets"><span class="num">5.</span> Env panel &amp; datasets</h2>
+<p><code>MP3DEnvPanel</code> is the canvas panel for episode selection. It exposes a three-field cascade — <strong>dataset → split → episode_index</strong> — plus Play / Pause / Stop / Reset actions. Changing <code>dataset</code> resets split + episode; changing <code>split</code> resets episode; any change fires an <code>episode_reset</code> signal so <code>lifetime="episode"</code> state containers downstream clear themselves.</p>
+<table>
+<thead><tr><th>Dataset</th><th>Schema note</th></tr></thead>
+<tbody>
+<tr><td><strong>R2R</strong></td><td>Room-to-Room — base schema (path + heading + single instruction).</td></tr>
+<tr><td><strong>R4R</strong></td><td>Concatenated R2R paths (longer, less direct).</td></tr>
+<tr><td><strong>RxR</strong></td><td>Multilingual; splits add a language suffix (<code>val_unseen_en</code> / <code>_hi</code> / <code>_te</code>). Language surfaces in <code>extras_json</code>.</td></tr>
+<tr><td><strong>REVERIE</strong></td><td>Object-grounded remote referring; target object id in <code>extras_json</code>.</td></tr>
+<tr><td><strong>CVDN / NDH</strong></td><td>Dialog-history navigation; dialog turns in <code>extras_json</code>.</td></tr>
+</tbody>
+</table>
+<p>All six are surfaced through the one nodeset — the env panel cascade picks the schema, and dataset-specific fields ride along in <code>extras_json</code> so the contract ports stay uniform.</p>
+<hr>
+
+<h2 id="6-server-mode"><span class="num">6.</span> Server mode</h2>
+<p>MatterSim has its own native dependency stack, so the nodeset runs as an <strong>auto-hosted subprocess</strong> under a dedicated interpreter (<code>MP3D_PYTHON</code>, default <code>~/miniforge3/envs/ac-mp3d/bin/python</code>). When loaded via <code>POST /api/components/nodesets/env_mp3d/load?mode=server</code>, the framework spins up the subprocess and proxies the nodes, preserving their <code>node_type</code> IDs (e.g. <code>env_mp3d__step</code>) so graphs run identically regardless of deployment mode.</p>
+<p>Episode state lives <em>inside</em> the subprocess (the main-backend singleton is empty under the active-workspace overlay). Episode browsing from the canvas therefore goes through the env panel / <code>/api/env-panels/env_mp3d/...</code>, not through hidden tool nodes. Initialization kwargs (passed to <code>initialize()</code> at subprocess boot): <code>width</code>, <code>height</code>, <code>vfov</code>, <code>preloading</code>, <code>depth</code>, <code>dataset</code>, <code>split</code>, <code>cache_size</code>.</p>
+<hr>
+
+<h2 id="7-usage"><span class="num">7.</span> Typical graph workflow</h2>
+<p>A discrete LLM-VLN agent on MP3D wires the gym facade into a loop:</p>
+<pre><code class="language-text">env_mp3d__reset ──┬─ instruction ───────────────┐
+                  ├─ views / view_meta ──► (method: format candidates + images)
+                  └─ navigable_json ────────────┘
+                                                  │
+                          (method LLM picks a viewpoint ID)
+                                                  ▼
+                              env_mp3d__step(action) ──┬─ views / view_meta / navigable_json ─► loop
+                                                       └─ done ─► env_mp3d__evaluate ─► metrics</code></pre>
+<ul>
+<li><strong>MapGPT</strong> consumes <code>views</code> + <code>view_meta</code> and pulls each candidate's image by its <code>view_index</code>.</li>
+<li><strong>NavGPT-MP3D</strong> feeds <code>views</code> to BLIP-2 / Faster R-CNN perception nodes, which bucket detections into compass sectors by the <code>heading_deg</code>/<code>elevation_deg</code> in <code>view_meta</code> (no grid geometry assumed).</li>
+<li><strong>SpatialNav</strong> adds SSG enrichment on top of the same view stream.</li>
+</ul>
+<p>For the live status of each MP3D graph (verified vs. needs-investigation), see <a href="../../nodesets/status/vln-support-status.html">VLN Support Status §2.2</a>. For the env-contract rationale across all environments, see <a href="../../design-docs/components/nodesets.html">NodeSets design doc</a>.</p>
+<hr>
+
+<h2 id="8-changelog"><span class="num">8.</span> Changelog</h2>
+<ul>
+<li><strong>2026-06-09</strong>: Page created. Documents the per-view image primitive (<code>views</code> / <code>view_meta</code> / <code>depth_views</code>) that replaced the composite-panorama contract (commit <code>c71e78f</code>), the candidate→<code>view_index</code> mapping, default render granularity 12&nbsp;×&nbsp;3&nbsp;=&nbsp;36 views, and the removal of the unused continuous-control tier.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-the-abstraction">1. The abstraction in one picture</a>
+      <a class="toc-h3" href="#manager-singleton">MP3DEnvManager singleton</a>
+      <a class="toc-h2" href="#2-env-contract">2. The three-tier env contract</a>
+      <a class="toc-h2" href="#3-per-view-primitive">3. The per-view image primitive</a>
+      <a class="toc-h3" href="#why-not-composite">Why per-view instead of a composite panorama</a>
+      <a class="toc-h3" href="#candidate-view-index">Candidate → view_index mapping</a>
+      <a class="toc-h2" href="#4-canvas-nodes">4. Canvas nodes</a>
+      <a class="toc-h3" href="#navigate-and-trajectory">Navigation &amp; trajectory accounting</a>
+      <a class="toc-h2" href="#5-env panel-and-datasets">5. Env panel &amp; datasets</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server mode</a>
+      <a class="toc-h2" href="#7-usage">7. Typical graph workflow</a>
+      <a class="toc-h2" href="#8-changelog">8. Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

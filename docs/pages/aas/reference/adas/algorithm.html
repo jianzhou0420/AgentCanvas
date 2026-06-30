@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ADAS on AgentCanvas — algorithm</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1a1a1a; --muted: #6b6b6b;
+    --accent: #b34700; --accent-bg: #fff3eb;
+    --frame: #d4d4d0; --frame-strong: #1a1a1a;
+    --box: #ffffff; --warn: #a52a00;
+    --code-bg: #f0efe9;
+  }
+  [data-theme="dark"] { --accent: #e8896c; --warn: #e8896c; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+    max-width: 920px; margin: 2.5rem auto; padding: 0 1.5rem;
+    line-height: 1.55;
+  }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid var(--frame-strong); padding-bottom: .35rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2.2rem; border-bottom: 1px solid var(--frame); padding-bottom: .2rem; }
+  h3 { font-size: 1.0rem; margin-top: 1.4rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; font-size: .95rem; }
+  .badge {
+    display: inline-block;
+    background: var(--accent-bg); color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: .05rem .5rem; border-radius: 3px; font-size: .8rem;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .refactor-note { background:#e9f4ee; border-left:4px solid #1a7a1a; padding:.85rem 1.1rem; margin:1.1rem 0; font-size:.95rem; }
+  [data-theme="dark"] .refactor-note { background:#1f2c25; border-left-color:#5fb88a; }
+  table { border-collapse: collapse; width: 100%; margin-top: .6rem; font-size: .9rem; }
+  th, td { border: 1px solid var(--frame); padding: .4rem .55rem; text-align: left; vertical-align: top; }
+  th { background: #f0efe9; font-weight: 600; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .05rem .35rem; border-radius: 2px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); padding: .7rem .9rem; border-radius: 3px;
+    overflow-x: auto; font-size: .85rem; border-left: 3px solid var(--accent);
+  }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin-bottom: .25rem; }
+  .diagram { background: var(--box); border: 1px solid var(--frame); border-radius: 4px; padding: 1rem; margin: 1rem 0; }
+  .legend { font-size: .82rem; color: var(--muted); margin-top: .6rem; }
+  .legend span { display: inline-block; margin-right: 1rem; }
+  .legend .sw {
+    display: inline-block; width: 11px; height: 11px;
+    vertical-align: middle; margin-right: .3rem; border: 1px solid #999;
+  }
+  .key { color: var(--accent); font-weight: 600; }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<!-- aas-cross-nav: v1 -->
+<script>
+  // Match the site-wide theme choice (shared 'site-theme' key) before first
+  // paint, so an AAS page opened from a dark main-site session renders dark.
+  (function() {
+    var t;
+    try { t = localStorage.getItem('site-theme'); } catch (e) {}
+    if (!t) { t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<nav class="aas-xnav" aria-label="Site sections">
+  <a class="aas-xnav-brand" href="../../../../index.html">AgentCanvas</a>
+  <div class="aas-xnav-tabs">
+    <a href="../../../../pages/developer-guide/capabilities/index.html">Developer Guide</a>
+    <a class="active" href="../../../../pages/aas/index.html">AAS</a>
+  </div>
+  <button class="aas-xnav-theme" type="button" aria-label="Toggle light / dark theme"
+    onclick="(function(){var d=document.documentElement;var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('site-theme',n);}catch(e){}})()">&#9680;</button>
+</nav>
+<style>
+.aas-xnav {
+  background: #1a1a1a; color: #fafaf7;
+  padding: .55rem 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: .88rem;
+  display: flex; align-items: center; gap: 1.6rem;
+  position: sticky; top: 0; z-index: 1000;
+  margin: 0; box-shadow: 0 1px 0 rgba(0,0,0,.15);
+}
+.aas-xnav .aas-xnav-brand {
+  color: #fafaf7; text-decoration: none; font-weight: 700;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: .92rem;
+}
+.aas-xnav .aas-xnav-tabs { display: flex; gap: .4rem; }
+.aas-xnav .aas-xnav-tabs a {
+  color: #fafaf7; text-decoration: none; opacity: .65;
+  padding: .25rem .65rem; border-radius: 3px;
+  transition: opacity .12s, background .12s;
+}
+.aas-xnav .aas-xnav-tabs a:hover { opacity: 1; background: rgba(255,255,255,.06); }
+.aas-xnav .aas-xnav-tabs a.active {
+  opacity: 1; font-weight: 600; background: rgba(255,255,255,.12);
+}
+.aas-xnav-theme {
+  margin-left: auto;
+  background: transparent; border: 1px solid rgba(255,255,255,.28);
+  color: #fafaf7; cursor: pointer; border-radius: 3px;
+  padding: .15rem .55rem; font-size: .95rem; line-height: 1;
+}
+.aas-xnav-theme:hover { background: rgba(255,255,255,.1); }
+
+/* Dark theme for the AAS subsite. These pages are self-contained (own
+   <head>/<style>, no shared style.css) but all share the same CSS var
+   names + boilerplate classes, so one override block covers the whole
+   subtree. It lives in <body> (injected after <head>), so it wins on
+   source order for equal-specificity rules. Per-page saturated --accent
+   text is left as-is; only the light --accent-bg tint is neutralised. */
+[data-theme="dark"] {
+  --bg: #1a1a1c; --fg: #e8e8e6; --muted: #8a8a86;
+  --frame: #3a3a3e; --frame-strong: #cfcfcc;
+  --box: #232328; --code-bg: #2a2a2e;
+  --accent-bg: #2b2b32; --link: #6ba6dc;
+}
+[data-theme="dark"] th { background: #26262b; }
+[data-theme="dark"] .frontmatter { background: #232328; }
+[data-theme="dark"] details.toc { background: #232328; }
+[data-theme="dark"] .group { background: #232328; }
+[data-theme="dark"] blockquote { color: #c0c0bc; }
+</style>
+<!-- /aas-cross-nav -->
+
+<h1>ADAS on AgentCanvas &mdash; paper analysis + adas-subagent port</h1>
+<p class="subtitle">
+  A two-part document. <strong>Section 1</strong> dissects Hu et al. 2024
+  <em>"Automated Design of Agentic Systems"</em> &mdash; how
+  <code>search.py</code>'s outer loop, archive injection, and debug retry
+  actually work, with the original source annotated.
+  <strong>Section 2</strong> documents the AgentCanvas port
+  (<strong>adas-subagent</strong>): one main Claude conversation envelope
+  plus one <code>Agent</code> sub-agent per Reflexion round, giving 3
+  independent tool-augmented samples per propose.
+</p>
+
+<p>
+  <span class="badge">section 1</span> upstream paper analysis
+  &nbsp;
+  <span class="badge">section 2</span> adas-subagent (reasoning module = sub-agent)
+  &nbsp;
+  <span class="badge">scope</span> coding-agent-era extension, no AAS additions
+</p>
+
+<p style="background:var(--accent-bg); border-left:3px solid var(--accent); padding:.7rem 1rem; border-radius:3px; margin:1rem 0; font-size:.92rem;">
+  <strong>Framing note.</strong> Upstream ADAS lives in the
+  <code>reasoning module = stateless LLM call</code> paradigm &mdash; the only
+  option in 2024. adas-subagent proposes
+  <strong><code>reasoning module = tool-augmented Claude conversation with
+  context management</code></strong> as the coding-agent-era replacement.
+  This is the primary contribution; "faithful 1:1 reproduction" is
+  <em>not</em> the goal. Several paradigm-independent elements (3-call
+  Reflexion structure, <code>Reflexion_prompt_1 / 2</code> text,
+  <code>bootstrap_CI</code> algorithm, archive contract) <em>are</em>
+  preserved verbatim &mdash; the "verbatim" labels on individual tables
+  below are accurate at that per-element level. Any residual
+  &ldquo;faithful port&rdquo;-style language elsewhere should be read as
+  &ldquo;structurally accurate translation of paradigm-independent
+  elements,&rdquo; not as a 1:1 fidelity claim.
+</p>
+
+<h2>Section 1 &mdash; Upstream paper analysis (Hu et al. 2024)</h2>
+
+<p>
+  How the original ADAS paper's <code>search()</code> function drives one
+  generation (source:
+  <code>third_party/ADAS/_mmlu/search.py:146&ndash;242</code>).
+  The orange 3-call Reflexion sequence is the load-bearing piece &mdash; our
+  adas-subagent <code>proposer</code> skill (Section 2) preserves it
+  verbatim &mdash; three independent <code>Agent</code> sub-agent spawns,
+  one per Reflexion round. Annotations below the SVG link each diagram
+  region to the exact upstream line.
+</p>
+
+<div class="diagram">
+<svg viewBox="0 0 880 480" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr2-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b34700"/>
+    </marker>
+  </defs>
+
+  <!-- ROW 1: pre-search initial archive -->
+  <rect x="20" y="15" width="170" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="105" y="38" text-anchor="middle" font-weight="600">get_init_archive()</text>
+  <text x="105" y="56" text-anchor="middle" font-size="11">7 baseline agents</text>
+
+  <line x1="190" y1="42" x2="215" y2="42" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="215" y="15" width="200" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="315" y="38" text-anchor="middle" font-weight="600">evaluate + bootstrap_CI</text>
+  <text x="315" y="56" text-anchor="middle" font-size="11">score each seed once</text>
+
+  <line x1="415" y1="42" x2="440" y2="42" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="440" y="15" width="150" height="55" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="515" y="38" text-anchor="middle" font-weight="600">archive.json</text>
+  <text x="515" y="56" text-anchor="middle" font-size="11">size 7 → grow</text>
+
+  <line x1="515" y1="70" x2="515" y2="105" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- for-n outer dashed bounding box -->
+  <rect x="10" y="85" width="860" height="380" fill="none" stroke="#999" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="22" y="103" font-size="12" fill="#6b6b6b" font-style="italic">for n in range(n_generation):</text>
+
+  <!-- ROW 2: 3-call Reflexion sequence -->
+  <rect x="25" y="115" width="130" height="50" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="90" y="135" text-anchor="middle" font-weight="600">get_prompt</text>
+  <text x="90" y="151" text-anchor="middle" font-size="11">(archive)</text>
+
+  <line x1="155" y1="140" x2="175" y2="140" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="175" y="115" width="130" height="50" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="240" y="135" text-anchor="middle" font-weight="600" fill="#b34700">LLM #1</text>
+  <text x="240" y="151" text-anchor="middle" font-size="11">propose</text>
+
+  <line x1="305" y1="140" x2="325" y2="140" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="325" y="115" width="150" height="50" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="400" y="135" text-anchor="middle" font-weight="600" fill="#b34700">LLM #2</text>
+  <text x="400" y="151" text-anchor="middle" font-size="11">Reflexion_prompt_1</text>
+
+  <line x1="475" y1="140" x2="495" y2="140" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="495" y="115" width="150" height="50" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="570" y="135" text-anchor="middle" font-weight="600" fill="#b34700">LLM #3</text>
+  <text x="570" y="151" text-anchor="middle" font-size="11">Reflexion_prompt_2</text>
+
+  <line x1="645" y1="140" x2="665" y2="140" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="665" y="115" width="180" height="50" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="755" y="135" text-anchor="middle" font-weight="600">next_solution</text>
+  <text x="755" y="151" text-anchor="middle" font-size="11">{thought, name, code}</text>
+
+  <!-- annotations under LLM row -->
+  <text x="440" y="183" text-anchor="middle" font-size="11" fill="#6b6b6b">shared msg_list · temperature=0.8 · response_format=json_object · max_tokens=4096</text>
+  <text x="440" y="200" text-anchor="middle" font-size="11" fill="#a52a00">any of LLM #1/#2/#3 raises → <tspan font-style="italic">n -= 1; continue</tspan> (generation NOT archived)</text>
+
+  <!-- arrow from next_solution down into debug loop -->
+  <line x1="755" y1="165" x2="755" y2="220" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- debug retry sub-box -->
+  <rect x="40" y="215" width="810" height="160" fill="none" stroke="#b34700" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="52" y="232" font-size="12" fill="#b34700" font-style="italic">for _ in range(debug_max=3):</text>
+
+  <!-- evaluate_forward_fn -->
+  <rect x="60" y="248" width="180" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="150" y="270" text-anchor="middle" font-weight="600">evaluate_forward_fn</text>
+  <text x="150" y="286" text-anchor="middle" font-size="11">acc_list ← run agent</text>
+
+  <line x1="240" y1="275" x2="287" y2="275" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- decision diamond -->
+  <polygon points="370,248 450,275 370,302 290,275" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="370" y="270" text-anchor="middle" font-size="11" font-weight="600">exception OR</text>
+  <text x="370" y="285" text-anchor="middle" font-size="11" font-weight="600">mean(acc)&lt;0.01 ?</text>
+
+  <!-- diamond NO -->
+  <line x1="450" y1="275" x2="490" y2="275" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="470" y="268" text-anchor="middle" font-size="10" fill="#6b6b6b">no</text>
+
+  <rect x="490" y="248" width="160" height="55" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="570" y="270" text-anchor="middle" font-weight="600">bootstrap_CI</text>
+  <text x="570" y="286" text-anchor="middle" font-size="11">→ fitness_str</text>
+
+  <line x1="650" y1="275" x2="680" y2="275" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <rect x="680" y="248" width="160" height="55" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="760" y="270" text-anchor="middle" font-weight="600">archive.append</text>
+  <text x="760" y="286" text-anchor="middle" font-size="11">(next_solution)</text>
+
+  <!-- diamond YES — retry feedback loop -->
+  <path d="M 370 302 L 370 335 L 150 335 L 150 303" fill="none" stroke="#b34700" stroke-width="1.5" marker-end="url(#arr2-orange)"/>
+  <text x="370" y="324" text-anchor="middle" font-size="10" fill="#b34700">yes</text>
+  <text x="262" y="350" text-anchor="middle" font-size="11" fill="#b34700">push err to msg_list, ask LLM (debug_thought) → new code → retry</text>
+
+  <!-- exhausted-retries arrow out of debug box -->
+  <line x1="370" y1="375" x2="370" y2="400" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arr2-orange)"/>
+  <text x="468" y="392" font-size="11" fill="#a52a00">3 retries exhausted</text>
+
+  <!-- skip-on-failure box (outside debug retry box) -->
+  <rect x="270" y="400" width="200" height="50" fill="#fff" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="370" y="421" text-anchor="middle" font-weight="600" fill="#a52a00">n -= 1; continue</text>
+  <text x="370" y="438" text-anchor="middle" font-size="11" fill="#a52a00">generation NOT archived</text>
+
+  <!-- corner label inside for-n box -->
+  <text x="858" y="103" text-anchor="end" font-size="11" fill="#6b6b6b">archive grows iff success</text>
+</svg>
+<div class="legend">
+  <span><span class="sw" style="background:#fff3eb;border-color:#b34700"></span>meta-LLM call (Reflexion 3-step)</span>
+  <span><span class="sw" style="background:#fff"></span>computation</span>
+  <span><span class="sw" style="background:#f0efe9"></span>archive / decision</span>
+  <span><span class="sw" style="background:#fff;border-color:#a52a00;border-style:dashed"></span>failure / skip</span>
+</div>
+</div>
+
+<h3>Annotated source — does the diagram match?</h3>
+
+<p>
+  Below is the verbatim <code>search()</code> function from
+  <code>third_party/ADAS/_mmlu/search.py:146–241</code>,
+  with right-side annotations tying each region back to a box / arrow in the
+  diagram above. <strong>Yes — the diagram is a faithful structural translation;
+  every diagram element has a corresponding code region marked here.</strong>
+</p>
+
+<p style="font-size: .88rem;"><strong>Diagram ↔ code map</strong>:</p>
+<ul style="font-size: .88rem;">
+  <li><b>Top row (3 boxes)</b> ↔ <code>156</code>, <code>159–172</code>, <code>178</code> — init archive + seed scoring + persist.</li>
+  <li><b>Outer dashed for-loop box</b> ↔ <code>180</code>.</li>
+  <li><b>3 orange LLM boxes</b> ↔ <code>188</code>, <code>194</code>, <code>198</code> — each is one <code>get_json_response_from_gpt_reflect</code> sharing the same <code>msg_list</code>.</li>
+  <li><b>Red "any LLM raises" skip annotation</b> ↔ <code>199–203</code>.</li>
+  <li><b>Inner orange dashed debug box</b> ↔ <code>206</code>.</li>
+  <li><b>evaluate_forward_fn box + decision diamond</b> ↔ <code>208–212</code>.</li>
+  <li><b>YES branch (retry feedback arrow)</b> ↔ <code>215–218</code> — push err to <code>msg_list</code>, re-ask LLM.</li>
+  <li><b>"3 retries exhausted" red skip box</b> ↔ <code>224–226</code>.</li>
+  <li><b>NO branch → bootstrap_CI → archive.append</b> ↔ <code>228</code> and <code>236</code>.</li>
+</ul>
+
+<pre style="font-size: .78rem; line-height: 1.42;">
+146  def search(args):
+147      file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
+148      if os.path.exists(file_path):
+149          with open(file_path, 'r') as json_file:
+150              archive = json.load(json_file)                       <span style="color:#6b6b6b"># resume from disk if exists</span>
+151          if "generation" in archive[-1] and isinstance(archive[-1]['generation'], int):
+152              start = archive[-1]['generation']
+153          else:
+154              start = 0
+155      else:
+156          archive = get_init_archive()                             <span class="key">◀── BOX: get_init_archive (7 baseline agents)</span>
+157          start = 0
+158
+159      for solution in archive:                                     <span class="key">◀── BOX: evaluate + bootstrap_CI (score each seed)</span>
+160          if 'fitness' in solution:
+161              continue
+162
+163          solution['generation'] = "initial"
+164          print(f"============Initial Archive: {solution['name']}=================")
+165          try:
+166              acc_list = evaluate_forward_fn(args, solution["code"])
+167          except Exception as e:
+168              print("During evaluating initial archive:")
+169              print(e)
+170              continue
+171
+172          fitness_str = bootstrap_confidence_interval(acc_list)
+173          solution['fitness'] = fitness_str
+174
+175          # save results
+176          os.makedirs(os.path.dirname(file_path), exist_ok=True)
+177          with open(file_path, 'w') as json_file:
+178              json.dump(archive, json_file, indent=4)              <span class="key">◀── BOX: archive.json (seeded archive persisted)</span>
+179
+180      for n in range(start, args.n_generation):                    <span class="key">◀── OUTER DASHED BOX (for n in range(n_generation))</span>
+181          print(f"============Generation {n + 1}=================")
+182          system_prompt, prompt = get_prompt(archive)              <span class="key">◀── BOX: get_prompt(archive)</span>
+183          msg_list = [
+184              {"role": "system", "content": system_prompt},
+185              {"role": "user", "content": prompt},
+186          ]
+187          try:
+188              next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+                                                                     <span class="key">◀── BOX (orange): LLM #1 propose</span>
+                                                                     <span class="key">    temp=0.8 / JSON mode / max_tokens=4096 (defaults in search.py:53–67)</span>
+189
+190              Reflexion_prompt_1, Reflexion_prompt_2 = get_reflexion_prompt(archive[-1] if n > 0 else None)
+191              # Reflexion 1
+192              msg_list.append({"role": "assistant", "content": str(next_solution)})
+193              msg_list.append({"role": "user", "content": Reflexion_prompt_1})
+194              next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+                                                                     <span class="key">◀── BOX (orange): LLM #2 Reflexion_prompt_1</span>
+195              # Reflexion 2
+196              msg_list.append({"role": "assistant", "content": str(next_solution)})
+197              msg_list.append({"role": "user", "content": Reflexion_prompt_2})
+198              next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+                                                                     <span class="key">◀── BOX (orange): LLM #3 Reflexion_prompt_2</span>
+                                                                     <span class="key">    next_solution = {thought, name, code}</span>
+199          except Exception as e:
+200              print("During LLM generate new solution:")
+201              print(e)
+202              n -= 1                                               <span class="warn">◀── RED SKIP: any of LLM #1/#2/#3 raised</span>
+203              continue                                             <span class="warn">              n -= 1; continue (generation NOT archived)</span>
+204
+205          acc_list = []
+206          for _ in range(args.debug_max):                          <span class="key">◀── INNER ORANGE DASHED BOX (debug_max=3)</span>
+207              try:
+208                  acc_list = evaluate_forward_fn(args, next_solution["code"])
+                                                                     <span class="key">◀── BOX: evaluate_forward_fn</span>
+209                  if np.mean(acc_list) &lt; 0.01 and SEARCHING_MODE:  <span class="key">◀── DIAMOND: mean(acc)&lt;0.01? → "yes" path</span>
+210                      raise Exception("All 0 accuracy")
+211                  break                                            <span class="key">◀── DIAMOND: no → leave debug loop, success</span>
+212              except Exception as e:                               <span class="key">◀── DIAMOND: yes → catch &amp; retry</span>
+213                  print("During evaluation:")
+214                  print(e)
+215                  msg_list.append({"role": "assistant", "content": str(next_solution)})
+216                  msg_list.append({"role": "user", "content":      <span class="key">◀── YES branch arrow: push err to msg_list</span>
+                      f"Error during evaluation:\n{e}\nCarefully consider where you went wrong in your latest implementation. "
+                      f"Using insights from previous attempts, try to debug the current code to implement the same thought. "
+                      f"Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
+217                  try:                                             <span class="key">◀── ask LLM (with debug_thought field) → new code</span>
+218                      next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+219                  except Exception as e:
+220                      print("During LLM generate new solution:")
+221                      print(e)
+222                      continue
+223                  continue
+224          if not acc_list:                                         <span class="warn">◀── RED SKIP: 3 retries exhausted</span>
+225              n -= 1                                               <span class="warn">              n -= 1</span>
+226              continue                                             <span class="warn">              continue (generation NOT archived)</span>
+227
+228          fitness_str = bootstrap_confidence_interval(acc_list)    <span class="key">◀── BOX: bootstrap_CI → fitness_str</span>
+229          next_solution['fitness'] = fitness_str
+230          next_solution['generation'] = n + 1
+231
+232          if 'debug_thought' in next_solution:
+233              del next_solution['debug_thought']                   <span style="color:#6b6b6b"># clean scratch field before archiving</span>
+234          if 'reflection' in next_solution:
+235              del next_solution['reflection']
+236          archive.append(next_solution)                            <span class="key">◀── BOX: archive.append(next_solution)</span>
+237
+238          # save results
+239          os.makedirs(os.path.dirname(file_path), exist_ok=True)
+240          with open(file_path, 'w') as json_file:
+241              json.dump(archive, json_file, indent=4)              <span style="color:#6b6b6b"># archive grows iff success</span>
+</pre>
+
+<p><strong>Upstream invariants worth marking</strong> — these are the paradigm-independent structural anchors adas-subagent preserves verbatim, even as the reasoning module mechanism itself is upgraded:</p>
+
+<ul>
+  <li><b>3 sequential LLM calls share one <code>msg_list</code></b> — R1
+  sees the assistant's propose response; R2 sees both. <em>adas-subagent's
+  <code>proposer</code> § 6 preserves this verbatim across the three
+  <code>Agent</code> sub-agent spawns.</em></li>
+  <li><b>Failed generations are NOT appended to archive</b> &mdash; LLM
+  exceptions and exhausted retries both <code>n -= 1; continue</code>.
+  <em>adas-subagent commits only via the loop skill's Atomic Writer,
+  which fires only on full success; SKIP paths do <code>rm -rf
+  .staging/iter_n/</code> with no archive append. Section 2 documents
+  this contract.</em></li>
+  <li><b>Fitness is a bootstrap-95%-CI string</b>, e.g.
+  <code>"95% Bootstrap CI: (52.3%, 73.1%), Median: 63.0%"</code>.
+  <em>adas-subagent's loop computes this verbatim in the Atomic Writer
+  enrichment step; the string is stored at the top of
+  <code>metrics.json</code> AND injected into every
+  <code>archive.jsonl</code> entry so meta-LLM sees uncertainty, not just
+  point estimates.</em></li>
+  <li><b>Initial archive contains 7 hand-designed agents</b>
+  (<code>COT, COT_SC, Reflexion, LLM_debate, Take_a_step_back, QD,
+  Role_Assignment</code>), each scored before generation 0 starts.
+  <em>adas-subagent keeps the 7-pattern injection but as
+  <strong>text-only</strong> seed entries (<code>fitness: null</code>)
+  &mdash; pre-evaluating 7 graph baselines at 100 ep each would cost ~14
+  h, infeasible at our scale. Meta-LLM sees the patterns as "design
+  palette", not benchmarked alternatives.</em></li>
+  <li><b><code>mean(acc_list) &lt; 0.01</code> is an upstream debug
+  trigger</b>, same as a Python crash. <em>adas-subagent's implementer
+  intentionally drops this trigger &mdash; low / zero metric values on
+  a clean run are real data ("this approach scored 0%"), not a
+  broken-code signal. See Section 2 bucket D (intentional divergences)
+  for rationale.</em></li>
+</ul>
+
+<p>
+  Section 2 below documents how adas-subagent implements each of these
+  invariants concretely.
+</p>
+
+
+<h2 id="section-2-adas-subagent">Section 2 &mdash; adas-subagent (reasoning module = sub-agent)</h2>
+
+<p>
+  <code>.claude/commands/architect/adas-subagent/</code> is the
+  AgentCanvas port of upstream ADAS. <strong>Structural delta vs
+  upstream:</strong> each meta-LLM call from <code>search.py</code> (the
+  3 Reflexion rounds in proposer and the retry-on-failure call in
+  implementer) becomes one
+  <code>Agent({subagent_type:"general-purpose", ...})</code> invocation
+  &mdash; a fully tool-augmented independent Claude conversation, not a
+  stateless OpenAI API call. The 5-skill layout, archive contract,
+  two-tier evaluation, atomic writer, and <code>vN/iter_M</code> run-dir
+  are kept; <code>bootstrap_CI</code> + <code>fitness_str</code> +
+  Reflexion prompt text are byte-for-byte verbatim.
+</p>
+
+<div class="refactor-note">
+  <strong>2026-05 refactor &mdash; method-free implementer + method-free evaluator.</strong>
+  Four divergences from a strict upstream-fidelity port (rationale: modern
+  coding agents are strong enough debuggers that Reflexion-style chained
+  reasoning offered little marginal value over
+  fresh-spawn-with-failure-trace; the prior contract was buying
+  ADAS-fidelity, not quality):
+  <ul style="margin:.55rem 0 0 .2rem; padding-left:1.2rem;">
+    <li><strong>Implementer no longer triggers retry on
+    <code>mean(acc)&lt;0.01</code></strong>. The smoke gate now judges
+    runtime correctness only (exit=0 + all eps completed +
+    <code>step_count&gt;0</code> + valid numeric metric). Low or zero
+    scores are real data for archive, not retry triggers.</li>
+    <li><strong>Implementer's retry sub-agent does NOT inherit
+    proposer's <code>msg_list</code>.</strong> Each retry is a fresh
+    coding-agent debugging task that sees the proposal + accumulated
+    failure trace as read-only text and emits <code>{thought, name,
+    patch}</code>. The Reflexion <code>debug_thought</code> field is
+    gone from the schema.</li>
+    <li><strong><code>retry_max</code> is a config knob</strong> (default
+    3); was hard-coded <code>debug_max=3</code> verbatim upstream.</li>
+    <li><strong>Evaluator is method-free</strong> &mdash; writes neutral
+    metrics only. <code>bootstrap_CI</code> + <code>fitness_str</code>
+    enrichment moved into loop's Atomic Writer step 1.</li>
+  </ul>
+  See bucket D (intentional divergences) further down for the full
+  rationale per item.
+</div>
+
+<p>This section documents:</p>
+<ul>
+  <li>The main per-iter flow &mdash; understand &rarr; loop &rarr;
+  proposer (3 <code>Agent</code> spawns) &rarr; implementer (native
+  edit + smoke + runtime-fail retry) &rarr; evaluator &rarr; atomic writer</li>
+  <li>The sub-agent contract: independent sampling + full tools + JSON-only
+  deliverable</li>
+  <li>Verbatim <code>Reflexion_prompt_1 / 2</code> text and the
+  cross-spawn <code>msg_list</code> rendering</li>
+  <li>What's preserved verbatim from upstream, what's forced by the new
+  substrate, and what's an intentional design choice (the 4-bucket
+  delta table)</li>
+</ul>
+
+<p>
+  The diagram below is the main per-iter flow. The proposer panel
+  contains three <code>Agent</code> sub-agent rectangles (orange-bordered)
+  for R0 / R1 / R2; the implementer panel is method-free, with one fresh
+  retry sub-agent spawned per smoke runtime fail (no
+  <code>mean&lt;0.01</code> trigger, no msg_list inheritance from
+  proposer, <code>retry_max</code> is a config knob).
+</p>
+
+<h3>At-a-glance &mdash; cycle + working memory</h3>
+
+<p>
+  Same shape as the myloop reference diagram: per-iter phases run
+  top-to-bottom on the left, the persistent archive lives on the right,
+  dashed lines show what each phase reads from or writes to it. The
+  large flow diagram immediately below preserves the per-skill mechanics
+  (R0/R1/R2 sub-agent spawns inside <code>proposer</code>, smoke retry
+  inside <code>implementer</code>, Atomic Writer); this view is the
+  10-second summary.
+</p>
+
+<div class="diagram">
+<svg viewBox="0 0 940 600" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr-adas-glance" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr-adas-glance-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b34700"/>
+    </marker>
+  </defs>
+
+  <!-- Pre-loop init box (top) -->
+  <rect x="50" y="20" width="260" height="55" fill="#fafaf7" stroke="#6b6b6b" stroke-width="1.5" stroke-dasharray="4 2"/>
+  <text x="180" y="40" text-anchor="middle" font-weight="600" fill="#6b6b6b">P0 understand + iter_0 baseline</text>
+  <text x="180" y="56" text-anchor="middle" font-size="11" fill="#6b6b6b">load context · run baseline (100ep)</text>
+  <text x="180" y="70" text-anchor="middle" font-size="11" fill="#6b6b6b">&rarr; archive head: baseline + 7 reference seeds</text>
+
+  <line x1="180" y1="75" x2="180" y2="105" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-adas-glance)"/>
+  <text x="195" y="92" font-size="11" fill="#6b6b6b">for n in iters:</text>
+
+  <!-- Proposer -->
+  <rect x="50" y="108" width="260" height="80" fill="#fff3eb" stroke="#b34700" stroke-width="2"/>
+  <text x="180" y="132" text-anchor="middle" font-weight="600" fill="#b34700">proposer</text>
+  <text x="180" y="150" text-anchor="middle" font-size="11">3 Agent spawns (R0 / R1 / R2)</text>
+  <text x="180" y="166" text-anchor="middle" font-size="11">independent samples &middot; full tools</text>
+  <text x="180" y="180" text-anchor="middle" font-size="11">writes proposal.md &rarr; staging</text>
+
+  <line x1="180" y1="188" x2="180" y2="218" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-adas-glance)"/>
+
+  <!-- Implementer -->
+  <rect x="50" y="220" width="260" height="80" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="180" y="244" text-anchor="middle" font-weight="600">implementer (method-free)</text>
+  <text x="180" y="262" text-anchor="middle" font-size="11">apply patch &rarr; smoke (5ep)</text>
+  <text x="180" y="278" text-anchor="middle" font-size="11">runtime-fail retry (fresh Agent, &le;retry_max)</text>
+  <text x="180" y="292" text-anchor="middle" font-size="11">exhausted &rarr; SKIP_RUNTIME_FAIL</text>
+
+  <line x1="180" y1="300" x2="180" y2="330" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-adas-glance)"/>
+
+  <!-- Evaluator -->
+  <rect x="50" y="332" width="260" height="80" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="180" y="356" text-anchor="middle" font-weight="600">evaluator (method-free)</text>
+  <text x="180" y="374" text-anchor="middle" font-size="11">perf eval (100ep, perf_&lt;graph&gt;)</text>
+  <text x="180" y="390" text-anchor="middle" font-size="11">writes neutral metrics.json</text>
+  <text x="180" y="404" text-anchor="middle" font-size="11">(acc_list, primary_metric_value)</text>
+
+  <line x1="180" y1="412" x2="180" y2="442" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-adas-glance)"/>
+
+  <!-- Atomic writer (commit) -->
+  <rect x="50" y="442" width="260" height="70" fill="#fafaf7" stroke="#b34700" stroke-width="1.5"/>
+  <text x="180" y="462" text-anchor="middle" font-weight="600" fill="#b34700">Atomic writer (commit)</text>
+  <text x="180" y="478" text-anchor="middle" font-size="11" fill="#b34700">enrich: bootstrap_CI &rarr; fitness_str</text>
+  <text x="180" y="492" text-anchor="middle" font-size="11" fill="#b34700">mv .staging/iter_n/ &rarr; iter_n/</text>
+  <text x="180" y="506" text-anchor="middle" font-size="11" fill="#b34700">+ archive.append + trace + lineage</text>
+
+  <!-- Loop-back -->
+  <path d="M 50 470 L 25 470 L 25 148 L 48 148" fill="none" stroke="#b34700" stroke-width="1.5" stroke-dasharray="4 2" stroke-linejoin="round" marker-end="url(#arr-adas-glance-orange)"/>
+  <text x="32" y="310" font-size="11" fill="#b34700">next iter</text>
+
+  <!-- WM box on right -->
+  <rect x="500" y="108" width="410" height="390" fill="#fafaf7" stroke="#1a1a1a" stroke-width="1.5"/>
+
+  <text x="705" y="130" text-anchor="middle" font-weight="600">Working memory (persistent per vN)</text>
+  <line x1="520" y1="138" x2="890" y2="138" stroke="#d4d4d0" stroke-width="1"/>
+
+  <!-- Central archive -->
+  <text x="520" y="158" font-size="11" font-weight="600" fill="#b34700">Central archive</text>
+  <text x="535" y="176" font-size="11" fill="#b34700">&bull; archive.jsonl</text>
+  <text x="555" y="191" font-size="10" fill="#6b6b6b">&mdash; baseline entry (fitness set)</text>
+  <text x="555" y="205" font-size="10" fill="#6b6b6b">&mdash; 7 reference seeds (fitness:null)</text>
+  <text x="555" y="219" font-size="10" fill="#6b6b6b">&mdash; each successful iter: {generation,</text>
+  <text x="555" y="232" font-size="10" fill="#6b6b6b">  iter_id, name, thought, graph_summary,</text>
+  <text x="555" y="246" font-size="10" fill="#6b6b6b">  diff_narrative, fitness}</text>
+
+  <!-- Per-iter forensics -->
+  <text x="520" y="272" font-size="11" font-weight="600" fill="#1a1a1a">Per-iter forensics</text>
+  <text x="535" y="290" font-size="11" fill="#1a1a1a">&bull; iter_M/active_workspace/</text>
+  <text x="535" y="305" font-size="11" fill="#1a1a1a">&bull; iter_M/debug_log.md</text>
+  <text x="535" y="320" font-size="11" fill="#1a1a1a">&bull; iter_M/{metrics.json, summary.csv, export.json}</text>
+  <text x="535" y="335" font-size="11" fill="#1a1a1a">&bull; iter_M/proposal.md</text>
+
+  <!-- Roll-ups -->
+  <text x="520" y="361" font-size="11" font-weight="600" fill="#6b6b6b">Roll-ups</text>
+  <text x="535" y="379" font-size="11" fill="#6b6b6b">&bull; trace.md (one row per iter)</text>
+  <text x="535" y="394" font-size="11" fill="#6b6b6b">&bull; lineage.md (narrative per iter)</text>
+
+  <!-- Note -->
+  <text x="520" y="425" font-size="10" font-style="italic" fill="#a52a00">SKIP path: rm -rf .staging/iter_n/</text>
+  <text x="520" y="440" font-size="10" font-style="italic" fill="#a52a00">&mdash; no iter dir, no archive append</text>
+
+  <!-- Dashed connectors -->
+  <line x1="310" y1="148" x2="500" y2="148" stroke="#b34700" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="143" font-size="10" fill="#b34700">reads archive (full): [ARCHIVE] injection into base prompt</text>
+
+  <line x1="310" y1="260" x2="500" y2="260" stroke="#1a1a1a" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="255" font-size="10" fill="#1a1a1a">writes active_workspace + debug_log to staging</text>
+
+  <line x1="310" y1="372" x2="500" y2="372" stroke="#1a1a1a" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="367" font-size="10" fill="#1a1a1a">writes metrics.json to staging</text>
+
+  <line x1="310" y1="470" x2="500" y2="470" stroke="#b34700" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="318" y="465" font-size="10" fill="#b34700">promote staging &rarr; iter_M &middot; append archive + trace + lineage</text>
+</svg>
+</div>
+
+<h3>Detailed per-iter flow</h3>
+
+<div class="diagram">
+<svg viewBox="0 0 900 640" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="13">
+  <defs>
+    <marker id="arr-v3main" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arr-v3main-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a52a00"/>
+    </marker>
+  </defs>
+
+  <!-- ===== understand (P0) ===== -->
+  <rect x="20" y="20" width="860" height="50" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="450" y="42" text-anchor="middle" font-weight="600">understand <tspan font-weight="400" font-size="11" fill="#6b6b6b">(P0 skill &mdash; runs once before loop starts)</tspan></text>
+  <text x="450" y="60" text-anchor="middle" font-size="11">read-only: load files-contract + AgentCanvas concept/contract docs + graph state + iter trail</text>
+
+  <line x1="450" y1="70" x2="450" y2="92" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-v3main)"/>
+
+  <!-- ===== loop outer box ===== -->
+  <rect x="20" y="95" width="860" height="520" fill="none" stroke="#1a1a1a" stroke-width="2"/>
+  <text x="32" y="115" font-weight="600">loop skill <tspan font-weight="400" font-size="11" fill="#6b6b6b">(orchestrator &mdash; owns the main Claude conversation; meta-LLM calls are Agent spawns)</tspan></text>
+
+  <!-- iter_0 baseline -->
+  <text x="40" y="138" font-style="italic" font-size="12" fill="#6b6b6b">// iter_0 (pre-seed: baseline + 7 reference seeds &rarr; archive head)</text>
+  <rect x="40" y="145" width="250" height="46" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="165" y="165" text-anchor="middle" font-weight="600">iter_0 baseline</text>
+  <text x="165" y="183" text-anchor="middle" font-size="11">loop &rarr; evaluator (100 ep) &rarr; AW bootstrap_CI</text>
+
+  <line x1="290" y1="168" x2="320" y2="168" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-v3main)"/>
+
+  <rect x="320" y="145" width="540" height="46" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="590" y="165" text-anchor="middle" font-weight="600">v{N}/archive.jsonl head</text>
+  <text x="590" y="183" text-anchor="middle" font-size="11">[baseline entry with fitness] + 7 reference seeds (fitness:null)</text>
+
+  <!-- for-n header -->
+  <text x="40" y="215" font-style="italic" font-size="12" fill="#6b6b6b">for n in range(max_iters):</text>
+
+  <!-- ===== one-Claude-conversation envelope ===== -->
+  <rect x="40" y="222" width="820" height="268" fill="none" stroke="#b34700" stroke-width="1.8" stroke-dasharray="5 3"/>
+  <text x="52" y="242" font-size="12" fill="#b34700" font-style="italic">ONE main Claude conversation per iter &mdash; msg_list shared across proposer's 3 Agent spawns; implementer's retry spawn does NOT inherit msg_list</text>
+
+  <!-- ===== proposer (left) ===== -->
+  <rect x="60" y="258" width="290" height="220" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="205" y="278" text-anchor="middle" font-weight="600">proposer skill</text>
+  <text x="205" y="294" text-anchor="middle" font-size="10" fill="#6b6b6b">(analyze helper Python inline &rarr; 3 sub-agent spawns)</text>
+
+  <!-- 3 sub-agent rectangles, stacked -->
+  <rect x="75" y="304" width="260" height="40" fill="#fff3eb" stroke="#b34700" stroke-width="1.5"/>
+  <text x="205" y="320" text-anchor="middle" font-size="11" font-weight="600" fill="#b34700">Agent #1 &mdash; propose</text>
+  <text x="205" y="335" text-anchor="middle" font-size="9" fill="#6b6b6b">fresh Claude &middot; full tools &middot; &rarr; {thought, name, patch}</text>
+
+  <line x1="205" y1="344" x2="205" y2="354" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr-v3main)"/>
+
+  <rect x="75" y="354" width="260" height="40" fill="#fff3eb" stroke="#b34700" stroke-width="1.5"/>
+  <text x="205" y="370" text-anchor="middle" font-size="11" font-weight="600" fill="#b34700">Agent #2 &mdash; Reflexion_1</text>
+  <text x="205" y="385" text-anchor="middle" font-size="9" fill="#6b6b6b">verbatim prompt &middot; sees R0 in msg_list &middot; +reflection</text>
+
+  <line x1="205" y1="394" x2="205" y2="404" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr-v3main)"/>
+
+  <rect x="75" y="404" width="260" height="40" fill="#fff3eb" stroke="#b34700" stroke-width="1.5"/>
+  <text x="205" y="420" text-anchor="middle" font-size="11" font-weight="600" fill="#b34700">Agent #3 &mdash; Reflexion_2</text>
+  <text x="205" y="435" text-anchor="middle" font-size="9" fill="#6b6b6b">verbatim prompt &middot; sees R0+R1 &middot; final patch</text>
+
+  <text x="205" y="463" text-anchor="middle" font-size="10" fill="#6b6b6b">out: proposal.md (staging)</text>
+
+  <line x1="350" y1="368" x2="380" y2="368" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-v3main)"/>
+
+  <!-- ===== implementer (middle) ===== -->
+  <rect x="380" y="258" width="275" height="220" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="517" y="278" text-anchor="middle" font-weight="600">implementer skill</text>
+  <text x="517" y="294" text-anchor="middle" font-size="10" fill="#6b6b6b">(apply &rarr; smoke &rarr; debug retry sub-agent)</text>
+
+  <rect x="395" y="304" width="244" height="32" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="517" y="324" text-anchor="middle" font-size="11">apply patch &rarr; active_workspace/</text>
+
+  <line x1="517" y1="336" x2="517" y2="346" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr-v3main)"/>
+
+  <rect x="395" y="346" width="244" height="32" fill="#fff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="517" y="366" text-anchor="middle" font-size="11">Smoke eval (5 ep, ~10 min)</text>
+
+  <line x1="517" y1="378" x2="517" y2="386" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr-v3main)"/>
+
+  <!-- decision diamond -->
+  <polygon points="517,386 567,406 517,426 467,406" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="517" y="402" text-anchor="middle" font-size="9">runtime fail?</text>
+  <text x="517" y="413" text-anchor="middle" font-size="8">(crash | incomplete</text>
+  <text x="517" y="422" text-anchor="middle" font-size="8">| step=0 | malformed)</text>
+
+  <!-- YES branch &rarr; retry sub-agent -->
+  <line x1="567" y1="406" x2="592" y2="406" stroke="#b34700" stroke-width="1.2" marker-end="url(#arr-v3main-red)"/>
+  <text x="579" y="400" text-anchor="middle" font-size="9" fill="#b34700">yes</text>
+
+  <rect x="592" y="386" width="50" height="40" fill="#fff3eb" stroke="#b34700" stroke-width="1.5"/>
+  <text x="617" y="402" text-anchor="middle" font-size="9" font-weight="600" fill="#b34700">Agent</text>
+  <text x="617" y="414" text-anchor="middle" font-size="9" font-weight="600" fill="#b34700">retry</text>
+  <text x="617" y="423" text-anchor="middle" font-size="7" fill="#6b6b6b">&le;3</text>
+
+  <!-- NO branch &rarr; exit -->
+  <line x1="467" y1="406" x2="442" y2="406" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr-v3main)"/>
+  <text x="454" y="400" text-anchor="middle" font-size="9" fill="#6b6b6b">no</text>
+
+  <text x="517" y="448" text-anchor="middle" font-size="9" fill="#b34700">&#8634; fresh retry sub-agent: proposal + failure trace &rarr; corrected patch (no msg_list inheritance)</text>
+  <text x="517" y="463" text-anchor="middle" font-size="9" fill="#a52a00">retry_max exhausted &rarr; SKIP_RUNTIME_FAIL</text>
+
+  <line x1="655" y1="368" x2="685" y2="368" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-v3main)"/>
+
+  <!-- ===== evaluator (right) ===== -->
+  <rect x="685" y="258" width="175" height="220" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="772" y="278" text-anchor="middle" font-weight="600">evaluator skill</text>
+  <text x="772" y="290" text-anchor="middle" font-size="10" fill="#1a7a1a">(method-free)</text>
+  <text x="772" y="304" text-anchor="middle" font-size="10" fill="#6b6b6b">(no sub-agent &mdash; direct call)</text>
+
+  <text x="772" y="328" text-anchor="middle" font-size="11">Performance eval</text>
+  <text x="772" y="343" text-anchor="middle" font-size="11">(100 ep, perf_&lt;graph&gt;)</text>
+
+  <text x="772" y="370" text-anchor="middle" font-size="11">writes neutral metrics</text>
+  <text x="772" y="385" text-anchor="middle" font-size="10" fill="#6b6b6b">acc_list, primary_metric_value,</text>
+  <text x="772" y="397" text-anchor="middle" font-size="10" fill="#6b6b6b">secondary_metrics, episode_count</text>
+
+  <text x="772" y="423" text-anchor="middle" font-size="10" fill="#a52a00">(no bootstrap_CI / no fitness_str)</text>
+  <text x="772" y="436" text-anchor="middle" font-size="10" fill="#a52a00">&mdash; enrichment done by loop AW</text>
+
+  <text x="772" y="458" text-anchor="middle" font-size="10" fill="#6b6b6b">out: metrics.json</text>
+  <text x="772" y="471" text-anchor="middle" font-size="10" fill="#6b6b6b">summary.csv, export.json</text>
+
+  <!-- SKIP path from implementer south -->
+  <path d="M 517 478 L 517 510" fill="none" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arr-v3main-red)"/>
+
+  <!-- evaluator &rarr; atomic write south -->
+  <path d="M 772 478 L 772 510" fill="none" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-v3main)"/>
+  <text x="780" y="498" font-size="9" fill="#6b6b6b">success</text>
+
+  <!-- atomic write row -->
+  <rect x="80" y="513" width="370" height="58" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="265" y="528" text-anchor="middle" font-weight="600" font-size="12">loop: Atomic Writer</text>
+  <text x="265" y="543" text-anchor="middle" font-size="10">enrich: bootstrap_CI(acc_list, 100k, 0.95) &rarr; fitness_str</text>
+  <text x="265" y="558" text-anchor="middle" font-size="10">mv .staging/iter_n/ &rarr; iter_n/ + trace.md row + lineage.md</text>
+
+  <line x1="450" y1="535" x2="480" y2="535" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-v3main)"/>
+
+  <rect x="480" y="513" width="380" height="58" fill="#f0efe9" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="670" y="530" text-anchor="middle" font-weight="600" font-size="11">v{N}/archive.jsonl &lt;&lt; entry</text>
+  <text x="670" y="546" text-anchor="middle" font-size="9">{generation, iter_id, name, thought, graph_summary,</text>
+  <text x="670" y="560" text-anchor="middle" font-size="9">diff_narrative, fitness} (reflection stripped; no debug_thought)</text>
+
+  <!-- SKIP destination row -->
+  <rect x="80" y="582" width="370" height="20" fill="#fff" stroke="#a52a00" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <text x="265" y="596" text-anchor="middle" font-size="10" fill="#a52a00">SKIP path: rm -rf .staging/iter_n/ &mdash; no iter dir, no archive append</text>
+
+  <!-- terminate footnote -->
+  <text x="40" y="625" font-size="11" fill="#6b6b6b">loop terminates when: max_iters reached &middot; STOP file &middot; consecutive SKIPs &ge; K</text>
+</svg>
+<div class="legend">
+  <span><span class="sw" style="background:#fff3eb;border-color:#b34700"></span>Agent sub-agent spawn (independent Claude sample, full tools)</span>
+  <span><span class="sw" style="background:#fff"></span>main-conversation computation (apply patch, smoke / perf eval, ...)</span>
+  <span><span class="sw" style="background:#f0efe9"></span>orchestrator step / archive state</span>
+  <span><span class="sw" style="background:#fff;border-color:#a52a00;border-style:dashed"></span>SKIP / failure path</span>
+</div>
+</div>
+
+<h3>Sub-agent contract</h3>
+
+<p>Every <code>Agent(...)</code> spawn in adas-subagent obeys three rules:</p>
+
+<ol>
+  <li><strong>Independent sample.</strong> Each spawn is a fresh Claude
+  with its own sampling. R0, R1, R2 are three independent samples, not
+  one autoregressive trace. This is the property a single Claude pass
+  cannot provide and the reason <code>Agent</code> spawns exist at
+  all.</li>
+  <li><strong>Full tool access.</strong> <code>subagent_type:
+  "general-purpose"</code>, so the sub-agent has Read / Grep / Bash /
+  WebSearch / nested Agent. It can ground its proposal in
+  <code>log.jsonl</code>, archive entries, source under
+  <code>workspace/nodesets/</code>, related literature, etc. This is
+  what the "Claude conversation as modernized meta-LLM" framing
+  delivers &mdash; without tool access, sub-agents collapse back to
+  stateless LLM calls.</li>
+  <li><strong>JSON-only deliverable.</strong> Each sub-agent MUST emit a
+  single fenced <code>```json</code> block as the final visible chunk of
+  its return message. <strong>Proposer's</strong> R0 / R1 / R2 spawns
+  share the same msg_list &mdash; each parsed response is appended as
+  <code>{"role":"assistant", "content":json.dumps(parsed)}</code> and
+  fed to the next Agent spawn as text. <strong>Implementer's</strong>
+  retry spawns do NOT inherit this msg_list; each retry is a fresh
+  coding-agent debugging task that sees the proposal + accumulated
+  failure trace as read-only text, edits the <code>active_workspace/</code>
+  overlay natively with Edit / Write, and emits
+  <code>{edit_summary, extra_targets}</code> (no Reflexion-style
+  <code>debug_thought</code> field). Proposer's sub-agents MUST NOT edit
+  files &mdash; they only produce the change spec; the implementer
+  sub-agent is the one that edits, and only ever under
+  <code>active_workspace/</code>, never frozen <code>workspace/*</code>.</li>
+</ol>
+
+<h3>Verbatim Reflexion prompts</h3>
+
+<p>
+  <code>Reflexion_prompt_1</code> and <code>Reflexion_prompt_2</code> are
+  copied character-for-character from upstream
+  <code>third_party/ADAS/_mmlu/mmlu_prompt.py:497&ndash;528</code>
+  into <code>adas-subagent/proposer.md</code> &sect; 6. The only character-level
+  adaptation is <code>"code"</code> &rarr; <code>"patch"</code> in the
+  response-schema description (our artifact is a <code>{intent, targets}</code>
+  change spec, not a Python function string).
+</p>
+
+<p>
+  The <code>[EXAMPLE]</code> placeholder in <code>Reflexion_prompt_1</code>
+  follows upstream's <code>get_reflexion_prompt</code> formula verbatim:
+  filled with <code>"Here is the previous agent you tried:\n" +
+  json.dumps(archive[-1]) + "\n\n"</code> for generation &ge; 1, empty
+  string for iter_1 (when there is no prior evolved generation).
+</p>
+
+<h3>msg_list across sub-agents</h3>
+
+<p>
+  Upstream <code>search.py</code> threads one Python list of
+  <code>{role, content}</code> dicts through three sequential API calls.
+  adas-subagent keeps the textual content of this list identical, with one
+  unavoidable adaptation: the <code>Agent</code> tool accepts only a
+  single user-string prompt, so prior <code>role: assistant</code>
+  outputs are serialized as text inside subsequent sub-agents' prompts
+  (rendered with <code>[role]</code> block markers). From the
+  sub-agent's perspective this is the same information; the only loss is
+  the literal <code>role: assistant</code> tagging, which the
+  cumulative-prompt-text form approximates.
+</p>
+
+<pre style="font-size:.82rem">=== msg_list so far (each [role] block is one conversation turn) ===
+
+[system]
+You are a helpful assistant. Make sure to return in a WELL-FORMED JSON object.
+
+[user]
+{base prompt: # Overview ... # Task ... # The utility code ... # Discovered architecture archive [ARCHIVE] ... # Output Instruction ...}
+
+[assistant]   &lArr; R0's response, present from R1 onward
+{"thought": "...", "name": "...", "patch": {...}}
+
+[user]   &lArr; Reflexion_prompt_1 (verbatim), present from R1 onward
+"[EXAMPLE]Carefully review the proposed new architecture and reflect on the following points: ..."
+
+[assistant]   &lArr; R1's response, present from R2 onward
+{"reflection": "...", "thought": "...", "name": "...", "patch": {...}}
+
+[user]   &lArr; Reflexion_prompt_2 (verbatim), present at R2 only
+"Using the tips in '## WRONG Implementation examples' section, revise the patch further..."
+
+=== end msg_list ===</pre>
+
+<h3>adas-subagent vs upstream ADAS &mdash; the full delta</h3>
+
+<p>
+  <strong>Against the original ADAS paper</strong> (Hu et al. 2024,
+  MMLU codebase): what do we keep verbatim, what's forced by the new
+  substrate, and what's an intentional design choice. Four buckets:
+</p>
+
+<h4 style="margin-top:1.2rem;">A. Preserved verbatim from upstream</h4>
+
+<p style="font-size:.92rem; color:#6b6b6b; margin-top:.2rem;">
+  These items survive the port unchanged at the structural or
+  byte-for-byte level. Reasoning module no longer being a stateless
+  API call doesn't disturb them.
+</p>
+
+<table>
+  <tr><th>Element</th><th>Upstream anchor</th><th>How preserved</th></tr>
+  <tr>
+    <td>3-call Reflexion sequence (R0 / R1 / R2)</td>
+    <td><code>search.py:188, 194, 198</code></td>
+    <td>Call sequence verbatim; implemented as 3 independent
+    <code>Agent(...)</code> spawns instead of 3 stateless API calls</td>
+  </tr>
+  <tr>
+    <td><code>Reflexion_prompt_1</code> + <code>Reflexion_prompt_2</code></td>
+    <td><code>mmlu_prompt.py:497, 525</code></td>
+    <td>Character-for-character verbatim; only <code>"code"</code> &rarr;
+    <code>"patch"</code> renamed in the response-schema description</td>
+  </tr>
+  <tr>
+    <td><code>get_prompt(archive)</code> injects whole archive into
+    <code>[ARCHIVE]</code> slot of base prompt</td>
+    <td><code>mmlu_prompt.py:535&ndash;541</code></td>
+    <td>Same shape; archive entries use <code>graph_summary</code>
+    where upstream had Python code string</td>
+  </tr>
+  <tr>
+    <td><code>get_reflexion_prompt(archive[-1])</code> &mdash; separate
+    echo of most-recent archive entry</td>
+    <td><code>mmlu_prompt.py:544&ndash;547</code></td>
+    <td>Verbatim semantics</td>
+  </tr>
+  <tr>
+    <td><code>bootstrap_confidence_interval(acc_list, 100000, 0.95)</code></td>
+    <td><code>utils.py:31</code></td>
+    <td>Verbatim algorithm; lives in
+    <code>adas-subagent/lib/helpers.py</code>; invoked from loop's
+    Atomic Writer (moved here from evaluator in the 2026-05 evaluator
+    refactor &mdash; the algorithm itself is unchanged)</td>
+  </tr>
+  <tr>
+    <td><code>fitness_str = "95% Bootstrap CI: (lo%, hi%), Median:
+    x%"</code></td>
+    <td><code>utils.py:76</code></td>
+    <td>Verbatim format string (downstream <code>[ARCHIVE]</code>
+    injection matches it literally)</td>
+  </tr>
+  <tr>
+    <td><code>del next_solution['reflection']</code> before archive
+    append</td>
+    <td><code>search.py:232&ndash;233</code></td>
+    <td>Verbatim semantics for <code>reflection</code>; the companion
+    <code>debug_thought</code> stripping is no longer applicable (field
+    removed from schema &mdash; see bucket D)</td>
+  </tr>
+  <tr>
+    <td>Failed iter not archived (<code>n -= 1; continue</code>)</td>
+    <td><code>search.py:202, 225</code></td>
+    <td>Verbatim semantics</td>
+  </tr>
+  <tr>
+    <td>7 reference seeds pre-loaded into archive at init</td>
+    <td><code>search.py:154&ndash;172</code> + <code>mmlu_prompt.py</code>
+    archive constants (CoT / CoT-SC / Self-Refine / LLM Debate /
+    Step-back / QD / Role Assignment)</td>
+    <td>Same 7 patterns, same archive injection</td>
+  </tr>
+  <tr>
+    <td>Single-population hill-climb (no tournament / parallel
+    candidates)</td>
+    <td><code>search.py</code> overall search shape</td>
+    <td>Same &mdash; archive grows linearly, one new entry per successful
+    iter</td>
+  </tr>
+</table>
+
+<h4 style="margin-top:1.4rem;">B. Adapted by paradigm shift (stateless API &rarr; tool-augmented Claude)</h4>
+
+<p style="font-size:.92rem; color:#6b6b6b; margin-top:.2rem;">
+  These items change because the meta-LLM is no longer a stateless
+  OpenAI API call. The reasoning module is now a tool-augmented Claude
+  sub-agent (<code>Agent({subagent_type: "general-purpose", ...})</code>);
+  the upstream knobs that control stateless sampling don't have a
+  meaningful home in this paradigm.
+</p>
+
+<table>
+  <tr><th>Upstream</th><th>adas-subagent</th><th>Why forced</th></tr>
+  <tr>
+    <td>Meta-LLM call =
+    <code>get_json_response_from_gpt_reflect(msg_list, ...)</code>
+    stateless API</td>
+    <td>Meta-LLM call =
+    <code>Agent({subagent_type:"general-purpose", ...})</code> spawn with
+    full tool access (Read / Grep / Bash / WebSearch / nested Agent)</td>
+    <td>Claude isn't a stateless API; "the LLM" is replaced by a
+    coding-agent session. Tools let each propose ground itself in the
+    codebase, eval logs, archive entries, etc.</td>
+  </tr>
+  <tr>
+    <td>Sampling diversity = 3 calls at <code>temperature=0.8</code></td>
+    <td>Sampling diversity = 3 fresh <code>Agent</code> spawns (each is
+    one independent Claude sample)</td>
+    <td>Stateless sampling-knob equivalent doesn't exist for sub-agents;
+    fresh-spawn-per-call restores independence at the spawn boundary
+    instead</td>
+  </tr>
+  <tr>
+    <td>Pinned API params: <code>temperature=0.8</code>,
+    <code>response_format=json_object</code>, <code>max_tokens=4096</code>,
+    <code>model=gpt-4o-2024-05-13</code></td>
+    <td>N/A &mdash; not applicable to sub-agent spawns</td>
+    <td>These are stateless-API-call knobs. Sub-agents don't expose them.
+    JSON output is enforced by prompt instruction + parser; max_tokens
+    is the sub-agent's own context budget</td>
+  </tr>
+  <tr>
+    <td><code>role: assistant</code> history (native API message
+    role)</td>
+    <td>Prior assistant outputs serialized as text inside the next
+    sub-agent's user prompt (rendered with <code>[role]</code> block
+    markers)</td>
+    <td><code>Agent</code> tool takes a single user-string prompt;
+    semantic role-tagging is approximated by textual rendering. Content
+    identical</td>
+  </tr>
+</table>
+
+<h4 style="margin-top:1.4rem;">C. Adapted by AgentCanvas substrate + VLN evaluation cost</h4>
+
+<p style="font-size:.92rem; color:#6b6b6b; margin-top:.2rem;">
+  These items change because the target environment (Habitat VLN
+  episodes) is fundamentally different from upstream's target (MMLU
+  multiple-choice). VLN episodes are expensive (~1&ndash;2 h for 100
+  ep) and the artifact is a multi-file graph + nodeset spec, not a
+  Python function string.
+</p>
+
+<table>
+  <tr><th>Upstream (MMLU)</th><th>adas-subagent (VLN)</th><th>Cost / substrate reason</th></tr>
+  <tr>
+    <td>Artifact = Python <code>code</code> string (one function body)</td>
+    <td>Artifact = a prose <code>{intent, targets}</code> change spec;
+    the implementer sub-agent realizes it by editing
+    <code>{graph}.json</code> + nodeset <code>.py</code> files natively</td>
+    <td>AgentCanvas agents are graph + nodesets, not a Python function.
+    A code string can't express the artifact; the typed op DSL was
+    retired 2026-05-20 once the implementer became an editing agent</td>
+  </tr>
+  <tr>
+    <td>Archive entry "code" slot = full Python source</td>
+    <td>Archive entry "code" slot = <code>graph_summary</code>
+    (rendered structural snapshot) + <code>diff_narrative</code>
+    (plain-text What-changed)</td>
+    <td>Full <code>graph.json</code> blows the context budget on
+    <code>[ARCHIVE]</code> injection; the patch alone isn't
+    self-contained (relies on parent state). Need a compact structural
+    indicator</td>
+  </tr>
+  <tr>
+    <td>7-pattern reference seed evaluated upfront
+    (<code>search.py:159&ndash;172</code>)</td>
+    <td>7 seeds entered as text-only descriptors with
+    <code>fitness: null</code> &mdash; no upfront eval</td>
+    <td>Upstream ~seconds per seed; ours would be 7&times;~2 h = 14 h
+    upfront before any new search iter</td>
+  </tr>
+  <tr>
+    <td>Evaluation = 1 tier
+    (<code>evaluate_forward_fn(acc_list, ...)</code>, ~seconds)</td>
+    <td>Evaluation = 2 tiers: Smoke (5 ep, ~10 min, inside implementer)
+    + Performance (100 ep, ~1&ndash;2 h, separate evaluator skill)</td>
+    <td>Need a cheap patch-correctness gate before paying for full
+    perf eval; conflated would mean every broken patch costs ~2 h</td>
+  </tr>
+  <tr>
+    <td>Low-fitness or all-zero result triggers debug retry (3&times;)</td>
+    <td>Performance tier has NO retry on low fitness; low scores enter
+    archive as data</td>
+    <td>3&times;~2 h = ~6 h per gen infeasible. (For Smoke tier
+    specifically, low-fitness retry was also removed in the 2026-05
+    refactor &mdash; see bucket D &mdash; for a different reason)</td>
+  </tr>
+  <tr>
+    <td>State management = stateless <code>exec(code_str)</code>;
+    archive is the only persistent state</td>
+    <td>Full <code>vN/iter_M/active_workspace/</code> overlay system
+    + atomic <code>.staging/iter_n/ &rarr; iter_n/</code> commit + edit
+    whitelist enforcement (per files-contract)</td>
+    <td>VLN agents touch multiple files (graphs / nodesets / policies /
+    hooks). Need an isolated mutation set per iter with rollback
+    semantics</td>
+  </tr>
+  <tr>
+    <td>Run-dir = just <code>archive.json</code></td>
+    <td>Full <code>outputs/design_runs/adas-subagent/{graph}/v{N}/iter_M/</code>
+    tree with per-iter graph snapshot, eval profile copy, metrics,
+    summary CSV, export JSON, proposal.md, debug_log.md</td>
+    <td>Each VLN iter has ~MB of forensic data worth keeping (per-ep
+    log.jsonl, per-step traces); flat archive can't hold it</td>
+  </tr>
+</table>
+
+<h4 style="margin-top:1.4rem;">D. Intentional divergences from upstream (2026-05 refactor)</h4>
+
+<p style="font-size:.92rem; color:#6b6b6b; margin-top:.2rem;">
+  These changes were not forced by substrate or cost &mdash; they're
+  judgement calls about what coding-agent capability changes mean for
+  the search loop. Modern Claude sub-agents are strong enough debuggers
+  that the Reflexion-style retry chain in upstream's debug loop offered
+  little marginal value over fresh-spawn-with-failure-trace. The
+  refactor below removes those ADAS-fidelity-but-not-quality elements
+  from the implementer; the proposer's Reflexion chain (bucket A) is
+  preserved because that's where the quality-diversity actually lives.
+</p>
+
+<table>
+  <tr><th>Upstream</th><th>adas-subagent (post-refactor)</th><th>Rationale</th></tr>
+  <tr>
+    <td><code>debug_max = 3</code> hard-coded
+    (<code>search.py:206</code>)</td>
+    <td><code>retry_max</code> from <code>config.yaml</code> (default 3)</td>
+    <td>Same value by default; config knob future-proofs the cap
+    without semantic change</td>
+  </tr>
+  <tr>
+    <td>Retry trigger = <code>exception</code> OR
+    <code>mean(acc_list) &lt; 0.01</code>
+    (<code>search.py:209&ndash;210</code>, <code>raise "All 0 accuracy"</code>)</td>
+    <td>Retry trigger = <strong>runtime correctness only</strong>
+    (exit&ne;0 OR not all eps completed OR <code>step_count == 0</code>
+    OR <code>primary_metric</code> not numeric)</td>
+    <td>Low/zero metric values on a clean run are <em>data</em> ("this
+    approach scored 0%"), not a broken-code signal. Conflating the two
+    cost us a retry on every "patch ran but didn't help" outcome.
+    Modern coding agents only need a retry to fix actual runtime
+    failures</td>
+  </tr>
+  <tr>
+    <td>Retry mechanism: push <code>{err, debug_feedback}</code> to
+    shared <code>msg_list</code>, ask the meta-LLM for a corrected
+    patch with a <code>debug_thought</code> field; same Reflexion thread
+    continues (<code>search.py:215&ndash;218</code>,
+    <code>mmlu_prompt.py</code> debug-feedback wording)</td>
+    <td>Retry mechanism: spawn a <strong>fresh
+    <code>Agent</code></strong> per retry; it sees the
+    <em>proposal</em> + <em>accumulated failure trace</em> as
+    read-only text, edits the <code>active_workspace/</code> overlay
+    natively, and emits <code>{edit_summary, extra_targets}</code>. No
+    msg_list inheritance from proposer; no Reflexion-style
+    <code>debug_thought</code> field</td>
+    <td>Implementer's job is "make the patch run"; the proposal's
+    strategic intent is read-only context. Reflexion-style
+    chain-of-reasoning isn't load-bearing for debugging when the
+    sub-agent has full tool access (Read / Grep / Bash on
+    <code>log.jsonl</code>, source, etc.). Decoupling implementer from
+    proposer's msg_list also lets implementer be method-free &mdash;
+    reusable across variants</td>
+  </tr>
+  <tr>
+    <td><code>del next_solution['debug_thought']</code> before archive
+    append (<code>search.py:232&ndash;235</code>)</td>
+    <td>No-op &mdash; <code>debug_thought</code> field doesn't exist
+    in the schema</td>
+    <td>Companion of the row above; nothing to strip if nothing produces
+    it</td>
+  </tr>
+  <tr>
+    <td>Evaluator computes <code>fitness_str</code> + bootstrap CI as
+    part of the eval call</td>
+    <td>Evaluator writes neutral metrics only
+    (<code>acc_list</code>, <code>primary_metric_value</code>);
+    bootstrap CI + <code>fitness_str</code> enrichment moved to loop's
+    Atomic Writer step 1</td>
+    <td>Evaluator is method-free now &mdash; same skill works for any
+    variant. Method-specific metrics enrichment is the variant's loop
+    job. Algorithm body unchanged (bucket A)</td>
+  </tr>
+</table>
+
+
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Base Canvas Node — AgentCanvas</title>
+<meta name="description" content="The one base class every node subclasses — lifecycle, ports, config, UI, and the dynamic-firelist spawner">
+<meta property="og:title" content="Base Canvas Node — AgentCanvas">
+<meta property="og:description" content="The one base class every node subclasses — lifecycle, ports, config, UI, and the dynamic-firelist spawner">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/components/base-canvas-node.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="bn-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:680px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#bna); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/components/base-canvas-node.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">Base Canvas Node</span>
+  </div>
+  <div class="last-updated">2026-06-17</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Base Canvas Node</h1>
+  <p class="tagline">The one base class every node subclasses — lifecycle, ports, config, UI, and the dynamic-firelist spawner</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="bna" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">There is exactly one node base class. A tool, a skill, a neural policy, a whole agent — all of them are a <code>BaseCanvasNode</code> subclass, and the executor treats every subclass identically. This page is the developer's-eye view of that class: the contract you implement, its lifecycle, and the attributes that shape its ports and on-canvas UI. The <em>system</em> around it — registry, catalog, rendering — is <a href="canvas-system.html">Canvas System</a>; packaging several nodes together is <a href="nodesets.html">NodeSets</a>.</p>
+
+<hr>
+
+<h2 id="1-what-it-is"><span class="num">1.</span> What it is</h2>
+
+<p><code>BaseCanvasNode</code> (in <code>agentcanvas/backend/app/components/bases.py</code>) is an <code>ABC</code>. Subclassing it is the <em>only</em> way to put behaviour on the canvas — there is no separate <code>BaseTool</code> / <code>BaseSkill</code> / <code>BaseAgent</code> / <code>BaseEnv</code> hierarchy; those distinctions are just <code>category</code> labels on one class. The contract is deliberately tiny: a subclass <strong>must</strong> set a <code>node_type</code> string and implement an <code>async forward()</code>. Everything else has a default.</p>
+
+<h2 id="2-smallest-node"><span class="num">2.</span> The smallest working node</h2>
+
+<p>A complete, canvas-ready node — no TypeScript, no registration boilerplate beyond living in a scanned directory:</p>
+
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseCanvasNode</span><span class="p">,</span> <span class="n">PortDef</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">CoinFlipNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">coin_flip</span><span class="s2">&quot;</span>          <span class="c1"># the only attribute with no default</span>
+    <span class="n">display_name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Coin Flip</span><span class="s2">&quot;</span>
+    <span class="n">category</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">tool</span><span class="s2">&quot;</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">result</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">heads or tails</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span><span class="p">:</span>   <span class="c1"># the only required method</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">result</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">heads</span><span class="s2">&quot;</span><span class="p">}</span>
+</pre>
+
+<p>It fires once (no required inputs), emits <code>result</code> on its one wire, and the frontend renders it from the schema alone (§9). <code>forward</code> takes <code>inputs</code> (a <code>{port_name: value}</code> dict of filled input ports) and <code>ctx</code> (the per-node state proxy), and returns a <code>{port_name: value}</code> dict.</p>
+
+<h2 id="3-lifecycle"><span class="num">3.</span> The lifecycle in one figure</h2>
+
+<p>The executor builds one instance per graph node, optionally warms it up, fires it as many times as the dataflow requires, and tears it down at the end:</p>
+
+<svg class="rxsvg" viewBox="0 0 680 120" role="img" aria-label="Node lifecycle: construct sets config and node_id; initialize runs once for heavy setup; forward is called repeatedly each time the node's required inputs are filled; shutdown runs once at teardown. _resolve_ports is consulted at build time; _self_log and log run around each forward.">
+  <rect x="8" y="42" width="118" height="40" rx="7" class="box"/><text x="67" y="61" text-anchor="middle">__init__</text><text x="67" y="76" text-anchor="middle" class="dim">config · node_id</text>
+  <rect x="150" y="42" width="120" height="40" rx="7" class="box"/><text x="210" y="61" text-anchor="middle" class="mono">initialize()</text><text x="210" y="76" text-anchor="middle" class="dim">once · heavy setup</text>
+  <rect x="294" y="42" width="150" height="40" rx="7" class="accent"/><text x="369" y="61" text-anchor="middle" class="at mono">forward(inputs, ctx)</text><text x="369" y="76" text-anchor="middle" class="dim">on ready → fire</text>
+  <rect x="468" y="42" width="120" height="40" rx="7" class="box"/><text x="528" y="61" text-anchor="middle" class="mono">shutdown()</text><text x="528" y="76" text-anchor="middle" class="dim">once · cleanup</text>
+  <path class="edge" d="M126,62 H150"/><path class="edge" d="M270,62 H294"/><path class="edge" d="M444,62 H468"/>
+  <path class="edge" d="M369,82 C369,104 330,104 330,84"/><text x="298" y="116" class="dim">re-fires while inputs arrive</text>
+  <text x="600" y="48" class="dim">build:</text><text x="600" y="63" class="mono">_resolve_ports</text>
+  <text x="600" y="80" class="dim">per-fire:</text><text x="600" y="95" class="mono">_self_log / log</text>
+</svg>
+
+<p>Both <code>initialize()</code> and <code>shutdown()</code> are optional async hooks (no-ops by default) — override them when the node holds a model, a GPU context, or any expensive resource. <code>_resolve_ports</code> (§5) is consulted at build time to get the live port lists; <code>_self_log</code>/<code>log</code> (§8) let a node record internals around each fire. That's the whole lifecycle.</p>
+
+<h2 id="4-attributes"><span class="num">4.</span> Class attributes in full</h2>
+
+<p>Every attribute is a <code>ClassVar</code> with a default except <code>node_type</code>. Set the ones you need:</p>
+
+<table>
+<thead><tr><th>Attribute</th><th>Default</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>node_type</code></td><td><em>(required)</em></td><td>Unique type key in graph JSON; the registry lookup key.</td></tr>
+<tr><td><code>display_name</code></td><td><code>""</code></td><td>Human label in the catalog / on the node.</td></tr>
+<tr><td><code>description</code></td><td><code>""</code></td><td>Tooltip / search text.</td></tr>
+<tr><td><code>category</code></td><td><code>"custom"</code></td><td>Catalog grouping &amp; default colour source.</td></tr>
+<tr><td><code>icon</code></td><td><code>""</code></td><td>Lucide icon name.</td></tr>
+<tr><td><code>kind</code></td><td><code>"block"</code></td><td><code>block</code> (atomic) · <code>composite</code> (has a <code>children</code> graph) · <code>control</code> (structural — iterIn/iterOut/graphIn/graphOut).</td></tr>
+<tr><td><code>input_ports</code> / <code>output_ports</code></td><td><code>[]</code></td><td>Class-level <code>PortDef</code> lists (§5). Empty for dynamic-port nodes.</td></tr>
+<tr><td><code>children</code></td><td><code>None</code></td><td><code>GraphDefinition</code> subgraph for composites.</td></tr>
+<tr><td><code>config_schema</code> / <code>default_config</code></td><td><code>{}</code></td><td>The node's config contract and its drop-time defaults.</td></tr>
+<tr><td><code>ui_config</code></td><td><code>NodeUIConfig()</code></td><td>How the generic renderer draws it (§7).</td></tr>
+<tr><td><code>batched</code> / <code>batch_dim</code></td><td><code>False</code> / <code>""</code></td><td>Batched-inference opt-in (§10, ADR-028).</td></tr>
+</tbody>
+</table>
+
+<p>Per-instance config from the graph JSON lands on <code>self.config</code>, and the node's id on <code>self.node_id</code> — both set by the executor before the first <code>forward</code>. (There is no <code>final_fire</code> attribute: after-loop membership is derived from wiring, not a flag — §6.)</p>
+
+<h2 id="5-ports"><span class="num">5.</span> Ports &amp; per-instance resolution</h2>
+
+<p>A <code>PortDef</code> has four fields: <code>name</code> (the React Flow handle id and the <code>inputs</code>/return key), <code>wire_type</code> (see <a href="../graph/wire-types.html">Wire Types</a>), <code>description</code>, and <code>optional</code> — a node won't fire until every <em>non-optional</em> input port holds a value. Most nodes just declare static <code>input_ports</code>/<code>output_ports</code>.</p>
+
+<p>Nodes whose ports depend on their config (the LLM call, the pivots) leave the class lists empty and override <code>_resolve_ports(cls, config)</code> — the classmethod the validator and executor call to get the live <code>(inputs, outputs)</code> for one instance (<a href="../core/decisions/dataflow/index.html">ADR-dataflow-003</a>):</p>
+
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">LLMCallNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">llmCall</span><span class="s2">&quot;</span>
+    <span class="n">ports_mode</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">input</span><span class="s2">&quot;</span>                  <span class="c1"># frontend hint: this node owns its input list</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_resolve_ports</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">)</span><span class="p">:</span>
+        <span class="c1"># build the live (inputs, outputs) from this instance&#x27;s config.ports</span>
+        <span class="n">ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">name</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="n">p</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">wire_type</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">ports</span><span class="s2">&quot;</span><span class="p">,</span> <span class="p">[</span><span class="p">]</span><span class="p">)</span><span class="p">]</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">ports</span><span class="p">,</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">response</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span><span class="p">)</span>
+</pre>
+
+<p><code>ports_mode</code> is <strong>not</strong> a base-class attribute — it's an optional per-subclass hint the schema serializer reads with a <code>getattr(cls, "ports_mode", "mirror")</code> default, telling the frontend port editor which side is author-editable. The values seen in builtins are <code>"source"</code> (iterIn — owns its output list), <code>"sink"</code> (iterOut, viewers — owns its input list), <code>"input"</code> (llmCall), and the implicit <code>"mirror"</code>.</p>
+
+<h2 id="6-kind"><span class="num">6.</span> kind &amp; the after-loop story</h2>
+
+<p><code>kind</code> tells the executor how to treat the node structurally. <code>block</code> nodes are ordinary functions. <code>composite</code> nodes carry a <code>children</code> graph and are flattened away before execution (<a href="../graph/graph-system.html#5-composition">Graph System §5</a>). <code>control</code> nodes are the structural machinery — <code>iterIn</code>, <code>iterOut</code>, <code>graphIn</code>, <code>graphOut</code> (matching §4; <code>nullSource</code> is <em>categorised</em> <code>control</code> but its <code>kind</code> is actually <code>block</code> — it's an entry node, not structural).</p>
+
+<p>One historical wrinkle worth stating because older docs got it wrong: a node that runs <em>once after the loop</em> (a verdict, a post-loop summary) is <strong>not</strong> declared by any flag. After-loop membership is purely topological — a node is after-loop iff it is wired downstream of a loop iterOut's <code>final_*</code> handles. The old <code>final_fire</code> ClassVar (retired 2026-05-21) and its successor <code>config.post_loop</code> flag (retired 2026-06-11) are both gone. See <a href="../graph/loop-control-system.html#6-final-side">Loop Control §6</a>.</p>
+
+<h2 id="7-ui"><span class="num">7.</span> NodeUIConfig, ConfigField, DisplayField</h2>
+
+<p>A node renders on the canvas with zero TypeScript because the generic renderer reads its <code>ui_config</code>. <code>NodeUIConfig</code> sets the frame (<code>color</code>, <code>layout</code> = <code>block</code> or <code>strip</code>, <code>width</code>/<code>min_height</code>/<code>rounding</code>/<code>min_width</code>/<code>max_width</code>) and carries two widget lists:</p>
+
+<ul>
+  <li><strong><code>config_fields</code></strong> — <em>editable</em> inline controls. Each <code>ConfigField</code> has a <code>field_type</code>: <code>label</code> · <code>slider</code> (uses <code>min</code>/<code>max</code>/<code>step</code>) · <code>text</code> · <code>select</code> (uses <code>options</code>) · <code>toggle</code> · <code>textarea</code>. A <code>port_list</code> variant edits dynamic ports and can show a per-port persist toggle.</li>
+  <li><strong><code>display_fields</code></strong> — <em>read-only</em> runtime widgets fed from WebSocket output: each <code>DisplayField</code> has a <code>display_type</code> of <code>image_viewer</code>, <code>log_list</code>, or <code>metric_table</code>.</li>
+</ul>
+
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseCanvasNode</span><span class="p">,</span> <span class="n">PortDef</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="nn">.</span><span class="nn">bases</span><span class="w"> </span><span class="kn">import</span> <span class="n">NodeUIConfig</span><span class="p">,</span> <span class="n">ConfigField</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">ThresholdNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">threshold</span><span class="s2">&quot;</span>
+    <span class="n">display_name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Threshold</span><span class="s2">&quot;</span>
+    <span class="n">category</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">processing</span><span class="s2">&quot;</span>
+    <span class="n">icon</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Filter</span><span class="s2">&quot;</span>
+    <span class="n">input_ports</span>  <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">score</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">incoming score</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">pass</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">BOOL</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">score &gt;= cutoff</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+    <span class="n">default_config</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">cutoff</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">}</span>
+    <span class="n">ui_config</span> <span class="o">=</span> <span class="n">NodeUIConfig</span><span class="p">(</span><span class="n">config_fields</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">ConfigField</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">cutoff</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">slider</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">Cutoff</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="nb">max</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mf">0.05</span><span class="p">)</span><span class="p">,</span>
+    <span class="p">]</span><span class="p">)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span><span class="p">:</span>
+        <span class="n">cutoff</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">cutoff</span><span class="s2">&quot;</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">)</span>   <span class="c1"># per-instance config from the JSON</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">pass</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">score</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">&gt;</span><span class="o">=</span> <span class="n">cutoff</span><span class="p">}</span>
+</pre>
+
+<h2 id="8-forward"><span class="num">8.</span> forward() &amp; ctx in depth</h2>
+
+<p><code>forward(self, inputs, ctx)</code> is where the work happens. <code>inputs</code> holds only the filled ports; read instance config from <code>self.config</code>. The <code>ctx</code> proxy exposes per-node persistent state and, for nodes granted access, state containers: <code>ctx.containers[id]</code> and <code>ctx.graph_state</code> (see <a href="../graph/state-containers.html">State Containers</a>) — a node sees only containers it holds a grant to. Arbitrary attributes on <code>ctx</code> persist across that node's fires (<code>ctx.foo = …</code>) as private scratch state.</p>
+
+<p>For internals the executor can't observe from outside — an assembled prompt, a token count — call <code>self._self_log(key, value)</code> inside <code>forward</code>; the executor collects them via <code>log()</code> after the fire and surfaces them in the execution log. Override <code>log()</code> to filter or summarise.</p>
+
+<h2 id="9-schema-endpoint"><span class="num">9.</span> The schema the frontend consumes</h2>
+
+<p>The bridge to the canvas is one endpoint: <code>GET /api/components/node-schemas</code> walks <code>NODE_HANDLERS</code> and emits, per node, <code>{type, display_name, description, category, icon, kind, ports_mode, config_schema, default_config, ui_config, input_ports[], output_ports[]}</code> — each port serialised as <code>{name, wire_type, description, optional}</code>. That JSON is everything the generic renderer needs; how the frontend turns it into a rendered node is <a href="canvas-system.html">Canvas System</a>'s subject.</p>
+
+<h2 id="10-batched"><span class="num">10.</span> Batched inference</h2>
+
+<p>A neural-policy node that should run K parallel rollouts through one GPU batch opts in by setting <code>batched = True</code> and <code>batch_dim = "&lt;input port name&gt;"</code> (<a href="../core/decisions/index.html">ADR-028</a>). The registry then swaps the in-process handler for a <code>BatchedClient</code>: K worker callers rendezvous in a <code>BatchedInferenceServer</code>, and the node's <code>forward()</code> is invoked once per flush with inputs stacked along <code>batch_dim</code>. The server is pure-functional — any per-call state (RNN hidden states) must travel on the wire as explicit ports, not on <code>self</code>. <code>register_node</code> validates the two attributes at scan time.</p>
+
+<h2 id="11-dynamic-firelist"><span class="num">11.</span> DynamicFireListNode — the spawner</h2>
+
+<p>One subclass changes the <code>forward</code> contract: <code>DynamicFireListNode</code> returns a <code>FireList</code> instead of a dict. The engine fires each <code>FireSpec</code> sequentially against the live registry, then calls <code>aggregate(child_results)</code> to collapse the children's outputs into this node's ports. The children are ephemeral — they appear in the log with this node as parent but never enter the static graph or the ready-queue (<a href="../core/decisions/executor/adr-executor-004-dynamic-firelist-dispatch.html">ADR-executor-004</a>).</p>
+
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">FanOutNode</span><span class="p">(</span><span class="n">DynamicFireListNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">fan_out</span><span class="s2">&quot;</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">answers</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">LIST[TEXT]</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">one per spawned child</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="n">FireList</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">FireList</span><span class="p">(</span><span class="n">specs</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">FireSpec</span><span class="p">(</span><span class="n">node_type</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">llmCall</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">prompt</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">q</span><span class="p">}</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">q</span> <span class="ow">in</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">questions</span><span class="s2">&quot;</span><span class="p">]</span>
+        <span class="p">]</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">aggregate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">child_results</span><span class="p">)</span><span class="p">:</span>           <span class="c1"># collapse children → output ports</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">answers</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">response</span><span class="s2">&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">child_results</span><span class="p">]</span><span class="p">}</span>
+</pre>
+
+<p>For server-mode spawners (where the framework holds only a proxy without the <code>aggregate</code> method), set a declarative <code>FireList.aggregator</code> recipe instead — <code>{"kind": "merge_all"}</code>, <code>{"kind": "passthrough_index", "index": N}</code>, etc. — so the engine can collapse the children without a second round-trip. Children fire sequentially and a child returning its own <code>FireList</code> is rejected (no nested spawning in this version).</p>
+
+<h2 id="12-registration"><span class="num">12.</span> Registration &amp; boundaries</h2>
+
+<p>A subclass becomes live by being in a scanned directory: built-ins are collected into <code>NODE_HANDLERS</code> in <code>builtin_nodes.py</code>; workspace nodes are added by <code>register_node(cls)</code> (last-write-wins on <code>node_type</code>, with the batched-attribute validation of §10). How discovery, the catalog, and rendering work as a <em>system</em> is <a href="canvas-system.html">Canvas System</a>; bundling several nodes with a shared lifecycle and an env panel is <a href="nodesets.html">NodeSets</a>. This page is just the one class.</p>
+
+<h2 id="13-cookbook"><span class="num">13.</span> Cookbook</h2>
+
+<ul>
+  <li><strong>Add a node</strong> — subclass <code>BaseCanvasNode</code>, set <code>node_type</code> + implement <code>forward</code>, drop the file in the right <code>workspace/</code> directory (see <a href="nodesets.html">NodeSets</a> for placement), reload. It appears in the catalog with no frontend work.</li>
+  <li><strong>Give it config UI</strong> — add a <code>ui_config</code> with <code>config_fields</code> (§7); the values land on <code>self.config</code> at run time.</li>
+  <li><strong>Dynamic ports</strong> — leave the class port lists empty, override <code>_resolve_ports</code> (§5), set a <code>ports_mode</code> hint.</li>
+  <li><strong>Debug a node that never fires</strong> — check every non-optional input port has an incoming edge (the load-time validator catches this; see <a href="../graph/graph-system.html#42-validation-rules">Graph System §4.2</a>).</li>
+</ul>
+
+<hr>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-06-17: §6 — removed <code>nullSource</code> from the <code>kind="control"</code> list (it carries <code>category="control"</code> but <code>kind="block"</code>; the four <code>kind="control"</code> nodes are <code>iterIn</code>/<code>iterOut</code>/<code>graphIn</code>/<code>graphOut</code>, matching §4). Code-faithfulness pass; all other claims re-verified accurate against <code>components/bases.py</code>.</li>
+<li>2026-06-13 14:08: <strong>Full rewrite for the inverted-pyramid structure and code-accuracy.</strong> Concept-first ordering: what the class is → smallest node → lifecycle figure → full attribute table → details. Corrections vs code: removed the obsolete <code>final_fire</code> section (retired 2026-05-21; after-loop is now wiring-derived — §6); fixed <code>ports_mode</code> (not a base attribute; added <code>"source"</code>; serializer default); replaced removed/renamed control-node names (PortIn/PortOut → graphIn/graphOut, TerminationNode/OutputPortNode gone); fixed <code>PortDef</code> import to <code>app.components</code>; corrected <code>node.data[...]</code> → <code>self.config</code>. Added previously-undocumented current contract: <code>batched</code>/<code>batch_dim</code> (§10), <code>DynamicFireListNode</code>/<code>FireList</code>/<code>FireSpec</code> (§11), the exact <code>GET /api/components/node-schemas</code> shape (§9). Moved frontend-rendering mechanics out to Canvas System and packaging out to NodeSets. All code blocks via the Pygments pipeline.</li>
+<li>2026-05-18: prior revision — unified-node thesis, ports/config/ui sections (now superseded by this rewrite).</li>
+<li>2026-05-11: documented the (since-removed) <code>final_fire</code> lifecycle flag.</li>
+<li>2026-04-19 18:11: style compliance retrofit — ToC + numbered sections.</li>
+</ul>
+
+<nav class="page-nav">
+  <p><a href="../index.html">↑ Design Docs index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-is">1. What it is</a>
+      <a class="toc-h2" href="#2-smallest-node">2. The smallest working node</a>
+      <a class="toc-h2" href="#3-lifecycle">3. The lifecycle in one figure</a>
+      <a class="toc-h2" href="#4-attributes">4. Class attributes in full</a>
+      <a class="toc-h2" href="#5-ports">5. Ports &amp; per-instance resolution</a>
+      <a class="toc-h2" href="#6-kind">6. kind &amp; the after-loop story</a>
+      <a class="toc-h2" href="#7-ui">7. NodeUIConfig, ConfigField, DisplayField</a>
+      <a class="toc-h2" href="#8-forward">8. forward() &amp; ctx in depth</a>
+      <a class="toc-h2" href="#9-schema-endpoint">9. The schema the frontend consumes</a>
+      <a class="toc-h2" href="#10-batched">10. Batched inference</a>
+      <a class="toc-h2" href="#11-dynamic-firelist">11. DynamicFireListNode — the spawner</a>
+      <a class="toc-h2" href="#12-registration">12. Registration &amp; boundaries</a>
+      <a class="toc-h2" href="#13-cookbook">13. Cookbook</a>
+      <a class="toc-h2" href="#changelog">Changelog</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

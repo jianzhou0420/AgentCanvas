@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-eval-003 — AgentCanvas</title>
+<meta name="description" content="Subprocess-per-run job scheduler with cross-session admission">
+<meta property="og:title" content="ADR-eval-003 — AgentCanvas">
+<meta property="og:description" content="Subprocess-per-run job scheduler with cross-session admission">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/eval/adr-eval-003-subprocess-job-scheduler.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/eval/adr-eval-003-subprocess-job-scheduler.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Eval</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-eval-003</span>
+  </div>
+  <div class="last-updated">2026-05-07 22:55</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-eval);">ADR-eval-003</h1>
+  <p class="tagline">Subprocess-per-run job scheduler with cross-session admission</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-07 22:55</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>eval</code></a></dd>
+</dl>
+
+
+
+
+<h2 id='context'>Context</h2>
+<p>Eval Phase 2 (ADR-eval-002) shipped a working worker pool inside one in-process <code>BatchEvalRunner</code> (<code>agent_loop/eval_batch.py:222</code>), driven from a single FastAPI handler that takes the singleton <code>ExecutionGuard.eval</code> mutex (<code>api/execution/eval.py:176</code>) and dispatches as <code>asyncio.create_task(_run_and_persist())</code> (<code>api/execution/eval.py:228</code>). The mutex is per-backend-process — at most one batch eval runs at a time per backend. To work around it, every Claude session has been starting its <strong>own</strong> <code>uvicorn app.main:app</code> on a port from <code>8765–8769</code> via the <code>/experiment:run</code> skill harness (<code>.claude/commands/experiment/run.md</code> pre-2026-05-07), with a parallel admission-control system in <code>.claude/experiment/bin/admit.py</code> reading and writing JSON files under <code>.claude/experiment/runtime/</code> to coordinate between sessions. Two failure modes have surfaced repeatedly: (i) GPU OOM because each backend loads its own copy of Prismatic VLM (~14 GB), so two concurrent sessions blow a 24 GB card even when neither's eval is heavy — the JSON-based admission ledger has no way to amortize a shared singleton across sessions because every session owns a different <code>WorkspaceComponentRegistry</code>; (ii) cross-session backend kills, where one session's PGID-scoped cleanup trap fires at the wrong moment and another session's running eval dies with it. The skill's "no blanket pkill" memory (<code>feedback_architect_cleanup</code>) was added after one such incident on 2026-05-07. Both failure modes share one root cause: backends are per-session ephemeral, but the scarce resources they manage (VRAM, env subprocesses, model checkpoints) are per-host. The architecture has the wrong unit of scope.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>One long-lived agentcanvas backend per host. Every eval submitted via HTTP runs as a <strong>separate Python subprocess</strong> owned by an admission-controlled scheduler inside the backend. Six rules.</p>
+<p>(1) <strong><code>JobScheduler</code> service inside the backend</strong> (<code>agentcanvas/backend/app/services/job_scheduler.py</code>). Singleton attached to <code>ProcessServices</code>, created in FastAPI lifespan. Owns: a FIFO queue of <code>_QueuedJob</code>, a dict of <code>_RunningJob</code>, a VRAM ledger (<code>usable_vram_mb − Σ active.marginal_vram_mb</code>), and a per-second <code>tick()</code> that admits queued jobs whose declared marginal fits and reaps finished <code>Popen</code> children. Cross-session admission is automatic because the backend is shared: every Claude session that POSTs <code>/api/eval/v2/start</code> to the same backend hits the same scheduler, the same queue, the same ledger. <code>GET /api/eval/v2/queue</code> is the cross-session view.</p>
+<p>(2) <strong>Run subprocess as the unit of execution</strong> (<code>agentcanvas/backend/app/eval_subprocess_main.py</code>). Admit → <code>Popen([python, -m, app.eval_subprocess_main, --run-dir, /abs/path], setsid+PR_SET_PDEATHSIG)</code>. The subprocess reads <code>spec.json</code> + <code>shared_urls.json</code> from the run dir, registers the parent's shared singletons via <code>WorkspaceComponentRegistry.register_remote_nodeset(name, url)</code> (no second 14 GB load), spawns its own tagged env-worker subprocesses via the existing <code>ensure_nodesets_for_graph(worker_count=N)</code> path, calls <code>BatchEvalRunner.execute()</code> <strong>unmodified</strong>, writes <code>summary.json</code> + <code>_DONE</code>, exits. Fault isolation falls out of the OS process boundary: a run subprocess crash (segfault, CUDA OOM raised as Python, <code>SIGKILL</code> from kernel OOM-killer) cannot bring down the parent backend or sibling runs. Code-reload-friendly dev iteration falls out for free: each run is a fresh Python interpreter, picks up backend code edits without backend restart.</p>
+<p>(3) <strong>Disk is the IPC channel; no scheduler→subprocess RPC</strong>. Backend writes <code>spec.json</code> + <code>shared_urls.json</code> pre-spawn; subprocess writes <code>summary.json</code> (atomic via <code>tempfile + os.replace</code> with pid+tid suffix to avoid concurrent-writer races) on every episode boundary and on terminal exit; subprocess touches <code>_DONE</code> last. Backend status queries (<code>GET /api/eval/v2/runs/{id}</code>) are file reads, not RPC. <code>_DONE</code> presence ⇔ status was finalized; absence + dead PID = "aborted" (Q1 fault model). Backend startup walks <code>outputs/eval_runs/</code>, runs <code>reconcile_aborted_runs</code> to flip stale <code>running</code> → <code>aborted</code> for crashed runs from previous backend lifetimes. This is deliberately not a JSON-RPC channel because (a) the live state already needs to land on disk for restart resilience anyway, (b) RPC adds a failure mode (subprocess deadlocks on a backend that's not reading) that file-based comms doesn't have.</p>
+<p>(4) <strong>Q1 fault model — in-flight loss accepted</strong>. When the backend dies (user restart, OOM, segfault, <code>kill -9</code>), every running run subprocess receives <code>SIGTERM</code> via <code>PR_SET_PDEATHSIG</code> and dies with it. No checkpointing of in-flight runs, no resume-on-restart, no per-run independent supervisor process. Persisted records carry <code>_DONE</code> (presence ⇒ clean terminal); absence after the parent goes away = the user manually decides whether to re-submit or sweep. The decision is calibrated to the typical restart cause (developer changed code and wants the new code to take effect) — at that moment the running episodes are using soon-to-be-stale code anyway, so losing them is honest. The cost of the simpler model (no run-supervisor process, no checkpoint protocol, no resume-after-restart code path) outweighs the cost of one episode's lost work.</p>
+<p>(5) <strong>Q2 resource accounting — singleton baseline implicit, marginal declared</strong>. Shared singletons (Prismatic VLM, BLIP-2 caption, etc.) are loaded once by the backend at first-use and stay live; their VRAM footprint is implicit in the difference between <code>nvidia-smi total</code> and <code>AGENTCANVAS_USABLE_VRAM_MB</code> (default <code>total - 16000</code>, configurable per host). Each job spec declares <code>scheduling.marginal_vram_mb</code> for what its env-side workers + per-job adapters add on top. Admission rule: <code>Σ active.marginal ≤ usable</code>. No live <code>nvidia-smi</code> polling, no double-counting; if the operator declares wrong, the run OOMs and gets handled by Q1. This is a deliberate trust-the-author choice over reserve-then-measure, mirroring how SLURM partition memory works: declarations are policy, not predictions.</p>
+<p>(6) <strong><code>/api/eval/v2/start</code> gains <code>via_subprocess</code> (default True), <code>marginal_vram_mb</code>, <code>exclusive_gpu</code>, <code>priority</code></strong>. Default-on flips the backend's eval semantics from "in-process asyncio task gated by <code>ExecutionGuard.eval</code>" to "subprocess gated by <code>JobScheduler.admit</code>". <code>via_subprocess=false</code> (or env <code>AGENTCANVAS_EVAL_SUBPROCESS=0</code>) keeps the legacy path alive as an emergency-rollback escape hatch. <code>ExecutionGuard.canvas</code> mode is unchanged — canvas Play vs eval mutex still exists, scheduler's <code>_canvas_lock_held</code> callback respects it. <code>ExecutionGuard.eval</code> mode survives only as the legacy path's lock; once the legacy path is removed (future ADR), eval mutex retires entirely and N concurrent runs become the only mode.</p>
+<p><strong>Out of scope</strong> (deferred): (i) Multi-host federation — scheduler is per-host today; cross-host job submission would need a registration/heartbeat protocol that's a separate ADR. (ii) Frontend Eval-page status compatibility — <code>/api/eval/v2/status</code> and <code>/episodes</code> still read the legacy <code>_current_run</code>, returning "none" for subprocess runs; UI fix lands in a follow-up. (iii) WebSocket event forwarding from subprocess to backend so the canvas can stream live progress — M2 work, currently subprocess writes only to disk and frontend can poll <code>/runs/{id}</code> for state. (iv) Priority lanes / preemption — M3 admission today is FIFO. (v) Job dependencies (<code>depends_on</code>) — out of M1; trivial extension to admission rule when needed.</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep one backend, allow N concurrent in-process eval tasks via per-eval <code>ExecutionGuard.eval#K</code></strong> — rejected: the executor isn't fully reentrant against shared in-process state (one buggy run's uncaught exception in <code>graph_executor</code> can bring down the asyncio loop and every sibling run with it), memory leaks accumulate across runs in one Python heap, and dev iteration needs a backend restart to pick up code edits which then loses every running run anyway — same blast radius as subprocess approach without any of its benefits. (b) <strong>Cgroups + process-namespacing per run, sharing one Python interpreter via <code>os.fork</code></strong> — rejected: post-fork CUDA state corrupts on most drivers, requires a "no GPU init before fork" invariant that breaks the moment any imported module touches <code>torch.cuda</code>, and the lifecycle complexity (per-run cgroup teardown, namespace cleanup) is bigger than just calling <code>subprocess.Popen</code>. (c) <strong>Per-run independent supervisor process</strong> that survives backend restart (resume in-flight on next backend boot via reading checkpoints) — rejected: episode-level checkpointing of <code>EvalRun</code> state requires a serialization protocol the framework doesn't have, the supervisor adds a third process tier (backend ↔ supervisor ↔ run), and the realistic cause of restart is "developer changed code" — at which point the in-flight run was using stale code and recovering it has negative value. (d) <strong>JSON-RPC channel from subprocess to backend</strong> for live state instead of file-based summary.json — rejected: (i) live state must land on disk anyway for restart-resume of <code>queued</code> jobs and for cross-session <code>GET /runs/{id}</code> after the originating run subprocess exits, so RPC duplicates the protocol; (ii) RPC introduces a deadlock vector (subprocess blocks on a backend that's not reading); (iii) atomic file rename is cheap (sub-ms at episode cadence). (e) <strong>Separate <code>tools/exp/</code> daemon outside the backend</strong> managing admission via SQLite + spawning per-job uvicorn subprocesses (the design that was prototyped and deleted on 2026-05-07) — rejected: the agentcanvas backend already has every primitive the daemon would re-implement (FastAPI server, WorkspaceComponentRegistry, eval pipeline, run state store), and per-job uvicorn replicates the original "every session loads its own Prismatic" anti-pattern.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The trampling problem this ADR solves is one of resource scope mismatch — backends were ephemeral but the resources they managed (VRAM, model checkpoints, env subprocesses) are per-host. Moving the backend to host-scope and the eval to per-run-subprocess-scope realigns the layers: each tier owns the lifetime of resources at its scale. The <code>JobScheduler</code> inside the backend is structurally simpler than the deleted external <code>tools/exp/</code> because it reuses what the backend already has — <code>WorkspaceComponentRegistry</code> for nodeset URLs, <code>outputs/eval_runs/</code> for run state, FastAPI for the API surface, lifespan for the tick loop. The disk-as-IPC choice (rule 3) is load-bearing for restart resilience: every other state mechanism (JSON-RPC, in-memory dicts, SQLite) needs special-case recovery code; atomic file rename is already restart-safe by construction. The Q1 fault model (rule 4) accepts a precisely-scoped loss class (in-flight runs at backend death) in exchange for not building a checkpoint/resume/supervisor stack — a 10× simplicity win for a real but bounded cost. The Q2 model (rule 5) trusts operators to declare correctly because it has to: live <code>nvidia-smi</code> polling double-counts (a job's declared marginal would be subtracted from <code>free</code>, but then the actual model load would also reduce <code>free</code>, blocking sibling admissions), and the OOM blast radius is contained by Q1. The default-on flip in rule 6 forces the new path through the live frontend without a feature-flag dance — frontend's <code>/start</code> POST without explicit <code>scheduling</code> block defaults to <code>marginal_vram_mb=0, priority=normal</code>, treated as a CPU-only task and admitted immediately, which is bit-identical to the legacy path's "always admit" behaviour for interactive runs. The <code>ExecutionGuard.eval</code> legacy lock survives intentionally — it lets the rollback escape hatch (<code>via_subprocess=false</code>) keep working without a bigger refactor, and pruning it can be a one-line deletion in a follow-up ADR once subprocess path is the sole entrypoint. Together: M1 ships a strictly better default behaviour without breaking any callers, and the things it doesn't ship (multi-host, WS streaming, priority) are clean extension points rather than baked-in compromises.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<ul>
+<li><code>developer-guide/core/architecture.md</code> — eval execution model section (asyncio task → subprocess + scheduler)</li>
+<li><code>developer-guide/core/codebase-map.md</code> — new files (<code>services/job_scheduler.py</code>, <code>services/run_state_io.py</code>, <code>eval_subprocess_main.py</code>, <code>api/registry/snapshot.py</code>)</li>
+<li><code>developer-guide/core/glossary.md</code> — new terms (JobScheduler, run subprocess, marginal_vram_mb, _DONE marker, shared_urls.json)</li>
+<li><code>developer-guide/core/decisions/eval/index.md</code> — table entry</li>
+<li><code>developer-guide/core/roadmap.md</code> — mark trampling-problem TODO done</li>
+<li><code>developer-guide/core/decisions.md</code> (top-level if exists) — changelog</li>
+<li><code>.claude/PROJECT_OVERVIEW.md</code> — flag for next <code>/overview:update</code></li>
+</ul>
+<p><strong>Follow-up</strong>: A future ADR retires <code>ExecutionGuard.eval</code> mode entirely once <code>via_subprocess=false</code> legacy path is deleted, and extends <code>JobScheduler</code> to multi-host (worker registration + heartbeat). WS event forwarding from subprocess to backend is M2 work, no ADR needed.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

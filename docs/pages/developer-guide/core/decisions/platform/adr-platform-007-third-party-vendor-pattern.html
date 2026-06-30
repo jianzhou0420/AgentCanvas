@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-platform-007 — AgentCanvas</title>
+<meta name="description" content="third_party vendor pattern: method repos vendored into workspace/nodesets/_upstream/ + _vendored/ ; env repos stay as submodules">
+<meta property="og:title" content="ADR-platform-007 — AgentCanvas">
+<meta property="og:description" content="third_party vendor pattern: method repos vendored into workspace/nodesets/_upstream/ + _vendored/ ; env repos stay as submodules">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/platform/adr-platform-007-third-party-vendor-pattern.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/platform/adr-platform-007-third-party-vendor-pattern.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Platform</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-platform-007</span>
+  </div>
+  <div class="last-updated">2026-05-18 20:04</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-platform);">ADR-platform-007</h1>
+  <p class="tagline">third_party vendor pattern: method repos vendored into <code>workspace/nodesets/_upstream/</code> + <code>_vendored/</code>; env repos stay as submodules</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-05-18 20:04</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>platform</code></a></dd>
+</dl>
+
+<blockquote class="adr-superseded-note">
+<p><strong>⚠ Partially superseded (2026-06-30).</strong> The "<em>env-class repos stay as submodules</em>" layer (decision&nbsp;1 below) is no longer in effect: <strong>all <code>third_party/</code> repos are now pinned install-time clones</strong>, not git submodules. The former env submodules (<code>habitat-lab</code>, <code>VLN-CE</code>, <code>Matterport3DSimulator</code>) are cloned and pinned by <code>scripts/install/lib/thirdparty.sh</code> — the single place their commit IDs now live — invoked from the per-env <code>install_ac_*.sh</code> scripts; <code>.gitmodules</code> was deleted. The private <code>vla_workspace</code> repo was severed entirely: <code>lerobot</code> + <code>libero</code> clone from their public upstreams, and <code>openpi-client</code> + the LIBERO norm_stats are vendored into the <code>policy_vla</code> nodeset. Decision&nbsp;2 (method repos &rarr; <code>_upstream/</code>), decision&nbsp;3 (runtime code &rarr; <code>_vendored/</code>), and the install-time-clone convention itself remain in force.</p>
+</blockquote>
+
+
+
+<h2 id='context'>Context</h2>
+<p>Pre-2026-05-18 the <code>third_party/</code> tree mixed three kinds of upstream code: (1) <strong>env-class</strong> repos that are genuine runtime dependencies (habitat-lab + VLN-CE pip-install editable, Matterport3DSimulator builds <code>.so</code> via CMake, ManiSkill2_real2sim + SimplerEnv + vla_workspace are required by VLA nodesets); (2) <strong>method-class</strong> repos cited by individual reasoning nodesets (MapGPT, NavGPT, Open-Nav, SmartWay-Code, VoxPoser, open-eqa, explore-eqa, tooleqa) — most cited for prompts / constants / model defs already reimplemented verbatim inside <code>workspace/nodesets/</code>; (3) <strong>reference-only</strong> clones under <code>zz_just_for_refer/</code> kept for human reading (18 submodules: ADAS / AFlow / AdaPlanner / AgentSquare / CA-Nav-code / ComfyUI / ComfyUI_frontend / DetAny3D / EvoAgentX / GroundingDINO / MaAS / NavGPT-2 / STRIDER-Nav / UniDepth / dify / langgraph / self-refine / vln-zero).</p>
+<p>Pain points: (a) <code>git clone --recurse-submodules</code> took minutes and pulled GB of reference code that no runtime touches; (b) every method nodeset that hardcoded <code>third_party/&lt;repo&gt;/&lt;path&gt;</code> in <code>sys.path.insert</code> or <code>os.path.join</code> defaults was tied to upstream HEAD drift — pinning happened only at submodule commit level, not at the file-content level; (c) the <code>zz_just_for_refer/</code> subtree never had documented purpose, and several entries (NavGPT inside it, an Open-Nav top-level clone shadowing the one under <code>zz_just_for_refer/</code>) had drifted to inconsistent states; (d) the <code>workspace/</code> standalone policy (memory: <code>feedback_workspace_standalone</code>) was nominally enforced but in practice the engines in <code>workspace/nodesets/server/{opennav_waypoint,smartway_waypoint}/</code> did runtime <code>sys.path.insert(0, third_party/&lt;repo&gt;)</code> — a tight coupling that meant deleting <code>third_party/&lt;repo&gt;</code> silently broke method nodesets at first import.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Adopt a three-layer convention separating attribution, vendored source, and external installs:</p>
+<ol>
+  <li><strong>Env-class repos stay as submodules under <code>third_party/</code>.</strong> They are runtime dependencies that need pip-installable layouts or CMake builds — vendoring would duplicate large mature codebases. Six entries remain post-cleanup: <code>habitat-lab</code>, <code>VLN-CE</code>, <code>Matterport3DSimulator</code>, <code>ManiSkill2_real2sim</code>, <code>SimplerEnv</code>, <code>vla_workspace</code>.</li>
+  <li><strong>Method-class repos move to <code>workspace/nodesets/_upstream/&lt;name&gt;/</code>.</strong> Each entry is a metadata directory containing <code>fetch_upstream.sh</code> (clones the pinned upstream commit to a sibling <code>./upstream/</code>, gitignored via <code>workspace/nodesets/_upstream/*/upstream/</code>) plus a <code>LICENSE</code> copy where the upstream provides one. Optional <code>fetch_data.sh</code> for runtime-data fetch (used by <code>navgpt</code>, <code>explore-eqa</code>). Nine entries: <code>mapgpt</code>, <code>voxposer</code>, <code>navgpt</code>, <code>open-eqa</code>, <code>tooleqa</code>, <code>explore-eqa</code>, <code>prismatic-vlms</code>, <code>open-nav</code>, <code>smartway-code</code>.</li>
+  <li><strong>Runtime code that must be importable lives inside the consuming nodeset as <code>_vendored/&lt;upstream-subdir&gt;/</code>.</strong> Leading-underscore prefix means the nodeset registry skips this directory during scan. Engines do <code>sys.path.insert(0, &lt;nodeset&gt;/_vendored)</code> with the same string-match imports as before, preserving byte-identical upstream code. Currently used for Open-Nav's <code>waypoint_prediction/</code> (6 .py files) and SmartWay-Code's <code>waypoint_predictor/</code> (17 .py files including a bare <code>import utils</code> sibling pattern that requires a second sys.path insert).</li>
+  <li><strong>External Python packages install directly from pinned upstream commits</strong>: <code>pip install git+https://&lt;upstream&gt;.git@&lt;commit&gt;</code>. Used in <code>install_ac_hmeqa.sh</code> for <code>prismatic-vlms</code>, replacing the previous editable install from a nested submodule.</li>
+  <li><strong><code>zz_just_for_refer/</code> drops all 18 submodule entries.</strong> Three local untracked dirs (<code>claudecode</code>, <code>DiscussNav</code>, <code>agentcanvas-refs</code>) survive as gitignored personal reference material.</li>
+  <li><strong>Reference clones happen on-demand</strong>, not by default. <code>fetch_upstream.sh</code> defaults to placing the clone inside the project at <code>workspace/nodesets/_upstream/&lt;name&gt;/upstream/</code> (predictable path, survives reboots, gitignored) — overridden via <code>$1</code>. No upstream code is pulled at <code>git clone</code> time for any method repo.</li>
+</ol>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Keep all method repos as submodules, just flatten <code>zz_just_for_refer/</code></strong> — rejected because the underlying coupling (runtime <code>sys.path.insert(0, third_party/&lt;repo&gt;)</code> tied nodesets to a directory that fresh clones might not have populated) stays unchanged; the registry of "things to clone before this works" remains opaque.</p>
+<p>(b) <strong>Vendor everything: copy entire upstream repos into <code>workspace/nodesets/&lt;name&gt;/_vendored/</code></strong> — rejected because most method nodesets cite only prompts / constants that the user has already reimplemented verbatim inline (MapGPT, VoxPoser). Vendoring the full repos would 10× the workspace diff with code nobody runs.</p>
+<p>(c) <strong>Pure <code>pip install git+&lt;url&gt;@&lt;commit&gt;</code> for every method repo</strong> — rejected because most method repos are research codebases without a <code>setup.py</code> / <code>pyproject.toml</code> that pip can install. Even the ones with installable shape don't expose the modules the nodesets import (the imports target <code>waypoint_prediction/</code> sub-tree files, not a top-level package).</p>
+<p>(d) <strong>Submodule the method repos but lazily init only on first use</strong> — rejected: doesn't address the "where does the upstream code live for re-syncing" question, and adds a runtime branch ("if not initialized, init now") that's hard to reason about in server-mode nodesets running under conda activation hooks.</p>
+<p>(e) <strong>Keep <code>zz_just_for_refer/</code> as a real "human reading" submodule farm</strong> — rejected because (1) submodules induce clone-time pulls regardless of recursion flag presence in user habits; (2) zero of the 18 reference entries had any functional import in <code>workspace/</code>; (3) on-demand fetch via the same <code>fetch_upstream.sh</code> pattern serves the same purpose with zero default cost.</p>
+<p>(f) <strong>Store the LICENSE files at the repo root</strong> instead of co-located with each <code>_upstream/&lt;name&gt;/</code> — rejected because per-directory <code>LICENSE</code> is the audit-friendly convention (compliance tooling expects to find it next to the vendored content).</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p><strong>The env-vs-method split is the load-bearing distinction.</strong> Env repos are infrastructure: they need pip-installable layouts, CMake builds, or simulator binaries. Vendoring them would be a bad-faith fork of a mature codebase. Method repos cite prompts, constants, or single-purpose model defs — vendoring is cheap, locks the project against silent upstream drift, and makes <code>workspace/</code> truly standalone (per <code>feedback_workspace_standalone</code> memory). The two classes have different lifecycles and deserve different storage.</p>
+<p><strong><code>_upstream/&lt;name&gt;/</code> as metadata-only directory is the cheapest possible attribution layer.</strong> It always lists the URL + pinned commit + license, always provides a one-command path to re-fetch the upstream snapshot for diffing, and never imposes clone-time cost. The pattern scales linearly: adding a new method nodeset adds one directory with two-to-three small files.</p>
+<p><strong><code>_vendored/&lt;upstream-subdir&gt;/</code> co-located with the consuming nodeset</strong> keeps Python's namespace flat. <code>sys.path.insert(0, nodeset/_vendored)</code> works identically whether the consumer is in <code>ac-vlnce</code> conda env (Open-Nav) or <code>ac-smartway</code> conda env (SmartWay-Code). The leading-underscore registry-skip convention prevents accidental double-registration. Byte-identical upstream copies make audit + re-sync trivial (<code>diff -r _vendored/X _upstream/X/upstream/X</code>).</p>
+<p><strong><code>pip install git+&lt;url&gt;@&lt;commit&gt;</code> for packageable upstreams</strong> (Prismatic VLM) keeps the install path declarative and lockable — the commit pin is in the install script, the package lands in <code>site-packages</code> the standard way, and editable rebuilds happen via <code>_upstream/&lt;name&gt;/fetch_upstream.sh</code> + <code>pip install -e ./upstream</code> when local edits are needed.</p>
+<p><strong>Three-phase migration (4 batches) bounded blast radius</strong>: batch 1 (MapGPT + VoxPoser + spatialx) was zero-risk validation — no runtime use, only docstring updates. Batch 2 (NavGPT + open-eqa + tooleqa) moved data references. Batch 3 (explore-eqa + prismatic-vlms) introduced the <code>pip install git+</code> idiom. Batch 4 (Open-Nav + SmartWay-Code) vendored the only real code subtrees, with a Python smoke test of <code>sys.path</code> + <code>find_spec</code> + instantiation before deleting the submodules.</p>
+<p><strong>On-demand fetch destination = <code>./upstream/</code> sibling</strong>, not <code>/tmp/</code>: predictable, survives reboots, lives next to the LICENSE + fetch script for review convenience, gitignored via a single <code>.gitignore</code> glob (<code>workspace/nodesets/_upstream/*/upstream/</code>).</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>Migration delivered across 6 commits: <code>2d012d3</code> (batch 0: flatten zz_just_for_refer + drop 18), <code>eefafc0</code> (batch 1), <code>b53eab5</code> (fetch-script destination fix), <code>0af0a9f</code> (batch 2), <code>a9f3ced</code> (batch 3), <code>b617c21</code> (batch 4). Per-doc updates:</p>
+<ul>
+  <li><code>.claude/PROJECT_OVERVIEW.md</code> — <code>third_party/</code> row rewritten to describe the env-only + <code>_upstream/</code> + <code>_vendored/</code> layout.</li>
+  <li><code>.gitignore</code> — added <code>workspace/nodesets/_upstream/*/upstream/</code> rule; dropped stale spatialx/tooleqa lines.</li>
+  <li><code>scripts/install/install_ac_hmeqa.sh</code> — Prismatic VLM install switched to <code>pip install git+https://...</code>.</li>
+  <li><code>scripts/data/fetch_dataset_openeqa.sh</code> — open-eqa-v0.json fetched via curl from pinned commit.</li>
+  <li><code>scripts/install/install_ac_smartway.sh</code> — vendored-subtree existence check.</li>
+  <li><code>scripts/data/fetch_episodes_vln.sh</code> — HM-EQA data sourced from <code>_upstream/explore-eqa/upstream/data/</code>.</li>
+  <li><code>workspace/nodesets/server/{opennav_waypoint/__init__,smartway_waypoint/__init__,smartway_waypoint/_engine,smartway_perception/__init__,matterport3d}.py</code> — defaults + docstrings.</li>
+  <li><code>workspace/nodesets/_upstream/&lt;9 dirs&gt;/{fetch_upstream.sh,LICENSE,fetch_data.sh}</code> — new metadata directories.</li>
+  <li><code>workspace/nodesets/server/{opennav_waypoint,smartway_waypoint}/_vendored/</code> — 6 + 17 vendored .py files.</li>
+  <li><code>docs/pages/developer-guide/nodesets/{explore-eqa,hmeqa}.html</code> — references updated.</li>
+  <li><code>architect-site/reference/fastsmartway/algorithm.html</code> — references updated.</li>
+  <li>Three <code>.claude/notes</code> / <code>.claude/memory</code> / <code>.claude/analysis</code> files — path refs updated.</li>
+</ul>
+<p><strong>Carry-over follow-ups</strong> (not yet resolved): (i) <code>workspace/nodesets/_upstream/tooleqa/fetch_upstream.sh</code> has a TODO marker — upstream URL needs confirmation (local clone's origin pointed at the user's own AgentCanvas fork, not the canonical paper release); (ii) NavGPT R2R precomputed-observation data is missing in the upstream submodule itself — graphs that consume <code>matterport3d.graph_get_observation</code> already handle the <code>None</code> path via online BLIP-2 + Faster R-CNN, so this is by-design fallback rather than a bug.</p>
+
+<h2 id='changelog'>Changelog</h2>
+<ul>
+  <li><code>2026-05-18 20:04</code>: Initial draft documenting the third_party vendor pattern (4-batch migration completed earlier this session — commits <code>2d012d3</code>, <code>eefafc0</code>, <code>b53eab5</code>, <code>0af0a9f</code>, <code>a9f3ced</code>, <code>b617c21</code>).</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>
