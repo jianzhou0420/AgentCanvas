@@ -2,10 +2,10 @@
 # ==============================================================================
 # AgentCanvas — Test Install & Launch
 #
-# Same as install_all.sh but uses an isolated test env: agentcanvas-test.
+# Same as install_core.sh but uses an isolated test env: agentcanvas-test.
 # The doc-site is hand-authored HTML with no install step.
 #
-# Usage:  bash scripts/install/install_all_test.sh
+# Usage:  bash scripts/install/install_core_test.sh
 # ==============================================================================
 set -euo pipefail
 

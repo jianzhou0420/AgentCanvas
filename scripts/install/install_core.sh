@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# AgentCanvas — Full Install & Launch
+# AgentCanvas — Core Install & Launch
 #
 # Installs the agentcanvas conda env + frontend deps, then launches the canvas
 # (backend :8000 + frontend :5173 in foreground).
 #
+# This is the CORE hub env ONLY — it does NOT install any server-mode env.
+# Each simulator / model env has its own scripts/install/install_ac_*.sh.
+#
 # The doc-site (under docs/) is hand-authored HTML with no install step — run
 # `bash docs/run_dev.sh` separately to serve it on :8092.
 #
-# Usage:  bash scripts/install/install_all.sh
+# Usage:  bash scripts/install/install_core.sh
 # ==============================================================================
 set -euo pipefail
 
