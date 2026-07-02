@@ -61,6 +61,15 @@ RELOAD_SNIPPET = b"""
 EXCLUDED_DIR_NAMES = {".git", "__pycache__", "node_modules", ".idea", ".vscode"}
 EXCLUDED_SUFFIXES = (".swp", ".swo", ".tmp", ".pyc")
 
+# Committed assets with a gitignored ".local" twin holding the full view —
+# including gitignored sections (see _wrap_handwritten). The dev server serves
+# the twin so local-only pages show up locally; the published site has no
+# .local files and serves the committed public view.
+LOCAL_ASSET_VARIANTS = {
+    "/assets/nav.json": "/assets/nav.local.json",
+    "/assets/search-index.json": "/assets/search-index.local.json",
+}
+
 
 def is_excluded(p: Path) -> bool:
     if p.suffix in EXCLUDED_SUFFIXES:
@@ -180,6 +189,9 @@ class LiveReloadHandler(SimpleHTTPRequestHandler):
         if self.path == "/__reload-stream":
             self._serve_sse()
             return
+        local = LOCAL_ASSET_VARIANTS.get(self.path)
+        if local and os.path.exists(self.translate_path(local)):
+            self.path = local
         if (self.path.endswith(".html") or self.path.endswith("/")) and self._serve_html():
             return
         super().do_GET()

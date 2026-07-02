@@ -47,7 +47,11 @@ Only the content inside `<main>` (excluding the topbar div) is yours to edit. Th
 
 ## Re-wrapping after layout/nav changes
 
-The **top tabs + left sidebar are rendered client-side** by `assets/nav.js` from a generated `assets/nav.json` (built by `_wrap_handwritten.py` via `_nav.build_nav_data`). Each page bakes only empty `#site-tabs` / `#sidebar-left` shells plus page-local `data-tab` / `data-page-rel` on `<body>`. Consequence: **adding / removing / renaming a page touches only that page + `nav.json` — never every sibling.** Breadcrumbs and the right-TOC are still baked per page (they're page-local, so no cross-page churn).
+The **top tabs + left sidebar are rendered client-side** by `assets/nav.js` from a generated `assets/nav.json` (built by `_wrap_handwritten.py` via `_nav.build_nav_data`). Each page bakes only empty `#site-tabs` / `#sidebar-left` shells plus page-local `data-tab` / `data-page-rel` on `<body>`. Breadcrumbs and the right-TOC are still baked per page (they're page-local, so no cross-page churn). The AAS cross-nav strip works the same way since v2: `_aas_nav.py` injects an empty tab container + a small fetch script, never baked links.
+
+**Nav/search data is generated, never committed.** `assets/nav.json`, `assets/search-index.json`, and their `*.local.json` twins are all gitignored. Locally the dev server's auto-wrap keeps them fresh on disk; on the published site the deploy workflow (`.github/workflows/docs.yml`) runs the same wrap pass against the checked-out tree, so the public nav is always consistent with the committed page set by construction. Consequence: **adding / removing / renaming a page touches only that page's own file in git — never a nav artifact, never a sibling.**
+
+**Gitignore = visibility switch (local-only sections).** The wrap pass runs `git check-ignore` over everything under `pages/`: gitignored dirs/pages are pruned from the public `nav.json` / `search-index.json` but kept in the `nav.local.json` / `search-index.local.json` twins, which the dev server serves in place of the public files (CI deletes the twins from the deploy artifact). So a private section shows up locally and never leaks to the published site. To add one: `mkdir docs/pages/<name>/` (or a subdir/page anywhere) + one `.gitignore` line — nothing else to configure.
 
 When you change things, three cases:
 

@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      # nav/search visibility is gitignore-driven (docs/_lib/_nav.py), so a
+      # .gitignore-only change can alter the public nav — redeploy on it too.
+      - '.gitignore'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -27,12 +30,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The one build step: regenerate baked chrome + nav.json/search-index.json
+      # from the checked-out tree (pure stdlib, no pip installs). The generated
+      # nav/search data is untracked — this is its single source of truth for
+      # the published site. The *.local.json twins only matter for the local
+      # dev server; on a public checkout they'd duplicate the public files, so
+      # drop them from the artifact.
+      - name: Build nav + chrome (stdlib-only wrap pass)
+        run: |
+          python3 docs/_lib/_wrap_handwritten.py
+          rm -f docs/assets/*.local.json
+
       - uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # The docs/ tree IS the built site — no build step needed.
+          # Hand-authored docs/ tree + the freshly built nav/search data above.
           path: ./docs
 
       - name: Deploy to GitHub Pages
