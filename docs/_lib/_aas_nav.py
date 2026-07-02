@@ -4,12 +4,15 @@
 The AAS site (formerly `architect-site/`, moved into `docs/pages/aas/`) keeps
 its own internal layout — 1080px max-width body, its own CSS, its own
 breadcrumbs. We do NOT graft the docs/ sidebar/breadcrumbs onto it.
-What we do graft is a thin sticky strip at the very top of `<body>`
-with three tabs back to the rest of the site (Developer Guide /
-Research / AAS — AAS marked active).
+What we do graft is a thin sticky strip at the very top of `<body>` with
+tabs back to the rest of the site (AAS marked active). The tab links render
+client-side from assets/nav.json — the same data the main site's nav.js
+consumes — so the folder set never bakes into these pages, and the dev
+server's nav.local.json swap makes gitignored local-only sections show up
+locally without ever entering the committed HTML.
 
-Idempotent: the strip is wrapped in a `<!-- aas-cross-nav: v1 -->` /
-`<!-- /aas-cross-nav -->` block; reruns replace the block in place.
+Idempotent: the strip is wrapped in a versioned `<!-- aas-cross-nav: vN -->` /
+`<!-- /aas-cross-nav -->` block; reruns replace the block (any version) in place.
 
 Usage:
     python docs/_lib/_aas_nav.py
@@ -20,22 +23,20 @@ so the regenerated pages keep the strip.
 
 from __future__ import annotations
 
-import html
 import re
 from pathlib import Path
-
-import _nav
 
 # docs/ root — script lives at docs/_lib/_aas_nav.py
 V2 = Path(__file__).resolve().parent.parent
 AAS_DIR = V2 / "pages" / "aas"
 
-OPEN_MARK = "<!-- aas-cross-nav: v1 -->"
+OPEN_MARK = "<!-- aas-cross-nav: v2 -->"
 CLOSE_MARK = "<!-- /aas-cross-nav -->"
 
-# Match a previously injected block (idempotency).
+# Match a previously injected block of any version (idempotency + clean
+# upgrade over pages still carrying an older baked block).
 BLOCK_RE = re.compile(
-    re.escape(OPEN_MARK) + r".*?" + re.escape(CLOSE_MARK) + r"\s*",
+    r"<!-- aas-cross-nav: v\d+ -->.*?" + re.escape(CLOSE_MARK) + r"\s*",
     re.DOTALL,
 )
 BODY_OPEN_RE = re.compile(r"(<body[^>]*>)", re.IGNORECASE)
@@ -50,16 +51,9 @@ def _build_block(prefix: str) -> str:
     """The injected strip. `prefix` is a relative path from the page
     directory to the docs/ root (with trailing slash, e.g. '../' or '../../').
 
-    Tab list is sourced from _nav.get_tabs() so the strip reflects whatever
-    is currently in docs/pages/. Tabs whose dir is absent locally are
-    silently omitted; the AAS tab is marked active."""
-    tab_links: list[str] = []
-    for tab in _nav.get_tabs():
-        active = ' class="active"' if tab.get("_dir") == "aas" else ""
-        href = f"{prefix}{tab['landing']}"
-        tab_links.append(f'    <a{active} href="{href}">{html.escape(tab["tab"])}</a>')
-    tabs_block = "\n".join(tab_links)
-
+    The tab container starts empty and is filled client-side from
+    assets/nav.json (dev server swaps in nav.local.json — see module
+    docstring), so the strip never bakes the folder set into the page."""
     return f"""{OPEN_MARK}
 <script>
   // Match the site-wide theme choice (shared 'site-theme' key) before first
@@ -73,12 +67,28 @@ def _build_block(prefix: str) -> str:
 </script>
 <nav class="aas-xnav" aria-label="Site sections">
   <a class="aas-xnav-brand" href="{prefix}index.html">AgentCanvas</a>
-  <div class="aas-xnav-tabs">
-{tabs_block}
-  </div>
+  <div class="aas-xnav-tabs"></div>
   <button class="aas-xnav-theme" type="button" aria-label="Toggle light / dark theme"
     onclick="(function(){{var d=document.documentElement;var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{{localStorage.setItem('site-theme',n);}}catch(e){{}}}})()">&#9680;</button>
 </nav>
+<script>
+  (function () {{
+    var host = document.querySelector('.aas-xnav .aas-xnav-tabs');
+    if (!host || !window.fetch) return;
+    fetch('{prefix}assets/nav.json')
+      .then(function (r) {{ return r.json(); }})
+      .then(function (data) {{
+        (data.tabs || []).forEach(function (t) {{
+          var a = document.createElement('a');
+          a.href = '{prefix}' + t.landing;
+          a.textContent = t.tab;
+          if (t.dir === 'aas') {{ a.className = 'active'; }}
+          host.appendChild(a);
+        }});
+      }})
+      .catch(function () {{ /* leave the strip tab-less if nav.json is unreachable */ }});
+  }})();
+</script>
 <style>
 .aas-xnav {{
   background: #1a1a1a; color: #fafaf7;

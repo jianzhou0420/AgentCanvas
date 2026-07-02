@@ -47,7 +47,9 @@ Only the content inside `<main>` (excluding the topbar div) is yours to edit. Th
 
 ## Re-wrapping after layout/nav changes
 
-The **top tabs + left sidebar are rendered client-side** by `assets/nav.js` from a generated `assets/nav.json` (built by `_wrap_handwritten.py` via `_nav.build_nav_data`). Each page bakes only empty `#site-tabs` / `#sidebar-left` shells plus page-local `data-tab` / `data-page-rel` on `<body>`. Consequence: **adding / removing / renaming a page touches only that page + `nav.json` — never every sibling.** Breadcrumbs and the right-TOC are still baked per page (they're page-local, so no cross-page churn).
+The **top tabs + left sidebar are rendered client-side** by `assets/nav.js` from a generated `assets/nav.json` (built by `_wrap_handwritten.py` via `_nav.build_nav_data`). Each page bakes only empty `#site-tabs` / `#sidebar-left` shells plus page-local `data-tab` / `data-page-rel` on `<body>`. Consequence: **adding / removing / renaming a page touches only that page + `nav.json` — never every sibling.** Breadcrumbs and the right-TOC are still baked per page (they're page-local, so no cross-page churn). The AAS cross-nav strip works the same way since v2: `_aas_nav.py` injects an empty tab container + a small fetch script, never baked links.
+
+**Gitignore = visibility switch (local-only sections).** The wrap pass runs `git check-ignore` over everything under `pages/`: gitignored dirs/pages are pruned from the committed `nav.json` / `search-index.json` (the public view) but kept in the gitignored `nav.local.json` / `search-index.local.json` twins, which the dev server serves in place of the committed files. So a private section shows up locally and never leaks to the published site. To add one: `mkdir docs/pages/<name>/` (or a subdir/page anywhere) + one `.gitignore` line — nothing else to configure.
 
 When you change things, three cases:
 

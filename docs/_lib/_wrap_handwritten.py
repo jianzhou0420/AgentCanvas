@@ -100,14 +100,6 @@ P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
 DESC_MAX = 200
 SEARCH_TEXT_MAX = 8000
 
-# Pages under these docs-relative prefixes are still re-baked (so they render
-# locally) but kept OUT of the committed search-index.json. `pages/research/`
-# and `pages/todo/` are .gitignored personal content (never deployed) — indexing
-# them would both leak them into the tracked index and create dead links on the
-# published site.
-INDEX_EXCLUDE_PREFIXES = ("pages/research/", "pages/todo/")
-
-
 def _dir_label(name: str) -> str:
     return DIR_LABEL_OVERRIDES.get(name, name.replace("-", " ").replace("_", " ").title())
 
@@ -350,43 +342,53 @@ def discover_all_pages() -> list[Path]:
 
 
 SEARCH_INDEX_FILE = V2 / "assets" / "search-index.json"
+SEARCH_INDEX_LOCAL_FILE = V2 / "assets" / "search-index.local.json"
 NAV_JSON_FILE = V2 / "assets" / "nav.json"
+NAV_JSON_LOCAL_FILE = V2 / "assets" / "nav.local.json"
 
 
-def _write_nav_json() -> bool:
-    """Write assets/nav.json — the single source of truth for the client-rendered
-    top tabs + left sidebar (see _nav.build_nav_data + assets/nav.js). Returns
-    True if the file changed. Writing only on change keeps mtimes stable so the
-    dev server's auto-wrap doesn't see its own output as a new change and loop."""
-    # Trailing newline so the file is stable under end-of-file-fixer (otherwise
-    # every wrap re-dirties nav.json and the pre-commit hook fights it forever).
-    payload = json.dumps(_nav.build_nav_data(), ensure_ascii=False, separators=(",", ":")) + "\n"
+def _write_json_asset(path: Path, data) -> bool:
+    """Serialize + write one client-consumed JSON asset; True if it changed.
+    Compact separators keep the output deterministic; the trailing newline keeps
+    the file stable under end-of-file-fixer (otherwise every wrap re-dirties it
+    and the pre-commit hook fights it forever). Writing only on change keeps
+    mtimes stable so the dev server's auto-wrap doesn't see its own output as a
+    new change and loop."""
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
     try:
-        prev = NAV_JSON_FILE.read_text(encoding="utf-8") if NAV_JSON_FILE.exists() else None
-    except OSError:
-        prev = None
-    if prev == payload:
-        return False
-    NAV_JSON_FILE.write_text(payload, encoding="utf-8")
-    return True
-
-
-def _write_search_index(entries: list[dict]) -> bool:
-    """Write assets/search-index.json (consumed by the client-side search in
-    nav.js). Returns True if the file changed. Sorted + compact so the output
-    is deterministic and the dev server's auto-wrap doesn't loop on it."""
-    import json
-
-    entries = sorted(entries, key=lambda e: e["url"])
-    payload = json.dumps(entries, ensure_ascii=False, separators=(",", ":")) + "\n"
-    try:
-        if SEARCH_INDEX_FILE.exists() and SEARCH_INDEX_FILE.read_text(encoding="utf-8") == payload:
+        if path.exists() and path.read_text(encoding="utf-8") == payload:
             return False
-    except Exception:
+    except OSError:
         pass
-    SEARCH_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SEARCH_INDEX_FILE.write_text(payload, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
     return True
+
+
+def _write_nav_json() -> int:
+    """Write the client-rendered nav data (see _nav.build_nav_data + assets/nav.js):
+    the committed assets/nav.json holds the public view (gitignored sections
+    dropped — they never deploy, so listing them would leak titles and create
+    dead links on the published site); the gitignored assets/nav.local.json
+    holds the full view and is served in place of nav.json by the dev server,
+    so local-only sections still show up locally. Returns files changed."""
+    n = 0
+    n += _write_json_asset(NAV_JSON_FILE, _nav.build_nav_data())
+    n += _write_json_asset(NAV_JSON_LOCAL_FILE, _nav.build_nav_data(include_private=True))
+    return n
+
+
+def _write_search_index(entries: list[dict]) -> int:
+    """Write the client-side search data (consumed by nav.js), split the same
+    way as the nav data: committed search-index.json = public pages only
+    (gitignored ones dropped), gitignored search-index.local.json = everything,
+    served in its place by the dev server. Returns files changed."""
+    entries = sorted(entries, key=lambda e: e["url"])
+    public = [e for e in entries if not _nav.is_private_rel(e["url"])]
+    n = 0
+    n += _write_json_asset(SEARCH_INDEX_FILE, public)
+    n += _write_json_asset(SEARCH_INDEX_LOCAL_FILE, entries)
+    return n
 
 
 def main(quiet: bool = False) -> int:
@@ -404,8 +406,7 @@ def main(quiet: bool = False) -> int:
     for path in discover_all_pages():
         try:
             changed, entry = convert(path)
-            rel = path.relative_to(V2).as_posix()
-            if entry is not None and not rel.startswith(INDEX_EXCLUDE_PREFIXES):
+            if entry is not None:
                 entries.append(entry)
             if changed:
                 n_ok += 1
@@ -414,10 +415,8 @@ def main(quiet: bool = False) -> int:
         except Exception as e:
             print(f"  ERROR {path.relative_to(V2)}: {type(e).__name__}: {e}")
             n_skip += 1
-    if _write_search_index(entries):
-        n_ok += 1
-    if _write_nav_json():
-        n_ok += 1
+    n_ok += _write_search_index(entries)
+    n_ok += _write_nav_json()
     if not quiet:
         print(f"\ndone — {n_ok} written, {n_skip} unchanged/skipped")
 

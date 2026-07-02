@@ -36,6 +36,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -44,6 +45,54 @@ from _site import SITE_NAME
 # Resolves to the docs/ root (script lives at docs/_lib/_nav.py).
 V2 = Path(__file__).resolve().parent.parent
 PAGES = V2 / "pages"
+
+
+# ---------- gitignore-driven visibility ----------
+
+# Paths under pages/ that git ignores (docs-relative posix; dirs + .html files).
+# Computed once per build; invalidate_discovery_cache() drops it so a long-lived
+# dev server picks up new dirs / .gitignore edits on the next wrap pass.
+_IGNORED_CACHE: frozenset[str] | None = None
+
+
+def _ignored_under_pages() -> frozenset[str]:
+    global _IGNORED_CACHE
+    if _IGNORED_CACHE is not None:
+        return _IGNORED_CACHE
+    candidates = [
+        p.relative_to(V2).as_posix() for p in PAGES.rglob("*") if p.is_dir() or p.suffix == ".html"
+    ]
+    ignored: frozenset[str] = frozenset()
+    if candidates:
+        try:
+            proc = subprocess.run(
+                ["git", "check-ignore", "--stdin", "-z"],
+                cwd=V2,
+                input="\0".join(candidates),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            # 0 = some ignored, 1 = none ignored; anything else (no git /
+            # not a repo) falls through to "nothing is private".
+            if proc.returncode in (0, 1):
+                ignored = frozenset(p for p in proc.stdout.split("\0") if p)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _IGNORED_CACHE = ignored
+    return ignored
+
+
+def is_private_rel(rel: str) -> bool:
+    """True when the docs-relative path is gitignored.
+
+    Gitignore is the single visibility switch: an ignored dir/page still renders
+    on the local dev site but is dropped from every committed artifact (nav.json,
+    search-index.json), so it never reaches the published site. On a checkout
+    without git nothing reads as private — such machines also lack the ignored
+    dirs, so nothing can leak.
+    """
+    return rel.rstrip("/") in _ignored_under_pages()
 
 
 # ---------- per-tab config loading ----------
@@ -82,8 +131,12 @@ def _find_default_landing(tab_dir: Path) -> str | None:
     return None
 
 
-def get_tabs() -> list[dict]:
+def get_tabs(include_private: bool = True) -> list[dict]:
     """Scan docs/pages/<dir>/ and return one tab dict per discovered dir.
+
+    include_private=False drops tabs whose dir is gitignored (see is_private_rel)
+    — used when building the committed nav.json so local-only sections never
+    leak into the published site.
 
     Returns same shape as the old hardcoded TABS list, with one extra
     `_dir` field so consumers can find a tab by directory name.
@@ -94,6 +147,8 @@ def get_tabs() -> list[dict]:
     discovered: list[tuple[tuple, dict]] = []
     for d in sorted(PAGES.iterdir()):
         if not d.is_dir() or d.name.startswith("_") or d.name.startswith("."):
+            continue
+        if not include_private and is_private_rel(f"pages/{d.name}"):
             continue
         cfg = _load_tab_cfg(d)
         landing_rel = cfg.get("landing") or _find_default_landing(d)
@@ -228,8 +283,11 @@ def invalidate_discovery_cache() -> None:
     Cheap (just clears a dict). Long-lived callers that re-render after the page
     set may have changed — chiefly the live-reload dev server's per-change wrap —
     call this first so newly added/removed/renamed pages propagate into every
-    sibling sidebar without a server restart.
+    sibling sidebar without a server restart. Also drops the gitignore snapshot
+    so visibility follows .gitignore edits.
     """
+    global _IGNORED_CACHE
+    _IGNORED_CACHE = None
     _DISCOVER_CACHE.clear()
 
 
@@ -446,16 +504,38 @@ def _json_node(n: dict) -> dict:
     return out
 
 
-def build_nav_data() -> dict:
-    """Serializable nav tree for client-side rendering (written to assets/nav.json).
+def _prune_private(nodes: list[dict]) -> list[dict]:
+    """Drop gitignored pages/groups from a discovery tree (public view).
+
+    Group/section nodes carry their dir in `key`; page nodes their file in
+    `href`. An ignored dir prunes its whole subtree in one hit."""
+    out: list[dict] = []
+    for n in nodes:
+        ref = n.get("key") or n.get("href")
+        if ref and is_private_rel(ref):
+            continue
+        if n.get("children"):
+            n = {**n, "children": _prune_private(n["children"])}
+        out.append(n)
+    return out
+
+
+def build_nav_data(include_private: bool = False) -> dict:
+    """Serializable nav tree for client-side rendering.
 
     Single source of truth for the top tabs + left sidebar. Rendered in the
     browser by assets/nav.js, so adding/removing/renaming a page touches only
     that page's own file + this one JSON — never every sibling's baked chrome.
     hrefs are V2-relative ("pages/.../x.html"); the client prepends the page's
-    data-asset-prefix so they resolve at any depth / under any Pages base path."""
+    data-asset-prefix so they resolve at any depth / under any Pages base path.
+
+    The default (public) view drops gitignored tabs/pages — it is written to
+    the committed assets/nav.json and is what the published site serves.
+    include_private=True keeps them — written to the gitignored
+    assets/nav.local.json, which the dev server serves in place of nav.json so
+    local-only sections still show up locally (see _wrap_handwritten, _serve)."""
     tabs_out: list[dict] = []
-    for tab in get_tabs():
+    for tab in get_tabs(include_private=include_private):
         nodes: list[dict]
         if tab.get("external_layout"):
             # External-layout tabs (AAS) own their chrome; they still appear in
@@ -477,6 +557,8 @@ def build_nav_data() -> dict:
                         "children": [_json_node(c) for c in children],
                     }
                 )
+        if not include_private:
+            nodes = _prune_private(nodes)
         tabs_out.append(
             {
                 "tab": tab["tab"],
