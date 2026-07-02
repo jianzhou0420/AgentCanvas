@@ -363,3 +363,41 @@
     })
     .catch(function (e) { console.error('mermaid load failed', e); });
 })();
+
+/* ---- Local changelog injection ---------------------------------------------
+ * Per-page Changelog sections are personal dev history and live outside the
+ * tracked tree, as gitignored fragments under docs/_changelogs/<page-rel>
+ * (a parallel tree mirroring docs/pages/**). On the local dev site we fetch
+ * the page's fragment and re-attach it at the tail of <main> plus a right-TOC
+ * entry. Localhost-gated: the published site never even issues the fetch —
+ * fragments aren't tracked, so there is nothing to find there anyway. */
+(function () {
+  if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return;
+  var body = document.body;
+  var rel = body.getAttribute('data-page-rel') || '';
+  var PREFIX = body.getAttribute('data-asset-prefix') || '';
+  if (rel.indexOf('pages/') !== 0) return;
+  var main = document.querySelector('main.doc-body');
+  if (!main) return;
+  fetch(PREFIX + '_changelogs/' + rel)
+    .then(function (r) { return r.ok ? r.text() : null; })
+    .then(function (html) {
+      if (!html) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'local-changelog';
+      wrap.innerHTML = '<hr>\n' + html;
+      // Same tail slot the section occupied before extraction: ahead of the
+      // page-nav if the page has one, else ahead of the in-main footer.
+      main.insertBefore(wrap, main.querySelector('nav.page-nav, footer'));
+      var h2 = wrap.querySelector('h2[id]');
+      var toc = document.querySelector('.sidebar-right .toc-list');
+      if (h2 && toc && !toc.querySelector('a[href="#' + h2.id + '"]')) {
+        var a = document.createElement('a');
+        a.className = 'toc-h2';
+        a.href = '#' + h2.id;
+        a.textContent = h2.textContent.trim();
+        toc.appendChild(a);
+      }
+    })
+    .catch(function () { /* fragment tree absent — nothing to attach */ });
+})();
