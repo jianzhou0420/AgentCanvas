@@ -2,7 +2,8 @@
 
 API keys are NEVER stored on profiles. Each provider has a standard
 environment-variable name (the de-facto convention each vendor's SDK
-uses). The runtime reads the key from that env var at call time, so
+uses). At call time the key is resolved from ``~/.agentcanvas/.keys``
+(see :mod:`app.llm.keystore`) with the env var as fallback, so
 ``profiles.json`` can be checked into git or shared without leaking
 secrets.
 """
@@ -198,15 +199,36 @@ PROVIDER_REGISTRY: dict[str, ProviderDef] = {
 
 
 def get_provider_api_key(provider_id: str) -> str:
-    """Read the API key for ``provider_id`` from its standard env var.
+    """Resolve the API key for ``provider_id``: keys file → env var → ``""``.
 
-    Returns ``""`` if no env var is set or the provider is unknown. Ollama
-    always returns ``""`` (no key needed).
+    The keys file (``~/.agentcanvas/.keys``) wins so a key saved from the
+    Settings UI takes effect immediately; a plain exported env var keeps
+    working when the file has no entry. Ollama always returns ``""`` (no
+    key needed).
     """
     reg = PROVIDER_REGISTRY.get(provider_id)
     if reg is None or not reg.env_var:
         return ""
+    from .keystore import get_key_store
+
+    file_key = get_key_store().get(reg.env_var)
+    if file_key:
+        return file_key
     return os.environ.get(reg.env_var, "")
+
+
+def get_provider_key_source(provider_id: str) -> str:
+    """Where the provider's key currently comes from: ``"file" | "env" | "none"``."""
+    reg = PROVIDER_REGISTRY.get(provider_id)
+    if reg is None or not reg.env_var:
+        return "none"
+    from .keystore import get_key_store
+
+    if get_key_store().get(reg.env_var):
+        return "file"
+    if os.environ.get(reg.env_var, ""):
+        return "env"
+    return "none"
 
 
 def resolve_provider_config(profile) -> dict:

@@ -13,6 +13,13 @@ import {
 } from "./layoutUtils";
 import type { NodeSchema, UIConfigSchema } from "./layoutUtils";
 import { ConfigFieldRenderer } from "./ConfigFieldRenderer";
+import {
+  CardSectionHeader,
+  LlmModelChip,
+  LlmSamplingBlock,
+  LlmTemplatePreview,
+  LlmUsageLine,
+} from "./LlmCardExtras";
 
 export default function BlockLayout({
   id,
@@ -35,7 +42,12 @@ export default function BlockLayout({
     (data.toolDescription as string) || schema?.description || "";
   const inputPorts = schema?.input_ports || [];
   const outputPorts = schema?.output_ports || [];
-  const configFields = uiConfig?.config_fields || [];
+  // The card is a gauge, not a form: only on_card fields render inline;
+  // the rest live in the properties panel (grouped by section).
+  const configFields = (uiConfig?.config_fields || []).filter(
+    (f) => f.on_card !== false,
+  );
+  const isLlm = category === "llm";
 
   const normalizedCat = category.startsWith("server:") ? "server" : category;
   const style =
@@ -43,10 +55,17 @@ export default function BlockLayout({
     CATEGORY_STYLES[normalizedCat] ||
     DEFAULT_STYLE;
 
-  // Collapsible: nodes with >=4 config fields or >=6 input ports can fold
-  const canCollapse = configFields.length >= 4 || inputPorts.length >= 6;
+  // Collapsible: nodes with >=4 config fields or >=6 input ports can fold.
+  // llm cards never fold — the sectioned gauge IS the card; a stale
+  // persisted _collapsed=true is ignored so they can't get stuck folded.
+  const canCollapse =
+    !isLlm && (configFields.length >= 4 || inputPorts.length >= 6);
   const [collapsed, setCollapsed] = useState(
-    data._collapsed !== undefined ? Boolean(data._collapsed) : canCollapse,
+    isLlm
+      ? false
+      : data._collapsed !== undefined
+        ? Boolean(data._collapsed)
+        : canCollapse,
   );
 
   const maxPorts = Math.max(inputPorts.length, outputPorts.length, 1);
@@ -93,6 +112,9 @@ export default function BlockLayout({
         </div>
       </div>
 
+      {/* LLM gauge: model chip — the headline fact, right under the title */}
+      {isLlm && <LlmModelChip data={data} schema={schema} />}
+
       {/* Collapsible body — overflow hidden preserves width when folded */}
       <div
         style={{
@@ -111,6 +133,21 @@ export default function BlockLayout({
               ? description.slice(0, 28) + "…"
               : description}
           </div>
+        )}
+
+        {/* LLM gauge: sectioned read-only display, mirroring the
+            properties panel's grouping (Model & Sampling / Prompt) */}
+        {isLlm && (
+          <>
+            <LlmSamplingBlock data={data} schema={schema} />
+            {String(data.template ?? "").trim() && (
+              <>
+                <CardSectionHeader>Prompt</CardSectionHeader>
+                <LlmTemplatePreview data={data} schema={schema} />
+              </>
+            )}
+            <LlmUsageLine nodeId={id} />
+          </>
         )}
 
         {/* Config fields */}

@@ -1176,6 +1176,23 @@ class GraphExecutor:
             transfer_bytes = None
             compute_ms = duration_ms_total
 
+        # Live per-node usage event — same node_id routing as viewer_data,
+        # so the canvas card can show last-call tokens/latency as a gauge.
+        if usage_bucket["calls"] > 0 and getattr(ctx, "session", None):
+            await broadcast(
+                ctx.session._ws(
+                    "llm_usage",
+                    {
+                        "node_id": node.id,
+                        "step": getattr(ctx, "step", 0),
+                        "usage": {
+                            **usage_bucket,
+                            "duration_ms": round(duration_ms_total, 1),
+                        },
+                    },
+                )
+            )
+
         # C.5 Dynamic Fire-List dispatch.
         # A DynamicFireListNode subclass returns a FireList sentinel from
         # ``execute()`` instead of a port-output dict. The engine fires each

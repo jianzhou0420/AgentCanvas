@@ -65,6 +65,9 @@ class ConfigField:
     show_persist_toggle: bool = (
         False  # port_list only: render a per-port persist checkbox (iterIn ports)
     )
+    section: str = ""  # properties-panel group ("model" | "prompt" | "wiring"); "" = ungrouped
+    on_card: bool = True  # render inline on the canvas card (False: panel-only)
+    unset_label: str = ""  # two-state fields: placeholder shown while unset (value not sent)
 
 
 @dataclass

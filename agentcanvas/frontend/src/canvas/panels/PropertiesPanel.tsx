@@ -11,6 +11,11 @@ import { useFlowStore } from "../useFlowStore";
 import type { HookDef } from "../types";
 import { ConfigFieldRenderer } from "../nodes/agentloop/inner/layouts/ConfigFieldRenderer";
 import { IterInExpandPanel } from "../nodes/agentloop/inner/layouts/IterInExpandPanel";
+import {
+  CapAnnotatedField,
+  ModelRefPicker,
+  useModelCapabilities,
+} from "./LlmModelControls";
 import type {
   ConfigFieldSchema,
   UIConfigSchema,
@@ -34,10 +39,29 @@ const SKIP_KEYS = new Set([
   "hooks", // rendered in dedicated HooksSection
 ]);
 
+/** Panel section titles for ConfigField.section groups. */
+const SECTION_TITLES: Record<string, string> = {
+  model: "Model & Sampling",
+  prompt: "Prompt",
+  wiring: "Wiring",
+  "": "Config",
+};
+const SECTION_ORDER = ["model", "prompt", "wiring", ""];
+
 export default function PropertiesPanel() {
   const selectedNodeId = useFlowStore((s) => s.selectedNodeId);
   const visibleNodes = useFlowStore((s) => s.visibleNodes);
   const node = visibleNodes.find((n) => n.id === selectedNodeId);
+
+  // llm nodes: fetch rulebook verdicts for the resolved (provider, model).
+  // Hook must run unconditionally — enabled=false when no llm node selected.
+  const nodeDataForCaps = (node?.data ?? {}) as Record<string, unknown>;
+  const nodeSchemaForCaps = nodeDataForCaps._schema as
+    | Record<string, unknown>
+    | undefined;
+  const isLlmNode =
+    ((nodeSchemaForCaps?.category as string) || "") === "llm";
+  const caps = useModelCapabilities(nodeDataForCaps, isLlmNode);
 
   if (!node) {
     return (
@@ -66,8 +90,21 @@ export default function PropertiesPanel() {
   // Collect editable fields from data (excluding internal keys + ones owned by a ConfigField)
   const fields = Object.entries(data).filter(
     ([key]) =>
-      !SKIP_KEYS.has(key) && !key.startsWith("_") && !configFieldNames.has(key),
+      !SKIP_KEYS.has(key) &&
+      !key.startsWith("_") &&
+      !configFieldNames.has(key) &&
+      // Direct-mode model reference is owned by the ModelRefPicker
+      !(isLlmNode && (key === "provider" || key === "model")),
   );
+
+  // Group config fields by section (llm nodes declare model/prompt/wiring;
+  // nodes without sections fall into the single "Config" group as before).
+  const sectionedFields = new Map<string, ConfigFieldSchema[]>();
+  for (const f of configFields) {
+    const section = f.section && SECTION_TITLES[f.section] ? f.section : "";
+    if (!sectionedFields.has(section)) sectionedFields.set(section, []);
+    sectionedFields.get(section)!.push(f);
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -153,24 +190,49 @@ export default function PropertiesPanel() {
           </tbody>
         </table>
 
-        {/* Declarative config fields (port_list, toggle, slider, etc.) */}
-        {configFields.length > 0 && (
-          <div className="border-t border-gray-800 px-3 py-2">
+        {/* Declarative config fields, grouped by section */}
+        {SECTION_ORDER.filter((s) => sectionedFields.has(s)).map((section) => (
+          <div key={section} className="border-t border-gray-800 px-3 py-2">
             <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">
-              Config
+              {SECTION_TITLES[section]}
             </div>
             <div className="space-y-1.5">
-              {configFields.map((field) => (
-                <ConfigFieldRenderer
-                  key={field.name}
-                  field={field}
-                  data={data}
-                  nodeId={node.id}
-                />
-              ))}
+              {sectionedFields.get(section)!.map((field) => {
+                // llm model reference → three-mode picker (Default /
+                // named profile / Browse provider→model pinned inline)
+                if (isLlmNode && field.name === "profile") {
+                  return (
+                    <ModelRefPicker
+                      key={field.name}
+                      field={field}
+                      data={data}
+                      nodeId={node.id}
+                    />
+                  );
+                }
+                if (isLlmNode) {
+                  return (
+                    <CapAnnotatedField
+                      key={field.name}
+                      field={field}
+                      data={data}
+                      nodeId={node.id}
+                      caps={caps}
+                    />
+                  );
+                }
+                return (
+                  <ConfigFieldRenderer
+                    key={field.name}
+                    field={field}
+                    data={data}
+                    nodeId={node.id}
+                  />
+                );
+              })}
             </div>
           </div>
-        )}
+        ))}
 
         {/* iterIn-specific: synthesised port list + persist toggles */}
         {node.type === "iterIn" && (

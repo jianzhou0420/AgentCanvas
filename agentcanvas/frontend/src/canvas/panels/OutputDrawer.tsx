@@ -1,9 +1,9 @@
-/** Bottom panel: tabbed view with Properties, State, Logs, Source, and Report. */
+/** Bottom panel: tabbed view with State, Logs, Source, and Report.
+ * (Properties moved to the right-side panel — see ResizableRightPanel.) */
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import clsx from "clsx";
 import LogPanel from "./LogPanel";
-import PropertiesPanel from "./PropertiesPanel";
 import ReportPanel from "./ReportPanel";
 import StatePanel from "./StatePanel";
 import { useErrorStore } from "../../errorStore";
@@ -11,7 +11,7 @@ import { useErrorStore } from "../../errorStore";
 // Lazy: pulls in CodeMirror — only fetched when the Source tab is opened.
 const SourcePanel = lazy(() => import("./SourcePanel"));
 
-const TABS = ["Properties", "State", "Logs", "Source", "Report"] as const;
+const TABS = ["State", "Logs", "Source", "Report"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function OutputDrawer() {
@@ -55,7 +55,6 @@ export default function OutputDrawer() {
       </div>
       {/* Content */}
       <div className="min-h-0 flex-1">
-        {activeTab === "Properties" && <PropertiesPanel />}
         {activeTab === "State" && <StatePanel />}
         {activeTab === "Logs" && <LogPanel />}
         {activeTab === "Source" && (
