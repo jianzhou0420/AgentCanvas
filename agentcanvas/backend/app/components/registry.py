@@ -1219,6 +1219,32 @@ class WorkspaceComponentRegistry:
             )
         return result
 
+    def nodeset_mode(self, name: str) -> str:
+        """``"server"`` if the nodeset currently runs auto-hosted, else ``"local"``."""
+        return "server" if self._tagged_server_keys_for(name) else "local"
+
+    def nodeset_source_info(self, name: str) -> dict | None:
+        """Source-file info for a discovered nodeset (loaded or not).
+
+        Backs the canvas source editor (``/nodesets/{name}/source``).
+        Returns ``None`` when the nodeset is unknown or recorded no
+        ``_source_file`` at discovery.
+        """
+        ns = self._discovered_nodesets.get(name)
+        if ns is None:
+            return None
+        source_file = getattr(ns, "_source_file", None)
+        if not source_file:
+            return None
+        sp = getattr(type(ns), "server_python", None)
+        return {
+            "name": name,
+            "source_file": Path(source_file),
+            "mode": self.nodeset_mode(name),
+            "requires_server": bool(sp and sp != sys.executable),
+            "loaded": self.is_nodeset_loaded(name),
+        }
+
     def get_policies(self) -> dict[str, Any]:
         """Return all registered policies as ``{policy_id: PolicyEntry}``."""
         return dict(self._policies)
