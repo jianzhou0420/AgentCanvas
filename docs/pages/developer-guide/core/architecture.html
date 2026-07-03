@@ -134,10 +134,10 @@
 <ol class="numbered-list">
   <li>User clicks <strong>Play</strong> in the ExecutionToolbar</li>
   <li>Frontend generates <code>execution_id</code> (UUID)</li>
-  <li><code>getGraphForExecution()</code> serializes the root canvas as <code>GraphDefinition</code> (filters out frontend-only nodes: output viewers, env lifecycle)</li>
+  <li><code>getGraphForExecution()</code> serializes the root canvas as <code>GraphDefinition</code> (filters out the frontend-only <code>stateContainer</code> node type — containers travel as <code>graph.containers</code>; output viewers are backend nodes and are sent along)</li>
   <li><code>POST /api/navigate/run { loop_definition, execution_id }</code></li>
   <li>Backend creates <code>GraphExecutor</code> from <code>loop_definition</code></li>
-  <li>Nodes fire by dataflow as inputs arrive: EnvObserve → PromptTemplate → LLMCall → Decision → EnvStep</li>
+  <li>Nodes fire by dataflow as inputs arrive: env observe → LLM call → parse → env step (domain nodes are nodeset-namespaced <code>&lt;nodeset&gt;__&lt;verb&gt;</code> types; built-ins like <code>llmCall</code> / <code>textParse</code> fill the reasoning slots)</li>
   <li><code>IterOut</code> collects end-of-step data → <code>IterIn</code> provides it next iteration</li>
   <li>Each node emits WebSocket events tagged with <code>execution_id</code></li>
   <li>Frontend discovers output nodes by type, routes WS events to them</li>
@@ -151,11 +151,11 @@
 
 <table>
   <tr><th>Category</th><th>Nodes</th><th>Purpose</th></tr>
-  <tr><td><strong>Environment</strong></td><td>EnvStep, EnvObserve, EnvState, EnvInfo</td><td>Interact with simulator (from activated NodeSets)</td></tr>
-  <tr><td><strong>Model</strong></td><td>PolicyForward, LLMCall, VLMCall</td><td>Run neural policies or language models</td></tr>
-  <tr><td><strong>Reasoning</strong></td><td>PromptTemplate, Decision, NavGPTReason, HistoryTracker</td><td>Build prompts, make decisions</td></tr>
-  <tr><td><strong>Control</strong></td><td>IterIn, IterOut</td><td>Manage iteration cycles; IterOut's <code>stop</code> port and after-loop band handle loop exit + verdict</td></tr>
-  <tr><td><strong>Output</strong></td><td>ImageViewer, TextViewer, TextScroll, ActionLog, Metrics</td><td>Display streaming results</td></tr>
+  <tr><td><strong>Environment</strong></td><td><code>&lt;env&gt;__reset</code> / <code>__step</code> / <code>__observe</code> / <code>__metric</code>, …</td><td>Interact with simulator via gym-like verbs (from activated env NodeSets)</td></tr>
+  <tr><td><strong>Model</strong></td><td><code>llmCall</code> (built-in) + NodeSet model/policy nodes (e.g. <code>policy_cma__forward</code>, SAM)</td><td>Run neural policies or language models</td></tr>
+  <tr><td><strong>Reasoning</strong></td><td><code>textParse</code>, <code>historyLog</code> (built-ins) + method NodeSets' reason/parse nodes</td><td>Build prompts, make decisions</td></tr>
+  <tr><td><strong>Control</strong></td><td><code>iterIn</code>, <code>iterOut</code></td><td>Manage iteration cycles; iterOut's <code>stop</code> port and after-loop band handle loop exit + verdict</td></tr>
+  <tr><td><strong>Output</strong></td><td><code>imageViewer</code>, <code>textViewer</code>, <code>textScroll</code>, <code>actionLog</code>, <code>metrics</code></td><td>Display streaming results</td></tr>
   <tr><td><strong>Tool</strong></td><td>(dynamic from NodeSets)</td><td>SAM, navigation tools, etc.</td></tr>
 </table>
 
@@ -166,7 +166,7 @@
 <p>One editor, one node registry, one catalog at every graph level:</p>
 
 <ul>
-  <li><code>unifiedNodeTypes.ts</code>: single map of ~25 node types (env, LLM, policy, control, output, composite)</li>
+  <li><code>unifiedNodeTypes.ts</code>: 3 explicit entries (<code>compositeNode</code>, <code>stateContainer</code>, <code>_generic</code>) + a Proxy routing every other registered type to <code>GenericBlockRenderer</code>; the full catalog enumeration lives in <code>unifiedCatalog.ts</code></li>
   <li><code>unifiedCatalog.ts</code>: single sidebar catalog with unified categories</li>
   <li><code>UnifiedGraphEditor.tsx</code>: dual-mode editor (root: Zustand store, subgraph: local state with save-back)</li>
   <li><code>ExecutionToolbar.tsx</code>: standalone Play/Pause/Stop controls (root canvas graph sent directly to <code>/run</code>)</li>
@@ -203,13 +203,13 @@
 <p>Key concepts:</p>
 <ul>
   <li><strong>CompositeNode</strong>: a node that contains a <code>GraphDefinition</code> subgraph</li>
-  <li><strong>PortIn / PortOut</strong>: boundary nodes defining composite inputs/outputs (separate from IterIn/IterOut)</li>
+  <li><strong>graphIn / graphOut</strong>: boundary nodes defining composite inputs/outputs (separate from IterIn/IterOut)</li>
   <li><strong>Canvas Stack</strong>: navigation breadcrumbs appear when inside a composite</li>
   <li><strong>Flatten-before-execute</strong>: backend recursively expands composites into a flat graph before execution</li>
 </ul>
 
 <ol class="numbered-list">
-  <li><strong>Author</strong> — select nodes → <em>Group</em> → a composite with auto-generated <code>PortIn</code>/<code>PortOut</code> boundaries.</li>
+  <li><strong>Author</strong> — select nodes → <em>Group</em> → a composite with auto-generated <code>graphIn</code>/<code>graphOut</code> boundaries.</li>
   <li><strong>Save</strong> — written to <code>workspace/graphs/*.json</code> → appears in the sidebar catalog, draggable onto any canvas.</li>
   <li><strong>Execute</strong> — <code>flatten_graph()</code> expands every composite → the <code>GraphExecutor</code> runs one flat graph.</li>
 </ol>
@@ -231,6 +231,19 @@
       <li><strong>Flatten step</strong>: at the top of <code>run()</code>, <code>flatten_graph()</code> recursively expands any composite nodes before processing</li>
       <li><strong>Startup seed-discovery rule</strong>: a node is queued at run-start iff its type is not <code>iterIn</code> AND it has no incoming edges AND it has no required input ports. Required-but-unwired ports are rejected at the API boundary by <code>validate_graph_connectivity()</code> in <code>graph_def.py</code> — no silent never-fires.</li>
     </ul>
+  </div>
+
+  <div class="card architecture">
+    <h3>4.2 Headless Eval Path (JobScheduler)</h3>
+    <p style="font-size:.9rem;">The same engine, driven without the canvas — the platform's primary path for producing numbers. §2's interactive Play runs one episode; this runs hundreds.</p>
+    <ol class="numbered-list" style="font-size:.9rem;">
+      <li><code>POST /api/eval/v2/start</code> enqueues a job on the backend-owned <code>JobScheduler</code> (<code>services/job_scheduler.py</code>)</li>
+      <li>A per-second <code>tick()</code> admits queued jobs when the declared <code>marginal_vram_mb</code> fits the shared VRAM budget and canvas Play isn't holding the <code>ExecutionGuard</code> lock (<code>state.py</code> — canvas/eval mutual exclusion)</li>
+      <li>Each admitted run is its own subprocess — <code>python -m app.eval_subprocess_main --run-dir …</code>, kernel-tied to the backend by <code>PR_SET_PDEATHSIG</code>. It re-scans <code>workspace/</code> from disk (fresh code per launch) and attaches to parent-owned shared singletons via <code>register_remote_nodeset</code> — no duplicate VRAM</li>
+      <li>Inside the subprocess, <code>BatchEvalRunner</code> (<code>agent_loop/eval_batch.py</code>) iterates the episode list through fresh <code>LoopRunner</code> instances; at <code>worker_count&gt;1</code> an <code>EnvWorkerPool</code> leases tagged env subprocesses per episode</li>
+      <li>Results land self-contained under <code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/</code> (<code>log.jsonl</code>, assets, <code>episode.json</code>); <code>spec.json</code> / <code>shared_urls.json</code> / <code>_DONE</code> form the parent↔subprocess file protocol (<code>services/run_state_io.py</code>)</li>
+    </ol>
+    <p class="muted" style="font-size:.85rem;">Governed by ADR-eval-001…004 + ADR-server-003 — see the <a href="../design-docs/graph/batch-eval.html">Batch Eval design-doc</a>.</p>
   </div>
 </div>
 
@@ -281,21 +294,16 @@
 
 <p>Every <code>BaseCanvasNode</code> carries a <code>ui_config</code> ClassVar (<code>NodeUIConfig</code>) that declares how the node renders on the canvas — color, layout, dimensions, and inline config controls. The frontend's <code>GenericBlockRenderer</code> reads <code>ui_config</code> at render time, eliminating the need for per-node <code>.tsx</code> components.</p>
 
-<p>Two layouts: <strong>Block</strong> (default — standard rectangle with ports, label, optional config fields) and <strong>Strip</strong> (narrow vertical gate, used by IterIn, IterOut, PortIn, PortOut).</p>
+<p>Two layouts: <strong>Block</strong> (default — standard rectangle with ports, label, optional config fields) and <strong>Strip</strong> (narrow vertical gate, used by iterIn, iterOut, graphIn, graphOut).</p>
 
 <p><code>ConfigField</code> declares inline widgets on the node face: <code>label</code>, <code>slider</code>, <code>text</code>, <code>select</code>, <code>toggle</code>, <code>textarea</code>. Example: LLMCall shows a temperature slider; Decision shows an action-space dropdown.</p>
 
-<p>This reduced <code>unifiedNodeTypes.ts</code> from 18 explicit component mappings to 7 — six nodes with truly custom UI plus <code>GenericBlockRenderer</code> as the universal fallback. 13 custom <code>.tsx</code> files were deleted. The remaining custom components handle interactions that exceed port+config rendering:</p>
+<p>This reduced <code>unifiedNodeTypes.ts</code> to <strong>3 explicit entries</strong> — <code>compositeNode</code>, <code>stateContainer</code>, and a <code>_generic</code> Proxy fallback that routes every other node type (built-ins + NodeSet tools) to <code>GenericBlockRenderer</code>. The former per-viewer custom <code>.tsx</code> components are gone: viewers now render as <strong>display-field layouts</strong> inside <code>GenericBlockRenderer</code> (<code>ImageViewerField</code>, <code>LogListField</code>, <code>MetricTableField</code>, <code>TextViewerField</code> under <code>nodes/agentloop/inner/layouts/fields/</code>). The remaining custom components handle interactions that exceed port+config rendering:</p>
 
 <table>
   <tr><th>Custom <code>.tsx</code></th><th>Why</th></tr>
-  <tr><td><code>PromptTemplateNode</code></td><td>Template editor with variable chip insertion</td></tr>
   <tr><td><code>CompositeCanvasNode</code> / <code>CompositeNodeView</code></td><td>Subgraph preview, port derivation, drill-in</td></tr>
-  <tr><td><code>ImageViewerCanvasNode</code></td><td>Live RGB + depth image viewer (WebSocket)</td></tr>
-  <tr><td><code>TextViewerCanvasNode</code></td><td>Latest TEXT content — single block (WebSocket)</td></tr>
-  <tr><td><code>TextScrollCanvasNode</code></td><td>Accumulating TEXT history — scrollable stack (WebSocket)</td></tr>
-  <tr><td><code>ActionLogCanvasNode</code></td><td>Action history with step numbers (WebSocket)</td></tr>
-  <tr><td><code>MetricsCanvasNode</code></td><td>SPL/SR/nDTW/SDTW metrics display (WebSocket)</td></tr>
+  <tr><td><code>StateContainerNode</code></td><td>Canvas-visible state container element (dual-wire system §6) — frontend-only type, filtered from execution</td></tr>
 </table>
 
 <p>The <code>/node-schemas</code> API endpoint includes <code>ui_config</code> in its response, so the frontend catalog can enrich sidebar entries with backend-defined styling at drag time.</p>
@@ -307,6 +315,17 @@
   <tr><td><code>BaseCanvasNode</code></td><td>Custom graph node handler (forward method, <code>NodeUIConfig</code> for Python-driven UI, typed port declarations) — see <a href="decisions/components/adr-components-004-node-ui-config.html">ADR-components-004</a></td></tr>
   <tr><td><code>BaseNodeSet</code></td><td>Atomic group of tools (load/unload together, optional server mode)</td></tr>
 </table>
+
+<h3 id="components-services">5.3 Runtime Services Around the Engine</h3>
+
+<ul>
+  <li><strong>LLM provider layer</strong> (<code>app/llm/</code>) — <code>llmCall</code> resolves its profile through <code>ProfileStore</code> → provider registry (24 providers via litellm) with a layered env-var fallback (ADR-platform-003); <code>llm_complete()</code> / <code>vlm_complete()</code> are the call seam</li>
+  <li><strong>Env panels</strong> (<code>components/env_panel.py</code> + <code>/api/env-panels</code> + frontend <code>EnvPanel.tsx</code>) — per-nodeset control plane for env-side runtime knobs (suite / split / episode, play / pause / reset); renamed from "controllers" 2026-06-11</li>
+  <li><strong>File-watch hot reload</strong> (<code>services/graph_watcher.py</code>, <code>services/nodeset_watcher.py</code>) — graph JSON and nodeset <code>.py</code> edits made on disk (e.g. by a coding agent) propagate without a restart, beyond the manual <code>POST /api/components/reload</code></li>
+  <li><strong>Episode replay</strong> (<code>app/replay/</code> + <code>/api/replay</code> + frontend Replay page) — env nodesets opt in via a <code>replay_parser</code> that turns persisted episode logs into an env-agnostic timeline</li>
+  <li><strong>Monitoring</strong> (<code>services/resource_sampler.py</code> + <code>services/system_runs.py</code> + frontend Monitor page) — always-on ~1 Hz resource time-series plus per-run performance summaries</li>
+  <li><strong>Structured per-run logs</strong> (<code>app/logging/logger.py</code>) — automatic exterior port-I/O capture + voluntary <code>_self_log()</code> interior detail, persisted as JSONL (ADR-observability-003)</li>
+</ul>
 
 <h2 id="state"><span class="num">§6</span>State Container System (<a href="decisions/dataflow/adr-dataflow-002-state-container-system.html">ADR-dataflow-002</a>)</h2>
 
@@ -372,7 +391,7 @@
   <tr><th>Layer</th><th>Choice</th><th>Why</th></tr>
   <tr><td>Backend runtime</td><td>Python 3.10+ (agentcanvas env), FastAPI</td><td>Modern ML stack + async web framework (<a href="decisions/platform/adr-platform-004-agentcanvas-primary-env.html">ADR-platform-004</a>)</td></tr>
   <tr><td>ML framework</td><td>PyTorch 2.5 + CUDA 12.1 (agentcanvas)</td><td>Modern torch for SAM, HF, LLM nodesets</td></tr>
-  <tr><td>Simulator</td><td>Habitat-Sim 0.1.7 (vlnce env, Python 3.8)</td><td>Binary locked to 3.8; accessed via server mode (<a href="decisions/server/adr-server-001-auto-server-app.html">ADR-server-001</a>)</td></tr>
+  <tr><td>Simulator</td><td>Habitat-Sim 0.1.7 (<code>ac-vlnce</code> env, Python 3.8)</td><td>Binary locked to 3.8; accessed via server mode (<a href="decisions/server/adr-server-001-auto-server-app.html">ADR-server-001</a>)</td></tr>
   <tr><td>Frontend framework</td><td>React 18 + TypeScript</td><td>Component model, strict typing</td></tr>
   <tr><td>Canvas library</td><td><code>@xyflow/react</code> (React Flow)</td><td>Mature node-graph editor with customization</td></tr>
   <tr><td>State management</td><td>Zustand (dual store)</td><td>Lightweight, no boilerplate, works with React Flow</td></tr>
@@ -401,6 +420,7 @@
       <a class="toc-h2" href="#components">§5Component System</a>
       <a class="toc-h3" href="#components-autohost">5.1 Auto-Hosted Deployment (ADR-server-001)</a>
       <a class="toc-h3" href="#components-ui">5.2 Python-Driven Node UI (ADR-components-004)</a>
+      <a class="toc-h3" href="#components-services">5.3 Runtime Services Around the Engine</a>
       <a class="toc-h2" href="#state">§6State Container System (ADR-dataflow-002)</a>
       <a class="toc-h3" href="#state-container">6.1 Container Model</a>
       <a class="toc-h3" href="#state-wires">6.2 Two Wire Systems</a>
