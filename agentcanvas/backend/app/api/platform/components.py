@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from ...state import get_services
+from ...components import nodeset_source
+from ...services.nodeset_watcher import roots_for
+from ...state import ExecutionGuard, ExecutionMode, get_services
 
 router = APIRouter()
 
@@ -213,6 +216,229 @@ async def get_nodeset_eval_metadata(name: str):
     metadata = await registry.get_eval_metadata_for_nodeset(name)
     loaded = registry.is_nodeset_loaded(name)
     return {"name": name, "loaded": loaded, "metadata": metadata}
+
+
+# ── NodeSet source (canvas source editor) ──
+
+
+def _resolve_source_target(name: str, rel_file: str | None) -> tuple[dict, str, Path]:
+    """Shared GET/PUT resolution: nodeset info + guarded target path.
+
+    Returns ``(info, rel_file, target)``; raises HTTPException on any miss.
+    """
+    registry = get_services().workspace_component_registry
+    info = registry.nodeset_source_info(name)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"Unknown nodeset (or no source file): {name}")
+    anchor, package_dir = nodeset_source.resolve_source(info["source_file"])
+    if rel_file is None:
+        rel_file = "__init__.py" if package_dir is not None else anchor.name
+    try:
+        target = nodeset_source.resolve_target(
+            info["source_file"], rel_file, roots_for(registry)
+        )
+    except nodeset_source.SourcePathError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"No such source file: {rel_file}") from e
+    return info, rel_file, target
+
+
+@router.get("/nodesets/{name}/source")
+async def get_nodeset_source(name: str, file: str | None = None, node_type: str | None = None):
+    """Read a nodeset source file for the canvas source editor.
+
+    Query params:
+        file:      Relative path within a package nodeset (default: the
+                   entry file — ``__init__.py`` for packages).
+        node_type: Optional graph node type; when resolvable, the response
+                   includes ``class_name`` so the editor can scroll to it.
+    """
+    info, rel_file, target = _resolve_source_target(name, file)
+    _, package_dir = nodeset_source.resolve_source(info["source_file"])
+    is_package = package_dir is not None
+    files = (
+        nodeset_source.list_package_files(package_dir)
+        if is_package
+        else [info["source_file"].name]
+    )
+
+    class_name = None
+    if node_type and "__" in node_type:
+        from ...agent_loop.builtin_nodes import NODE_HANDLERS
+
+        cls = NODE_HANDLERS.get(node_type)
+        class_name = cls.__name__ if cls is not None else None
+
+    return {
+        "name": name,
+        "mode": info["mode"],
+        "requires_server": info["requires_server"],
+        "loaded": info["loaded"],
+        "is_package": is_package,
+        "files": files,
+        "file": rel_file,
+        "content": target.read_text(encoding="utf-8"),
+        "mtime_ns": target.stat().st_mtime_ns,
+        "class_name": class_name,
+    }
+
+
+def _scoped_candidates(info: dict) -> list[str]:
+    """Files to search for a node's class: entry file first, then siblings."""
+    anchor, package_dir = nodeset_source.resolve_source(info["source_file"])
+    if package_dir is None:
+        return [anchor.name]
+    entry = "__init__.py"
+    rest = [f for f in nodeset_source.list_package_files(package_dir) if f != entry]
+    return [entry, *rest]
+
+
+@router.get("/nodesets/{name}/source/scoped")
+async def get_nodeset_source_scoped(name: str, node_type: str):
+    """A node's editable slice of its nodeset source (Source tab).
+
+    Locates the class assigning ``node_type = "<node_type>"`` across the
+    nodeset's files and returns its segments: module-level globals, the
+    functions the class transitively references, and the class itself —
+    each with the 1-based line range used to splice edits back.
+    """
+    registry = get_services().workspace_component_registry
+    info = registry.nodeset_source_info(name)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"Unknown nodeset (or no source file): {name}")
+    roots = roots_for(registry)
+    for rel_file in _scoped_candidates(info):
+        try:
+            target = nodeset_source.resolve_target(info["source_file"], rel_file, roots)
+        except (nodeset_source.SourcePathError, FileNotFoundError):
+            continue
+        try:
+            segments = nodeset_source.extract_scoped_view(
+                target.read_text(encoding="utf-8"), node_type
+            )
+        except SyntaxError:
+            continue  # broken sibling file — the class may live elsewhere
+        if segments is not None:
+            return {
+                "name": name,
+                "node_type": node_type,
+                "mode": info["mode"],
+                "requires_server": info["requires_server"],
+                "loaded": info["loaded"],
+                "file": rel_file,
+                "mtime_ns": target.stat().st_mtime_ns,
+                "segments": segments,
+            }
+    raise HTTPException(
+        status_code=404,
+        detail=f"No class with node_type={node_type!r} found in nodeset {name!r}",
+    )
+
+
+@router.put("/nodesets/{name}/source/scoped")
+async def put_nodeset_source_scoped(name: str, req: dict):
+    """Splice edited scoped segments back into the nodeset source file.
+
+    Body: ``{ "file": str, "node_type": str, "base_mtime_ns": int,
+    "segments": [{start_line, end_line, text}, ...] }``. Same reload
+    semantics as the whole-file PUT (watcher picks local nodesets up;
+    server-mode stays stale until an explicit restart).
+    """
+    rel_file = req.get("file")
+    node_type = req.get("node_type")
+    base_mtime_ns = req.get("base_mtime_ns")
+    segments = req.get("segments")
+    if not isinstance(rel_file, str) or not isinstance(segments, list) or not segments:
+        raise HTTPException(
+            status_code=400,
+            detail="body must include 'file' (str) and non-empty 'segments' (list)",
+        )
+
+    info, rel_file, target = _resolve_source_target(name, rel_file)
+
+    if base_mtime_ns is not None and target.stat().st_mtime_ns != base_mtime_ns:
+        raise HTTPException(
+            status_code=409, detail="file changed on disk since it was loaded — re-open to refresh"
+        )
+
+    try:
+        merged = nodeset_source.splice_segments(
+            target.read_text(encoding="utf-8"), segments
+        )
+    except (nodeset_source.ScopedEditError, KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"invalid segments: {e}") from e
+
+    try:
+        nodeset_source.syntax_check(merged, filename=rel_file)
+    except nodeset_source.SourceSyntaxError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "syntax", "msg": e.msg, "line": e.lineno, "offset": e.offset},
+        ) from e
+
+    target.write_text(merged, encoding="utf-8")
+    # Fresh ranges (line numbers may have shifted) so the client can keep editing.
+    fresh = (
+        nodeset_source.extract_scoped_view(merged, node_type)
+        if isinstance(node_type, str)
+        else None
+    )
+    run_active = ExecutionGuard.current().get("mode") != ExecutionMode.idle.value
+    return {
+        "ok": True,
+        "mtime_ns": target.stat().st_mtime_ns,
+        "mode": info["mode"],
+        "stale": info["mode"] == "server",
+        "run_active": run_active,
+        "segments": fresh,
+    }
+
+
+@router.put("/nodesets/{name}/source")
+async def put_nodeset_source(name: str, req: dict):
+    """Write a nodeset source file (canvas source editor save).
+
+    Body: ``{ "file": str, "content": str, "base_mtime_ns": int | None }``.
+
+    The write itself does not reload anything: local nodesets are picked
+    up by the nodeset watcher (deferred while a run holds the
+    ExecutionGuard — surfaced as ``run_active``); server-mode nodesets are
+    never auto-reloaded (``stale: true`` — restart the server or POST
+    ``/api/components/reload`` to apply).
+    """
+    rel_file = req.get("file")
+    content = req.get("content")
+    base_mtime_ns = req.get("base_mtime_ns")
+    if not isinstance(rel_file, str) or not isinstance(content, str):
+        raise HTTPException(
+            status_code=400, detail="body must include 'file' (str) and 'content' (str)"
+        )
+
+    info, rel_file, target = _resolve_source_target(name, rel_file)
+
+    if base_mtime_ns is not None and target.stat().st_mtime_ns != base_mtime_ns:
+        raise HTTPException(
+            status_code=409, detail="file changed on disk since it was loaded — re-open to refresh"
+        )
+
+    try:
+        nodeset_source.syntax_check(content, filename=rel_file)
+    except nodeset_source.SourceSyntaxError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "syntax", "msg": e.msg, "line": e.lineno, "offset": e.offset},
+        ) from e
+
+    target.write_text(content, encoding="utf-8")
+    run_active = ExecutionGuard.current().get("mode") != ExecutionMode.idle.value
+    return {
+        "ok": True,
+        "mtime_ns": target.stat().st_mtime_ns,
+        "mode": info["mode"],
+        "stale": info["mode"] == "server",
+        "run_active": run_active,
+    }
 
 
 # ── Node Schemas ──

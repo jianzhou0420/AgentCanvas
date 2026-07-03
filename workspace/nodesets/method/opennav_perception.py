@@ -186,28 +186,34 @@ class PerceptionEngine:
             tags_en = result[0]
         else:
             tags_en = str(result)
-        return tags_en.replace(" |", "").strip()
+        # Upstream passes the RAM output RAW — "tag | tag | tag" separators
+        # included (api.py:109-110, both Open-Nav parent and Three-Step fork);
+        # the old ``.replace(" |", "").strip()`` was an LLM-visible divergence
+        # (fixed 2026-07-03).
+        return tags_en
 
     @staticmethod
-    def _pack_depth(depth: np.ndarray) -> np.ndarray:
-        """Open-Nav api.py depth packing — preserves 16-bit range as 3 channels.
+    def _pack_depth(depth_u8: np.ndarray) -> np.ndarray:
+        """SpatialBot 3-channel depth packing — byte-faithful to the upstream
+        RUNTIME behaviour (api.py:260-268 on the generate_input depth chain).
 
-        Input: uint16 depth in millimetres (habitat.encode_depth_raw_base64).
-        Legacy 8-bit [0,1] float input is still accepted via a re-scale
-        branch, but the output loses the full range in that path.
+        Upstream packs the per-tile min-max-normalised **uint8** depth image
+        (generate_input, base_il_trainer_llm.py:186-191) — NOT raw 16-bit
+        depth — so ``img // 1024`` is always 0 and the R channel is
+        degenerate-zero. The previous port packed uint16 millimetres
+        ("improved", but not what upstream ever ran); fixed 2026-07-03.
         """
-        if depth.dtype == np.uint16:
-            depth_int = depth.astype(np.int32)
-        elif depth.max() <= 1.0:
-            depth_int = (depth * 65535.0).astype(np.int32)
-        else:
-            depth_int = depth.astype(np.int32)
-        h, w = depth_int.shape[-2:]
-        out = np.zeros((h, w, 3), dtype=np.uint8)
-        out[..., 0] = ((depth_int // 1024) * 4).clip(0, 255).astype(np.uint8)
-        out[..., 1] = ((depth_int // 32) * 8).clip(0, 255).astype(np.uint8)
-        out[..., 2] = ((depth_int % 32) * 8).clip(0, 255).astype(np.uint8)
-        return out
+        # NumPy 1.x (upstream env) silently promotes ``uint8 // 1024`` to
+        # int16; NumPy ≥2 (ac-ram env, NEP 50) raises OverflowError on the
+        # out-of-range literal instead. Promote explicitly — identical bytes
+        # to the upstream promotion (R = 0, G ≤ 56, B ≤ 248 all fit uint8).
+        img = depth_u8.astype(np.int16)
+        height, width = img.shape[-2:]
+        three_channel_array = np.zeros((height, width, 3), dtype=np.uint8)
+        three_channel_array[:, :, 0] = (img // 1024) * 4
+        three_channel_array[:, :, 1] = (img // 32) * 8
+        three_channel_array[:, :, 2] = (img % 32) * 8
+        return three_channel_array
 
     def caption(self, rgb: np.ndarray, depth: np.ndarray | None) -> str:
         self._ensure_spatialbot()
@@ -218,6 +224,8 @@ class PerceptionEngine:
         images = [rgb_pil]
         if depth is not None:
             packed = self._pack_depth(depth)
+            # Image.fromarray on a 3-channel uint8 array = mode RGB, exactly
+            # upstream's Image.fromarray(three_channel_array, 'RGB').
             images.append(Image.fromarray(packed))
         else:
             images.append(rgb_pil)
@@ -248,13 +256,17 @@ class PerceptionEngine:
         except Exception:
             image_tensors = None
 
+        # Generate args mirror api.py:271-277 EXACTLY (max_new_tokens=200,
+        # use_cache=True, repetition_penalty=1.0 — nothing else; upstream
+        # relies on the checkpoint's own generation defaults, so injecting
+        # do_sample/temperature would diverge). Fixed 2026-07-03.
         with torch.no_grad():
             output_ids = self.spatial_model.generate(
                 text_ids,
                 images=image_tensors,
                 max_new_tokens=_SPATIAL_MAX_NEW_TOKENS,
-                do_sample=False,
-                temperature=0.0,
+                use_cache=True,
+                repetition_penalty=1.0,
             )
         out = self.spatial_tokenizer.decode(
             output_ids[0][text_ids.shape[1]:], skip_special_tokens=True
@@ -274,25 +286,28 @@ def _decode_rgb(b64: str) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"), dtype=np.uint8)
 
 
-def _decode_depth(b64: str) -> np.ndarray:
-    # Legacy 8-bit normalised depth path — kept as fallback when a view
-    # dict only carries ``depth_base64`` (not ``depth_raw_base64``). Values
-    # are min-max-normalised to [0, 1] so absolute metric depth is lost.
+def _decode_depth_norm_u8(b64: str) -> np.ndarray:
+    # Per-tile min-max-normalised uint8 depth (env encode_depth_base64) —
+    # byte-identical to upstream generate_input's ``depth_img``
+    # (base_il_trainer_llm.py:186-191), the image SpatialBot's packer
+    # actually receives at upstream runtime.
     from PIL import Image  # noqa: WPS433
 
     raw = base64.b64decode(b64)
-    arr = np.asarray(Image.open(io.BytesIO(raw)), dtype=np.float32)
-    return arr / 255.0
+    return np.asarray(Image.open(io.BytesIO(raw)), dtype=np.uint8)
 
 
-def _decode_depth_raw(b64: str) -> np.ndarray:
-    # 16-bit depth (millimetres) — matches habitat.encode_depth_raw_base64.
-    # Returns uint16 so SpatialBot's 3-channel packer sees the reference's
-    # expected raw integer depth values.
+def _depth_norm_u8_from_raw(b64: str) -> np.ndarray:
+    # Fallback: reconstruct the upstream normalisation from the 16-bit
+    # absolute-depth payload when a view lacks ``depth_base64``.
     from PIL import Image  # noqa: WPS433
 
     raw = base64.b64decode(b64)
-    return np.asarray(Image.open(io.BytesIO(raw)), dtype=np.uint16)
+    d = np.asarray(Image.open(io.BytesIO(raw)), dtype=np.float32)
+    d_min, d_max = d.min(), d.max()
+    if d_max - d_min > 1e-6:
+        return (255 * (d - d_min) / (d_max - d_min)).astype(np.uint8)
+    return np.zeros_like(d, dtype=np.uint8)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -400,10 +415,13 @@ class CaptionCandidatesTool(BaseCanvasNode):
                     out[dir_id] = ""
                     continue
                 rgb = _decode_rgb(rgb_b64)
-                if depth_raw_b64:
-                    depth = _decode_depth_raw(depth_raw_b64)
-                elif depth_b64:
-                    depth = _decode_depth(depth_b64)
+                # Upstream packs the per-tile NORMALISED uint8 depth image
+                # (generate_input chain) — prefer depth_base64, which is
+                # exactly that; reconstruct it from the raw payload otherwise.
+                if depth_b64:
+                    depth = _decode_depth_norm_u8(depth_b64)
+                elif depth_raw_b64:
+                    depth = _depth_norm_u8_from_raw(depth_raw_b64)
                 else:
                     depth = None
                 out[dir_id] = engine.caption(rgb, depth)

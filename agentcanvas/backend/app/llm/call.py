@@ -367,6 +367,7 @@ async def vlm_complete(
     detail: str = "low",
     prior_messages: list[dict] | None = None,
     stop: list[str] | None = None,
+    mime: str = "image/png",
 ) -> str | None:
     """Call VLM API with text prompt and base64-encoded images.
 
@@ -392,6 +393,9 @@ async def vlm_complete(
             mode). History entries are plain text turns; images ride only
             the current turn.
         stop: Optional stop sequences, forwarded verbatim.
+        mime: data-URL MIME type for the images (``"image/png"`` default;
+            pass ``"image/jpeg"`` when the base64 payloads are JPEG — e.g.
+            Open-Nav-family ports whose upstream sends JPEG re-encodes).
 
     Returns:
         Assistant response text, or ``None`` on failure.
@@ -417,7 +421,7 @@ async def vlm_complete(
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{img}", "detail": detail},
+                    "image_url": {"url": f"data:{mime};base64,{img}", "detail": detail},
                 }
             )
 
@@ -463,6 +467,7 @@ async def vlm_complete_n(
     temperature: float | None = None,
     detail: str = "low",
     stop: list[str] | None = None,
+    mime: str = "image/png",
 ) -> list[str]:
     """Multi-sample VLM call — vision counterpart to :func:`llm_complete_n`.
 
@@ -493,6 +498,7 @@ async def vlm_complete_n(
             temperature=temperature,
             detail=detail,
             stop=stop,
+            mime=mime,
         )
         return [text] if text else []
 
@@ -518,7 +524,7 @@ async def vlm_complete_n(
         content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img}", "detail": detail},
+                "image_url": {"url": f"data:{mime};base64,{img}", "detail": detail},
             }
         )
     content.append({"type": "text", "text": prompt})
@@ -579,6 +585,7 @@ async def vlm_complete_n(
                 temperature=temperature,
                 detail=detail,
                 stop=stop,
+                mime=mime,
             )
             for _ in range(shortfall)
         ]

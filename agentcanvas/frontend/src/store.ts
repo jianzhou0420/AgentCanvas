@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { api } from "./api";
 import { wsManager } from "./ws";
 import { getFlowStoreBridge } from "./canvas/flowStoreRef";
+import { useSourceEditorStore } from "./canvas/sourceEditorStore";
 import { useErrorStore } from "./errorStore";
 import type { ErrorEnvelope } from "./errors";
 import type {
@@ -152,6 +153,17 @@ export function subscribeWS() {
     const refresh = (window as unknown as Record<string, unknown>)
       .__refreshSavedGraphs;
     if (typeof refresh === "function") (refresh as () => void)();
+  });
+
+  // Nodeset source hot-reloaded by the backend watcher. Reuse the existing
+  // window-event refresh path (CanvasPage/EnvPanel re-fetch node schemas)
+  // and let the source-editor drawer flip "Saved" → "Reloaded ✓".
+  wsManager.on("components_changed", (data) => {
+    window.dispatchEvent(new Event("nodesets-changed"));
+    const d = (data ?? {}) as { reloaded?: string[]; stale_servers?: string[] };
+    useSourceEditorStore
+      .getState()
+      .noteComponentsChanged(d.reloaded ?? [], d.stale_servers ?? []);
   });
 
   wsManager.on("eval_progress", (data) => {

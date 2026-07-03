@@ -134,13 +134,10 @@ def parse_navigator(text: str) -> tuple[str, str, str]:
         if digit_match:
             pred_vp = digit_match.group()
 
-    # Normalise the completion estimate to Yes / No / Unknown (the gate only
-    # cares about an exact "Yes" — base_il_trainer_llm.py:728).
-    ce = completion_est.replace("*", "").strip()
-    if ce[:3].lower() == "yes":
-        completion_est = "Yes"
-    elif ce[:2].lower() == "no":
-        completion_est = "No"
+    # The completion estimate is returned RAW (post the response-wide "**"
+    # strip + .strip(), exactly as upstream). The judge gate is a strict
+    # ``== "Yes"`` (base_il_trainer_llm.py:728) — "Yes.", "yes" etc. do NOT
+    # fire the judge upstream, so no normalisation here (grill 2026-07-02).
     return pred_vp, pred_thought, completion_est
 
 

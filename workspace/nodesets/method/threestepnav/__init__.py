@@ -40,11 +40,7 @@ Prompts are verbatim in ``_prompts.py`` (each constant cites its upstream
 upstream default is gpt-5; we follow the house VLN-port default — needs
 ``temperature=1.0`` + ``max_tokens=2000`` for the gpt-5 family).
 
-Deliberate deviations from upstream (Phase-1 monolith):
-  • [bucket-D] The judge's per-capability AST "logic analysis" meta-lines
-    (decision_agent.analyze_capability_logic) are omitted — pure code-
-    introspection noise with no navigation content. The verbatim capability
-    *descriptions* + in-context examples + format instructions are preserved.
+Deliberate deviations from upstream (see the doc page §3 for the full buckets):
   • [bucket-C] The judge LLM is gated on ``Completion Estimation == "Yes"``
     exactly as upstream; when gated off the decision defaults to "stay" with no
     extra LLM call (upstream cost behaviour preserved).
@@ -52,15 +48,20 @@ Deliberate deviations from upstream (Phase-1 monolith):
     moves to the navigator's pick; this graph already perceives every candidate
     direction each step, so look-around reduces to a normal move (no separate
     re-observe pass). backtrack reverses the last move via a per-episode
-    move-stack (mirrors ``env_actions_history`` + ``_create_reverse_action``).
-  • [bucket-D] candidate-id list is rendered as a comma list rather than
-    upstream's ``str(dict_keys([...]))``.
-  • The per-instruction action/landmark cache (``cache_files/...``) is dropped —
-    every episode re-runs Step 1. Faithfulness/simplicity tradeoff.
+    move-stack (mirrors ``env_actions_history`` + ``_create_reverse_action``);
+    upstream's backtrack branch additionally still executes the forward move in
+    the same iteration (two env steps) — the graph emits one action per step
+    (bucket B, config-dead under the faithful ``[continue, stay]`` abilities).
+  • [bucket-D] The per-instruction action/landmark cache (``cache_files/...``)
+    is dropped — every episode re-runs Step 1. Faithfulness/simplicity tradeoff.
 
-Load:  POST /api/components/nodesets/threestep/load
+Byte-fidelity oracle: ``tmp/verify/threestepnav_upstream_equiv.py`` imports the
+REAL upstream modules (langchain/model clients stubbed; trainer/api methods
+AST-extracted) and byte-compares this nodeset function-by-function — 79 checks.
 
-last updated: 2026-06-20
+Load:  POST /api/components/nodesets/threestepnav/load
+
+last updated: 2026-07-02
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ from app.components.bases import (
     NodeUIConfig,
     PortDef,
 )
-from workspace.nodesets.method.threestep._prompts import (
+from workspace.nodesets.method.threestepnav._prompts import (
     ACTION_DETECTION_SYSTEM,
     ACTION_DETECTION_USER,
     DIRECTIONS,
@@ -98,7 +99,7 @@ from workspace.nodesets.method.threestep._prompts import (
     string_to_decision,
 )
 
-log = logging.getLogger("agentcanvas.threestep")
+log = logging.getLogger("agentcanvas.threestepnav")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -151,6 +152,46 @@ def _views_by_dir(views: Any) -> dict[str, dict]:
         if isinstance(v, dict) and "dir_id" in v:
             out[str(v["dir_id"])] = v
     return out
+
+
+def _candidate_order(keys: Any) -> list[str]:
+    """Upstream candidate-dict insertion order: the TRM emits angle indexes in
+    ascending clockwise order (Policy_ViewSelection.py:374 ``nonzero()``), which
+    ``2π − idx/120·2π`` (:378) turns into DESCENDING angles, so
+    ``construct_image_dicts`` inserts bin '0' first (the 330°–360° else-branch),
+    then '11', '10', … '1' (base_il_trainer_llm.py:202-259)."""
+    return sorted((str(k) for k in keys), key=lambda k: (int(k) != 0, -int(k)))
+
+
+def _png_b64_to_jpeg_b64(b64: str) -> str | None:
+    """Decode a lossless env tile and re-encode as JPEG (PIL default
+    quality) — the byte chain upstream's VLM actually receives
+    (image_to_base64, base_il_trainer_llm.py:64-83; judge re-encode,
+    decision_agent.py:806-815)."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+
+def _flatten_history(entries: list) -> str:
+    """review_history (spatialNavigator.py:57-60) — ``"Step {i+1} Observation:
+    {obs} Thought: {thought}"`` joined with `` -> ``; the empty-history fallback
+    is the caller-side ``"Step 0 start position. "`` (base_il_trainer_llm.py:722)."""
+    if not entries:
+        return "Step 0 start position. "
+    return " -> ".join(
+        f"Step {i + 1} Observation: {e.get('observation', '')} Thought: {e.get('thought', '')}"
+        for i, e in enumerate(entries)
+    )
 
 
 # ── chosen-path image-sequence descriptions ──────────────────────────────
@@ -239,7 +280,7 @@ class StuckDetectNode(BaseCanvasNode):
     of ``judge_decide``'s pre-move appends to nav_history / chosen_images_b64 /
     chosen_descriptions."""
 
-    node_type: ClassVar[str] = "threestep__stuck_detect"
+    node_type: ClassVar[str] = "threestepnav__stuck_detect"
     display_name: ClassVar[str] = "3-Step: Stuck Detect"
     description: ClassVar[str] = "Blacklist no-move directions + pop the failed step"
     category: ClassVar[str] = "agent"
@@ -295,7 +336,7 @@ async def _internal_llm_call(
 
     cfg = get_llm_config(profile or "")
     if cfg is None:
-        log.warning("threestep: LLM profile '%s' not found", profile)
+        log.warning("threestepnav: LLM profile '%s' not found", profile)
         return ""
     out = await llm_complete(
         config=cfg,
@@ -315,7 +356,7 @@ async def _internal_llm_call(
 class DetectActionsPromptNode(BaseCanvasNode):
     """Step 1a — assemble ACTION_DETECTION prompt (decompose into sub-instructions)."""
 
-    node_type: ClassVar[str] = "threestep__detect_actions_prompt"
+    node_type: ClassVar[str] = "threestepnav__detect_actions_prompt"
     display_name: ClassVar[str] = "3-Step: Detect Actions Prompt"
     description: ClassVar[str] = "Decompose instruction into sub-instructions (ACTION_DETECTION)"
     category: ClassVar[str] = "agent"
@@ -345,7 +386,7 @@ class ExtractLandmarksNode(BaseCanvasNode):
     same dynamic-fan-out fold Open-Nav uses for its ensemble.
     """
 
-    node_type: ClassVar[str] = "threestep__extract_landmarks"
+    node_type: ClassVar[str] = "threestepnav__extract_landmarks"
     display_name: ClassVar[str] = "3-Step: Extract Landmarks"
     description: ClassVar[str] = "Per-sub-instruction landmark extraction (LANDMARK_DETECTION xN)"
     category: ClassVar[str] = "agent"
@@ -404,7 +445,7 @@ class SelectSubinstructionNode(BaseCanvasNode):
     in base_il_trainer_llm.py:619-666 (``action_list[current_action_idx]`` etc.).
     """
 
-    node_type: ClassVar[str] = "threestep__select_subinstruction"
+    node_type: ClassVar[str] = "threestepnav__select_subinstruction"
     display_name: ClassVar[str] = "3-Step: Select Sub-instruction"
     description: ClassVar[str] = "Pointer → current/next sub-instruction + landmarks"
     category: ClassVar[str] = "agent"
@@ -468,7 +509,7 @@ class FormatObservationNode(BaseCanvasNode):
         Scene Description: {caption} Scene Objects: {tags};
     """
 
-    node_type: ClassVar[str] = "threestep__format_observation"
+    node_type: ClassVar[str] = "threestepnav__format_observation"
     display_name: ClassVar[str] = "3-Step: Format Observation"
     description: ClassVar[str] = "Per-candidate RAM tags + SpatialBot captions → observation string"
     category: ClassVar[str] = "agent"
@@ -495,15 +536,18 @@ class FormatObservationNode(BaseCanvasNode):
         candidates = _as_dict(inputs.get("candidates"))
         tags = _as_dict(inputs.get("tags"))
         captions = _as_dict(inputs.get("captions"))
-        step = int(getattr(ctx, "step", 0)) if ctx else 0
+        # Upstream current_step is incremented BEFORE the observe
+        # (base_il_trainer_llm.py:600) — 1-based; ctx.step is 0-based.
+        step = (int(getattr(ctx, "step", 0)) if ctx else 0) + 1
 
+        # The observation TEXT covers every candidate (upstream passes the
+        # UNFILTERED observe list to the prompt, base_il_trainer_llm.py:624,666);
+        # only the candidate-ID list (and the images) drop stuck directions
+        # (:656-657).
         parts: list[str] = []
-        ids: list[str] = []
         blocks: dict[str, str] = {}
-        kept = _filter_stuck_keys(
-            sorted(candidates.keys(), key=lambda x: int(x)), inputs.get("stuck_directions")
-        )
-        for dir_id in kept:
+        ordered = _candidate_order(candidates.keys())
+        for dir_id in ordered:
             cap = str(captions.get(dir_id, "")).strip()
             tag = str(tags.get(dir_id, "")).strip()
             block = (
@@ -513,13 +557,18 @@ class FormatObservationNode(BaseCanvasNode):
                 f"Scene Objects: {tag}; "
             )
             parts.append(block)
-            ids.append(str(dir_id))
             blocks[str(dir_id)] = block
+        ids = _filter_stuck_keys(ordered, inputs.get("stuck_directions"))
 
         self._self_log("num_candidates", len(ids))
         return {
-            "observation": "".join(parts),
-            "candidate_ids": ", ".join(ids),
+            # Upstream formats the LIST of per-direction strings straight into
+            # the prompt ("Current Environment: {}".format(list)) — reproduce
+            # the list repr, not a plain concatenation. Likewise the candidate
+            # slot renders upstream's ``filtered_observe_dict.keys()`` view
+            # (spatialNavigator.py:120) — "dict_keys(['0', '11', …])".
+            "observation": str(parts),
+            "candidate_ids": str({k: None for k in ids}.keys()),
             "blocks": blocks,
         }
 
@@ -529,7 +578,7 @@ class ReviewHistoryNode(BaseCanvasNode):
     (spatialNavigator.py:57-60) — ``"Step {i+1} Observation: {obs} Thought:
     {thought}"`` joined with `` -> `` (else ``"Step 0 start position. "``)."""
 
-    node_type: ClassVar[str] = "threestep__review_history"
+    node_type: ClassVar[str] = "threestepnav__review_history"
     display_name: ClassVar[str] = "3-Step: Review History"
     description: ClassVar[str] = "Flatten nav_history container to '... -> ...' string"
     category: ClassVar[str] = "agent"
@@ -545,21 +594,15 @@ class ReviewHistoryNode(BaseCanvasNode):
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
         gs = getattr(ctx, "graph_state", None) if ctx else None
         entries = [e for e in _as_list(_read(gs, "nav_history", [])) if isinstance(e, dict)]
-        if not entries:
-            return {"history_traj": "Step 0 start position. "}
-        parts = [
-            f"Step {i + 1} Observation: {e.get('observation', '')} Thought: {e.get('thought', '')}"
-            for i, e in enumerate(entries)
-        ]
         self._self_log("history_steps", len(entries))
-        return {"history_traj": " -> ".join(parts)}
+        return {"history_traj": _flatten_history(entries)}
 
 
 class NavigatorPromptNode(BaseCanvasNode):
     """Assemble the MAPGPT_NAVIGATOR user prompt. Mirrors move_to_next_vp_single
     (spatialNavigator.py:120) format order."""
 
-    node_type: ClassVar[str] = "threestep__navigator_prompt"
+    node_type: ClassVar[str] = "threestepnav__navigator_prompt"
     display_name: ClassVar[str] = "3-Step: Navigator Prompt"
     description: ClassVar[str] = "Assemble MapGPT image-navigator prompt"
     category: ClassVar[str] = "agent"
@@ -595,7 +638,7 @@ class BuildImagesNode(BaseCanvasNode):
     the image navigator. Mirrors gpt_infer_with_images (api.py:154-162) — the
     label-before-image interleaving."""
 
-    node_type: ClassVar[str] = "threestep__build_images"
+    node_type: ClassVar[str] = "threestepnav__build_images"
     display_name: ClassVar[str] = "3-Step: Build Images"
     description: ClassVar[str] = "Per-candidate RGB tiles + 'Viewpoint N:' labels for the navigator"
     category: ClassVar[str] = "agent"
@@ -617,31 +660,28 @@ class BuildImagesNode(BaseCanvasNode):
     ]
 
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
-        import base64
-        import io
-
-        import numpy as np
-        from PIL import Image
-
         candidates = _as_dict(inputs.get("candidates"))
         vbd = _views_by_dir(inputs.get("views"))
 
+        # Upstream sends the navigator JPEG re-encodes of the raw render
+        # (generate_input → image_to_base64, base_il_trainer_llm.py:64-83:
+        # PIL save(format="JPEG"), default quality). Decode the env's
+        # lossless PNG tile → re-encode JPEG → emit raw-b64 STRINGS (the
+        # llmCall rgb port passes b64 strings through verbatim; its config
+        # sets image_mime="image/jpeg").
         images: list = []
         image_labels: list[str] = []
         kept = _filter_stuck_keys(
-            sorted(candidates.keys(), key=lambda x: int(x)), inputs.get("stuck_directions")
+            _candidate_order(candidates.keys()), inputs.get("stuck_directions")
         )
         for dir_id in kept:
             b64 = str(vbd.get(dir_id, {}).get("rgb_base64", ""))
             if not b64:
                 continue
-            try:
-                arr = np.asarray(
-                    Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB"), dtype="uint8"
-                )
-            except Exception:
+            jpeg = _png_b64_to_jpeg_b64(b64)
+            if jpeg is None:
                 continue
-            images.append(arr)
+            images.append(jpeg)
             image_labels.append(f"Viewpoint {dir_id}:")
 
         self._self_log("n_images", len(images))
@@ -652,7 +692,7 @@ class ParseNavigatorNode(BaseCanvasNode):
     """Verbatim parser from move_to_next_vp_single (spatialNavigator.py:141-194).
     Extracts ``pred_vp`` / ``pred_thought`` / ``completion_estimation``."""
 
-    node_type: ClassVar[str] = "threestep__parse_navigator"
+    node_type: ClassVar[str] = "threestepnav__parse_navigator"
     display_name: ClassVar[str] = "3-Step: Parse Navigator"
     description: ClassVar[str] = "Parse Thought / Prediction / Completion Estimation"
     category: ClassVar[str] = "agent"
@@ -680,7 +720,7 @@ class SelectDirectionObservationNode(BaseCanvasNode):
     """Pick the single-direction observation block for ``pred_vp`` + parse its
     direction id. Mirrors save_history (spatialNavigator.py:40-43)."""
 
-    node_type: ClassVar[str] = "threestep__select_direction_observation"
+    node_type: ClassVar[str] = "threestepnav__select_direction_observation"
     display_name: ClassVar[str] = "3-Step: Select Direction Observation"
     description: ClassVar[str] = "Per-direction block for pred_vp (+ direction id)"
     category: ClassVar[str] = "agent"
@@ -709,7 +749,7 @@ class SelectDirectionObservationNode(BaseCanvasNode):
 class ObservationSummaryPromptNode(BaseCanvasNode):
     """Assemble the OBSERVATION_SUMMARY prompt (per-step observation compressor)."""
 
-    node_type: ClassVar[str] = "threestep__observation_summary_prompt"
+    node_type: ClassVar[str] = "threestepnav__observation_summary_prompt"
     display_name: ClassVar[str] = "3-Step: Observation Summary Prompt"
     description: ClassVar[str] = "Compress the chosen direction's observation"
     category: ClassVar[str] = "agent"
@@ -724,10 +764,12 @@ class ObservationSummaryPromptNode(BaseCanvasNode):
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
         # Upstream summarises only from "Scene Description" onward, stripping the
         # "Direction {id} Direction Viewpoint ID: ... Eye Level " prefix
-        # (save_history, spatialNavigator.py:42).
+        # (save_history, spatialNavigator.py:42). No maxsplit — if the caption
+        # itself contains "Scene Description" upstream truncates at the second
+        # occurrence, and so do we.
         observation = str(inputs.get("observation", ""))
         if "Scene Description" in observation:
-            observation = "Scene Description" + observation.split("Scene Description", 1)[1]
+            observation = "Scene Description" + observation.split("Scene Description")[1]
         return {
             "system": OBSERVATION_SUMMARY_SYSTEM,
             "user": OBSERVATION_SUMMARY_USER.format(observation),
@@ -737,7 +779,7 @@ class ObservationSummaryPromptNode(BaseCanvasNode):
 class ThoughtSummaryPromptNode(BaseCanvasNode):
     """Assemble the THOUGHT_SUMMARY prompt (per-step thought compressor)."""
 
-    node_type: ClassVar[str] = "threestep__thought_summary_prompt"
+    node_type: ClassVar[str] = "threestepnav__thought_summary_prompt"
     display_name: ClassVar[str] = "3-Step: Thought Summary Prompt"
     description: ClassVar[str] = "Compress the navigator thought"
     category: ClassVar[str] = "agent"
@@ -750,8 +792,10 @@ class ThoughtSummaryPromptNode(BaseCanvasNode):
     ]
 
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
-        # Upstream strips a leading "Thought: " before summarising (save_history,
-        # spatialNavigator.py:45-46).
+        # The navigator thought is formatted RAW into the prompt; upstream's
+        # ``.replace("Thought: ", "")`` applies to the summary LLM's OUTPUT
+        # (save_history, spatialNavigator.py:45-46) and lives downstream in
+        # build_history_entry.
         thought = str(inputs.get("thought", ""))
         return {
             "system": THOUGHT_SUMMARY_SYSTEM,
@@ -766,7 +810,7 @@ class BuildHistoryEntryNode(BaseCanvasNode):
     is the SOLE WRITER of ``nav_history`` (it appends / resets / pops per the
     decision)."""
 
-    node_type: ClassVar[str] = "threestep__build_history_entry"
+    node_type: ClassVar[str] = "threestepnav__build_history_entry"
     display_name: ClassVar[str] = "3-Step: Build History Entry"
     description: ClassVar[str] = "Assemble the per-step nav_history entry (no state write)"
     category: ClassVar[str] = "agent"
@@ -781,21 +825,26 @@ class BuildHistoryEntryNode(BaseCanvasNode):
     output_ports = [PortDef("entry", "TEXT", "JSON-encoded history entry")]
 
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
-        step = int(getattr(ctx, "step", 0)) if ctx else 0
+        # 1-based like upstream current_step (base_il_trainer_llm.py:600).
+        step = (int(getattr(ctx, "step", 0)) if ctx else 0) + 1
         observation_summary = str(inputs.get("observation_summary", ""))
         did_raw = inputs.get("direction_id")
-        if did_raw is not None and observation_summary:
+        # Upstream prepends the DIRECTIONS phrase unconditionally
+        # (save_history, spatialNavigator.py:41-43).
+        if did_raw is not None:
             try:
                 did = int(did_raw)
                 if 0 <= did < len(DIRECTIONS):
                     observation_summary = f"Direction {DIRECTIONS[did]} " + observation_summary
             except (TypeError, ValueError):
                 pass
+        # Upstream strips "Thought: " from the thought-summary LLM output
+        # (save_history, spatialNavigator.py:45-46).
         entry = {
             "step": step,
             "viewpoint": str(inputs.get("viewpoint", "")),
             "observation": observation_summary,
-            "thought": str(inputs.get("thought_summary", "")),
+            "thought": str(inputs.get("thought_summary", "")).replace("Thought: ", ""),
         }
         return {"entry": json.dumps(entry)}
 
@@ -827,7 +876,7 @@ class JudgeDecideNode(BaseCanvasNode):
     loop ``stop`` flag.
     """
 
-    node_type: ClassVar[str] = "threestep__judge_decide"
+    node_type: ClassVar[str] = "threestepnav__judge_decide"
     display_name: ClassVar[str] = "3-Step: Judge & Decide"
     description: ClassVar[str] = (
         "Back-check verify (continue/stay/backtrack/look-around) + pointer + env action"
@@ -853,7 +902,6 @@ class JudgeDecideNode(BaseCanvasNode):
         PortDef("pred_thought", "TEXT", "Navigator thought (fallback decision thought)"),
         PortDef("current_action", "TEXT", "Current sub-instruction"),
         PortDef("current_landmarks_join", "TEXT", "', '-joined current landmarks"),
-        PortDef("history_traj", "TEXT", "Flattened nav history"),
         PortDef("action_idx", "ANY", "Current sub-instruction index"),
         PortDef("num_actions", "ANY", "Total sub-instructions"),
         PortDef("candidates", "ANY", "{dir_id: [angle, distance]} from waypoint predictor"),
@@ -883,7 +931,6 @@ class JudgeDecideNode(BaseCanvasNode):
         pred_thought = str(inputs.get("pred_thought", ""))
         current_action = str(inputs.get("current_action", ""))
         current_landmarks = str(inputs.get("current_landmarks_join", ""))
-        history_traj = str(inputs.get("history_traj", ""))
         idx = int(_read(gs, "current_action_idx", inputs.get("action_idx") or 0) or 0)
         num_actions = int(inputs.get("num_actions") or 1)
         candidates = _as_dict(inputs.get("candidates"))
@@ -915,8 +962,9 @@ class JudgeDecideNode(BaseCanvasNode):
             chosen.append(chosen_rgb)
 
         # Per-image descriptions (1:1 with chosen) — the judge's prepended
-        # "Image sequence descriptions" block. Built from PRIOR state, like chosen.
-        step = int(getattr(ctx, "step", 0)) if ctx else 0
+        # "Image sequence descriptions" block. Built from PRIOR state, like
+        # chosen. Step phrase is 1-based like upstream current_step.
+        step = (int(getattr(ctx, "step", 0)) if ctx else 0) + 1
         descs = _build_descs(gs, vbd, pred_vp, step, fwd_angle)
 
         prior_history = [e for e in _as_list(_read(gs, "nav_history", [])) if isinstance(e, dict)]
@@ -932,11 +980,17 @@ class JudgeDecideNode(BaseCanvasNode):
         clear_stuck = False
 
         if completion == "Yes":
+            # Upstream reviews the history AFTER save_history appended this
+            # step's entry (base_il_trainer_llm.py:683→722), so the judge's
+            # History field INCLUDES the current step.
+            judge_history = _flatten_history(new_history)
             judge_user = build_judge_user(
-                current_action, current_landmarks, history_traj, len(chosen), descriptions=descs
+                current_action, current_landmarks, judge_history, len(chosen), descriptions=descs
             )
             raw = await self._judge_llm(profile, judge_user, chosen, max_tokens)
             dstr, confidence, reasoning = parse_judge(raw)
+            # Upstream tags the judge reasoning (decision_agent.py:790).
+            reasoning = f"[Code-Informed] {reasoning}"
             decision = string_to_decision(dstr)
             decision = apply_decision_rules(
                 decision, confidence, enabled, idx, num_actions, len(chosen)
@@ -1006,20 +1060,24 @@ class JudgeDecideNode(BaseCanvasNode):
 
         cfg = get_llm_config(profile or "")
         if cfg is None:
-            log.warning("threestep: judge LLM profile '%s' not found", profile)
+            log.warning("threestepnav: judge LLM profile '%s' not found", profile)
             return ""
         # Mirror gpt_infer_with_images (api.py:154-177): "Viewpoint {i}:" before
-        # each chosen-path image (i = sequence index), detail="high".
-        labels = [f"Viewpoint {i}:" for i in range(len(images_b64))]
+        # each chosen-path image (i = sequence index), detail="high". Upstream
+        # JPEG-re-encodes the chosen PIL images (decision_agent.py:806-815) —
+        # reproduce that byte chain from the stored lossless tiles.
+        jpegs = [j for j in (_png_b64_to_jpeg_b64(b) for b in images_b64) if j]
+        labels = [f"Viewpoint {i}:" for i in range(len(jpegs))]
         out = await vlm_complete(
             cfg,
             user_prompt,
-            list(images_b64),
+            jpegs,
             image_labels=labels,
             system_prompt=JUDGE_SYSTEM,
             max_tokens=max_tokens,
             temperature=1.0,
             detail="high",
+            mime="image/jpeg",
         )
         return out or ""
 
@@ -1029,10 +1087,10 @@ class JudgeDecideNode(BaseCanvasNode):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class ThreeStepNodeSet(BaseNodeSet):
+class ThreeStepNavNodeSet(BaseNodeSet):
     """Three-Step Nav — global decompose · local image-navigator · back-check verify."""
 
-    name = "threestep"
+    name = "threestepnav"
     description = (
         "Three-Step Nav (arXiv 2604.26946) zero-shot VLN-CE: instruction decomposition, "
         "MapGPT-style image navigator with folded completion estimation, and a "

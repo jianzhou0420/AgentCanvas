@@ -156,6 +156,62 @@ import type {
   EnvPanelActionResult,
 } from "./types";
 
+/** GET /api/components/nodesets/{name}/source response. */
+export interface NodesetSourceFile {
+  name: string;
+  mode: "local" | "server";
+  requires_server: boolean;
+  loaded: boolean;
+  is_package: boolean;
+  files: string[];
+  file: string;
+  content: string;
+  mtime_ns: number;
+  class_name: string | null;
+}
+
+/** PUT /api/components/nodesets/{name}/source outcome (discriminated on `kind`). */
+export type SaveSourceResult =
+  | { ok: true; mtime_ns: number; mode: "local" | "server"; stale: boolean; run_active: boolean }
+  | { ok: false; kind: "syntax"; msg: string; line: number | null; offset: number | null }
+  | { ok: false; kind: "conflict" }
+  | { ok: false; kind: "error"; message: string };
+
+/** One editable slice of a nodeset file (Source tab): globals block,
+ *  referenced function, or the node's class. 1-based inclusive lines. */
+export interface SourceSegment {
+  kind: "globals" | "function" | "class";
+  name: string;
+  start_line: number;
+  end_line: number;
+  text: string;
+}
+
+/** GET /api/components/nodesets/{name}/source/scoped response. */
+export interface ScopedSource {
+  name: string;
+  node_type: string;
+  mode: "local" | "server";
+  requires_server: boolean;
+  loaded: boolean;
+  file: string;
+  mtime_ns: number;
+  segments: SourceSegment[];
+}
+
+export type SaveScopedResult =
+  | {
+      ok: true;
+      mtime_ns: number;
+      mode: "local" | "server";
+      stale: boolean;
+      run_active: boolean;
+      segments: SourceSegment[] | null;
+    }
+  | { ok: false; kind: "syntax"; msg: string; line: number | null; offset: number | null }
+  | { ok: false; kind: "conflict" }
+  | { ok: false; kind: "error"; message: string };
+
 export const api = {
   // Config
   getConfig: () => fetchJ<AppConfig>(`${API_BASE}/api/config/`),
@@ -272,6 +328,117 @@ export const api = {
     ),
   listNodesets: () =>
     fetchJ<NodeSetInfo[]>(`${API_BASE}/api/components/nodesets`),
+  getNodesetSource: (name: string, file?: string, nodeType?: string) => {
+    const q = new URLSearchParams();
+    if (file) q.set("file", file);
+    if (nodeType) q.set("node_type", nodeType);
+    const qs = q.toString();
+    return fetchJ<NodesetSourceFile>(
+      `${API_BASE}/api/components/nodesets/${encodeURIComponent(name)}/source${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getScopedSource: (name: string, nodeType: string) =>
+    fetchJ<ScopedSource>(
+      `${API_BASE}/api/components/nodesets/${encodeURIComponent(name)}/source/scoped?node_type=${encodeURIComponent(nodeType)}`,
+    ),
+  saveScopedSource: async (
+    name: string,
+    body: {
+      file: string;
+      node_type: string;
+      base_mtime_ns: number | null;
+      segments: { start_line: number; end_line: number; text: string }[];
+    },
+  ): Promise<SaveScopedResult> => {
+    let res: Response;
+    try {
+      res = await fetch(
+        `${API_BASE}/api/components/nodesets/${encodeURIComponent(name)}/source/scoped`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    let parsed: unknown = null;
+    try {
+      parsed = await res.json();
+    } catch {
+      /* empty / non-JSON body */
+    }
+    if (res.ok) return parsed as SaveScopedResult;
+    const detail = (parsed as { detail?: unknown } | null)?.detail;
+    if (
+      res.status === 400 &&
+      detail &&
+      typeof detail === "object" &&
+      (detail as { error?: string }).error === "syntax"
+    ) {
+      const s = detail as { msg: string; line: number | null; offset: number | null };
+      return { ok: false, kind: "syntax", msg: s.msg, line: s.line, offset: s.offset };
+    }
+    if (res.status === 409) return { ok: false, kind: "conflict" };
+    return {
+      ok: false,
+      kind: "error",
+      message: typeof detail === "string" ? detail : `HTTP ${res.status}`,
+    };
+  },
+  // Deliberately not putJ: 400 (syntax) / 409 (disk conflict) are expected
+  // editor outcomes handled inline in the source drawer — they must not
+  // land in the Report tab as app errors.
+  saveNodesetSource: async (
+    name: string,
+    body: { file: string; content: string; base_mtime_ns: number | null },
+  ): Promise<SaveSourceResult> => {
+    let res: Response;
+    try {
+      res = await fetch(
+        `${API_BASE}/api/components/nodesets/${encodeURIComponent(name)}/source`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    let parsed: unknown = null;
+    try {
+      parsed = await res.json();
+    } catch {
+      /* empty / non-JSON body */
+    }
+    if (res.ok) return parsed as SaveSourceResult;
+    const detail = (parsed as { detail?: unknown } | null)?.detail;
+    if (
+      res.status === 400 &&
+      detail &&
+      typeof detail === "object" &&
+      (detail as { error?: string }).error === "syntax"
+    ) {
+      const s = detail as { msg: string; line: number | null; offset: number | null };
+      return { ok: false, kind: "syntax", msg: s.msg, line: s.line, offset: s.offset };
+    }
+    if (res.status === 409) return { ok: false, kind: "conflict" };
+    return {
+      ok: false,
+      kind: "error",
+      message: typeof detail === "string" ? detail : `HTTP ${res.status}`,
+    };
+  },
   loadNodeset: (name: string) =>
     postJ<{ ok: boolean; tools: string[] }>(
       `${API_BASE}/api/components/nodesets/${name}/load`,

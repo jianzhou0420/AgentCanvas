@@ -1,9 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// BACKEND_URL overrides the dev-proxy target (same convention as
-// /experiment:run's wrapped commands). Default stays the user's :8000.
-const backend = process.env.BACKEND_URL || 'http://localhost:8000'
+// Backend the dev proxy forwards /api + /ws to. Override to pair this dev
+// frontend with a non-default backend instance:
+//   VITE_PROXY_TARGET=http://127.0.0.1:5175 npx vite --host
+// BACKEND_URL is honored too — it's the env var /experiment:run injects
+// into wrapped commands.
+const proxyTarget =
+  process.env.VITE_PROXY_TARGET ||
+  process.env.BACKEND_URL ||
+  'http://localhost:8000'
 
 export default defineConfig({
   plugins: [react()],
@@ -11,11 +17,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: backend,
+        target: proxyTarget,
         changeOrigin: true,
       },
       '/ws': {
-        target: backend.replace(/^http/, 'ws'),
+        target: proxyTarget.replace(/^http/, 'ws'),
         ws: true,
       },
     },

@@ -94,6 +94,7 @@ class WaypointEngine:
         self.device = None
         self.predictor = None
         self.rgb_encoder = None
+        self.rgb_transform = None
         self.depth_encoder = None
         self._loaded = False
 
@@ -149,52 +150,79 @@ class WaypointEngine:
             predictor.eval()
             self.predictor = predictor
 
-            # ResNet50 RGB encoder (ImageNet pretrained, frozen).
+            # ── RGB encoder — TorchVisionResNet50 (resnet_encoders.py:109-240)
+            # torchvision resnet50 pretrained, truncated [:-2] → (B,2048,7,7);
+            # preprocessing = ConvertImageDtype(float) + ImageNet Normalize
+            # (resnet_encoders.py:180-184), applied in predict() exactly as
+            # TorchVisionResNet50.forward does. The previous port fed /255
+            # WITHOUT the ImageNet Normalize — fixed 2026-07-03.
+            from torchvision import transforms  # type: ignore
             from torchvision.models import resnet50  # type: ignore
 
-            rgb_net = resnet50(weights=None)
             try:
                 from torchvision.models import ResNet50_Weights  # type: ignore
 
                 rgb_net = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
             except Exception:
-                log.warning("torchvision ResNet50_Weights unavailable — using random init")
+                rgb_net = resnet50(pretrained=True)  # older torchvision
             rgb_net = torch.nn.Sequential(*list(rgb_net.children())[:-2]).to(self.device)
             rgb_net.eval()
             for p in rgb_net.parameters():
                 p.requires_grad = False
             self.rgb_encoder = rgb_net
+            self.rgb_transform = torch.nn.Sequential(
+                transforms.ConvertImageDtype(torch.float),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ).to(self.device)
 
-            # DDPPO ResNet50 depth encoder — vendored under habitat_baselines.
-            try:
-                from vlnce_baselines.models.encoders.resnet_encoders import (  # type: ignore
-                    VlnResnetDepthEncoder,
-                )
+            # ── DDPPO ResNet50 depth encoder — VlnResnetDepthEncoder,
+            # file-level import of the vendored upstream module (bypasses the
+            # unimportable ``vlnce_baselines`` package — the old package-level
+            # import raised ModuleNotFoundError, was swallowed, and every run
+            # silently used ZERO depth features; found 2026-07-03). Load
+            # failure is now FATAL: upstream cannot run without this encoder,
+            # so neither may we.
+            import importlib.util
 
-                depth_net = VlnResnetDepthEncoder(
-                    observation_space=None,
-                    output_size=128,
-                    checkpoint=os.environ.get(
-                        "OPENNAV_DDPPO_CKPT",
-                        os.path.join(
-                            _REPO_ROOT,
-                            "data",
-                            "opennav",
-                            "ddppo-models",
-                            "gibson-2plus-resnet50.pth",
-                        ),
+            enc_path = os.path.join(
+                _PKG_DIR, "_vendored", "vlnce_encoders", "resnet_encoders.py"
+            )
+            spec = importlib.util.spec_from_file_location("_opennav_resnet_encoders", enc_path)
+            enc_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(enc_mod)  # type: ignore[union-attr]
+
+            from gym import spaces  # type: ignore
+
+            obs_space = spaces.Dict(
+                {
+                    "depth": spaces.Box(
+                        low=0.0, high=1.0, shape=(256, 256, 1), dtype=np.float32
                     ),
-                    backbone="resnet50",
-                    trainable=False,
-                ).to(self.device)
-                depth_net.eval()
-                self.depth_encoder = depth_net
-            except Exception:
-                log.warning(
-                    "DDPPO depth encoder unavailable — depth features will be zeroed",
-                    exc_info=True,
-                )
-                self.depth_encoder = None
+                }
+            )
+            # Ctor args mirror Policy_ViewSelection.py:97-103 + run_OpenNav.yaml
+            # (output_size=256 — metadata only at spatial use; ckpt; resnet50;
+            # spatial_output=False → forward returns raw (B,128,4,4)).
+            depth_net = enc_mod.VlnResnetDepthEncoder(
+                observation_space=obs_space,
+                output_size=256,
+                checkpoint=os.environ.get(
+                    "OPENNAV_DDPPO_CKPT",
+                    os.path.join(
+                        _REPO_ROOT,
+                        "data",
+                        "opennav",
+                        "ddppo-models",
+                        "gibson-2plus-resnet50.pth",
+                    ),
+                ),
+                backbone="resnet50",
+                trainable=False,
+                spatial_output=False,
+            ).to(self.device)
+            depth_net.eval()
+            self.depth_encoder = depth_net
+            log.info("DDPPO depth encoder loaded")
 
             self._loaded = True
             log.info("Waypoint engine ready (device=%s)", self.device)
@@ -204,12 +232,26 @@ class WaypointEngine:
     ) -> dict[str, list[float]]:
         """Return ``{slot_id: [angle_rad, distance_m]}`` keyed by 30° slot.
 
-        Mirrors the reference ``construct_image_dicts``
-        (``base_il_trainer_llm.py:186-243``): each waypoint angle is binned
-        into one of 12 30° slots ``'0'..'11'`` so RAM/SpatialBot on the
-        panorama sensor of that same slot are aligned with NAVIGATOR
-        prompt's "Direction 1 = 30° left" semantics. First NMS candidate
-        wins on slot collisions (matches reference dict assignment order).
+        Faithful transcription of the upstream waypoint-mode forward
+        (``Policy_ViewSelection.py:232-380`` @ Three-Step fork 5cdbdcf ==
+        Open-Nav parent) + ``construct_image_dicts`` binning
+        (``base_il_trainer_llm.py:202-259``), rewritten 2026-07-03:
+
+        1. clockwise slot arrangement ``ra = (12 - a) % 12`` (:253-258) —
+           the previous port fed the panorama counter-clockwise;
+        2. RGB 1024→224 via ``F.interpolate(mode="area")`` + dtype cast —
+           the fork's ACTIVE resize path (ResizerPerSensor,
+           ``habitat_extensions/obs_transformers.py:160-162``; the bilinear
+           shim at Policy_ViewSelection.py:259-268 is dead belt-and-braces);
+        3. TorchVisionResNet50 preprocessing = ConvertImageDtype + ImageNet
+           Normalize (was: bare /255);
+        4. depth = absolute-normalised [0,1] (was: per-tile min-max);
+        5. softmax over the flat heatmap + circular first/last-row wrap
+           BEFORE nms(5, (7.0, 5.0)), then unwrap (:300-315) (was: raw
+           logits, no wrap);
+        6. candidates iterated in ascending-angle-index ``nonzero()`` order,
+           slot collisions LAST-wins (dict overwrite in
+           construct_image_dicts) (was: strength-sorted, first-wins).
         """
         self._ensure_loaded()
 
@@ -219,53 +261,78 @@ class WaypointEngine:
         if not rgb_views:
             return {}
 
-        rgb_tensor = (
-            torch.from_numpy(np.stack(rgb_views).astype(np.float32) / 255.0)
-            .permute(0, 3, 1, 2)
-            .to(self.device)
-        )
-        with torch.no_grad():
-            rgb_feats = self.rgb_encoder(rgb_tensor)  # (12, 2048, h, w)
+        # ── clockwise arrangement (Policy_ViewSelection.py:243-268) ──
+        # env views arrive counter-clockwise (dir i = i·30° left);
+        # slot 0 keeps dir 0, slots 11..1 take dirs 1..11.
+        n_views = min(12, len(rgb_views))
+        rgb_cw: list = [None] * 12
+        depth_cw: list = [None] * 12
+        for a in range(n_views):
+            ra = (12 - a) % 12
+            rgb_cw[ra] = rgb_views[a]
+            if a < len(depth_views):
+                depth_cw[ra] = depth_views[a]
+        rgb_fill = next(v for v in rgb_cw if v is not None)
+        rgb_cw = [v if v is not None else np.zeros_like(rgb_fill) for v in rgb_cw]
+        d_fill = next((v for v in depth_cw if v is not None), None)
+        depth_cw = [
+            v
+            if v is not None
+            else (np.zeros_like(d_fill) if d_fill is not None else np.zeros((256, 256), np.float32))
+            for v in depth_cw
+        ]
 
-        if self.depth_encoder is not None and depth_views:
-            depth_tensor = (
-                torch.from_numpy(np.stack(depth_views).astype(np.float32))
-                .unsqueeze(1)
-                .to(self.device)
+        with torch.no_grad():
+            # ── RGB: (12,H,W,3) uint8 → ResizerPerSensor area-resize to 224
+            # (obs_transformers.py:160-162) → TorchVisionResNet50.forward
+            # (permute NHWC→NCHW, ConvertImageDtype+Normalize, resnet
+            # :189-217) → (12,2048,7,7).
+            rgb_batch = torch.from_numpy(np.stack(rgb_cw).astype(np.uint8)).to(self.device)
+            x = rgb_batch.permute(0, 3, 1, 2)  # NCHW uint8
+            if x.shape[-2:] != (224, 224):
+                x = F.interpolate(x.float(), size=(224, 224), mode="area").to(dtype=x.dtype)
+            rgb_feats = self.rgb_encoder(self.rgb_transform(x).contiguous())
+
+            # ── Depth: (12,256,256,1) float32 in [0,1] (absolute habitat
+            # normalisation) → VlnResnetDepthEncoder → (12,128,4,4).
+            depth_np = np.stack(
+                [np.asarray(d, dtype=np.float32).reshape(256, 256, 1) for d in depth_cw]
             )
-            with torch.no_grad():
-                depth_feats = self.depth_encoder({"depth": depth_tensor.permute(0, 2, 3, 1)})
-        else:
-            depth_feats = torch.zeros(rgb_feats.size(0), 128, 4, 4, device=self.device)
+            depth_tensor = torch.from_numpy(depth_np).to(self.device)
+            depth_feats = self.depth_encoder({"depth": depth_tensor})
 
-        with torch.no_grad():
             heatmap = self.predictor(rgb_feats, depth_feats)  # (1, 120, 12)
 
-        from waypoint_prediction.utils import nms  # type: ignore
+            # ── softmax + circular wrap + NMS (Policy_ViewSelection.py:300-315)
+            batch_x_norm = torch.softmax(
+                heatmap.reshape(1, 120 * 12), dim=1
+            ).reshape(1, 120, 12)
+            batch_x_norm_wrap = torch.cat(
+                (batch_x_norm[:, -1:, :], batch_x_norm, batch_x_norm[:, :1, :]), dim=1
+            )
 
-        # nms() needs a 4D (batch, 1, H, W) tensor and returns a same-shape map
-        # with the ≤max_predictions peaks kept (rest zeroed); the peaks are the
-        # non-zero cells, taken strongest-first. heatmap is (1, 120, 12) =
-        # (batch, angle_bins, distance_bins). The prior code passed a 3D numpy
-        # array and iterated the result as coordinate pairs — neither matched
-        # the vendored nms contract, so the predictor 500'd on every call.
-        nms_map = nms(heatmap.unsqueeze(1), max_predictions=5, sigma=(7.0, 5.0))
-        grid = nms_map.reshape(nms_map.shape[-2], nms_map.shape[-1])  # (120, 12)
-        peaks = grid.nonzero(as_tuple=False)
-        if peaks.numel():
-            vals = grid[peaks[:, 0], peaks[:, 1]]
-            peaks = peaks[torch.argsort(vals, descending=True)]
+            from waypoint_prediction.utils import nms  # type: ignore
 
+            batch_output_map = nms(
+                batch_x_norm_wrap.unsqueeze(1), max_predictions=5, sigma=(7.0, 5.0)
+            )
+            batch_output_map = batch_output_map.squeeze(1)[:, 1:-1, :]
+
+        # ── candidates: ascending nonzero order + 2π− angle mapping
+        # (Policy_ViewSelection.py:368-378) → construct_image_dicts binning
+        # with LAST-wins dict assignment (base_il_trainer_llm.py:202-259).
+        # Angle math in float32 TENSOR arithmetic exactly as upstream —
+        # python float64 here drifts at the 7th decimal (equiv-test proven).
+        import math
+
+        nz = batch_output_map[0].nonzero(as_tuple=False)
+        angle_idxes = nz[:, 0]
+        distance_idxes = nz[:, 1]
+        angle_rad_t = 2 * math.pi - angle_idxes.float() / 120 * 2 * math.pi
+        dist_t = ((distance_idxes + 1) * 0.25).float()
         out: dict[str, list[float]] = {}
-        for a_idx, d_idx in peaks.tolist():
-            angle_rad = 2 * np.pi - (float(a_idx) / 120.0) * 2 * np.pi
-            distance_m = (float(d_idx) + 1) * 0.25
-            slot_id = _bin_angle_to_slot(angle_rad)
-            if slot_id in out:
-                # First NMS candidate wins on collisions (reference dict
-                # assignment order in construct_image_dicts).
-                continue
-            out[slot_id] = [angle_rad, distance_m]
+        for angle_rad, distance_m in zip(angle_rad_t.tolist(), dist_t.tolist()):
+            out[_bin_angle_to_slot(angle_rad)] = [angle_rad, distance_m]
         return out
 
 
@@ -325,11 +392,25 @@ def _decode_rgb_b64(b64: str) -> np.ndarray:
 
 
 def _decode_depth_b64(b64: str) -> np.ndarray:
+    # LEGACY per-tile min-max 8-bit path — loses absolute depth. Kept only
+    # as a fallback for old payloads without ``depth_raw_base64``.
     from PIL import Image
 
     raw = base64.b64decode(b64)
     img = Image.open(io.BytesIO(raw))
     return np.asarray(img, dtype=np.float32) / 255.0
+
+
+def _decode_depth_raw_b64(b64: str) -> np.ndarray:
+    # 16-bit habitat-normalised depth ×1000 (env encode_depth_raw_base64) →
+    # back to the absolute [0,1] float the DDPPO encoder was trained on
+    # (habitat NORMALIZE_DEPTH over 0–10 m). ~1e-3 quantisation from the
+    # uint16 roundtrip; upstream feeds the raw float straight through.
+    from PIL import Image
+
+    raw = base64.b64decode(b64)
+    arr = np.asarray(Image.open(io.BytesIO(raw)), dtype=np.float32)
+    return arr / 1000.0
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -362,10 +443,15 @@ class PredictWaypointsTool(BaseCanvasNode):
             if not isinstance(v, dict):
                 continue
             rgb_b64 = v.get("rgb_base64")
+            depth_raw_b64 = v.get("depth_raw_base64")
             depth_b64 = v.get("depth_base64")
             if rgb_b64:
                 rgb_arrays.append(_decode_rgb_b64(rgb_b64))
-            if depth_b64:
+            # Absolute-normalised depth (upstream DDPPO contract) — the
+            # legacy per-tile min-max 8-bit path is fallback only.
+            if depth_raw_b64:
+                depth_arrays.append(_decode_depth_raw_b64(depth_raw_b64))
+            elif depth_b64:
                 depth_arrays.append(_decode_depth_b64(depth_b64))
 
         if not rgb_arrays:
