@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-"""EnvDetAny3DNodeSet — DetAny3D 3D detection as a server-mode NodeSet.
+"""ModelDetAny3DNodeSet — DetAny3D 3D detection as a server-mode NodeSet.
 
 Wraps DetAny3D (Zhai 2025; ToolEQA dependency) as a canvas server-mode
 nodeset. Exposes 2D detection, 3D detection, and SAM-prompted
@@ -22,9 +20,9 @@ Architecture — mirrors `hmeqa.py`:
      a single ThreadPoolExecutor for GPU thread affinity.
 
 2. Canvas tool nodes (`BaseCanvasNode` adapters)
-     env_detany3d__locate_2d   — text → 2D bboxes via GroundingDINO
-     env_detany3d__locate_3d   — text → 3D centers + sizes (DetAny3D)
-     env_detany3d__segment     — text → masks (SAM prompted by DINO bboxes)
+     model_detany3d__locate_2d   — text → 2D bboxes via GroundingDINO
+     model_detany3d__locate_3d   — text → 3D centers + sizes (DetAny3D)
+     model_detany3d__segment     — text → masks (SAM prompted by DINO bboxes)
 
 3. `EnvDetAny3DNodeSet` (collection + lifecycle)
      server_python defaults to `$DETANY3D_PYTHON` so the framework
@@ -52,8 +50,11 @@ verbatim but require:
      `cfg.model.checkpoint` resolve correctly — adjust paths to point at
      `data/detany3d/weights/...` in this conda env).
 
-last updated: 2026-05-10
+last updated: 2026-07-04 (moved env/ -> model/ per nodeset-layout role test;
+renamed model_detany3d; node_types re-prefixed)
 """
+
+from __future__ import annotations
 
 import asyncio
 import concurrent.futures
@@ -91,7 +92,7 @@ _VENDOR_ROOT = os.path.join(_THIS_DIR, "_vendor")
 _DETANY3D_CONFIG = os.path.join(_VENDOR_ROOT, "detect_anything", "configs", "demo.yaml")
 
 # Project root for resolving the data dir (e.g. `data/detany3d/weights/`).
-# `__file__` lives at workspace/nodesets/env/env_detany3d/__init__.py
+# `__file__` lives at workspace/nodesets/env/model_detany3d/__init__.py
 # → ../../../../ resolves to repo root.
 _REPO_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", "..", ".."))
 _DATA_ROOT = os.environ.get("DETANY3D_DATA_ROOT", os.path.join(_REPO_ROOT, "data", "detany3d"))
@@ -312,13 +313,17 @@ class DetAny3DEnvManager:
         from torchvision.ops import box_convert
 
         image_source_dino, image_dino = self._convert_dino_image(img)
+        # remove_combined omitted — not in the groundingdino-py 0.4.0
+        # signature installed in ac-detany3d (upstream default is False, so
+        # semantics are unchanged). Same fix as model_grounding_dino (2026-06-16);
+        # this SCAFFOLD-era copy kept the upstream-verbatim kwarg and the
+        # locate path had never been exercised end-to-end until 2026-07-04.
         boxes, _logits, phrases = dino_predict(
             model=self._dino_model,
             image=image_dino,
             caption=text,
             box_threshold=_DEFAULTS["box_threshold"],
             text_threshold=_DEFAULTS["text_threshold"],
-            remove_combined=False,
         )
         h, w, _ = image_source_dino.shape
         boxes = boxes * torch.Tensor([w, h, w, h])
@@ -521,7 +526,7 @@ def _decode_image_input(value: Any) -> np.ndarray:
 
 
 class Locate2DTool(BaseCanvasNode):
-    node_type = "env_detany3d__locate_2d"
+    node_type = "model_detany3d__locate_2d"
     display_name = "DetAny3D: Locate 2D"
     description = (
         "Open-vocab 2D detection via GroundingDINO. Input image + text prompt; output 2D bboxes."
@@ -557,7 +562,7 @@ class Locate2DTool(BaseCanvasNode):
 
 
 class Locate3DTool(BaseCanvasNode):
-    node_type = "env_detany3d__locate_3d"
+    node_type = "model_detany3d__locate_3d"
     display_name = "DetAny3D: Locate 3D"
     description = "3D detection — returns 3D bboxes (centers + sizes) and rotation matrix."
     category = "tool"
@@ -597,7 +602,7 @@ class Locate3DTool(BaseCanvasNode):
 
 
 class SegmentTool(BaseCanvasNode):
-    node_type = "env_detany3d__segment"
+    node_type = "model_detany3d__segment"
     display_name = "DetAny3D: Segment"
     description = "GroundingDINO + SAM open-vocab instance segmentation."
     category = "tool"
@@ -633,7 +638,7 @@ class SegmentTool(BaseCanvasNode):
 class DetAny3DEnvPanel(BaseEnvPanel):
     """Minimal canvas panel env panel — initialization status + GPU id."""
 
-    name = "env_detany3d"
+    name = "model_detany3d"
     display_name = "DetAny3D"
     fields = [
         EnvPanelField("gpu_id", "select", "GPU"),
@@ -696,7 +701,7 @@ class DetAny3DEnvPanel(BaseEnvPanel):
 # ══════════════════════════════════════════════════════════════════════
 
 
-class EnvDetAny3DNodeSet(BaseNodeSet):
+class ModelDetAny3DNodeSet(BaseNodeSet):
     """DetAny3D 3D detection as a server-mode NodeSet.
 
     Loads in server mode against the `detany3d` conda env by default
@@ -704,7 +709,7 @@ class EnvDetAny3DNodeSet(BaseNodeSet):
     + DetAny3D model weights).
     """
 
-    name = "env_detany3d"
+    name = "model_detany3d"
     description = "DetAny3D — open-vocab 2D + 3D detection + SAM segmentation"
     server_python = conda_env_python("ac-detany3d", "DETANY3D_PYTHON")
     env_panel = DetAny3DEnvPanel
