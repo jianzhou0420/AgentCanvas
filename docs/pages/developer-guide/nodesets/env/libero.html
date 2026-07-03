@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIBERO NodeSet — AgentCanvas</title>
+<meta name="description" content="The LIBERO NodeSet ( EnvLiberoNodeSet , workspace/nodesets/env/env_libero/ ) wraps robosuite + MuJoCo for LIBERO (23.06) — 130 manipulation tasks split across 5 suites ( libero_spatial / object /…">
+<meta property="og:title" content="LIBERO NodeSet — AgentCanvas">
+<meta property="og:description" content="The LIBERO NodeSet ( EnvLiberoNodeSet , workspace/nodesets/env/env_libero/ ) wraps robosuite + MuJoCo for LIBERO (23.06) — 130 manipulation tasks split across 5 suites ( libero_spatial / object /…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/libero.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="LIBERO">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/libero.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">LIBERO</span>
+  </div>
+  <div class="last-updated">2026-07-04</div>
+</div>
+  <header class="page-header guide">
+  <h1>LIBERO NodeSet</h1>
+</header>
+
+<p class="lede">The <strong>LIBERO NodeSet</strong> (<code>EnvLiberoNodeSet</code>, <code>workspace/nodesets/env/env_libero/</code>) wraps <strong>robosuite + MuJoCo</strong> for <a href="https://arxiv.org/abs/2306.03310">LIBERO</a> (23.06) — 130 manipulation tasks split across 5 suites (<code>libero_spatial / object / goal / 10 / 90</code>), each task with 50 init-state variations, executed on a Franka Panda arm. It implements the <a href="template.html">gym-like env interface</a> natively: <code>reset</code> (metadata only) · <code>step_continuous</code> / <code>step_ee_pose</code> (control signals) · <code>observe_egocentric</code> / <code>observe_objects</code> (pull perception) · <code>evaluate</code> (metric sink).</p>
+
+<p>Sibling of <a href="simpler.html">SIMPLER</a> — the two are a matched pair for first-release VLA evaluation. LIBERO uses MuJoCo + robosuite + Franka Panda; SIMPLER uses SAPIEN + ManiSkill2 + WidowX or Google Robot. Same TEXT-JSON 7-vec <code>step_continuous</code> contract, same egocentric port surface.</p>
+<hr>
+
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+
+<h3 id="architecture">Architecture</h3>
+<ol>
+<li><strong><code>LiberoEnvManager</code></strong> (singleton) — one <code>OffScreenRenderEnv</code> + <code>LiberoWrapper</code> (sidecar <code>_wrapper.py</code>) instance, <strong>rebuilt on every <code>set_episode</code></strong> because each task is its own BDDL scene file. Pinned single-thread executor for MuJoCo GL/physics affinity. After every rebuild the wrapper applies the episode's init-state, then runs <code>num_steps_wait = 10</code> zero-delta settle steps.</li>
+<li><strong>Eight canvas tool nodes</strong> — the four gym verb families (§2) plus two EE-control debug extras.</li>
+<li><strong><code>EnvLiberoNodeSet</code></strong> — <code>server_python = conda_env_python("ac-libero", "LIBERO_PYTHON")</code>; <code>parallelism = "replicated"</code> (robosuite scene state is per-worker); <code>default_per_step_budget_sec = 30.0</code>.</li>
+</ol>
+
+<h3 id="reset-semantics">Reset semantics (ensure-live)</h3>
+<p><code>env_libero__reset</code> forwards to <code>LiberoEnvManager.ensure_live()</code>: a <strong>live</strong> episode — the batch-eval path, where the runner has just placed a fresh one via <code>set_episode</code> — is read without disturbance (no rebuild); a <strong>done</strong> episode (canvas re-run) is re-armed in place by rebuilding the same <code>(suite, task, episode)</code>. Reset never chooses an episode — placement is env-panel-owned, exactly per template §5.1. (Until 2026-07-03 reset rebuilt unconditionally — correct but one wasted MuJoCo build per eval episode.)</p>
+
+<h3 id="step-budget">Step budget</h3>
+<p>All suites cap at <code>max_steps = 2500</code> env ticks (raised from 1500 on 2026-05-16: VoxPoser's bounded-advance OSC at ~5&nbsp;mm/tick needs ~2× more ticks than VLA per-step deltas). The underlying robosuite <code>horizon</code> is bumped to <code>max_steps + 100</code> so the manager's own budget check fires first — robosuite's default horizon-1000 <code>done</code> would otherwise be mislabelled as success by the wrapper.</p>
+<hr>
+
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<table>
+<thead>
+<tr><th>Node Type</th><th>Verb family</th><th>Input Ports</th><th>Output Ports</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_libero__reset</code></td>
+<td>reset</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>instruction</code>, <code>episode_id</code> (<code>{suite}/{task}/{ep}</code>), <code>suite</code>, <code>task_id</code>, <code>max_steps</code> — <strong>metadata only, no observation</strong></td>
+</tr>
+<tr>
+<td><code>env_libero__step_continuous</code></td>
+<td>step</td>
+<td><code>action</code> (TEXT, JSON 7-vec or K-chunk)</td>
+<td><code>reward</code>, <code>terminated</code>, <code>truncated</code>, <code>info</code> + extras <code>success</code>, <code>step_index</code></td>
+</tr>
+<tr>
+<td><code>env_libero__step_ee_pose</code></td>
+<td>step</td>
+<td><code>action</code> (TEXT, JSON 8-vec or <code>{pose, hold_steps}</code>)</td>
+<td>the four control ports + <code>success</code>, <code>step_index</code>, <code>converged</code>, <code>final_pose</code>, <code>step_count</code>, <code>error</code></td>
+</tr>
+<tr>
+<td><code>env_libero__observe_egocentric</code></td>
+<td>observe</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>rgb</code>, <code>agentview_image</code>, <code>wrist_image</code> (all IMAGE, 180°-flipped), <code>state</code> (8-D proprio), <code>observation</code> (LIST[IMAGE]), <code>pose</code> (POSE, None), <code>intrinsics</code> (ANY, None)</td>
+</tr>
+<tr>
+<td><code>env_libero__observe_objects</code></td>
+<td>observe</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>snapshot</code> (ANY — one privileged GT dict), <code>error</code> (TEXT)</td>
+</tr>
+<tr>
+<td><code>env_libero__evaluate</code></td>
+<td>evaluate</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>success</code> (BOOL), <code>metrics</code> (METRICS: success, num_steps, suite, task_id, cumulative_reward)</td>
+</tr>
+<tr>
+<td><code>env_libero__reset_to_home</code>, <code>env_libero__close_gripper</code></td>
+<td><em>extras</em></td>
+<td colspan="2">Sim-mutating EE-control debug helpers <strong>outside the gym verbs</strong> — no shipped graph binds them (§7)</td>
+</tr>
+</tbody>
+</table>
+<p><code>evaluate</code> is typically declared with <code>config.post_loop: true</code> in the graph so it fires in the after-loop band and reads the <em>final</em> step count (see <code>voxposer_libero_decomposed.json</code>).</p>
+<hr>
+
+<h2 id="3-action-contracts"><span class="num">3.</span> Action Contracts</h2>
+
+<h3 id="step-continuous"><code>step_continuous</code> — 7-DoF delta chunk</h3>
+<pre class="hl">
+<span class="s2">&quot;[ax, ay, az, arx, ary, arz, grip]&quot;</span><span class="w">        </span><span class="c1"># single step</span>
+<span class="s2">&quot;[[ax, ay, az, arx, ary, arz, grip], ...]&quot;</span><span class="w"> </span><span class="c1"># K-step chunk (K runtime-variable)</span>
+</pre>
+<table>
+<thead><tr><th>Index</th><th>Meaning</th><th>Range</th></tr></thead>
+<tbody>
+<tr><td>0–2</td><td>Delta end-effector position</td><td><code>[-1, 1]</code> (NaN/Inf clipped)</td></tr>
+<tr><td>3–5</td><td>Delta orientation (axis-angle)</td><td><code>[-1, 1]</code></td></tr>
+<tr><td>6</td><td>Gripper</td><td><code>+1 = close, −1 = open</code> (§3 callout below)</td></tr>
+</tbody>
+</table>
+<p>The chunk loop early-breaks on success/terminal. The node's <code>max_chunk_steps</code> config truncates long policy chunks before stepping: <code>0</code> = run the full chunk; <code>8</code> matches Pi0's replan rate (50-step chunks executed whole drift off-policy).</p>
+
+<h3 id="step-ee-pose"><code>step_ee_pose</code> — absolute EE waypoint (closed-loop OSC)</h3>
+<pre class="hl">
+<span class="s2">&quot;[x, y, z, qw, qx, qy, qz, grip]&quot;</span><span class="w">                             </span><span class="c1"># single waypoint (legacy 8-vec)</span>
+<span class="o">{</span><span class="s2">&quot;pose&quot;</span>:<span class="w"> </span><span class="o">[</span>x,<span class="w"> </span>y,<span class="w"> </span>z,<span class="w"> </span>qw,<span class="w"> </span>qx,<span class="w"> </span>qy,<span class="w"> </span>qz,<span class="w"> </span>grip<span class="o">]</span>,<span class="w"> </span><span class="s2">&quot;hold_steps&quot;</span>:<span class="w"> </span><span class="m">60</span><span class="o">}</span><span class="w">   </span><span class="c1"># gripper-settle hold</span>
+</pre>
+<p>Drives the EE to an absolute world-frame pose via bounded-advance OSC deltas (~5&nbsp;mm/tick), closed-loop on both position and rotation. Config: <code>max_steps</code> (default 100 env ticks per call), <code>pos_tol_m</code> (0.01), <code>rot_tol_rad</code> (0.10). <code>hold_steps &gt; 0</code> skips convergence and forces N zero-delta ticks with the requested gripper command — MuJoCo needs real ticks for fingers to actually close on an object. The waypoint's <code>grip</code> bit uses the downstream convention <code>1.0 = closed, 0.0 = open</code>; the node maps it to robosuite's <code>±1</code> at the actuation boundary. Empty input (<code>"[]"</code>) is a clean no-op tick for cursor-exhausted inner loops.</p>
+
+<div class="callout warn"><strong>Gripper convention: robosuite action <code>+1 = CLOSE, −1 = OPEN</code></strong> — verified empirically 2026-06-28 (10× action −1 → finger qpos 0.039 apart; 60× action +1 → qpos 0.0005 together). The opposite convention circulated in comments for weeks and inverted every VoxPoser grasp (roadmap #65). If a grasp "releases" at the object, check this first.</div>
+<hr>
+
+<h2 id="4-observation-spaces"><span class="num">4.</span> Observation Spaces</h2>
+
+<h3 id="observe-egocentric"><code>observe_egocentric</code></h3>
+<table>
+<thead><tr><th>Port</th><th>Wire Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>rgb</code> / <code>agentview_image</code></td><td>IMAGE</td><td>Third-person agentview camera, 256×256 uint8 (config <code>resolution</code>), 180°-flipped to match VLA training data</td></tr>
+<tr><td><code>wrist_image</code></td><td>IMAGE</td><td><code>robot0_eye_in_hand</code> camera, 180°-flipped</td></tr>
+<tr><td><code>state</code></td><td>ANY</td><td>8-D float32 proprio: <code>eef_pos(3) + axis_angle(3) + gripper_qpos(2)</code></td></tr>
+<tr><td><code>observation</code></td><td>LIST[IMAGE]</td><td><code>[agentview_image, wrist_image]</code></td></tr>
+<tr><td><code>pose</code></td><td>POSE</td><td>Always <code>None</code> (manipulation, no nav pose)</td></tr>
+<tr><td><code>intrinsics</code></td><td>ANY</td><td>Always <code>None</code> (no intrinsics surface exposed)</td></tr>
+</tbody>
+</table>
+
+<h3 id="observe-objects"><code>observe_objects</code> — privileged GT snapshot</h3>
+<p>One atomic dict: BDDL object names, per-object <strong>AABB-sampled</strong> point clouds + normals (boxes, not true geometry), scene collision PC, EE pose + gripper state, workspace bounds. This is the read side GT planners (VoxPoser) consume — keeping it a <em>visibly separate node</em> is the platform's GT-dependency-visibility principle in action: whether an agent runs on ground truth or perception is graph topology, not a hidden implementation detail.</p>
+<hr>
+
+<h2 id="5-env-panel"><span class="num">5.</span> Env Panel Integration</h2>
+<p>Three cascaded <code>select</code> fields — LIBERO's benchmark hierarchy is one level deeper than the typical <code>split → episode_index</code>:</p>
+<table>
+<thead><tr><th>Field</th><th>Default</th><th>Options</th></tr></thead>
+<tbody>
+<tr><td><code>suite</code></td><td><code>libero_spatial</code></td><td>5 suites (task counts shown in the label)</td></tr>
+<tr><td><code>task_id</code></td><td>0</td><td>per suite — 10 tasks each for spatial/object/goal/10, 90 for libero_90</td></tr>
+<tr><td><code>episode_index</code></td><td>0</td><td><code>range(50)</code> init-state variations per task</td></tr>
+</tbody>
+</table>
+<p>Field changes push <code>set_episode</code> and emit <code>signal_name="episode_reset"</code> (so <code>lifetime="episode"</code> state containers clear); play re-seats the selected episode then returns <code>run_start</code>. A <code>split</code> field-change naming a suite (e.g. eval harness <code>split=libero_object</code>) is accepted as an alias for the cascade head — that's how batch eval targets a suite without a stateful panel edit. <code>step_budget</code> reports 2500 per §1.</p>
+<hr>
+
+<h2 id="6-environment-setup"><span class="num">6.</span> Environment Setup</h2>
+
+<h3 id="install">Install</h3>
+<pre class="hl">
+bash<span class="w"> </span>scripts/install/install_ac_libero.sh
+</pre>
+<p>Creates conda env <code>ac-libero</code> with robosuite + MuJoCo + the LIBERO source (nested inside the <code>vla_workspace</code> submodule). The nodeset always runs server-mode against it.</p>
+
+<h3 id="data-layout">Data layout</h3>
+<table>
+<thead><tr><th>Path</th><th>Content</th></tr></thead>
+<tbody>
+<tr><td><code>data/libero/datasets/</code></td><td>symlink to the LIBERO HDF5 datasets</td></tr>
+<tr><td>BDDL task files</td><td>auto-resolved from the installed package via <code>libero.libero.get_libero_path("bddl_files")</code> — nothing to fetch</td></tr>
+</tbody>
+</table>
+
+<h3 id="activation">Activation</h3>
+<pre class="hl">
+<span class="nb">export</span><span class="w"> </span><span class="nv">LIBERO_PYTHON</span><span class="o">=</span>/home/<span class="k">$(</span>whoami<span class="k">)</span>/miniforge3/envs/ac-libero/bin/python
+</pre>
+<p>Optional — <code>server_python</code> resolves the <code>ac-libero</code> env by name and this var only overrides the location (<code>conda_env_python("ac-libero", "LIBERO_PYTHON")</code>).</p>
+<hr>
+
+<h2 id="7-deviations"><span class="num">7.</span> Deviations from the Template</h2>
+<ul>
+<li><strong><code>ee_pose</code> is a LIBERO-introduced action space</strong> (template §4.1, added 2026-07-03). The node shipped as <code>step_pose</code>, but its shape — 8-vec with a gripper bit + optional <code>hold_steps</code>, <code>action:TEXT</code> — never matched the nav <code>pose</code> row (<code>target:POSE</code>, as on <code>env_habitat</code>). Renamed <code>step_ee_pose</code> and the vocabulary extended; the same rename swept <code>voxposer_libero_decomposed.json</code> + <code>voxposer__waypoint_executor.json</code>.</li>
+<li><strong>No <code>depth</code> port in <code>observe_egocentric</code></strong> — the template's egocentric payload lists <code>depth:DEPTH</code>, but neither manipulation env (LIBERO, SIMPLER) renders it today. Add the port (not a new space) if a consumer needs it.</li>
+<li><strong>EE-control extras outside the gym verbs</strong> — <code>reset_to_home</code> / <code>close_gripper</code> mutate the sim without being <code>step_*</code> nodes. Debug-tier: kept for canvas poking, bound by no graph; <code>step_ee_pose</code>'s <code>hold_steps</code> subsumed <code>close_gripper</code>'s original job.</li>
+<li><strong>Rebuild-on-<code>set_episode</code> is structural</strong> — each task is a separate BDDL scene, so episode placement means a fresh MuJoCo env (~1&nbsp;s). The template's ensure-live reset (§1) keeps that cost out of the hot path.</li>
+</ul>
+<hr>
+
+<h2 id="8-verification"><span class="num">8.</span> Verification Status</h2>
+<ul>
+<li><strong>VoxPoser (decomposed)</strong> — <code>vla/verified/voxposer_libero_decomposed.json</code>: libero_object <strong>SR 0.88</strong> at 50-ep suite scale (2026-06-30); other suites grasp-geometry-limited. Canonical numbers: <a href="../status/vla-support-status.html">VLA support status</a>.</li>
+<li><strong>Post-rename smoke</strong> (2026-07-04, run <code>20260703_235719</code>): 2/2 libero_object episodes success 1.0 through the renamed <code>step_ee_pose</code> binding + ensure-live reset.</li>
+<li><strong>Generic VLA framework</strong> (<code>policy_vla</code> Pi0/SmolVLA/DP adapters over <code>step_continuous</code>) — re-eval pending since the gym-interface migration; see the support-status page.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h3" href="#reset-semantics">Reset semantics (ensure-live)</a>
+      <a class="toc-h3" href="#step-budget">Step budget</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h2" href="#3-action-contracts">3. Action Contracts</a>
+      <a class="toc-h3" href="#step-continuous">step_continuous — 7-DoF delta chunk</a>
+      <a class="toc-h3" href="#step-ee-pose">step_ee_pose — absolute EE waypoint (closed-loop OSC)</a>
+      <a class="toc-h2" href="#4-observation-spaces">4. Observation Spaces</a>
+      <a class="toc-h3" href="#observe-egocentric">observe_egocentric</a>
+      <a class="toc-h3" href="#observe-objects">observe_objects — privileged GT snapshot</a>
+      <a class="toc-h2" href="#5-env-panel">5. Env Panel Integration</a>
+      <a class="toc-h2" href="#6-environment-setup">6. Environment Setup</a>
+      <a class="toc-h3" href="#install">Install</a>
+      <a class="toc-h3" href="#data-layout">Data layout</a>
+      <a class="toc-h3" href="#activation">Activation</a>
+      <a class="toc-h2" href="#7-deviations">7. Deviations from the Template</a>
+      <a class="toc-h2" href="#8-verification">8. Verification Status</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

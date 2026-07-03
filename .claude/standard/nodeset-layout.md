@@ -178,7 +178,7 @@ references while moving:
 | Current | Target |
 |---|---|
 | `server/habitat.py` / `hmeqa.py` / `matterport3d.py` / `openeqa.py` | `env/env_habitat.py` / `env_hmeqa/` (absorbing `hmeqa_renderer.py`, `hmeqa_replay.py`) / `env_mp3d/` (absorbing `test_matterport3d_path_resolution.py`) / `env_openeqa_em.py` |
-| `server/libero/`, `server/simpler/`, `server/env_detany3d/` | `env/env_libero/`, `env/env_simpler/`, `env/env_detany3d/` |
+| `server/libero/`, `server/simpler/`, `server/env_detany3d/` | `env/env_libero/`, `env/env_simpler/`, `env/env_detany3d/` (detany3d moved on to `model/model_detany3d/` 2026-07-04 — stateless service, role test) |
 | `server/policy_cma.py`, `policy_octo.py`, `policy_vla/`, `policy_vlnce/` | `policy/…` (names unchanged) |
 | `server/vlm_prismatic.py`, `vlm_qwen2_5_vl.py` | `model/…` (names unchanged) |
 | `navgpt.py`, `navgpt_mp3d_tools.py`, `mapgpt.py`, `discussnav.py`, `opennav.py`, `spatialnav.py`, `ssg.py` | `method/…` (names unchanged) |

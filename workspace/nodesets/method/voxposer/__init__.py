@@ -7,7 +7,7 @@ Method-side half of the decomposed VoxPoser graph
 Runs local-mode in the agentcanvas backend; the ONLY env coupling is the
 GT snapshot wire from ``env_libero__observe_objects`` (privileged
 observation space) and the waypoint actions the graph sends to
-``env_libero__step_pose``. Any env exposing that observe/step pair can
+``env_libero__step_ee_pose``. Any env exposing that observe/step pair can
 host VoxPoser.
 
 Architecture:
@@ -20,13 +20,13 @@ Architecture:
                                  WITHOUT driving the sim
   voxposer__expand_for_settle  — insert gripper-settle holds at flips
   voxposer__dispense_waypoint  — inner-loop cursor over the trajectory
-  voxposer__plan_executor      — format one waypoint as step_pose JSON
+  voxposer__plan_executor      — format one waypoint as step_ee_pose JSON
   voxposer__check_waypoint_done / voxposer__check_done — terminations
 
 Planning is sound on a frozen snapshot because plan_subtask never steps
 the sim — all env reads during one plan see a single static state. The
 follow loop drives every waypoint closed-loop on the real env via
-``env_libero__step_pose`` (the abandoned v2 design buffered the whole
+``env_libero__step_ee_pose`` (the abandoned v2 design buffered the whole
 execute() open-loop instead — SR=0).
 
 Module-level RUNTIME cache keys on a string handle (issued by
@@ -215,7 +215,7 @@ class VoxPoserPlanExecutorNode(BaseCanvasNode):
     node_type = "voxposer__plan_executor"
     display_name = "VoxPoser: Plan Executor"
     description = (
-        "Format one waypoint for env step_pose. Accepts either "
+        "Format one waypoint for env step_ee_pose. Accepts either "
         "a raw 8-vec [x,y,z,qw,qx,qy,qz,gripper] (legacy) or a dict "
         "{'pose': [8-vec], 'hold_steps': int} (post-expand_for_settle)."
     )
@@ -226,7 +226,7 @@ class VoxPoserPlanExecutorNode(BaseCanvasNode):
         PortDef("waypoint", "ANY", "8-vec or {'pose', 'hold_steps'} dict; null = no-op"),
     ]
     output_ports = [
-        PortDef("action", "TEXT", "JSON for env step_pose: list (legacy) or object"),
+        PortDef("action", "TEXT", "JSON for env step_ee_pose: list (legacy) or object"),
         PortDef("has_action", "BOOL", "False when waypoint is null (no-op)"),
     ]
 
@@ -326,7 +326,7 @@ class VoxPoserPlanSubtaskNode(BaseCanvasNode):
         "Outer-scope body. Plans ONE subtask from a fresh GT snapshot "
         "(composer LMP + voxel maps + path planner) and returns the full "
         "world-frame waypoint trajectory — WITHOUT driving the sim. The "
-        "graph's per-waypoint follow loop (dispense → step_pose) then "
+        "graph's per-waypoint follow loop (dispense → step_ee_pose) then "
         "drives it closed-loop. Stateless across iters — caller (outer "
         "scope) drives subtask_index advancement."
     )
@@ -529,7 +529,7 @@ class VoxPoserExpandForSettleNode(BaseCanvasNode):
         "_GRIPPER_TRANSITION_SETTLE behaviour at the graph layer: open-loop "
         "dispatch alone never gives MuJoCo enough physics ticks for the "
         "fingers to actually close on the object. Each detected flip emits "
-        "a {pose, hold_steps>0} entry that env step_pose "
+        "a {pose, hold_steps>0} entry that env step_ee_pose "
         "interprets as 'skip OSC, force N zero-delta ticks with new gripper'."
     )
     category = "method"

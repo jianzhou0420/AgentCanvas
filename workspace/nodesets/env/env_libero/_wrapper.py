@@ -74,7 +74,7 @@ class LiberoWrapper:
 
     Action format (passed to ``step``):
         7-vector float32: [delta_pos(3), delta_axis_angle(3), gripper(1)]
-        gripper: -1 = close, +1 = open.
+        gripper: +1 = close, -1 = open (verified empirically 2026-06-28).
     """
 
     def __init__(

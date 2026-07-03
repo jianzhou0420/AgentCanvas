@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """EnvLiberoNodeSet — LIBERO manipulation benchmark as a NodeSet.
 
 Wraps the LIBERO suite (ICRA 2024, Liu et al., arXiv:2306.03310) — 130
@@ -22,7 +20,7 @@ Architecture — three-layer pattern mirroring ``hmeqa.py``:
                                       chunk (JSON list-of-lists), NaN-clips,
                                       executes K steps with early-break on
                                       success; control signals only
-     env_libero__step_pose          — absolute EE waypoint via closed-loop
+     env_libero__step_ee_pose       — absolute EE waypoint via closed-loop
                                       OSC convergence; control signals only
      env_libero__observe_egocentric — pull agentview/wrist RGB + proprio
      env_libero__observe_objects    — pull privileged GT scene snapshot
@@ -39,7 +37,8 @@ Action contract (TEXT JSON):
     Either a single 7-vec or a list of 7-vecs (chunk). K is runtime-variable.
         "[ax, ay, az, arx, ary, arz, grip]"
         "[[ax, ay, az, arx, ary, arz, grip], ...]"
-    Indices: 0-2 delta-pos, 3-5 delta-axis-angle, 6 gripper (-1=close, +1=open).
+    Indices: 0-2 delta-pos, 3-5 delta-axis-angle, 6 gripper (+1=close, -1=open;
+    verified empirically 2026-06-28 on the installed robosuite).
     NaN/Inf clipped to [-1, 1] before stepping.
 
 Observation bundle (pulled via observe_egocentric):
@@ -57,9 +56,10 @@ Data layout:
       └─ datasets/                        — symlink to LIBERO HDF5 datasets
       └─ bddl/                            — auto-resolved via libero.libero.get_libero_path
 
-last updated: 2026-06-10 (gym-like interface + VoxPoser decoupling)
+last updated: 2026-07-03 (step_ee_pose rename, ensure-live reset, tap removal)
 """
 
+from __future__ import annotations
 
 import asyncio
 import concurrent.futures
@@ -131,33 +131,13 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 # Fixed dummy action used during num_steps_wait. Indices 0-5 are zero
-# delta; index 6 is -1.0 (gripper closed).
+# delta; index 6 is -1.0 (gripper open — robosuite convention +1=close).
 _DUMMY_ACTION: list[float] = [0.0] * 6 + [-1.0]
 
 
 # ══════════════════════════════════════════════════════════════════════
 # LiberoEnvManager — singleton simulator runtime
 # ══════════════════════════════════════════════════════════════════════
-
-
-# ── temporary demo-recording tap (guarded by outputs/_record/ENABLE) ──────
-# Dumps per-step camera frames to outputs/_record/<subdir>/ep_<id>/ ONLY when
-# the sentinel file exists; no-op otherwise. Safe to delete after recording.
-_REC_DIR = "outputs/_record"
-
-
-def _rec_save(subdir: str, ep, idx, img) -> None:
-    import os
-    if img is None or not os.path.exists(_REC_DIR + "/ENABLE"):
-        return
-    try:
-        import numpy as _np
-        from PIL import Image as _Image
-        d = os.path.join(_REC_DIR, subdir, "ep_" + str(ep).replace("/", "_"))
-        os.makedirs(d, exist_ok=True)
-        _Image.fromarray(_np.asarray(img)).save(os.path.join(d, "f%06d.png" % int(idx)))
-    except Exception:
-        pass
 
 
 class LiberoEnvManager:
@@ -406,6 +386,27 @@ class LiberoEnvManager:
             )
             return self._bundle_unlocked()
 
+    def ensure_live(self) -> dict[str, Any]:
+        """Ensure the panel-placed episode is live (template §5.1 reset).
+
+        A live episode — the batch-eval path, where the runner has just
+        placed a fresh one via ``set_episode`` — is read without
+        disturbance (no rebuild). A done episode (canvas re-run) is
+        re-armed in place by rebuilding the same (suite, task, episode).
+        Never chooses an episode: placement stays env panel-owned; before
+        the first placement it falls back to the panel defaults (first
+        suite / task 0 / episode 0).
+        """
+        with self._lock:
+            if self._wrapper is not None and not self._done:
+                return self._bundle_unlocked()
+            suite = self._suite or _SUITE_NAMES[0]
+            task_id = self._task_id if self._task_id >= 0 else 0
+            episode_id = self._episode_id if self._episode_id >= 0 else 0
+        # set_episode takes the (non-reentrant) lock itself; the gap is
+        # harmless — all calls are serialized on the single-thread executor.
+        return self.set_episode(suite, task_id, episode_id)
+
     # ── Stepping ───────────────────────────────────────────────────────
 
     def step_chunk(self, action_chunk: np.ndarray) -> dict[str, Any]:
@@ -437,12 +438,6 @@ class LiberoEnvManager:
                 self._step_index += 1
                 self._cumulative_reward += float(reward)
                 self._last_obs = obs
-                _rec_save(
-                    "libero",
-                    "%s_%s_%s" % (self._suite, self._task_id, self._episode_id),
-                    self._step_index,
-                    obs.get("agentview_image") if isinstance(obs, dict) else None,
-                )
                 _succ = bool(info.get("success", False))
                 self._log_env_step("step_chunk", reward=reward, done=bool(done), success=_succ)
                 if _succ or bool(done):
@@ -538,7 +533,7 @@ async def _run_sync(fn: Any, *args: Any) -> Any:
 
 def _gym_control_fields(mgr: LiberoEnvManager, *, converged: bool = False) -> dict[str, Any]:
     """Gym-like control signals (reward/terminated/truncated/info + extras)
-    read from the manager's current episode state. Shared by step_pose's
+    read from the manager's current episode state. Shared by step_ee_pose's
     return paths so every exit carries the full step contract."""
     truncated = bool(
         mgr._done and not mgr._success and mgr._step_index >= mgr._max_steps
@@ -592,8 +587,8 @@ class ResetLiberoTool(BaseCanvasNode):
     node_type = "env_libero__reset"
     display_name = "LIBERO: Reset"
     description = (
-        "Begin episode — re-run set_episode for the env panel-selected "
-        "episode and emit metadata only (pull obs via observe_egocentric)."
+        "Ensure a live episode (re-arm if done) — emit metadata only "
+        "(pull obs via observe_egocentric)."
     )
     category = "environment"
     icon = "RotateCcw"
@@ -611,14 +606,10 @@ class ResetLiberoTool(BaseCanvasNode):
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
         mgr = _get_mgr()
-        # Episode placement is env panel-owned; re-run set_episode for the
-        # current selection so reset is idempotent. Metadata only — no obs.
-        result = await _run_sync(
-            mgr.set_episode,
-            mgr._suite or _SUITE_NAMES[0],
-            mgr._task_id if mgr._task_id >= 0 else 0,
-            mgr._episode_id if mgr._episode_id >= 0 else 0,
-        )
+        # Episode placement is env panel-owned; reset only ensures the placed
+        # episode is live (template §5.1) — a live one is read untouched, a
+        # done one is re-armed in place. Metadata only — no obs.
+        result = await _run_sync(mgr.ensure_live)
         if isinstance(result, dict) and "error" in result:
             self._self_log("error", result["error"])
             return {
@@ -826,7 +817,7 @@ class EvaluateLiberoTool(BaseCanvasNode):
 # ══════════════════════════════════════════════════════════════════════
 #
 # Consumed by env_libero__observe_objects (privileged GT snapshot) and
-# the EE-control extras (step_pose / reset_to_home / close_gripper).
+# the EE-control extras (step_ee_pose / reset_to_home / close_gripper).
 # Frozen v1 logic mirrored from the retired LiberoVoxPoserAdapter.
 
 import re as _re
@@ -1091,7 +1082,7 @@ class ObserveObjectsLiberoTool(BaseCanvasNode):
         return {"snapshot": snapshot, "error": err}
 
 
-# ── env_libero__step_pose ─────────────────────────────────────────
+# ── env_libero__step_ee_pose ─────────────────────────────────────────
 
 
 # Bounded-step OSC parameters (mirror mono adapter _voxposer/libero_adapter.py:
@@ -1133,9 +1124,9 @@ def _quat_inv(q_wxyz: np.ndarray) -> np.ndarray:
     return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
 
 
-class StepPoseLiberoTool(BaseCanvasNode):
-    node_type = "env_libero__step_pose"
-    display_name = "LIBERO: Step (pose)"
+class StepEEPoseLiberoTool(BaseCanvasNode):
+    node_type = "env_libero__step_ee_pose"
+    display_name = "LIBERO: Step (EE pose)"
     description = (
         "Drive EE to an absolute world-frame pose via OSC delta convergence "
         "(position AND rotation closed-loop); returns gym control signals "
@@ -1265,12 +1256,6 @@ class StepPoseLiberoTool(BaseCanvasNode):
                     mgr._step_index += 1
                     mgr._cumulative_reward += float(reward)
                     mgr._last_obs = obs
-                    _rec_save(
-                        "libero",
-                        "%s_%s_%s" % (mgr._suite, mgr._task_id, mgr._episode_id),
-                        mgr._step_index,
-                        obs.get("agentview_image") if isinstance(obs, dict) else None,
-                    )
                     steps += 1
                     mgr._log_env_step(
                         "move_to_pose__hold",
@@ -1356,12 +1341,6 @@ class StepPoseLiberoTool(BaseCanvasNode):
                 mgr._step_index += 1
                 mgr._cumulative_reward += float(reward)
                 mgr._last_obs = obs
-                _rec_save(
-                    "libero",
-                    "%s_%s_%s" % (mgr._suite, mgr._task_id, mgr._episode_id),
-                    mgr._step_index,
-                    obs.get("agentview_image") if isinstance(obs, dict) else None,
-                )
                 steps += 1
                 mgr._log_env_step(
                     "move_to_pose",
@@ -1752,7 +1731,7 @@ class EnvLiberoNodeSet(BaseNodeSet):
             # evaluate) — see docs/pages/developer-guide/nodesets/env/template.html
             ResetLiberoTool(),
             StepContinuousLiberoTool(),
-            StepPoseLiberoTool(),
+            StepEEPoseLiberoTool(),
             ObserveEgocentricLiberoTool(),
             ObserveObjectsLiberoTool(),
             EvaluateLiberoTool(),

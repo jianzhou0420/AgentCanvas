@@ -1,6 +1,6 @@
 {
   "name": "voxposer_libero_decomposed",
-  "description": "VoxPoser (decomposed, env-decoupled): GT-snapshot planning in the backend (voxposer__* local nodes) + closed-loop waypoint follow on LIBERO via env_libero__step_pose. Privileged GT enters through env_libero__observe_objects only.",
+  "description": "VoxPoser (decomposed, env-decoupled): GT-snapshot planning in the backend (voxposer__* local nodes) + closed-loop waypoint follow on LIBERO via env_libero__step_ee_pose. Privileged GT enters through env_libero__observe_objects only.",
   "nodes": [
     {
       "id": "env_reset",
@@ -228,9 +228,9 @@
             "config": {}
           },
           {
-            "id": "step_pose",
-            "type": "env_libero__step_pose",
-            "label": "Step (pose)",
+            "id": "step_ee_pose",
+            "type": "env_libero__step_ee_pose",
+            "label": "Step (EE pose)",
             "position": {
               "x": 1060,
               "y": 160
@@ -348,7 +348,7 @@
           {
             "id": "e_executor_to_move",
             "source": "vp_plan_executor",
-            "target": "step_pose",
+            "target": "step_ee_pose",
             "sourceHandle": "action",
             "targetHandle": "action"
           },
@@ -361,7 +361,7 @@
           },
           {
             "id": "e_epinfo_succ_to_check",
-            "source": "step_pose",
+            "source": "step_ee_pose",
             "target": "check_waypoint_done",
             "sourceHandle": "success",
             "targetHandle": "episode_success"
@@ -382,14 +382,14 @@
           },
           {
             "id": "e_episucc_to_portout",
-            "source": "step_pose",
+            "source": "step_ee_pose",
             "target": "graph_out__episode_success",
             "sourceHandle": "success",
             "targetHandle": "value"
           },
           {
             "id": "e_epstep_to_portout",
-            "source": "step_pose",
+            "source": "step_ee_pose",
             "target": "graph_out__step_index",
             "sourceHandle": "step_index",
             "targetHandle": "value"
@@ -525,7 +525,7 @@
         "y": -923.4444968158211
       },
       "config": {
-        "markdown": "**VoxPoser (decomposed, env-decoupled) \u2014 plan via GT snapshot + follow closed-loop**\n\n**Pre-loop**: `env_reset` (metadata only) \u2192 `obs_init` (`env_libero__observe_objects`, privileged GT snapshot) \u2192 `vp_init` (builds the 7-LMP runtime in the BACKEND process) \u2192 `vp_planner` (instruction \u2192 subtask list).\n\n**Outer scope** (per subtask): `obs_loop` re-observes a fresh GT snapshot each iter; `vp_plan_subtask` (`voxposer__plan_subtask`, local method node) runs the composer LMP + 5 voxel maps + path planner against that snapshot and returns a world-frame `trajectory` \u2014 WITHOUT driving the sim. `expand_for_settle` inserts gripper-settle holds.\n\n**Inner loop** (per waypoint): composite `waypoint_exec` FOLLOWS the trajectory closed-loop: `dispense_waypoint \u2192 plan_executor \u2192 env_libero__step_pose` (OSC convergence on the real sim, gym control signals). Double-click to inspect.\n\nWhy the snapshot is sound: plan_subtask never steps the sim, so every env read during one plan sees a single static state \u2014 a frozen snapshot is semantically identical to the retired in-subprocess live-adapter reads. The only env coupling is the observe_objects/step_pose pair; the LMP stack itself is env-agnostic (workspace/nodesets/voxposer/).\n\nCross-scope IO: `runtime_handle` + `trajectory` in; `episode_success`/`step_index`/`waypoints_completed`/`inner_status` out."
+        "markdown": "**VoxPoser (decomposed, env-decoupled) \u2014 plan via GT snapshot + follow closed-loop**\n\n**Pre-loop**: `env_reset` (metadata only) \u2192 `obs_init` (`env_libero__observe_objects`, privileged GT snapshot) \u2192 `vp_init` (builds the 7-LMP runtime in the BACKEND process) \u2192 `vp_planner` (instruction \u2192 subtask list).\n\n**Outer scope** (per subtask): `obs_loop` re-observes a fresh GT snapshot each iter; `vp_plan_subtask` (`voxposer__plan_subtask`, local method node) runs the composer LMP + 5 voxel maps + path planner against that snapshot and returns a world-frame `trajectory` \u2014 WITHOUT driving the sim. `expand_for_settle` inserts gripper-settle holds.\n\n**Inner loop** (per waypoint): composite `waypoint_exec` FOLLOWS the trajectory closed-loop: `dispense_waypoint \u2192 plan_executor \u2192 env_libero__step_ee_pose` (OSC convergence on the real sim, gym control signals). Double-click to inspect.\n\nWhy the snapshot is sound: plan_subtask never steps the sim, so every env read during one plan sees a single static state \u2014 a frozen snapshot is semantically identical to the retired in-subprocess live-adapter reads. The only env coupling is the observe_objects/step_pose pair; the LMP stack itself is env-agnostic (workspace/nodesets/voxposer/).\n\nCross-scope IO: `runtime_handle` + `trajectory` in; `episode_success`/`step_index`/`waypoints_completed`/`inner_status` out."
       }
     },
     {
@@ -576,7 +576,7 @@
         "y": -788.0553407528084
       },
       "config": {
-        "markdown": "**Ground truth & fixed constants** \u2014 full tables in `nodesets/method/voxposer/NOTES_ground_truth_and_constants.md`.\n\n**GT (not perceived)** \u2014 `env_libero__observe_objects` feeds a privileged MuJoCo snapshot: object names (BDDL), per-object **AABB** point clouds (boxes, not real geometry), EE pose, gripper state, workspace bounds.\n\n**Load-bearing constants**\n- Workspace z box: **per-scene from `robot0_base` z** (`_Z_BELOW_BASE=0.10` / `_Z_ABOVE_BASE=0.35`); x/y fixed `(-0.7,0.3)` / `(-0.4,0.5)`.\n- Gripper **action `+1`=close / `-1`=open** (the `-1=close` comments are stale).\n- OSC `_STEP_POS_M`=5mm/substep, `pos_tol`=5mm, `step_pose.max_steps`=400.\n\n\u26a0\ufe0f **Table bug (fixed 2026-06-28)**: z box was hardcoded `[0.85,1.25]` (table-mounted spatial, base z\u22480.91). Floor-mounted `libero_object` (base z\u22480) sat ~0.9 m below \u2192 every grasp unreachable \u2192 object **0/50 for 29 AAS iters**. Fix \u2192 object **44/50 (0.88)**. Any z constant is a per-suite assumption \u2014 never re-hardcode."
+        "markdown": "**Ground truth & fixed constants** \u2014 full tables in `nodesets/method/voxposer/NOTES_ground_truth_and_constants.md`.\n\n**GT (not perceived)** \u2014 `env_libero__observe_objects` feeds a privileged MuJoCo snapshot: object names (BDDL), per-object **AABB** point clouds (boxes, not real geometry), EE pose, gripper state, workspace bounds.\n\n**Load-bearing constants**\n- Workspace z box: **per-scene from `robot0_base` z** (`_Z_BELOW_BASE=0.10` / `_Z_ABOVE_BASE=0.35`); x/y fixed `(-0.7,0.3)` / `(-0.4,0.5)`.\n- Gripper **action `+1`=close / `-1`=open** (the `-1=close` comments are stale).\n- OSC `_STEP_POS_M`=5mm/substep, `pos_tol`=5mm, `step_ee_pose.max_steps`=400.\n\n\u26a0\ufe0f **Table bug (fixed 2026-06-28)**: z box was hardcoded `[0.85,1.25]` (table-mounted spatial, base z\u22480.91). Floor-mounted `libero_object` (base z\u22480) sat ~0.9 m below \u2192 every grasp unreachable \u2192 object **0/50 for 29 AAS iters**. Fix \u2192 object **44/50 (0.88)**. Any z constant is a per-suite assumption \u2014 never re-hardcode."
       }
     }
   ],

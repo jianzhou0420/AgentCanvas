@@ -6,7 +6,7 @@ The differences from upstream are limited to the IPC backend:
 
   * Upstream's `ObjectLocation2D` / `ObjectLocation3D` use posix_ipc shared
     memory to talk to a separate DetAny3D worker (`app_mp.py`). Here they
-    POST to the agentcanvas backend's `env_detany3d` server-mode subprocess
+    POST to the agentcanvas backend's `model_detany3d` server-mode subprocess
     over HTTP — same DetAny3D models, different IPC.
   * Upstream's `GoNextPointTool` calls `eqa_modeling.go_next_point(command)`
     directly (in-process simulator). Here it dispatches over HTTP to the
