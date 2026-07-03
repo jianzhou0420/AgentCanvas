@@ -1,4 +1,13 @@
-import { useEffect, useState } from "react";
+/** Settings modal — two sections mirroring the two user-facing planes.
+ *
+ * Credentials: one row per provider; keys persist to ~/.agentcanvas/.keys
+ * via PUT /api/providers/{id}/key (badge shows file / env / none), with a
+ * Validate round trip. Model profiles: the store's actual model — named
+ * {provider, model} rows with CRUD + ★ active. Every action applies
+ * immediately (plain CRUD; the legacy batch endpoint is gone).
+ */
+
+import { useCallback, useEffect, useState } from "react";
 import {
   X,
   Save,
@@ -8,10 +17,14 @@ import {
   ChevronDown,
   ChevronRight,
   Star,
+  Trash2,
+  Plus,
+  ShieldCheck,
+  Loader2,
 } from "lucide-react";
 import clsx from "clsx";
 import { api } from "../api";
-import type { AppConfig, ProfilesState, ProviderDef } from "../types";
+import type { AppConfig, LLMProfile, ProfilesState, ProvidersMap } from "../types";
 
 interface Props {
   open: boolean;
@@ -22,6 +35,7 @@ const TOP_PROVIDERS = ["openai", "anthropic", "google", "deepseek", "ollama"];
 
 export default function SettingsModal({ open, onClose }: Props) {
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [providers, setProviders] = useState<ProvidersMap | null>(null);
   const [profilesState, setProfilesState] = useState<ProfilesState | null>(
     null,
   );
@@ -29,278 +43,52 @@ export default function SettingsModal({ open, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
-
-  // Provider key inputs — only providers where user typed something
-  const [keys, setKeys] = useState<Record<string, string>>({});
-  // Track which providers already have a key saved on the server
-  const [serverKeySet, setServerKeySet] = useState<Record<string, boolean>>({});
-
-  // Active provider + model (now labeled "Default Model")
-  const [activeProvider, setActiveProvider] = useState("");
-  const [activeModel, setActiveModel] = useState("");
-
-  // Per-provider model overrides (edit model name per configured provider)
-  const [modelOverrides, setModelOverrides] = useState<Record<string, string>>(
-    {},
-  );
-
-  // Ollama overrides
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState("");
-
-  // Custom provider overrides
-  const [customKey, setCustomKey] = useState("");
-  const [customBaseUrl, setCustomBaseUrl] = useState("");
-  const [customModel, setCustomModel] = useState("");
-  const [customApiType, setCustomApiType] = useState("");
-
-  // Provider model lists (fetched from backend)
-  const [providerModels, setProviderModels] = useState<
-    Record<string, string[]>
-  >({});
-  const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>(
-    {},
-  );
-
-  // Collapsible more-providers section
   const [showMore, setShowMore] = useState(false);
-
-  // Show/hide password per provider
-  const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
 
   // App settings
   const [maxSteps, setMaxSteps] = useState(20);
   const [slamBackend, setSlamBackend] = useState("mock");
   const [ignoreLoopbackProxy, setIgnoreLoopbackProxy] = useState(true);
 
-  const registry = profilesState?.registry ?? {};
+  const reload = useCallback(async () => {
+    const [cfg, ps, prov] = await Promise.all([
+      api.getConfig(),
+      api.getProfiles(),
+      api.getProviders(),
+    ]);
+    setConfig(cfg);
+    setProfilesState(ps);
+    setProviders(prov);
+    setMaxSteps(cfg.vlm_max_steps);
+    setSlamBackend(cfg.slam_backend);
+    setIgnoreLoopbackProxy(cfg.ignore_loopback_proxy ?? true);
+  }, []);
 
-  // Load config + profiles when modal opens
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     setError("");
     setSaved(false);
-    setKeys({});
-    setVisibleKeys({});
     setShowMore(false);
-    setModelOverrides({});
-    Promise.all([api.getConfig(), api.getProfiles()])
-      .then(([cfg, ps]) => {
-        setConfig(cfg);
-        setProfilesState(ps);
-        setMaxSteps(cfg.vlm_max_steps);
-        setSlamBackend(cfg.slam_backend);
-        setIgnoreLoopbackProxy(cfg.ignore_loopback_proxy ?? true);
-
-        // Build server key set map
-        const keySetMap: Record<string, boolean> = {};
-        for (const [name, prof] of Object.entries(ps.profiles)) {
-          keySetMap[name] = prof.api_key_set;
-        }
-        setServerKeySet(keySetMap);
-
-        // Set active provider + model from current state
-        const active = ps.active || "";
-        setActiveProvider(active);
-        if (active && ps.profiles[active]) {
-          setActiveModel(ps.profiles[active].model);
-        } else {
-          setActiveModel("");
-        }
-
-        // Populate ollama/custom overrides from existing profiles
-        const ollamaProf = ps.profiles["ollama"];
-        if (ollamaProf) {
-          setOllamaBaseUrl(ollamaProf.base_url);
-        } else {
-          setOllamaBaseUrl("");
-        }
-        const customProf = ps.profiles["custom"];
-        if (customProf) {
-          setCustomBaseUrl(customProf.base_url);
-          setCustomModel(customProf.model);
-          setCustomApiType(customProf.api_type);
-          setCustomKey("");
-        } else {
-          setCustomBaseUrl("");
-          setCustomModel("");
-          setCustomApiType("");
-          setCustomKey("");
-        }
-      })
+    reload()
       .catch(() => setError("Failed to load settings"))
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, reload]);
 
-  // Fetch available models for saved providers
-  useEffect(() => {
-    if (!profilesState) return;
-    const saved = Object.entries(profilesState.profiles)
-      .filter(([, p]) => p.api_key_set || p.provider === "ollama")
-      .map(([id]) => id);
-    for (const id of saved) {
-      setModelsLoading((prev) => ({ ...prev, [id]: true }));
-      api
-        .getProviderModels(id)
-        .then((res) =>
-          setProviderModels((prev) => ({ ...prev, [id]: res.models })),
-        )
-        .catch(() => {})
-        .finally(() => setModelsLoading((prev) => ({ ...prev, [id]: false })));
-    }
-  }, [profilesState]);
+  const notifyProfilesChanged = () => {
+    window.dispatchEvent(new Event("profiles-changed"));
+  };
 
-  // Providers that can appear in the active dropdown:
-  // providers with a key set on server OR with a dirty key typed, plus ollama (always)
-  function getAvailableProviders(): string[] {
-    const available: string[] = [];
-    for (const id of Object.keys(registry)) {
-      if (id === "ollama") {
-        available.push(id);
-        continue;
-      }
-      if (id === "custom") {
-        if (serverKeySet[id] || customKey) available.push(id);
-        continue;
-      }
-      if (serverKeySet[id] || keys[id]) available.push(id);
-    }
-    return available;
-  }
-
-  // Get list of configured models (providers with keys + ollama)
-  function getConfiguredModels(): Array<{
-    id: string;
-    label: string;
-    model: string;
-    isDefault: boolean;
-  }> {
-    const models: Array<{
-      id: string;
-      label: string;
-      model: string;
-      isDefault: boolean;
-    }> = [];
-    for (const id of getAvailableProviders()) {
-      const reg = registry[id];
-      const prof = profilesState?.profiles[id];
-      const label = reg?.label || id;
-      const model =
-        modelOverrides[id] ?? prof?.model ?? reg?.default_model ?? "";
-      models.push({ id, label, model, isDefault: id === activeProvider });
-    }
-    return models;
-  }
-
-  function handleActiveProviderChange(providerId: string) {
-    setActiveProvider(providerId);
-    if (providerId) {
-      // Auto-fill model from existing profile or registry default
-      const overridden = modelOverrides[providerId];
-      if (overridden !== undefined) {
-        setActiveModel(overridden);
-      } else {
-        const existingProf = profilesState?.profiles[providerId];
-        if (existingProf?.model) {
-          setActiveModel(existingProf.model);
-        } else {
-          const reg = registry[providerId];
-          setActiveModel(reg?.default_model || "");
-        }
-      }
-    } else {
-      setActiveModel("");
-    }
-  }
-
-  function handleModelOverride(providerId: string, model: string) {
-    setModelOverrides((prev) => ({ ...prev, [providerId]: model }));
-    // If this is the active/default provider, also sync activeModel
-    if (providerId === activeProvider) {
-      setActiveModel(model);
-    }
-  }
-
-  const handleSave = async () => {
+  const handleSaveAppSettings = async () => {
     setSaving(true);
     setError("");
     setSaved(false);
     try {
-      // Build overrides for ollama and custom
-      const overrides: Record<string, Record<string, string>> = {};
-      // Always send ollama override if it has a base_url or already exists
-      if (ollamaBaseUrl || profilesState?.profiles["ollama"]) {
-        overrides["ollama"] = { base_url: ollamaBaseUrl };
-      }
-      // Custom overrides
-      if (
-        customBaseUrl ||
-        customModel ||
-        customApiType ||
-        customKey ||
-        profilesState?.profiles["custom"]
-      ) {
-        overrides["custom"] = {
-          base_url: customBaseUrl,
-          model: customModel,
-          api_type: customApiType,
-        };
-      }
-
-      // Apply per-provider model overrides
-      for (const [providerId, model] of Object.entries(modelOverrides)) {
-        if (providerId === "custom" || providerId === "ollama") continue; // handled above
-        if (!overrides[providerId]) overrides[providerId] = {};
-        overrides[providerId].model = model;
-      }
-      // Also apply ollama model override if set
-      if (modelOverrides["ollama"]) {
-        if (!overrides["ollama"]) overrides["ollama"] = {};
-        overrides["ollama"].model = modelOverrides["ollama"];
-      }
-
-      // Merge custom key into keys map
-      const allKeys = { ...keys };
-      if (customKey) {
-        allKeys["custom"] = customKey;
-      }
-
-      await Promise.all([
-        api.batchUpsertProfiles({
-          keys: allKeys,
-          active: activeProvider,
-          active_model: activeModel,
-          overrides,
-        }),
-        api.updateConfig({
-          vlm_max_steps: maxSteps,
-          slam_backend: slamBackend,
-          ignore_loopback_proxy: ignoreLoopbackProxy,
-        }),
-      ]);
-
-      // Re-fetch
-      const [cfg, ps] = await Promise.all([api.getConfig(), api.getProfiles()]);
-      setConfig(cfg);
-      setProfilesState(ps);
-
-      // Update server key set
-      const keySetMap: Record<string, boolean> = {};
-      for (const [name, prof] of Object.entries(ps.profiles)) {
-        keySetMap[name] = prof.api_key_set;
-      }
-      setServerKeySet(keySetMap);
-      setKeys({});
-      setCustomKey("");
-      setModelOverrides({});
-      setActiveProvider(ps.active || "");
-      if (ps.active && ps.profiles[ps.active]) {
-        setActiveModel(ps.profiles[ps.active].model);
-      }
-
-      // Notify canvas that profiles changed so node dropdowns refresh
-      window.dispatchEvent(new Event("profiles-changed"));
-
+      await api.updateConfig({
+        vlm_max_steps: maxSteps,
+        slam_backend: slamBackend,
+        ignore_loopback_proxy: ignoreLoopbackProxy,
+      });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -312,11 +100,8 @@ export default function SettingsModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const allProviderIds = Object.keys(registry);
-  const moreProviders = allProviderIds.filter(
-    (id) => !TOP_PROVIDERS.includes(id) && id !== "custom",
-  );
-  const configuredModels = getConfiguredModels();
+  const providerIds = providers ? Object.keys(providers) : [];
+  const moreProviders = providerIds.filter((id) => !TOP_PROVIDERS.includes(id));
 
   return (
     <div
@@ -324,7 +109,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="mx-4 w-full max-w-lg rounded-lg border border-gray-700 bg-gray-900 shadow-2xl"
+        className="mx-4 w-full max-w-2xl rounded-lg border border-gray-700 bg-gray-900 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -339,119 +124,45 @@ export default function SettingsModal({ open, onClose }: Props) {
         </div>
 
         {/* Body */}
-        <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4">
+        <div className="max-h-[72vh] space-y-5 overflow-y-auto px-5 py-4">
           {loading && <p className="text-sm text-gray-400">Loading...</p>}
           {error && <p className="text-sm text-red-400">{error}</p>}
 
-          {config && profilesState && (
+          {config && providers && profilesState && (
             <>
-              {/* ── Configured Models ── */}
-              {configuredModels.length > 0 && (
-                <div>
-                  <h3 className="mb-2 text-sm font-medium text-gray-400">
-                    Configured Models
-                  </h3>
-                  <p className="mb-2 text-xs text-gray-500">
-                    Available in LLM/VLM node dropdowns. Click star to set
-                    default.
-                  </p>
-                  <div className="space-y-1.5">
-                    {configuredModels.map((m) => (
-                      <div
-                        key={m.id}
-                        className="flex items-center gap-2 rounded border border-gray-700 bg-gray-800/40 px-3 py-1.5"
-                      >
-                        <button
-                          onClick={() => handleActiveProviderChange(m.id)}
-                          className={clsx(
-                            "flex-shrink-0 transition-colors",
-                            m.isDefault
-                              ? "text-yellow-400"
-                              : "text-gray-600 hover:text-gray-400",
-                          )}
-                          title={
-                            m.isDefault ? "Default model" : "Set as default"
-                          }
-                        >
-                          <Star
-                            size={14}
-                            fill={m.isDefault ? "currentColor" : "none"}
-                          />
-                        </button>
-                        <span
-                          className="w-28 flex-shrink-0 truncate text-sm font-medium text-gray-300"
-                          title={m.label}
-                        >
-                          {m.label}
-                        </span>
-                        <ModelSelector
-                          providerId={m.id}
-                          model={m.model}
-                          onChange={(v) => handleModelOverride(m.id, v)}
-                          models={providerModels[m.id]}
-                          loading={!!modelsLoading[m.id]}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {configuredModels.length === 0 && (
-                <div className="rounded border border-gray-700 bg-gray-800/30 px-3 py-2">
-                  <p className="text-sm text-gray-500">
-                    No models configured. Add API keys below to get started.
-                  </p>
-                </div>
-              )}
+              {/* ── Model Profiles ── */}
+              <ProfilesSection
+                profilesState={profilesState}
+                providers={providers}
+                onChanged={async () => {
+                  await reload();
+                  notifyProfilesChanged();
+                }}
+                onError={setError}
+              />
 
               <hr className="border-gray-700" />
 
-              {/* ── Provider Keys ── */}
+              {/* ── Credentials ── */}
               <div>
-                <h3 className="mb-3 text-sm font-medium text-gray-400">
-                  API Keys
+                <h3 className="mb-1 text-sm font-medium text-gray-400">
+                  Credentials
                 </h3>
-                <div className="space-y-2">
-                  {/* Top providers (always visible) */}
-                  {TOP_PROVIDERS.filter((id) => id !== "ollama").map((id) => (
-                    <ProviderKeyRow
+                <p className="mb-2 text-xs text-gray-500">
+                  Keys are stored in{" "}
+                  <code className="text-gray-400">~/.agentcanvas/.keys</code>{" "}
+                  (never in the repo). An exported env var still works as
+                  fallback.
+                </p>
+                <div className="space-y-1.5">
+                  {TOP_PROVIDERS.map((id) => (
+                    <CredentialRow
                       key={id}
                       providerId={id}
-                      providerDef={registry[id]}
-                      value={keys[id] ?? ""}
-                      onChange={(v) =>
-                        setKeys((prev) => ({ ...prev, [id]: v }))
-                      }
-                      hasServerKey={!!serverKeySet[id]}
-                      visible={!!visibleKeys[id]}
-                      onToggleVisible={() =>
-                        setVisibleKeys((prev) => ({ ...prev, [id]: !prev[id] }))
-                      }
+                      providers={providers}
+                      onChanged={reload}
                     />
                   ))}
-
-                  {/* Ollama row — base URL instead of key */}
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="w-36 flex-shrink-0 truncate text-sm text-gray-300"
-                      title="Ollama (local)"
-                    >
-                      Ollama (local)
-                    </span>
-                    <input
-                      type="text"
-                      value={ollamaBaseUrl}
-                      onChange={(e) => setOllamaBaseUrl(e.target.value)}
-                      placeholder="http://localhost:11434"
-                      className="input-field flex-1 text-sm"
-                    />
-                    <span className="w-16 flex-shrink-0 text-right text-xs text-gray-500">
-                      no key
-                    </span>
-                  </div>
-
-                  {/* Collapsible more-providers */}
                   <button
                     onClick={() => setShowMore(!showMore)}
                     className="mt-1 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300"
@@ -464,73 +175,18 @@ export default function SettingsModal({ open, onClose }: Props) {
                     {showMore ? "Hide" : "More providers"} (
                     {moreProviders.length})
                   </button>
-
                   {showMore && (
-                    <div className="ml-1 space-y-2 border-l-2 border-gray-800 pl-1">
+                    <div className="ml-1 space-y-1.5 border-l-2 border-gray-800 pl-1">
                       {moreProviders.map((id) => (
-                        <ProviderKeyRow
+                        <CredentialRow
                           key={id}
                           providerId={id}
-                          providerDef={registry[id]}
-                          value={keys[id] ?? ""}
-                          onChange={(v) =>
-                            setKeys((prev) => ({ ...prev, [id]: v }))
-                          }
-                          hasServerKey={!!serverKeySet[id]}
-                          visible={!!visibleKeys[id]}
-                          onToggleVisible={() =>
-                            setVisibleKeys((prev) => ({
-                              ...prev,
-                              [id]: !prev[id],
-                            }))
-                          }
+                          providers={providers}
+                          onChanged={reload}
                         />
                       ))}
                     </div>
                   )}
-
-                  {/* Custom provider row */}
-                  <div className="mt-2 space-y-2 rounded border border-gray-700 bg-gray-800/30 p-2">
-                    <span className="text-sm font-medium text-gray-300">
-                      Custom Provider
-                    </span>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="password"
-                        value={customKey}
-                        onChange={(e) => setCustomKey(e.target.value)}
-                        placeholder={
-                          serverKeySet["custom"] ? "(key is set)" : "API key"
-                        }
-                        className="input-field text-sm"
-                      />
-                      <input
-                        type="text"
-                        value={customBaseUrl}
-                        onChange={(e) => setCustomBaseUrl(e.target.value)}
-                        placeholder="Base URL"
-                        className="input-field text-sm"
-                      />
-                      <input
-                        type="text"
-                        value={customModel}
-                        onChange={(e) => setCustomModel(e.target.value)}
-                        placeholder="Model"
-                        className="input-field text-sm"
-                      />
-                      <select
-                        value={customApiType}
-                        onChange={(e) => setCustomApiType(e.target.value)}
-                        className="input-field text-sm"
-                      >
-                        <option value="">API type (auto)</option>
-                        <option value="openai">OpenAI</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="google">Google</option>
-                        <option value="ollama">Ollama</option>
-                      </select>
-                    </div>
-                  </div>
                 </div>
               </div>
 
@@ -593,7 +249,7 @@ export default function SettingsModal({ open, onClose }: Props) {
           )}
         </div>
 
-        {/* Footer */}
+        {/* Footer — app settings only; credentials & profiles apply instantly */}
         <div className="flex items-center justify-end gap-3 border-t border-gray-800 px-5 py-3">
           {saved && (
             <span className="flex items-center gap-1 text-sm text-green-400">
@@ -604,10 +260,10 @@ export default function SettingsModal({ open, onClose }: Props) {
             onClick={onClose}
             className="rounded border border-gray-700 px-4 py-1.5 text-sm text-gray-400 hover:border-gray-600 hover:text-gray-200"
           >
-            Cancel
+            Close
           </button>
           <button
-            onClick={handleSave}
+            onClick={handleSaveAppSettings}
             disabled={saving || loading}
             className={clsx(
               "flex items-center gap-1.5 rounded px-4 py-1.5 text-sm font-medium",
@@ -617,7 +273,7 @@ export default function SettingsModal({ open, onClose }: Props) {
             )}
           >
             <Save size={14} />
-            {saving ? "Saving..." : "Save"}
+            {saving ? "Saving..." : "Save app settings"}
           </button>
         </div>
       </div>
@@ -625,110 +281,431 @@ export default function SettingsModal({ open, onClose }: Props) {
   );
 }
 
-/* ── Sub-components ── */
+/* ── Credentials ── */
 
-function ProviderKeyRow({
+function CredentialRow({
   providerId,
-  providerDef,
-  value,
-  onChange,
-  hasServerKey,
-  visible,
-  onToggleVisible,
+  providers,
+  onChanged,
 }: {
   providerId: string;
-  providerDef: ProviderDef | undefined;
-  value: string;
-  onChange: (v: string) => void;
-  hasServerKey: boolean;
-  visible: boolean;
-  onToggleVisible: () => void;
+  providers: ProvidersMap;
+  onChanged: () => Promise<void>;
 }) {
-  const label = providerDef?.label || providerId;
-  const dirty = value.length > 0;
+  const info = providers[providerId];
+  const [draft, setDraft] = useState("");
+  const [visible, setVisible] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [validation, setValidation] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
+
+  if (!info) return null;
+  const noKey = !info.key_env; // e.g. ollama
+
+  const saveKey = async () => {
+    if (!draft.trim()) return;
+    setBusy(true);
+    setValidation(null);
+    try {
+      await api.setProviderKey(providerId, draft.trim());
+      setDraft("");
+      window.dispatchEvent(new Event("providers-changed"));
+      await onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeKey = async () => {
+    setBusy(true);
+    setValidation(null);
+    try {
+      await api.deleteProviderKey(providerId);
+      window.dispatchEvent(new Event("providers-changed"));
+      await onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const validate = async () => {
+    setBusy(true);
+    setValidation(null);
+    try {
+      const res = await api.validateProviderKey(providerId);
+      setValidation(res);
+    } catch {
+      setValidation({ ok: false, message: "validation request failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="flex items-center gap-2">
       <span
-        className="w-36 flex-shrink-0 truncate text-sm text-gray-300"
-        title={label}
+        className="w-32 flex-shrink-0 truncate text-sm text-gray-300"
+        title={`${info.label}${info.key_env ? ` — ${info.key_env}` : ""}`}
       >
-        {label}
+        {info.label}
       </span>
-      <div className="relative flex-1">
-        <input
-          type={visible ? "text" : "password"}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={hasServerKey ? "(key is set)" : "(paste API key)"}
-          className="input-field w-full pr-8 text-sm"
-        />
+
+      {noKey ? (
+        <span className="flex-1 text-xs text-gray-500">
+          no key needed — local server
+        </span>
+      ) : (
+        <div className="relative flex-1">
+          <input
+            type={visible ? "text" : "password"}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && saveKey()}
+            placeholder={
+              info.key_source !== "none"
+                ? "(key is set — paste to replace)"
+                : `paste key → saved as ${info.key_env}`
+            }
+            className="input-field w-full pr-8 text-sm"
+          />
+          <button
+            type="button"
+            onClick={() => setVisible(!visible)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+          >
+            {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+      )}
+
+      {!noKey && draft.trim() && (
         <button
-          type="button"
-          onClick={onToggleVisible}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+          onClick={saveKey}
+          disabled={busy}
+          className="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500"
         >
-          {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+          Save
         </button>
-      </div>
+      )}
+
+      {/* Source badge */}
       <span
         className={clsx(
-          "w-16 flex-shrink-0 text-right text-xs",
-          dirty
-            ? "text-yellow-400"
-            : hasServerKey
-              ? "text-green-400"
-              : "text-gray-500",
+          "w-10 flex-shrink-0 text-center text-[10px] uppercase tracking-wide",
+          info.key_source === "file"
+            ? "text-green-400"
+            : info.key_source === "env"
+              ? "text-cyan-400"
+              : noKey
+                ? "text-gray-500"
+                : "text-gray-600",
+        )}
+        title={
+          info.key_source === "file"
+            ? "from ~/.agentcanvas/.keys"
+            : info.key_source === "env"
+              ? `from env var ${info.key_env}`
+              : "no key configured"
+        }
+      >
+        {noKey ? "—" : info.key_source === "none" ? "no key" : info.key_source}
+      </span>
+
+      {/* Validate */}
+      <button
+        onClick={validate}
+        disabled={busy || (!info.key_set && !noKey)}
+        title="Send a minimal request to verify"
+        className={clsx(
+          "flex w-7 flex-shrink-0 justify-center text-gray-500",
+          (info.key_set || noKey) && "hover:text-gray-200",
         )}
       >
-        {dirty ? "unsaved" : hasServerKey ? "saved" : "no key"}
-      </span>
+        {busy ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : (
+          <ShieldCheck size={14} />
+        )}
+      </button>
+
+      {/* Remove file key */}
+      <button
+        onClick={removeKey}
+        disabled={busy || info.key_source !== "file"}
+        title="Remove key from ~/.agentcanvas/.keys"
+        className={clsx(
+          "flex w-6 flex-shrink-0 justify-center text-gray-600",
+          info.key_source === "file" && "hover:text-red-400",
+        )}
+      >
+        <Trash2 size={13} />
+      </button>
+
+      {validation && (
+        <span
+          className={clsx(
+            "max-w-40 flex-shrink-0 truncate text-xs",
+            validation.ok ? "text-green-400" : "text-red-400",
+          )}
+          title={validation.message}
+        >
+          {validation.ok ? "✓ valid" : `✗ ${validation.message}`}
+        </span>
+      )}
     </div>
   );
 }
 
-function ModelSelector({
-  providerId,
-  model,
-  onChange,
-  models,
-  loading,
+/* ── Model profiles ── */
+
+function ProfilesSection({
+  profilesState,
+  providers,
+  onChanged,
+  onError,
 }: {
-  providerId: string;
-  model: string;
-  onChange: (v: string) => void;
-  models: string[] | undefined;
-  loading: boolean;
+  profilesState: ProfilesState;
+  providers: ProvidersMap;
+  onChanged: () => Promise<void>;
+  onError: (msg: string) => void;
 }) {
-  if (models && models.length > 0) {
-    return (
-      <select
-        value={models.includes(model) ? model : "__current__"}
-        onChange={(e) =>
-          onChange(e.target.value === "__current__" ? model : e.target.value)
-        }
-        className="input-field flex-1 text-sm"
-      >
-        {!models.includes(model) && model && (
-          <option value="__current__">{model}</option>
-        )}
-        {models.map((m) => (
-          <option key={m} value={m}>
-            {m}
-          </option>
-        ))}
-      </select>
-    );
-  }
+  const [adding, setAdding] = useState(false);
+
+  const setActive = async (name: string) => {
+    try {
+      await api.activateProfile(name);
+      await onChanged();
+    } catch {
+      onError("Failed to activate profile");
+    }
+  };
+
+  const remove = async (name: string) => {
+    try {
+      await api.deleteProfile(name);
+      await onChanged();
+    } catch {
+      onError("Failed to delete profile");
+    }
+  };
+
+  const names = Object.keys(profilesState.profiles);
 
   return (
-    <input
-      type="text"
-      value={model}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={loading ? "Loading models..." : "model name"}
-      className="input-field flex-1 text-sm"
-      disabled={loading}
-    />
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-sm font-medium text-gray-400">Model Profiles</h3>
+        <button
+          onClick={() => setAdding(!adding)}
+          className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200"
+        >
+          <Plus size={13} /> Add profile
+        </button>
+      </div>
+      <p className="mb-2 text-xs text-gray-500">
+        Named (provider, model) pairs — what LLM/VLM node dropdowns list. ★ =
+        default for nodes that don't pick one.
+      </p>
+
+      {adding && (
+        <ProfileEditor
+          providers={providers}
+          onDone={async () => {
+            setAdding(false);
+            await onChanged();
+          }}
+          onCancel={() => setAdding(false)}
+          onError={onError}
+        />
+      )}
+
+      <div className="space-y-1.5">
+        {names.length === 0 && !adding && (
+          <p className="rounded border border-gray-700 bg-gray-800/30 px-3 py-2 text-sm text-gray-500">
+            No profiles yet. Add one to make a model callable.
+          </p>
+        )}
+        {names.map((name) => {
+          const p = profilesState.profiles[name];
+          const isActive = profilesState.active === name;
+          const provLabel = providers[p.provider]?.label || p.provider;
+          return (
+            <div
+              key={name}
+              className="flex items-center gap-2 rounded border border-gray-700 bg-gray-800/40 px-3 py-1.5"
+            >
+              <button
+                onClick={() => setActive(name)}
+                className={clsx(
+                  "flex-shrink-0 transition-colors",
+                  isActive
+                    ? "text-yellow-400"
+                    : "text-gray-600 hover:text-gray-400",
+                )}
+                title={isActive ? "Default profile" : "Set as default"}
+              >
+                <Star size={14} fill={isActive ? "currentColor" : "none"} />
+              </button>
+              <span
+                className="w-32 flex-shrink-0 truncate text-sm font-medium text-gray-300"
+                title={name}
+              >
+                {name}
+              </span>
+              <span className="flex-1 truncate text-sm text-gray-400">
+                {provLabel} / {p.model}
+                {p.base_url && (
+                  <span className="ml-1 text-xs text-gray-600">
+                    @ {p.base_url}
+                  </span>
+                )}
+              </span>
+              <span
+                className={clsx(
+                  "w-12 flex-shrink-0 text-right text-[10px]",
+                  p.api_key_set ? "text-green-500" : "text-gray-600",
+                )}
+                title={
+                  p.api_key_set
+                    ? "provider key available"
+                    : "no key for this provider — resolves to mock"
+                }
+              >
+                {p.api_key_set ? "key ✓" : "no key"}
+              </span>
+              <button
+                onClick={() => remove(name)}
+                className="flex-shrink-0 text-gray-600 hover:text-red-400"
+                title="Delete profile"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ProfileEditor({
+  providers,
+  onDone,
+  onCancel,
+  onError,
+}: {
+  providers: ProvidersMap;
+  onDone: () => Promise<void>;
+  onCancel: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [provider, setProvider] = useState("openai");
+  const [model, setModel] = useState("");
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  // Fetch live model list when the provider has a usable key
+  useEffect(() => {
+    setModels([]);
+    const info = providers[provider];
+    if (!info || (!info.key_set && provider !== "ollama")) return;
+    api
+      .getProviderModels(provider)
+      .then((res) => setModels(res.models))
+      .catch(() => {});
+  }, [provider, providers]);
+
+  const create = async () => {
+    const finalModel = model || providers[provider]?.default_model || "";
+    const finalName = name.trim() || finalModel;
+    if (!finalName || !finalModel) return;
+    setBusy(true);
+    try {
+      await api.createProfile({
+        name: finalName,
+        provider,
+        model: finalModel,
+        base_url: baseUrl,
+      });
+      await onDone();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to create profile");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-2 space-y-2 rounded border border-blue-900/60 bg-gray-800/40 p-2">
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+          className="input-field text-sm"
+        >
+          {Object.entries(providers).map(([id, info]) => (
+            <option key={id} value={id}>
+              {info.label}
+              {!info.key_set && id !== "ollama" ? " (no key)" : ""}
+            </option>
+          ))}
+        </select>
+        {models.length > 0 ? (
+          <select
+            value={model || providers[provider]?.default_model || ""}
+            onChange={(e) => setModel(e.target.value)}
+            className="input-field text-sm"
+          >
+            {models.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type="text"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder={`model (default: ${providers[provider]?.default_model || "—"})`}
+            className="input-field text-sm"
+          />
+        )}
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="profile name (default: model name)"
+          className="input-field text-sm"
+        />
+        <input
+          type="text"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          placeholder="base URL override (optional)"
+          className="input-field text-sm"
+        />
+      </div>
+      <div className="flex justify-end gap-2">
+        <button
+          onClick={onCancel}
+          className="rounded border border-gray-700 px-3 py-1 text-xs text-gray-400 hover:text-gray-200"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={create}
+          disabled={busy}
+          className="rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-500"
+        >
+          {busy ? "Creating…" : "Create"}
+        </button>
+      </div>
+    </div>
   );
 }
 

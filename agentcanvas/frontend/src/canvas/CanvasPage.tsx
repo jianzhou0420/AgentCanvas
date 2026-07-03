@@ -75,6 +75,7 @@ import TabBar from "./panels/TabBar";
 import ShortcutCheatsheet from "./ShortcutCheatsheet";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import ResizableBottomPanel from "./panels/ResizableBottomPanel";
+import ResizableRightPanel from "./panels/ResizableRightPanel";
 import TemplatePicker from "./panels/TemplatePicker";
 import ExecutionToolbar from "./panels/ExecutionToolbar";
 import EnvPanel from "./panels/EnvPanel";
@@ -386,6 +387,7 @@ export default function CanvasPage() {
                 onClose={popCanvas}
               />
             </ReactFlowProvider>
+            <ResizableRightPanel />
           </div>
           <ResizableBottomPanel />
         </div>
@@ -451,6 +453,7 @@ export default function CanvasPage() {
               <UnifiedGraphEditor mode="root" />
             </ReactFlowProvider>
           </div>
+          <ResizableRightPanel />
         </div>
         <ResizableBottomPanel />
       </div>
