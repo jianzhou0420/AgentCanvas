@@ -3,7 +3,7 @@
 # VLN-CE Environment Installation Script
 # =============================================================================
 # Creates the vlnce conda env for Habitat-Sim 0.1.7 (Python 3.8).
-# This env is used in server mode by env_habitat and policy_cma nodesets.
+# This env is used in server mode by env_habitat and policy_adapter_vlnce nodesets.
 #
 # Usage:
 #   bash scripts/install/install_ac_vlnce.sh

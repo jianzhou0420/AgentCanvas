@@ -28,9 +28,9 @@
 # Prerequisites:
 #   - mamba or conda installed
 #   - (lerobot + libero at third_party/{lerobot,libero} are auto-cloned + pinned
-#     from public upstream; openpi-client is vendored in the policy_vla nodeset
+#     from public upstream; openpi-client is vendored in the policy_adapter_vla nodeset
 #     — see lib/thirdparty.sh)
-#   - Vendored adapter / policy / models trees in workspace/nodesets/policy/policy_vla/.
+#   - Vendored adapter / policy / models trees in workspace/nodesets/policy/policy_adapter_vla/.
 # =============================================================================
 
 set -e
@@ -42,10 +42,10 @@ ENV_NAME="${VLA_POLICY_ENV_NAME:-ac-vla-policy}"
 ENV_YAML="$PROJECT_ROOT/scripts/install/envs/ac_vla_policy.yaml"
 # Runtime deps (formerly editable-installed out of the private vla_workspace repo):
 #   lerobot + libero — public upstreams, cloned + pinned via lib/thirdparty.sh
-#   openpi-client    — vendored into the policy_vla nodeset (small; was private)
+#   openpi-client    — vendored into the policy_adapter_vla nodeset (small; was private)
 LEROBOT_DIR="$PROJECT_ROOT/third_party/lerobot"
 LIBERO_DIR="$PROJECT_ROOT/third_party/libero"
-OPENPI_CLIENT_DIR="$PROJECT_ROOT/workspace/nodesets/policy/policy_vla/_vendored/openpi-client"
+OPENPI_CLIENT_DIR="$PROJECT_ROOT/workspace/nodesets/policy/policy_adapter_vla/_vendored/openpi-client"
 
 echo "=== VLA Policy Environment Installation ==="
 echo "Project root:  $PROJECT_ROOT"
@@ -73,7 +73,7 @@ echo "  found $ENV_YAML"
 
 # Clone + pin the public upstreams (lerobot, libero); commit IDs live in
 # scripts/install/lib/thirdparty.sh. openpi-client is vendored in-repo under the
-# policy_vla nodeset, so there is nothing to fetch for it.
+# policy_adapter_vla nodeset, so there is nothing to fetch for it.
 source "$SCRIPT_DIR/lib/thirdparty.sh"
 ensure_thirdparty lerobot
 ensure_thirdparty libero
@@ -87,10 +87,12 @@ done
 echo "  lerobot + libero (cloned) + openpi-client (vendored) present"
 
 for tree in adapters policies models; do
-    [ -d "$PROJECT_ROOT/workspace/nodesets/policy/policy_vla/$tree" ] || \
-        { echo "[ERROR] policy_vla/$tree/ missing"; exit 1; }
+    [ -d "$PROJECT_ROOT/workspace/nodesets/policy/policy_adapter_vla/$tree" ] || \
+        { echo "[ERROR] policy_adapter_vla/$tree/ missing"; exit 1; }
 done
-echo "  policy_vla vendored trees present"
+[ -d "$PROJECT_ROOT/workspace/nodesets/env/env_adapter/robots" ] || \
+    { echo "[ERROR] env_adapter/robots/ missing"; exit 1; }
+echo "  policy_adapter_vla vendored trees + env_adapter robots present"
 
 # ── Step 1: Apply our libero source patches (idempotent) ──
 #
@@ -153,7 +155,7 @@ echo "=== Step 2b: AgentCanvas backend deps (server-mode) ==="
 #
 # RT-1's deps don't conflict with torch 2.6 / jax 0.5.3 / flax 0.10.2 in
 # practice; SimplerEnv runs them concurrently. The vendored RT1Inference
-# (workspace/nodesets/policy/policy_vla/rt1_inference.py) avoids
+# (workspace/nodesets/policy/policy_adapter_vla/policies/rt1_policy.py) avoids
 # simpler_env/__init__.py's `import mani_skill2_real2sim.envs` so SAPIEN
 # stays out of this env.
 #
@@ -286,16 +288,17 @@ echo -n "  TF + torch coexist: "
 echo -n "  adapters:     "
 PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
     "$VLA_PYTHON" -c "
-from workspace.nodesets.policy.policy_vla.adapters import (
-    Adaptor, LiberoRobot, SimplerRobot, Pi0Model, SmolVLAModel, DPModel, Rt1Model,
+from workspace.nodesets.policy.policy_adapter_vla.adapters import (
+    Pi0Model, SmolVLAModel, DPModel, Rt1Model,
 )
+from workspace.nodesets.env.env_adapter.robots import LiberoRobot, SimplerRobot
 print('OK')
 " 2>&1 || echo "FAIL"
 
 echo -n "  policies:     "
 PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
     "$VLA_PYTHON" -c "
-from workspace.nodesets.policy.policy_vla.policies import (
+from workspace.nodesets.policy.policy_adapter_vla.policies import (
     BasePolicy, Pi0Policy, SmolVLAPolicy,
     DiffusionUnetHybridImagePolicy, DroidDiffusionPolicy, Rt1Policy,
 )
@@ -305,7 +308,8 @@ print('OK')
 echo -n "  rt1 dropdowns:"
 PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
     "$VLA_PYTHON" -c "
-from workspace.nodesets.policy.policy_vla import MODEL_OPTIONS, POLICY_OPTIONS, ROBOT_OPTIONS
+from workspace.nodesets.policy.policy_adapter_vla import MODEL_OPTIONS, POLICY_OPTIONS
+from workspace.nodesets.env.env_adapter import ROBOT_OPTIONS
 assert 'rt1_model' in MODEL_OPTIONS, f'rt1_model not in {MODEL_OPTIONS}'
 assert 'rt1_policy' in POLICY_OPTIONS, f'rt1_policy not in {POLICY_OPTIONS}'
 print(f' OK — models={MODEL_OPTIONS}, policies={POLICY_OPTIONS}, robots={ROBOT_OPTIONS}')
@@ -317,11 +321,11 @@ PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
     "$VLA_PYTHON" - <<'PYEOF' 2>&1 | sed 's/^/    /' || true
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
-from workspace.nodesets.policy.policy_vla.policies import (
+from workspace.nodesets.policy.policy_adapter_vla.policies import (
     Pi0Policy, SmolVLAPolicy,
     DiffusionUnetHybridImagePolicy, DroidDiffusionPolicy,
 )
-from workspace.nodesets.policy.policy_vla.policies.pi0_policy import Pi0Config
+from workspace.nodesets.policy.policy_adapter_vla.policies.pi0_policy import Pi0Config
 
 print("  Pi0Policy:        ", end="")
 try:
@@ -373,18 +377,18 @@ except Exception as e:
     print(f"FAIL {type(e).__name__}: {e!s}"[:200])
 PYEOF
 
-echo -n "  policy_vla:   "
+echo -n "  policy_adapter_vla: "
 PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
     "$VLA_PYTHON" -c "
-from workspace.nodesets.policy.policy_vla import PolicyVlaNodeSet
-ns = PolicyVlaNodeSet()
+from workspace.nodesets.policy.policy_adapter_vla import PolicyAdapterVlaNodeSet
+ns = PolicyAdapterVlaNodeSet()
 print(f'OK — name={ns.name}, tools={len(ns.get_tools())}')
 " 2>&1 || echo "FAIL"
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The $ENV_NAME env is used by workspace/nodesets/policy/policy_vla/ in server mode."
+echo "The $ENV_NAME env is used by workspace/nodesets/policy/policy_adapter_vla/ in server mode."
 echo "To set it explicitly:  export VLA_POLICY_PYTHON=$VLA_PYTHON"
 echo "To activate manually:  conda activate $ENV_NAME"
 echo ""
@@ -393,6 +397,6 @@ echo "  bash scripts/data/fetch_ckpt_rt1.sh    # downloads SavedModel ckpt via g
 echo ""
 echo "Then:"
 echo "  1. cd agentcanvas && bash run_dev.sh"
-echo "  2. POST /api/components/nodesets/policy_vla/load?mode=server"
+echo "  2. POST /api/components/nodesets/policy_adapter_vla/load?mode=server"
 echo "  3. Open the canvas — VLA Policy controller will appear."
 echo "     Pick model/policy/robot dropdowns + checkpoint path, click Load Model."

@@ -16,7 +16,7 @@
 #   - lerobot + libero are PUBLIC upstreams (formerly nested inside the private
 #     jianzhou0420/vlaworkspace repo). They are cloned here directly from their
 #     public origins so the install never touches the private repo. The small
-#     vendored openpi-client lives in the policy_vla nodeset, not here.
+#     vendored openpi-client lives in the policy_adapter_vla nodeset, not here.
 #
 # Idempotent: re-running clones if absent, otherwise fetches + re-checks-out the
 # pinned commit. To bump a pin, edit the SHA here (one place) and re-run the
