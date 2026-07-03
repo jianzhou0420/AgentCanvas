@@ -551,14 +551,6 @@ Cada nodeset y grafo se acredita a su autor/mantenedor en el tablero de Crédito
 
 ---
 
-## Historial de Estrellas
-
-<a href="https://star-history.com/#jianzhou0420/AgentCanvas&Date">
-  <img src="https://api.star-history.com/svg?repos=jianzhou0420/AgentCanvas&type=Date" alt="Gráfico del Historial de Estrellas" width="600">
-</a>
-
----
-
 ## 9. Citación
 
 Si utilizas AgentCanvas en tu investigación, cítalo así:

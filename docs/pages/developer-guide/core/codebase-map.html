@@ -101,16 +101,17 @@
 </defs></svg>
 
 <div class="lede">
-  Files are grouped by package; descriptions explain the <strong>role</strong>, not the implementation. As of 2026-05-18 the backend (<code>app/</code>) contains <strong>~20,800 lines of Python across 9 packages + 11 root files</strong>. The frontend (<code>src/</code>) is React 18 + TypeScript + React Flow + Zustand. <em>Line counts in tables below are approximate snapshots and drift between updates — trust the structure (which file holds what role), not the digits.</em>
+  Files are grouped by package; descriptions explain the <strong>role</strong>, not the implementation. As of 2026-07-03 the backend (<code>app/</code>) contains <strong>~22,800 lines of Python (tests excluded) across 10 packages + root files</strong>. The frontend (<code>src/</code>) is React 18 + TypeScript + React Flow + Zustand. <em>Line counts in tables below are approximate snapshots and drift between updates — trust the structure (which file holds what role), not the digits.</em>
 </div>
 
 <div class="callout note">
   <strong>Packages added since the initial v1 map</strong>
-  <code>agent_loop/</code> (executor, scope analysis, loop runner — ~6,400 lines, the largest package) ·
-  <code>services/</code> (job scheduler, eval orchestration — ~1,500 lines) ·
-  <code>standard/</code> (built-in standard nodes — ~470 lines) ·
-  <code>replay/</code> (eval replay parser — ~510 lines) ·
-  <code>logging/</code> (execution log layer — ~410 lines). The original v1 narrative below still describes <code>api/</code>, <code>components/</code>, <code>llm/</code>, and <code>server/</code> accurately; new-package sections are not yet split out.
+  <code>agent_loop/</code> (executor, scope analysis, loop runner — the largest package, §3) ·
+  <code>services/</code> (job scheduler, watchers, resource sampler — §9) ·
+  <code>standard/</code> (wire types, actions, node I/O — §8) ·
+  <code>replay/</code> (episode replay backend — §9) ·
+  <code>logging/</code> (execution log layer — §7) ·
+  <code>tools/</code> (standalone graph validator — §9). Every package now has its own section below; tests (<code>test_*.py</code>) are out of scope throughout.
 </div>
 
 <nav class="toc-strip">
@@ -123,18 +124,20 @@
   <a href="#s6">6. LLM</a><span class="toc-sep">·</span>
   <a href="#s7">7. Logging</a><span class="toc-sep">·</span>
   <a href="#s8">8. Standard</a><span class="toc-sep">·</span>
-  <a href="#s9">9. Deps</a>
+  <a href="#s9">9. Services</a><span class="toc-sep">·</span>
+  <a href="#s10">10. Deps</a>
 </nav>
 <nav class="toc-strip">
   <span class="toc-label">frontend</span>
-  <a href="#s10">10. Shell</a><span class="toc-sep">·</span>
-  <a href="#s11">11. Editor</a><span class="toc-sep">·</span>
-  <a href="#s12">12. Nodes</a><span class="toc-sep">·</span>
-  <a href="#s13">13. Panels</a><span class="toc-sep">·</span>
-  <a href="#s14">14. Eval</a><span class="toc-sep">·</span>
-  <a href="#s15">15. Logs</a><span class="toc-sep">·</span>
-  <a href="#s16">16. NodeSet Mgr</a><span class="toc-sep">·</span>
-  <a href="#s17">17. Build</a>
+  <a href="#s11">11. Shell</a><span class="toc-sep">·</span>
+  <a href="#s12">12. Editor</a><span class="toc-sep">·</span>
+  <a href="#s13">13. Nodes</a><span class="toc-sep">·</span>
+  <a href="#s14">14. Panels</a><span class="toc-sep">·</span>
+  <a href="#s15">15. Eval</a><span class="toc-sep">·</span>
+  <a href="#s16">16. Logs</a><span class="toc-sep">·</span>
+  <a href="#s17">17. Replay/Monitor</a><span class="toc-sep">·</span>
+  <a href="#s18">18. NodeSet Mgr</a><span class="toc-sep">·</span>
+  <a href="#s19">19. Build</a>
 </nav>
 
 <!-- 1 -->
@@ -147,7 +150,7 @@
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
 <tr><td><code>__init__.py</code></td><td>0</td><td></td><td>Package marker</td></tr>
 <tr><td><code>__main__.py</code></td><td>3</td><td></td><td><code>python -m app</code> entry point — calls <code>llm.cli.main()</code></td></tr>
-<tr><td><code>main.py</code></td><td>83</td><td></td><td><strong>FastAPI application factory</strong> — creates the app, registers CORS middleware, mounts all 9 API routers (grouped by domain: canvas, execution, platform), defines lifespan (scans <code>workspace/</code> on startup via <code>WorkspaceComponentRegistry</code>, shuts down nodesets on exit)</td></tr>
+<tr><td><code>main.py</code></td><td>276</td><td></td><td><strong>FastAPI application factory</strong> — creates the app, registers CORS middleware, mounts 15 API routers across 5 domain sub-packages (canvas, execution, platform, registry, replay), defines lifespan (scans <code>workspace/</code> on startup via <code>WorkspaceComponentRegistry</code>, starts the <code>JobScheduler</code> tick loop + file watchers + <code>ResourceSampler</code>, shuts down nodesets on exit)</td></tr>
 </table>
 
 <h3>1.2 Core Singletons</h3>
@@ -170,13 +173,13 @@
 </table>
 <div class="callout note">
   <strong>Removed since v1</strong>
-  <code>env_controller.py</code> + its <code>HabitatEnvController</code> were superseded by the generic <code>BaseEnvPanel</code> contract in <code>app/server/</code> (<a href="decisions/server/adr-server-002-base-controller.html">ADR-server-002</a>). Episode control is now a nodeset-side concern, not a framework module.
+  <code>env_controller.py</code> + its <code>HabitatEnvController</code> were superseded by the generic <code>BaseEnvPanel</code> contract in <code>app/components/env_panel.py</code> (<a href="decisions/server/adr-server-002-base-controller.html">ADR-server-002</a>). Episode control is now a nodeset-side concern, not a framework module.
 </div>
 
 <!-- 2 -->
 <h2 id="s2"><span class="num">§2</span>Backend: API Layer</h2>
 <div class="pkg-header">agentcanvas/backend/app/api/</div>
-<p>Grouped into 3 domain sub-packages. Each module exports a <code>router = APIRouter()</code> that <code>main.py</code> mounts.</p>
+<p>Grouped into 5 domain sub-packages. Each module exports a <code>router = APIRouter()</code> that <code>main.py</code> mounts.</p>
 
 <h3>2.1 Canvas — graph editing + environment control</h3>
 <table class="file-table">
@@ -189,10 +192,12 @@
 <table class="file-table">
 <tr><th>File</th><th>Lines</th><th>Route prefix</th><th>Role</th></tr>
 <tr><td><code>run.py</code></td><td>139</td><td><code>/api/navigate</code></td><td><strong>Canvas graph execution</strong> — <code>POST /run</code> receives <code>GraphDefinition</code> JSON, creates <code>LoopRunner</code>, runs via <code>GraphExecutor</code>. Plus <code>/stop</code>, <code>/pause</code>, <code>/resume</code>, <code>GET /node-schemas</code></td></tr>
-<tr><td><code>eval.py</code></td><td>240</td><td><code>/api/eval/v2</code></td><td><strong>Batch eval API</strong> — <code>POST /start</code> (enqueue a run on <code>JobScheduler</code>; the admitted run executes <code>BatchEvalRunner</code> in its own subprocess), <code>GET /status</code>, <code>POST /stop</code>, <code>GET /runs</code>, <code>DELETE /runs/{id}</code></td></tr>
+<tr><td><code>eval.py</code></td><td>558</td><td><code>/api/eval/v2</code></td><td><strong>Batch eval API</strong> — <code>POST /start</code> (enqueue a run on <code>JobScheduler</code>; the admitted run executes <code>BatchEvalRunner</code> in its own subprocess), <code>GET /status</code>, <code>POST /stop</code>, <code>GET /runs</code>, <code>DELETE /runs/{id}</code></td></tr>
 <tr><td><code>eval_storage.py</code></td><td>106</td><td>—</td><td><strong>Eval run persistence</strong> — saves/loads/deletes eval run results as JSON in <code>outputs/eval_runs/</code></td></tr>
 <tr><td><code>logs.py</code></td><td>270</td><td><code>/api/logs</code></td><td><strong>Execution log retrieval</strong> — list runs, full run, per-node, summary. Reads JSONL from <code>outputs/runs/</code> and <code>outputs/eval_runs/</code></td></tr>
 <tr><td><code>websocket.py</code></td><td>47</td><td><code>/ws</code></td><td><strong>WebSocket endpoint</strong> — accepts connections, registers/unregisters clients with <code>state.py</code>. Broadcast logic lives in <code>state.broadcast()</code></td></tr>
+<tr><td><code>internal_containers.py</code></td><td>136</td><td><code>/api/internal</code></td><td><strong>Cross-process container broker</strong> (not a public API) — lets server-mode subprocess nodes read/write state containers regardless of which process homes them; called by <code>server/remote_container.py::RemoteContainerProxy</code>, msgpack payload path</td></tr>
+<tr><td><code>internal_events.py</code></td><td>72</td><td><code>/api/internal</code></td><td><strong>Subprocess event push</strong> — receives structured log/error events POSTed by server-mode subprocesses (<code>server/event_push.py</code>) and republishes them on the <code>ErrorBus</code> → <code>error_event</code> WS frame</td></tr>
 </table>
 
 <h3>2.3 Platform — config, components, LLM profiles</h3>
@@ -201,6 +206,20 @@
 <tr><td><code>config.py</code></td><td>41</td><td><code>/api/config</code></td><td><strong>Settings</strong> — <code>GET /</code> returns current <code>Settings</code> + active LLM profile info</td></tr>
 <tr><td><code>components.py</code></td><td>238</td><td><code>/api/components</code></td><td><strong>Component registry</strong> — nodeset list/load/unload, <code>POST /reload</code> (hot-reload <code>workspace/</code>), <code>/eval-metadata</code></td></tr>
 <tr><td><code>profiles.py</code></td><td>248</td><td><code>/api/profiles</code></td><td><strong>LLM profile management</strong> — CRUD, <code>POST /test-key</code>, <code>GET /providers</code> (24 providers), <code>GET /models/{provider}</code></td></tr>
+<tr><td><code>errors.py</code></td><td>32</td><td><code>/api/errors</code></td><td><strong>Error backfill</strong> — returns the <code>ErrorBus</code> ring buffer so the frontend can backfill envelopes published while disconnected</td></tr>
+<tr><td><code>system.py</code></td><td>53</td><td><code>/api/system</code></td><td><strong>System usage</strong> — <code>/usage</code> (latest sample) + <code>/history</code> from the always-on <code>ResourceSampler</code> (§9)</td></tr>
+</table>
+
+<h3>2.4 Registry — component snapshot</h3>
+<table class="file-table">
+<tr><th>File</th><th>Lines</th><th>Route prefix</th><th>Role</th></tr>
+<tr><td><code>snapshot.py</code></td><td>43</td><td><code>/api/registry</code></td><td><strong>Shared-nodeset snapshot</strong> — read-only view of currently-loaded shared nodesets; fallback for run subprocesses that started without a <code>shared_urls.json</code> (the normal path: <code>JobScheduler</code> writes it at submit time), also used by tests</td></tr>
+</table>
+
+<h3>2.5 Replay — episode replay API</h3>
+<table class="file-table">
+<tr><th>File</th><th>Lines</th><th>Route prefix</th><th>Role</th></tr>
+<tr><td><code>router.py</code></td><td>207</td><td><code>/api/replay</code></td><td><strong>Replay API</strong> — serves the env-agnostic replay timeline parsed from a run's episode logs (backend package <code>app/replay/</code>, §9); consumed by the frontend Replay page (§17)</td></tr>
 </table>
 
 <!-- 3 -->
@@ -229,7 +248,7 @@
 
 <h3>3.2 File by File</h3>
 
-<h3 class="file-entry"><code>loop_runner.py</code><span class="lines">171 lines</span></h3>
+<h3 class="file-entry"><code>loop_runner.py</code><span class="lines">216 lines</span></h3>
 <p>The outermost lifecycle shell — first thing called from the API. Owns the <strong>lifecycle</strong>: pause, stop, resume.</p>
 <ul>
   <li>Receives a <code>GraphDefinition</code> JSON from the frontend</li>
@@ -241,16 +260,16 @@
 </ul>
 <p>Does not know <em>how</em> nodes fire — sets up the world and hands control to the executor.</p>
 
-<h3 class="file-entry"><code>flatten.py</code><span class="lines">234 lines</span></h3>
+<h3 class="file-entry"><code>flatten.py</code><span class="lines">300 lines</span></h3>
 <p>Pre-processing step. Runs <em>before</em> execution starts. The canvas supports nested graphs (composite nodes containing sub-graphs), but the executor needs a flat list of nodes and edges.</p>
 <ul>
   <li>Recursively walks composite nodes that have a <code>subgraph</code></li>
-  <li>Expands them into the parent graph, rewiring <code>PortIn</code>/<code>PortOut</code> boundary nodes to parent edges</li>
+  <li>Expands them into the parent graph, rewiring <code>graphIn</code>/<code>graphOut</code> boundary nodes to parent edges</li>
   <li>Prefixes node IDs to avoid collisions (<code>composite1.inner_node</code>)</li>
   <li>Returns a <code>FlattenMap</code> so error messages can trace back to the original composite context</li>
 </ul>
 
-<h3 class="file-entry"><code>graph_executor.py</code><span class="lines">624 lines</span></h3>
+<h3 class="file-entry"><code>graph_executor.py</code><span class="lines">1,987 lines · largest file</span></h3>
 <p>Where nodes actually execute. Implements a <strong>dataflow FIFO queue</strong> model:</p>
 <ol>
   <li><strong>Build</strong>: wraps each <code>NodeDef</code> into a <code>NodeInstance</code> (tracks pending inputs per port)</li>
@@ -263,27 +282,37 @@
 </ol>
 <p>Each node fires by calling <code>NODE_HANDLERS[node_type].forward(inputs, ctx)</code>.</p>
 
-<h3 class="file-entry"><code>builtin_nodes.py</code><span class="lines">920 lines · largest file</span></h3>
+<h3 class="file-entry"><code>scope_analysis.py</code><span class="lines">416 lines</span></h3>
+<p>Computes the <strong>scope forest</strong> before execution starts.</p>
+<ul>
+  <li><code>analyze_scopes()</code> — walks the flat graph and returns every <code>(iterIn, iterOut)</code> scope plus its parent/child topology (<a href="decisions/dataflow/adr-dataflow-007-multi-scope-iteration.html">ADR-dataflow-007</a>)</li>
+  <li>Classifies composite boundaries: <code>graphIn</code> = parameter slot, <code>graphOut</code> = return slot of a scope</li>
+  <li>Validates scope shape (inner scopes bounded by mandatory graphIn/graphOut) — feeds the executor's per-scope <code>_ScopeState</code></li>
+</ul>
+
+<h3 class="file-entry"><code>builtin_nodes.py</code><span class="lines">1,369 lines</span></h3>
 <p>The <strong>node handler registry</strong> and the home for all <strong>built-in framework nodes</strong> (see TODO #37).</p>
 <p><strong>Registry</strong>:</p>
 <ul>
   <li><code>NODE_HANDLERS: dict[str, type[BaseCanvasNode]]</code> — global registry mapping <code>node_type</code> string to Python class</li>
-  <li><code>register_node(node_type, cls)</code> — called by <code>WorkspaceComponentRegistry</code> when loading nodesets</li>
+  <li><code>register_node(cls)</code> — called by <code>WorkspaceComponentRegistry</code> when loading nodesets</li>
   <li><code>ExecutionContext</code> dataclass — mutable state passed to every node</li>
 </ul>
-<p><strong>Built-in node classes (~15):</strong></p>
+<p><strong>Built-in node classes (14):</strong></p>
 <table>
 <tr><th>Node</th><th>What it does</th></tr>
-<tr><td><code>IterInNode</code> / <code>IterOutNode</code></td><td>Loop gates — IterOut sends data back to IterIn for next iteration</td></tr>
+<tr><td><code>IterInNode</code> / <code>IterOutNode</code></td><td>Loop gates — IterOut sends data back to IterIn for next iteration; iterIn's left side captures run-start <code>initPorts</code>, iterOut's final side feeds the after-loop band</td></tr>
 <tr><td><code>LLMCallNode</code></td><td>Calls <code>llm_complete()</code> / <code>vlm_complete()</code> with a prompt, returns text</td></tr>
-<tr><td><code>PortInNode</code> / <code>PortOutNode</code></td><td>Composite boundaries — bridge parent↔child graph edges during flatten</td></tr>
-<tr><td><code>PromptTemplateNode</code></td><td>String interpolation — fills <code>{variable}</code> placeholders</td></tr>
-<tr><td><code>NavGPTReasonNode</code></td><td>Domain-specific LLM reasoning node for NavGPT</td></tr>
-<tr><td><code>ImageViewerSink</code></td><td>Viewer — displays images on canvas via <code>viewer_data</code> WS events</td></tr>
-<tr><td><code>TextViewerSink</code> / <code>TextScrollSink</code> / <code>ActionLogSink</code> / <code>MetricsSink</code></td><td>Viewers for latest TEXT / accumulating TEXT / action history / SR/SPL/NE metrics</td></tr>
+<tr><td><code>TextParseNode</code></td><td>Generic structured parser for LLM response text</td></tr>
+<tr><td><code>HistoryLogNode</code></td><td>Accumulates one TEXT entry per firing, emits the formatted history</td></tr>
+<tr><td><code>GraphInNode</code> / <code>GraphOutNode</code></td><td>Composite boundaries — parameter slot / return slot (formerly PortIn/PortOut); graphOut doubles as the sink that buffers <code>_last_inputs</code> for the <code>nav_step</code> broadcast</td></tr>
+<tr><td><code>NullSourceNode</code></td><td>Emits <code>None</code> on a typed output port — once, at run-start</td></tr>
+<tr><td><code>NoteNode</code></td><td>Markdown billboard — pure annotation, no inputs/outputs</td></tr>
+<tr><td><code>ImageViewerSink</code></td><td>Viewer — displays images on canvas via <code>viewer_data</code> WS events (configurable grid, <code>imageGrid</code> layout)</td></tr>
+<tr><td><code>TextViewerSink</code> / <code>TextScrollSink</code> / <code>ActionLogSink</code> / <code>MetricsViewerSink</code></td><td>Viewers for latest TEXT / accumulating TEXT / action history / SR/SPL/NE metrics</td></tr>
 </table>
 
-<h3 class="file-entry"><code>state_containers.py</code><span class="lines">278 lines</span></h3>
+<h3 class="file-entry"><code>state_containers.py</code><span class="lines">469 lines</span></h3>
 <p>Implements the <strong>dual-wire system</strong>: nodes communicate via data edges (typed values) <em>and</em> state edges (access grants to shared containers).</p>
 <ul>
   <li><code>BaseState</code> ABC with 3 reducer implementations (ephemeral removed 2026-04-18 — use <code>lifetime="step"</code>): <code>AccumulatorState</code> (append), <code>LastWriteState</code> (overwrite), <code>CounterState</code> (increment)</li>
@@ -291,9 +320,10 @@
   <li><code>StateContainer</code> — a dict of named <code>BaseState</code> entries</li>
   <li>Factory function builds containers from <code>ContainerDef</code> in graph JSON</li>
   <li>Executor injects connected containers into <code>ctx._containers</code> before each node fires</li>
+  <li><strong>Nodeset-owned / keyed containers</strong> — <code>BaseNodeSet.get_containers()</code> lets a nodeset own containers (with <code>allow_opaque</code> values and per-key evict for worker parallelism), alongside graph-level containers</li>
 </ul>
 
-<h3 class="file-entry"><code>eval_batch.py</code><span class="lines">~410 lines</span></h3>
+<h3 class="file-entry"><code>eval_batch.py</code><span class="lines">827 lines</span></h3>
 <p>Wraps <code>LoopRunner</code> for <strong>batch evaluation</strong>:</p>
 <ul>
   <li><code>BatchEvalRunner</code> takes a graph + episode iterator</li>
@@ -303,7 +333,7 @@
   <li>Respects <code>ExecutionGuard</code> — only one eval or canvas run at a time</li>
 </ul>
 
-<h3 class="file-entry"><code>env_worker_pool.py</code><span class="lines">~210 lines</span></h3>
+<h3 class="file-entry"><code>env_worker_pool.py</code><span class="lines">244 lines</span></h3>
 <p>Sits between <code>BatchEvalRunner</code> and <code>LoopRunner</code> (<a href="decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> PA-3 + PB).</p>
 <ul>
   <li><code>EnvWorkerPool(worker_count=N, env_nodeset=name)</code> — async context manager. <code>__aenter__</code> populates N <code>WorkerHandle</code>s; at <code>worker_count&gt;1</code> each binds to a tagged <code>RemoteEnvPanelProxy</code> + tagged URL</li>
@@ -325,7 +355,7 @@
 <p><code>PolicyEntry</code> dataclass: metadata for a loadable neural policy checkpoint (id, name, checkpoint path, config path). Used by <code>WorkspaceComponentRegistry</code> when scanning <code>workspace/policies/</code>.</p>
 
 <h3>3.3 Layering</h3>
-<svg class="rxsvg" viewBox="0 0 700 320" role="img" aria-label="Engine layering, top to bottom. LoopRunner is the lifecycle shell (pause/stop/resume). GraphExecutor is the firing engine (FIFO queue), supported by flatten, state containers, and hooks. builtin_nodes is the NODE_HANDLERS registry plus the ~15 built-in node classes. BaseCanvasNode lives in components/bases.py. Separately, BatchEvalRunner is the multi-episode loop, spawned per-run as a subprocess by JobScheduler, creating a fresh LoopRunner per episode.">
+<svg class="rxsvg" viewBox="0 0 700 320" role="img" aria-label="Engine layering, top to bottom. LoopRunner is the lifecycle shell (pause/stop/resume). GraphExecutor is the firing engine (FIFO queue), supported by flatten, state containers, and hooks. builtin_nodes is the NODE_HANDLERS registry plus the 14 built-in node classes. BaseCanvasNode lives in components/bases.py. Separately, BatchEvalRunner is the multi-episode loop, spawned per-run as a subprocess by JobScheduler, creating a fresh LoopRunner per episode.">
   <rect class="accent" x="250" y="14" width="200" height="30" rx="6"/><text class="at" x="350" y="34" text-anchor="middle">LoopRunner</text>
   <text class="dim" x="464" y="33">lifecycle shell (pause/stop/resume)</text>
   <path class="edge" d="M350,44 L350,58"/>
@@ -339,7 +369,7 @@
   <text class="dim" x="350" y="156" text-anchor="middle">pre-processing + runtime services</text>
 
   <path class="edge" d="M350,162 L350,176"/>
-  <rect class="accent" x="250" y="178" width="200" height="34" rx="6"/><text class="at" x="350" y="195" text-anchor="middle">builtin_nodes</text><text class="dim" x="350" y="207" text-anchor="middle">NODE_HANDLERS + ~15 classes</text>
+  <rect class="accent" x="250" y="178" width="200" height="34" rx="6"/><text class="at" x="350" y="195" text-anchor="middle">builtin_nodes</text><text class="dim" x="350" y="207" text-anchor="middle">NODE_HANDLERS + 14 classes</text>
   <path class="edge" d="M350,212 L350,226"/>
   <rect class="box" x="250" y="228" width="200" height="28" rx="6"/><text class="mono" x="350" y="247" text-anchor="middle">BaseCanvasNode (components/bases.py)</text>
 
@@ -359,8 +389,10 @@
 <p>The public API for node authors. Files in <code>workspace/</code> import from this package.</p>
 <table class="file-table">
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
-<tr><td><code>bases.py</code></td><td>314</td><td></td><td><strong>Base classes for all node authoring</strong> — <code>PortDef</code>, <code>ConfigField</code> (7 widget types incl. <code>port_list</code>), <code>DisplayField</code> (3 display types: image_viewer, log_list, metric_table), <code>NodeUIConfig</code>, <code>BaseCanvasNode</code> (abstract: <code>forward()</code>, ports, category, icon, <code>_self_log()</code>), <code>BaseNodeSet</code> (loadable tool group, <code>server_python</code> for auto-routing)</td></tr>
-<tr><td><code>registry.py</code></td><td>845</td><td></td><td><strong>WorkspaceComponentRegistry</strong> — scans <code>workspace/</code> subdirectories, imports Python files, discovers <code>BaseCanvasNode</code>/<code>BaseNodeSet</code> subclasses via <code>inspect</code>. Registers in <code>NODE_HANDLERS</code>. Handles load/unload lifecycle, server-mode auto-routing, hook file loading, graph auto-loading</td></tr>
+<tr><td><code>bases.py</code></td><td>554</td><td></td><td><strong>Base classes for all node authoring</strong> — <code>PortDef</code>, <code>ConfigField</code> (7 widget types incl. <code>port_list</code>), <code>DisplayField</code> (4 display types: image_viewer, log_list, metric_table, text_viewer), <code>NodeUIConfig</code>, <code>BaseCanvasNode</code> (abstract: <code>forward()</code>, ports, category, icon, <code>_self_log()</code>, <code>batched</code>/<code>batch_dim</code>), <code>BaseNodeSet</code> (loadable tool group; <code>server_python</code>, <code>parallelism</code>, <code>env_panel</code>, <code>default_per_step_budget_sec</code>, <code>replay_parser</code> ClassVars)</td></tr>
+<tr><td><code>registry.py</code></td><td>1,955</td><td></td><td><strong>WorkspaceComponentRegistry</strong> — scans <code>workspace/</code> subdirectories, imports Python files, discovers <code>BaseCanvasNode</code>/<code>BaseNodeSet</code> subclasses via <code>inspect</code>. Registers in <code>NODE_HANDLERS</code>. Handles load/unload lifecycle, server-mode auto-routing, hook file loading, graph auto-loading, <code>register_remote_nodeset</code> (subprocess attach to shared singletons), container-ownership checks</td></tr>
+<tr><td><code>env_panel.py</code></td><td>250</td><td></td><td><strong>BaseEnvPanel</strong> — control-plane panel base for env-side runtime knobs (suite / split / episode, play / pause / reset); declared via the <code>BaseNodeSet.env_panel</code> ClassVar, served at <code>/api/env-panels/*</code>, bridged into server-mode subprocesses by <code>RemoteEnvPanelProxy</code>. Renamed from "controller" 2026-06-11 (<a href="decisions/server/adr-server-002-base-controller.html">ADR-server-002</a>)</td></tr>
+<tr><td><code>content_hash.py</code></td><td>95</td><td></td><td><strong>Content hashing for nodeset source trees</strong> — lets <code>/api/eval/v2/start</code> detect whether an <code>active_workspace_dir</code> overlay actually changed a <code>shared</code> nodeset's source vs. the frozen baseline</td></tr>
 <tr><td><code>__init__.py</code></td><td>24</td><td></td><td>Re-exports: <code>BaseCanvasNode</code>, <code>BaseNodeSet</code>, <code>PortDef</code>, <code>ConfigField</code>, <code>DisplayField</code>, <code>NodeUIConfig</code> — the public import path</td></tr>
 </table>
 
@@ -377,7 +409,10 @@
 <tr><td><code>nodeset.py</code></td><td>192</td><td></td><td><strong>ServerNodeSet</strong> — combines <code>BaseNodeSet</code> + <code>BaseServer</code>: loadable group of canvas nodes backed by an external server process</td></tr>
 <tr><td><code>proxy.py</code></td><td>149</td><td></td><td><strong>Proxy node generator</strong> (bridge) — reads <code>ServerManifest</code> and auto-generates <code>BaseCanvasNode</code> subclasses whose <code>forward()</code> forwards inputs over HTTP. Canvas can't tell the difference</td></tr>
 <tr><td><code>manifest.py</code></td><td>93</td><td></td><td><strong>Manifest protocol types</strong> — <code>PortSchema</code>, <code>FunctionSchema</code>, <code>ServerManifest</code></td></tr>
-<tr><td><code>serialization.py</code></td><td>130</td><td></td><td><strong>Wire-type serialization</strong> — converts numpy arrays, PIL images, depth maps to/from JSON-safe formats (base64 strings, nested dicts) for HTTP transport</td></tr>
+<tr><td><code>serialization.py</code></td><td>300</td><td></td><td><strong>Wire serialization</strong> — msgpack codec (<code>pack_body</code>/<code>unpack_body</code>, <a href="decisions/server/adr-server-004-transport-contract.html">ADR-server-004</a>): one <code>blob</code> ExtType carries raw <code>ndarray</code>/<code>torch.Tensor</code>/<code>PIL.Image</code> bytes with receiver-side degrade; JSON+base64 legacy path kept for the migration window</td></tr>
+<tr><td><code>event_push.py</code></td><td>144</td><td></td><td><strong>Subprocess → executor event push</strong> — forwards structured node logs + first-classed handler exceptions from a server-mode subprocess to the parent's <code>/api/internal/events</code>, so server-node errors surface on the canvas (roadmap #54 Move 3)</td></tr>
+<tr><td><code>remote_container.py</code></td><td>75</td><td></td><td><strong>RemoteContainerProxy</strong> — subprocess-side handle to an executor-home state container; calls the <code>/api/internal</code> broker so access-granted server nodes can read/write home containers</td></tr>
+<tr><td><code>_loopback_proxy.py</code></td><td>39</td><td></td><td><strong>Loopback proxy policy</strong> — keeps httpx calls to localhost auto-host children from being routed through a user's <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code> shell env</td></tr>
 <tr><td><code>auto_host.py</code></td><td>60</td><td></td><td><strong>CLI entry point</strong> — <code>python -m app.server.auto_host --file nodeset.py --class MyNodeSet --port 9200</code></td></tr>
 <tr><td><code>examples/habitat_server.py</code></td><td>230</td><td></td><td><strong>Reference example</strong> — hand-written <code>ServerApp</code> for Habitat-Sim (pre-dates <code>AutoServerApp</code>). Kept as documentation</td></tr>
 <tr><td><code>__init__.py</code></td><td>30</td><td></td><td>Re-exports: <code>AutoServerApp</code>, <code>BaseServer</code>, <code>ServerApp</code>, <code>ServerFunction</code>, <code>ServerNodeSet</code>, manifest types</td></tr>
@@ -426,16 +461,45 @@
 <p>Shared type definitions and constants used by node implementations and the executor. This is a leaf package with no intra-app dependencies.</p>
 <table class="file-table">
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
-<tr><td><code>wire_types.py</code></td><td>151</td><td></td><td><strong>Wire type registry</strong> — 10 wire types (<code>IMAGE</code>, <code>DEPTH</code>, <code>ACTION</code>, <code>POSE</code>, <code>TEXT</code>, <code>BOOL</code>, <code>METRICS</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>, <code>ANY</code>) + <code>LIST[T]</code> modifier, with display colours. Helpers: <code>image_to_base64()</code>, <code>depth_to_base64()</code>, <code>serialize_for_display()</code></td></tr>
-<tr><td><code>actions.py</code></td><td>42</td><td></td><td><strong>Action constants</strong> — <code>ACTION_FORWARD</code>, <code>ACTION_LEFT</code>, <code>ACTION_RIGHT</code>, <code>ACTION_STOP</code>. <code>parse_action_from_text()</code> extracts action from LLM output</td></tr>
-<tr><td><code>node_io.py</code></td><td>168</td><td></td><td><strong>Node I/O contracts</strong> — <code>get_required_inputs(node_type)</code> for fan-in logic. Used by <code>GraphExecutor</code></td></tr>
+<tr><td><code>wire_types.py</code></td><td>443</td><td></td><td><strong>Wire type registry</strong> — 9 current types (<code>IMAGE</code>, <code>DEPTH</code>, <code>POSE</code>, <code>DISCRETE_ACTION</code>, <code>CONTROL</code>, <code>TEXT</code>, <code>BOOL</code>, <code>METRICS</code>, <code>ANY</code>) + 3 deprecated aliases (<code>ACTION</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>) kept so legacy graphs load, + <code>LIST[T]</code> modifier, <code>WIRE_FORMAT_SPEC</code> canonical on-wire formats, display colours. Helpers: <code>image_to_base64()</code>, <code>depth_to_base64()</code>, <code>serialize_for_display()</code></td></tr>
+<tr><td><code>actions.py</code></td><td>40</td><td></td><td><strong>Action constants</strong> — <code>ACTION_STOP</code>, <code>ACTION_FORWARD</code>, <code>ACTION_TURN_LEFT</code>, <code>ACTION_TURN_RIGHT</code> (the VLN <code>Discrete(4)</code> space). <code>parse_action_from_text()</code> extracts an action from LLM output</td></tr>
+<tr><td><code>node_io.py</code></td><td>168</td><td></td><td><strong>Auto-generated node I/O schema</strong> — <code>NODE_IO_SCHEMA</code> + <code>REQUIRED_INPUTS</code> built lazily from the <code>NODE_HANDLERS</code> registry (no handler classes live here). Used by <code>GraphExecutor</code> for fan-in logic</td></tr>
 <tr><td><code>__init__.py</code></td><td>9</td><td></td><td>Re-exports everything from all 3 modules</td></tr>
 </table>
 
 <!-- 9 -->
-<h2 id="s9"><span class="num">§9</span>Backend: Dependency Flow</h2>
+<h2 id="s9"><span class="num">§9</span>Backend: Services, Replay &amp; Tools</h2>
+<div class="pkg-header">agentcanvas/backend/app/services/</div>
+<p>Long-running backend-process services owned by the FastAPI lifespan: job scheduling, file watching, resource sampling.</p>
+<table class="file-table">
+<tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
+<tr><td><code>job_scheduler.py</code></td><td>678</td><td></td><td><strong>JobScheduler</strong> — admission + FIFO queue + Popen pool for eval run subprocesses (<a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>). Singleton owned by <code>ProcessServices</code>; one <code>tick()</code> per second admits queued jobs whose <code>marginal_vram_mb</code> fits the budget while the canvas <code>ExecutionGuard</code> lock is free; spawns <code>python -m app.eval_subprocess_main</code> with <code>PR_SET_PDEATHSIG</code></td></tr>
+<tr><td><code>graph_watcher.py</code></td><td>73</td><td></td><td><strong>Graph-directory watcher</strong> — pushes <code>graphs_changed</code> when graph JSON files change on disk, so coding-agent edits made outside the web UI show up in the Explorer without a manual refresh</td></tr>
+<tr><td><code>nodeset_watcher.py</code></td><td>156</td><td></td><td><strong>Nodeset-source watcher</strong> — hot-reloads nodeset <code>.py</code> edits without a backend restart; companion to <code>graph_watcher</code></td></tr>
+<tr><td><code>resource_sampler.py</code></td><td>346</td><td></td><td><strong>ResourceSampler</strong> — always-on ~1 Hz machine resource time-series written to <code>outputs/system/system-YYYYMMDD.jsonl</code>; feeds <code>/api/system/usage</code> + <code>/history</code> and the Monitor page (§17)</td></tr>
+<tr><td><code>run_state_io.py</code></td><td>137</td><td></td><td><strong>Run-dir file protocol</strong> — the contract between JobScheduler (parent) and <code>eval_subprocess_main</code> (subprocess) under <code>outputs/eval_runs/{run_id}/</code>: <code>spec.json</code>, <code>shared_urls.json</code>, <code>_DONE</code>, …</td></tr>
+<tr><td><code>system_runs.py</code></td><td>279</td><td></td><td><strong>System Log per-run aggregation</strong> — joins a run's execution logs with tee'd resource samples into a per-run performance summary for the Monitor page's Run view</td></tr>
+</table>
+
+<div class="pkg-header">agentcanvas/backend/app/replay/</div>
+<p>Episode replay backend — turns persisted episode logs into an env-agnostic replay timeline (served by <code>api/replay/</code>, §2.5; consumed by the frontend Replay page, §17).</p>
+<table class="file-table">
+<tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
+<tr><td><code>interface.py</code></td><td>292</td><td></td><td><strong>Replay interface</strong> — env-agnostic timeline schema + <code>BaseReplayParser</code> ABC; an env nodeset opts into replay by pointing its <code>replay_parser</code> ClassVar at a parser module (pure log-walking, no simulator imports)</td></tr>
+<tr><td><code>renderer_client.py</code></td><td>144</td><td></td><td><strong>Renderer client</strong> — lazy-spawns and calls a renderer subprocess for parsers' smooth-mode frame requests; held warm for the FastAPI process lifetime</td></tr>
+<tr><td><code>renderer_host.py</code></td><td>61</td><td></td><td><strong>Renderer host</strong> — launches a renderer class from a file path (mirrors <code>server/auto_host.py</code> but only needs a <code>build_app()</code> method)</td></tr>
+</table>
+
+<div class="pkg-header">agentcanvas/backend/app/tools/</div>
+<table class="file-table">
+<tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
+<tr><td><code>validate_graph.py</code></td><td>226</td><td></td><td><strong>Standalone graph wire-type validator</strong> (dev tool) — loads a graph from disk, runs the same <code>app.graph_def.wire_type_report</code> core the backend uses, prints a report, exits non-zero on any mismatch. No backend needed</td></tr>
+</table>
+
+<!-- 10 -->
+<h2 id="s10"><span class="num">§10</span>Backend: Dependency Flow</h2>
 <p>How the backend packages depend on each other. Arrows point from importer to imported.</p>
-<svg class="rxsvg" viewBox="0 0 700 252" role="img" aria-label="Backend dependency flow, arrows from importer to imported. main.py mounts the three API sub-packages: api/canvas, api/execution, api/platform. canvas and execution import agent_loop; execution and platform import state.py; platform imports components. agent_loop imports the leaf packages graph_def, standard, and logging. components imports server and llm. state.broadcast() is cross-cutting, used by both agent_loop and the websocket route.">
+<svg class="rxsvg" viewBox="0 0 700 252" role="img" aria-label="Backend dependency flow, arrows from importer to imported. main.py mounts five API sub-packages; the three largest are drawn: api/canvas, api/execution, api/platform. canvas and execution import agent_loop; execution and platform import state.py; platform imports components. agent_loop imports the leaf packages graph_def, standard, and logging. components imports server and llm. state.broadcast() is cross-cutting, used by both agent_loop and the websocket route.">
   <rect class="accent" x="280" y="12" width="140" height="28" rx="6"/><text class="at" x="350" y="31" text-anchor="middle">main.py</text>
   <path class="edge" d="M350,40 L140,66"/><path class="edge" d="M350,40 L350,66"/><path class="edge" d="M350,40 L560,66"/>
 
@@ -467,10 +531,11 @@
   <li><strong>Leaf packages</strong> (no intra-app deps): <code>standard/</code>, <code>logging/</code>, <code>llm/</code></li>
   <li><strong>Core data model</strong>: <code>graph_def.py</code> — imported by everything</li>
   <li><strong>Cross-cutting</strong>: <code>state.broadcast()</code> — used by both <code>agent_loop/</code> and <code>api/execution/websocket.py</code>. The engine no longer imports from the API layer</li>
+  <li class="muted">Diagram shows the three largest of the five <code>api/</code> sub-packages; <code>api/registry/</code> and <code>api/replay/</code> (§2.4–2.5) are omitted for legibility, as are <code>services/</code>, <code>replay/</code>, and <code>tools/</code> (§9)</li>
 </ul>
 
-<!-- 10 -->
-<h2 id="s10"><span class="num">§10</span>Frontend: App Shell</h2>
+<!-- 11 -->
+<h2 id="s11"><span class="num">§11</span>Frontend: App Shell</h2>
 <div class="pkg-header">agentcanvas/frontend/src/</div>
 <table class="file-table">
 <tr><th>File</th><th></th><th></th><th>Role</th></tr>
@@ -480,11 +545,21 @@
 <tr><td><code>api.ts</code></td><td></td><td></td><td>REST client — <code>fetchJ</code>, <code>postJ</code>, <code>deleteJ</code>, <code>putJ</code> wrappers around <code>fetch</code> with JSON handling</td></tr>
 <tr><td><code>ws.ts</code></td><td></td><td></td><td>WebSocket manager — connects to <code>/ws</code>, dispatches typed events to listeners; reconnects on drop</td></tr>
 <tr><td><code>types.ts</code></td><td></td><td></td><td>Global TypeScript types — <code>NavStatus</code>, <code>EvalRunSummary</code>, <code>AppMode</code>, <code>EnvContextState</code></td></tr>
+<tr><td><code>errorStore.ts</code></td><td></td><td></td><td><code>useErrorStore</code> — Zustand store of <code>ErrorEnvelope</code>s fed by <code>error_event</code> WS frames; backfills from <code>GET /api/errors</code> on (re)connect</td></tr>
+<tr><td><code>errors.ts</code></td><td></td><td></td><td><code>ErrorEnvelope</code> types + severity helpers mirroring the backend <code>ErrorBus</code> schema</td></tr>
 <tr><td><code>vite-env.d.ts</code></td><td></td><td></td><td>Vite environment type declarations</td></tr>
 </table>
 
-<!-- 11 -->
-<h2 id="s11"><span class="num">§11</span>Frontend: Canvas Editor</h2>
+<h3>Shared components (<code>src/components/</code>)</h3>
+<table class="file-table">
+<tr><td><code>Header.tsx</code></td><td></td><td></td><td>Top app header — brand, <code>appMode</code> segmented toggle, execution-mode badge (polls <code>/api/navigate/execution-mode</code>), settings-gear entry</td></tr>
+<tr><td><code>SettingsModal.tsx</code></td><td></td><td></td><td>Settings modal — provider API keys, active provider + default model, profiles/favorites; reads/writes <code>/api/config</code> + <code>/api/profiles</code></td></tr>
+<tr><td><code>ErrorToast.tsx</code></td><td></td><td></td><td>Floating toast layer — auto-pops fresh error/warning <code>ErrorEnvelope</code>s (max 3, auto-dismiss); click focuses the Report tab</td></tr>
+<tr><td><code>ViewPanel.tsx</code></td><td></td><td></td><td>Static placeholder "Views" panel (RGB / Depth tiles) — presentational stub, not wired to data</td></tr>
+</table>
+
+<!-- 12 -->
+<h2 id="s12"><span class="num">§12</span>Frontend: Canvas Editor</h2>
 <div class="pkg-header">agentcanvas/frontend/src/canvas/</div>
 <p>Core graph editing workspace. React Flow drives the visual layer; a Zustand store owns all graph state.</p>
 <table class="file-table">
@@ -492,7 +567,7 @@
 <tr><td><code>CanvasPage.tsx</code></td><td></td><td></td><td>Canvas workspace page — tab management, error boundary, layout scaffold</td></tr>
 <tr><td><code>UnifiedGraphEditor.tsx</code></td><td></td><td></td><td>Core editor — root graph mode + subgraph drill-down mode; React Flow instance owner</td></tr>
 <tr><td><code>useFlowStore.ts</code></td><td></td><td></td><td>Zustand canvas store — tab-aware graph state, node/edge CRUD, selection, execution status per tab</td></tr>
-<tr><td><code>types.ts</code></td><td></td><td></td><td><code>GraphDefinition</code>, <code>NodeDef</code>, <code>EdgeDef</code>, <code>ContainerDef</code>, <code>StateDef</code>, <code>StateEdgeDef</code> — mirrors backend schema</td></tr>
+<tr><td><code>types.ts</code></td><td></td><td></td><td><code>GraphDefinition</code>, <code>NodeDef</code>, <code>EdgeDef</code>, <code>ContainerDef</code>, <code>StateDef</code>, <code>AccessGrantDef</code> — mirrors backend schema</td></tr>
 <tr><td><code>graphConversion.ts</code></td><td></td><td></td><td>Bidirectional conversion between <code>GraphDefinition</code> (backend JSON) and React Flow <code>Node[]</code>/<code>Edge[]</code></td></tr>
 <tr><td><code>defaultGraph.ts</code></td><td></td><td></td><td>Template graphs loaded for new tabs (Straightforward CMA, NavGPT-CE)</td></tr>
 <tr><td><code>portResolution.ts</code></td><td></td><td></td><td><code>resolveInstancePorts()</code> — applies <code>config.ports</code> overrides to class-level port schemas</td></tr>
@@ -502,12 +577,14 @@
 <tr><td><code>groupSelection.ts</code></td><td></td><td></td><td>Multi-select group logic — bounding box selection, group move</td></tr>
 <tr><td><code>flowStoreRef.ts</code></td><td></td><td></td><td>Bridge — holds a stable ref to the React Flow instance accessible outside React tree</td></tr>
 <tr><td><code>runPipeline.ts</code></td><td></td><td></td><td><code>runPipeline()</code> — builds <code>RunRequest</code>, calls <code>/api/run</code>, manages execution lifecycle from frontend side</td></tr>
-<tr><td><code>edgeTypes.ts</code></td><td></td><td></td><td>Custom edge type registry — registers <code>StateEdge</code> alongside default React Flow edge types</td></tr>
-<tr><td><code>edges/StateEdge.tsx</code></td><td></td><td></td><td>Renders dashed violet state edges with directional arrow</td></tr>
+<tr><td><code>edgeTypes.ts</code></td><td></td><td></td><td>Custom edge type registry — registers <code>AccessGrantEdge</code> alongside default React Flow edge types</td></tr>
+<tr><td><code>edges/AccessGrantEdge.tsx</code></td><td></td><td></td><td>Renders dashed violet access-grant edges (renamed from <code>StateEdge.tsx</code> with the state-edge → access-grant terminology shift, <a href="decisions/dataflow/adr-dataflow-004-tighten-wire-state-split.html">ADR-dataflow-004</a>)</td></tr>
+<tr><td><code>ShortcutCheatsheet.tsx</code></td><td></td><td></td><td>Keyboard-shortcut cheatsheet overlay</td></tr>
+<tr><td><code>useKeyboardShortcuts.ts</code></td><td></td><td></td><td>Global keyboard-shortcut hook — Space = play/pause, F = fit view, ? = cheatsheet; ignores typing targets</td></tr>
 </table>
 
-<!-- 12 -->
-<h2 id="s12"><span class="num">§12</span>Frontend: Canvas Nodes</h2>
+<!-- 13 -->
+<h2 id="s13"><span class="num">§13</span>Frontend: Canvas Nodes</h2>
 <div class="pkg-header">agentcanvas/frontend/src/canvas/nodes/</div>
 <p>The renderer tree that turns Python-defined <code>NodeUIConfig</code> into visible canvas nodes.</p>
 
@@ -527,10 +604,13 @@
 <h3>Generic renderer stack (<code>agentloop/inner/</code>)</h3>
 <p>All non-special nodes flow through this stack, driven entirely by <code>NodeUIConfig</code> from Python.</p>
 <table class="file-table">
-<tr><td><code>GenericBlockRenderer.tsx</code></td><td></td><td></td><td>Dispatcher — reads <code>ui_config.layout</code>, routes to <code>BlockLayout</code>, <code>StripLayout</code>, or <code>ViewerLayout</code></td></tr>
+<tr><td><code>GenericBlockRenderer.tsx</code></td><td></td><td></td><td>Dispatcher — reads <code>ui_config.layout</code>, routes to <code>BlockLayout</code>, <code>StripLayout</code>, <code>ViewerLayout</code>, <code>NoteLayout</code>, or <code>ImageGridViewerLayout</code></td></tr>
 <tr><td><code>layouts/BlockLayout.tsx</code></td><td></td><td></td><td>Standard block layout — title bar + config fields + port handles</td></tr>
 <tr><td><code>layouts/StripLayout.tsx</code></td><td></td><td></td><td>Horizontal strip — compact port-only view for pass-through nodes</td></tr>
 <tr><td><code>layouts/ViewerLayout.tsx</code></td><td></td><td></td><td>Viewer layout — display-only fields for output sink nodes</td></tr>
+<tr><td><code>layouts/ImageGridViewerLayout.tsx</code></td><td></td><td></td><td><code>imageGrid</code> layout — rows×cols image grid for the configurable <code>imageViewer</code> (<a href="decisions/components/adr-components-007-configurable-image-viewer.html">ADR-components-007</a>)</td></tr>
+<tr><td><code>layouts/NoteLayout.tsx</code></td><td></td><td></td><td><code>note</code> layout — markdown billboard rendering for the <code>note</code> built-in</td></tr>
+<tr><td><code>layouts/IterInExpandPanel.tsx</code></td><td></td><td></td><td>iterIn expand panel — edits the two-sided iterIn's <code>initPorts</code> (with per-port <code>persist</code> checkboxes) and shows the synthesised init/iterOut port surface; edits resync handles live</td></tr>
 <tr><td><code>layouts/ConfigFieldRenderer.tsx</code></td><td></td><td></td><td>Renders a single <code>ConfigField</code> — label, slider, text, select, toggle, textarea, port_list</td></tr>
 <tr><td><code>layouts/PortListEditor.tsx</code></td><td></td><td></td><td><code>port_list</code> config field widget — add/remove/rename ports for IterIn/IterOut</td></tr>
 <tr><td><code>layouts/layoutUtils.ts</code></td><td></td><td></td><td>Shared layout helpers — port position calculation, label truncation</td></tr>
@@ -546,8 +626,8 @@
 <tr><td><code>MetricTableField.tsx</code></td><td></td><td></td><td>Key-value metric table (SR, SPL, NE, etc.)</td></tr>
 </table>
 
-<!-- 13 -->
-<h2 id="s13"><span class="num">§13</span>Frontend: Canvas Panels</h2>
+<!-- 14 -->
+<h2 id="s14"><span class="num">§14</span>Frontend: Canvas Panels</h2>
 <div class="pkg-header">agentcanvas/frontend/src/canvas/panels/</div>
 <p>Sidebar and toolbar UI components that surround the React Flow canvas.</p>
 <table class="file-table">
@@ -556,20 +636,21 @@
 <tr><td><code>NodeLibrary.tsx</code></td><td></td><td></td><td>Draggable node palette — shows only built-in + currently loaded nodeset nodes</td></tr>
 <tr><td><code>PropertiesPanel.tsx</code></td><td></td><td></td><td>Selected node property editor — config field forms, port visibility</td></tr>
 <tr><td><code>StatePanel.tsx</code></td><td></td><td></td><td>State container editor — add/remove named state entries, set reducer type</td></tr>
-<tr><td><code>OutputDrawer.tsx</code></td><td></td><td></td><td>Bottom drawer — tabs for Observation, Logs, Step Log</td></tr>
+<tr><td><code>OutputDrawer.tsx</code></td><td></td><td></td><td>Bottom drawer — Observation / Logs / Step Log / State / Report tabs</td></tr>
 <tr><td><code>LogPanel.tsx</code></td><td></td><td></td><td>Execution log tab — lists <code>exec_log</code> events grouped by node</td></tr>
 <tr><td><code>StepLogPanel.tsx</code></td><td></td><td></td><td>Per-step log tab — full I/O trace for the current step</td></tr>
 <tr><td><code>ExecutionToolbar.tsx</code></td><td></td><td></td><td>Run / Pause / Stop / Step buttons + execution status badge</td></tr>
-<tr><td><code>EnvContextBar.tsx</code></td><td></td><td></td><td>Environment context strip — split selector, episode navigator, episode preview, browser modal</td></tr>
+<tr><td><code>EnvPanel.tsx</code></td><td></td><td></td><td>Env panel strip (renamed from <code>EnvContextBar.tsx</code>; episode browsing folded in) — renders any nodeset's <code>BaseEnvPanel</code> from <code>/api/env-panels</code>: suite/split selectors, episode navigator, panel actions</td></tr>
 <tr><td><code>ObservationPanel.tsx</code></td><td></td><td></td><td>Current observation display — image + instruction text</td></tr>
-<tr><td><code>EpisodeBrowser.tsx</code></td><td></td><td></td><td>Modal episode selector — browse episodes with preview images</td></tr>
+<tr><td><code>ReportPanel.tsx</code></td><td></td><td></td><td>Report tab — time-ordered <code>ErrorEnvelope</code> list with severity filter chips, click-to-expand (<a href="decisions/observability/adr-observability-004-error-reporting-bus.html">ADR-observability-004</a>)</td></tr>
+<tr><td><code>ResizableBottomPanel.tsx</code></td><td></td><td></td><td>Drag-resizable wrapper for the bottom drawer</td></tr>
 <tr><td><code>GraphStateBanner.tsx</code></td><td></td><td></td><td>Banner shown during/after execution — run status, error messages</td></tr>
 <tr><td><code>TemplatePicker.tsx</code></td><td></td><td></td><td>Graph template picker modal — choose preset to load into new tab</td></tr>
 <tr><td><code>SaveGraphDialog.tsx</code></td><td></td><td></td><td>Save graph / save-as-node dialog — name, group, kind selection</td></tr>
 </table>
 
-<!-- 14 -->
-<h2 id="s14"><span class="num">§14</span>Frontend: Evaluation Page</h2>
+<!-- 15 -->
+<h2 id="s15"><span class="num">§15</span>Frontend: Evaluation Page</h2>
 <div class="pkg-header">agentcanvas/frontend/src/eval/</div>
 <p>Batch evaluation launcher and live monitor (<a href="decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a>).</p>
 <table class="file-table">
@@ -584,8 +665,8 @@
 <tr><td><code>RunHistory.tsx</code></td><td></td><td></td><td>Previous runs list — load past run results for comparison</td></tr>
 </table>
 
-<!-- 15 -->
-<h2 id="s15"><span class="num">§15</span>Frontend: Log Viewer</h2>
+<!-- 16 -->
+<h2 id="s16"><span class="num">§16</span>Frontend: Log Viewer</h2>
 <div class="pkg-header">agentcanvas/frontend/src/logs/</div>
 <p>Dedicated page for post-hoc inspection of execution logs (<a href="decisions/observability/adr-observability-003-execution-logs.html">ADR-observability-003</a>).</p>
 <table class="file-table">
@@ -613,11 +694,24 @@
 <tr><td><code>ErrorRenderer.tsx</code></td><td></td><td></td><td>Error traces — red-highlighted stack output</td></tr>
 <tr><td><code>TensorRenderer.tsx</code></td><td></td><td></td><td>NumPy array — shape, dtype, value preview</td></tr>
 <tr><td><code>MetricsRenderer.tsx</code></td><td></td><td></td><td><code>METRICS</code> wire — key-value metric table</td></tr>
-<tr><td><code>StepResultRenderer.tsx</code></td><td></td><td></td><td><code>STEP_RESULT</code> wire — done flag, info dict, reward</td></tr>
+<tr><td><code>StepResultRenderer.tsx</code></td><td></td><td></td><td><code>STEP_RESULT</code> wire (deprecated type) — done flag, info dict, reward</td></tr>
+<tr><td><code>ImageListRenderer.tsx</code></td><td></td><td></td><td><code>LIST[IMAGE]</code> — thumbnail strip for multi-image port values</td></tr>
 </table>
 
-<!-- 16 -->
-<h2 id="s16"><span class="num">§16</span>Frontend: NodeSet Manager</h2>
+<!-- 17 -->
+<h2 id="s17"><span class="num">§17</span>Frontend: Replay &amp; Monitor</h2>
+<div class="pkg-header">agentcanvas/frontend/src/replay/ · src/pages/monitor/</div>
+<p>Two post-hoc inspection pages beyond the log viewer: episode replay and system/run performance monitoring.</p>
+<table class="file-table">
+<tr><td><code>replay/ReplayPage.tsx</code></td><td></td><td></td><td>Episode replay page — steps through the env-agnostic replay timeline served by <code>/api/replay</code> (§2.5), with frame scrubbing</td></tr>
+<tr><td><code>replay/replayApi.ts</code></td><td></td><td></td><td>Replay API client — timeline + frame fetch wrappers</td></tr>
+<tr><td><code>pages/monitor/MonitorPage.tsx</code></td><td></td><td></td><td>Monitor page — machine resource sparklines (polls <code>/api/system/usage</code>, §2.3) + the JobScheduler queue view (polls <code>/api/eval/v2/queue</code>) + per-run performance view (System Log)</td></tr>
+<tr><td><code>pages/monitor/NodeTimingTable.tsx</code></td><td></td><td></td><td>Per-node timing table — where a run's wall-clock went, node by node</td></tr>
+<tr><td><code>pages/monitor/Sparkline.tsx</code></td><td></td><td></td><td>Inline sparkline chart for resource/timing series</td></tr>
+</table>
+
+<!-- 18 -->
+<h2 id="s18"><span class="num">§18</span>Frontend: NodeSet Manager</h2>
 <div class="pkg-header">agentcanvas/frontend/src/pages/</div>
 <table class="file-table">
 <tr><td><code>NodeSetManager.tsx</code></td><td></td><td></td><td>Full NodeSet manager page — two sections: Local NodeSets (load/unload), Server Mode (start/stop/restart)</td></tr>
@@ -625,8 +719,8 @@
 <tr><td><code>manager/ServerCard.tsx</code></td><td></td><td></td><td>Card for one server-mode nodeset — URL, health status, start/stop/restart controls</td></tr>
 </table>
 
-<!-- 17 -->
-<h2 id="s17"><span class="num">§17</span>Config and Build</h2>
+<!-- 19 -->
+<h2 id="s19"><span class="num">§19</span>Config and Build</h2>
 <table class="file-table">
 <tr><td><code>frontend/package.json</code></td><td></td><td></td><td>NPM manifest — React 18, <code>@xyflow/react</code>, Zustand, Tailwind, Vite, Three.js</td></tr>
 <tr><td><code>frontend/vite.config.ts</code></td><td></td><td></td><td>Vite config — API proxy (<code>/api</code> to <code>localhost:8000</code>), React plugin</td></tr>
@@ -653,15 +747,17 @@
       <a class="toc-h2" href="#s6">§6Backend: LLM System</a>
       <a class="toc-h2" href="#s7">§7Backend: Logging</a>
       <a class="toc-h2" href="#s8">§8Backend: Standard Library</a>
-      <a class="toc-h2" href="#s9">§9Backend: Dependency Flow</a>
-      <a class="toc-h2" href="#s10">§10Frontend: App Shell</a>
-      <a class="toc-h2" href="#s11">§11Frontend: Canvas Editor</a>
-      <a class="toc-h2" href="#s12">§12Frontend: Canvas Nodes</a>
-      <a class="toc-h2" href="#s13">§13Frontend: Canvas Panels</a>
-      <a class="toc-h2" href="#s14">§14Frontend: Evaluation Page</a>
-      <a class="toc-h2" href="#s15">§15Frontend: Log Viewer</a>
-      <a class="toc-h2" href="#s16">§16Frontend: NodeSet Manager</a>
-      <a class="toc-h2" href="#s17">§17Config and Build</a>
+      <a class="toc-h2" href="#s9">§9Backend: Services, Replay &amp; Tools</a>
+      <a class="toc-h2" href="#s10">§10Backend: Dependency Flow</a>
+      <a class="toc-h2" href="#s11">§11Frontend: App Shell</a>
+      <a class="toc-h2" href="#s12">§12Frontend: Canvas Editor</a>
+      <a class="toc-h2" href="#s13">§13Frontend: Canvas Nodes</a>
+      <a class="toc-h2" href="#s14">§14Frontend: Canvas Panels</a>
+      <a class="toc-h2" href="#s15">§15Frontend: Evaluation Page</a>
+      <a class="toc-h2" href="#s16">§16Frontend: Log Viewer</a>
+      <a class="toc-h2" href="#s17">§17Frontend: Replay &amp; Monitor</a>
+      <a class="toc-h2" href="#s18">§18Frontend: NodeSet Manager</a>
+      <a class="toc-h2" href="#s19">§19Config and Build</a>
     </nav>
   </div>
 </aside>

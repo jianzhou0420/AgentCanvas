@@ -551,14 +551,6 @@ AgentCanvas는 **pre-1.0이며 활발히 개발 중**입니다. 상태는 진행
 
 ---
 
-## 스타 히스토리
-
-<a href="https://star-history.com/#jianzhou0420/AgentCanvas&Date">
-  <img src="https://api.star-history.com/svg?repos=jianzhou0420/AgentCanvas&type=Date" alt="스타 히스토리 차트" width="600">
-</a>
-
----
-
 ## 9. 인용
 
 연구에서 AgentCanvas를 사용하신다면 다음을 인용해 주세요:

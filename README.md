@@ -551,14 +551,6 @@ Every nodeset and graph is credited to its author/maintainer on the Credits boar
 
 ---
 
-## Star History
-
-<a href="https://star-history.com/#jianzhou0420/AgentCanvas&Date">
-  <img src="https://api.star-history.com/svg?repos=jianzhou0420/AgentCanvas&type=Date" alt="Star History Chart" width="600">
-</a>
-
----
-
 ## 9. Citation
 
 If you use AgentCanvas in your research, please cite:

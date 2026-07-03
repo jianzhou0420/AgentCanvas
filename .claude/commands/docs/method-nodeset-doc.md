@@ -99,7 +99,12 @@ also add `<meta name="nav-title" content="<Method>">` in `<head>` before
 at-a-glance (incl. **Fidelity** row), §1 upstream analysis (+ invariants), §2 port
 (flow / inventory / state / boundary / prompts), §3 buckets A–E, §4 eval, §5 usage,
 §6 NOT, §7 sources, §8 changelog. Copy the `<main>` scaffold from spec §6. For policy
-nodesets, re-aim §1 at the inference contract (spec §4).
+nodesets, re-aim §1 at the inference contract (spec §4). **Changelog placement (since
+2026-07-02)**: the §8 changelog goes in the gitignored fragment
+`docs/_changelogs/<page-rel>` (heading + entry list, no leading `<hr>`), NOT in the
+page HTML — a section committed into a page is stripped from the published site by
+the CI guard (`docs/_lib/_strip_changelogs.py`); the local dev site re-attaches
+fragments via `nav.js`.
 
 Drafting rules that earn their keep:
 
@@ -143,7 +148,8 @@ system prompt carried in `llmCall.config`, node not instantiated). Concretely:
    stratification and engine known-gaps.
 4. **Usage truth** — current `/experiment:run` form (graph-only since 2026-05-07, no
    `-- <cmd>`), profile exists in `profiles.yaml`.
-5. Fix findings and add a review-pass changelog entry to the page.
+5. Fix findings and add a review-pass changelog entry to the page's
+   `docs/_changelogs/<page-rel>` fragment.
 
 ## Step 6 — Publish
 
