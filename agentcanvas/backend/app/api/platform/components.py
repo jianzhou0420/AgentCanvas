@@ -191,7 +191,7 @@ async def unload_nodeset(name: str):
 async def ensure_nodesets(req: dict):
     """Auto-load all nodesets required by a graph's node types.
 
-    Body: { "node_types": ["env_habitat__step", "policy_cma__forward", ...] }
+    Body: { "node_types": ["env_habitat__step", "policy_adapter_vlnce__predict", ...] }
     Returns: { "loaded": [...], "already_loaded": [...], "failed": [...], "unknown": [...] }
 
     Shared logic used by both canvas and eval.

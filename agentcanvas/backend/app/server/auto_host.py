@@ -7,10 +7,10 @@ Usage (single-file nodeset)::
         --class SamNodeSet \\
         --port 9200
 
-Usage (package nodeset, e.g. ``policy_vla/__init__.py``)::
+Usage (package nodeset, e.g. ``policy_adapter_vla/__init__.py``)::
 
     python -m app.server.auto_host \\
-        --module workspace.nodesets.server.policy_vla \\
+        --module workspace.nodesets.policy.policy_adapter_vla \\
         --class PolicyVlaNodeSet \\
         --port 9200
 
@@ -102,7 +102,7 @@ def main() -> None:
     parser.add_argument(
         "--module",
         default=None,
-        help="Dotted module name (package mode, e.g. workspace.nodesets.server.policy_vla)",
+        help="Dotted module name (package mode, e.g. workspace.nodesets.policy.policy_adapter_vla)",
     )
     parser.add_argument("--class", dest="cls", required=True, help="BaseNodeSet class name")
     parser.add_argument("--port", type=int, default=9200, help="Port to serve on (default: 9200)")

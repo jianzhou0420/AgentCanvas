@@ -803,7 +803,7 @@ class NullSourceNode(BaseCanvasNode):
 
     Bridges the gap when a graph needs to feed a typed-but-empty value into
     a downstream port (e.g. SIMPLER has no wrist camera, but
-    ``policy_vla__adapt_env_to_canonical.wrist_image`` is a required IMAGE
+    ``env_adapter__vla_env_to_canonical.wrist_image`` is a required IMAGE
     input). Wire ``value`` into an iterIn init port as a run-invariant;
     downstream nodes receive ``None`` every iteration. The output's
     ``wire_type`` is author-configurable so the edge type-checker stays

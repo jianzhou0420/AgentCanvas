@@ -8,7 +8,7 @@ stacked, and scatters K result slices back to K awaiting HTTP responses.
 
 Why server-side instead of client-side rendezvous:
     * The K workers run in **separate** ``LoopRunner`` instances inside one
-      process; their ``policy_cma__forward`` calls all proxy to the same
+      process; their ``policy_adapter_vlnce__predict`` calls all proxy to the same
       policy subprocess. The natural seam to batch them is **server-side**,
       not client-side, because that's where the K calls converge.
     * Keeping the rendezvous in-process (within the policy subprocess)
@@ -57,7 +57,7 @@ log = logging.getLogger("agentcanvas.batched-inference")
 
 # Batch key shape: (function_name, config_hash). See module docstring.
 # Typing.Tuple form (not ``tuple[...]``) so this module imports under the
-# Python 3.8 vlnce env that hosts the habitat / policy_cma server-mode
+# Python 3.8 vlnce env that hosts the habitat / policy_adapter_vlnce server-mode
 # subprocesses. ``from __future__ import annotations`` doesn't cover
 # module-level type aliases (they're evaluated at import time).
 BatchKey = Tuple[str, str]

@@ -35,7 +35,7 @@ log = logging.getLogger("agentcanvas.vlm_prismatic")
 
 _DEFAULT_MODEL_ID = "prism-dinosiglip+7b"
 
-# Subprocess-local singleton. Pattern mirrors policy_cma.py.
+# Subprocess-local singleton. Pattern mirrors policy_adapter_vlnce.
 _VLM_BUNDLE: dict | None = None
 _VLM_LOAD_LOCK = threading.Lock()
 

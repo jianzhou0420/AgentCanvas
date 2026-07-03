@@ -470,7 +470,7 @@ def _interpret_heading(relative_deg: float) -> str:
 def _try_get_habitat_mgr() -> Any:
     """Try to access HabitatEnvManager via the component registry.
 
-    Uses the same pattern as policy_cma.py — avoids importing the habitat
+    Uses the same pattern as the VLN-CE policy server (now policy_adapter_vlnce) — avoids importing the habitat
     module directly, which would fail under the agentcanvas env (ADR-020).
     """
     try:

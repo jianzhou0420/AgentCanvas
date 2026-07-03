@@ -1,6 +1,6 @@
 {
   "name": "VLA Policy Runner (LIBERO)",
-  "description": "Run any vendored VLA policy (Pi0 / SmolVLA / DiffusionPolicy / DROID-DP) on LIBERO via the 5-node adapter pipeline (4 atomic adapter stages + 1 model forward, 1:1 with vlaworkspace's RobotAdaptor + ModelAdaptor methods). Each config-owning node has a single `select` dropdown whose options come from filesystem discovery: **adapt_env_to_canonical** lists `adapters/robots/*.py` (`robot`); **adapt_canonical_to_model** lists `adapters/models/*.py` (`model`); **predict** lists `policies/*.py` (`policy`) plus a `checkpoint_path` (per-experiment). Each adapter / policy file owns its own `DEFAULT_KWARGS` transcribed from upstream Hydra YAMLs \u2014 drop a new .py in the folder = new dropdown entry; delete a file = option vanishes. Switch model = change two dropdowns (model + policy) and the checkpoint_path. The action-side nodes (**adapt_model_to_canonical** and **adapt_canonical_to_env**) carry no config. Topology (gym-like, 2026-06-10): env_libero__reset emits metadata only; seed_obs (env_libero__observe_egocentric) pulls the first-iter loop carry (agentview/wrist/state); inside the loop, iterIn fans out to adapt_env_to_canonical \u2192 adapt_canonical_to_model \u2192 predict \u2192 adapt_model_to_canonical \u2192 adapt_canonical_to_env, whose JSON action chunk feeds env_libero__step_continuous (control signals only); loop_obs re-observes per iter; evaluate (trigger \u2190 step.info) harvests metrics.",
+  "description": "Run any vendored VLA policy (Pi0 / SmolVLA / DiffusionPolicy / DROID-DP) on LIBERO via the 5-node General Policy Adapter pipeline (env_adapter stages 1/5 + policy_adapter_vla stages 2/3/4, 1:1 with vlaworkspace's RobotAdaptor + ModelAdaptor methods). Each config-owning node has a single `select` dropdown whose options come from filesystem discovery: **adapt_env_to_canonical** lists `adapters/robots/*.py` (`robot`); **adapt_canonical_to_model** lists `adapters/models/*.py` (`model`); **predict** lists `policies/*.py` (`policy`) plus a `checkpoint_path` (per-experiment). Each adapter / policy file owns its own `DEFAULT_KWARGS` transcribed from upstream Hydra YAMLs — drop a new .py in the folder = new dropdown entry; delete a file = option vanishes. Switch model = change two dropdowns (model + policy) and the checkpoint_path. The action-side nodes (**adapt_model_to_canonical** and **adapt_canonical_to_env**) carry no config. Topology (gym-like, 2026-06-10): env_libero__reset emits metadata only; seed_obs (env_libero__observe_egocentric) pulls the first-iter loop carry (agentview/wrist/state); inside the loop, iterIn fans out to adapt_env_to_canonical → adapt_canonical_to_model → predict → adapt_model_to_canonical → adapt_canonical_to_env, whose JSON action chunk feeds env_libero__step_continuous (control signals only); loop_obs re-observes per iter; evaluate (trigger ← step.info) harvests metrics.",
   "nodes": [
     {
       "id": "env_reset",
@@ -64,8 +64,8 @@
     },
     {
       "id": "adapt_env_to_canonical",
-      "type": "policy_vla__adapt_env_to_canonical",
-      "label": "VLA: Env \u2192 Canonical",
+      "type": "env_adapter__vla_env_to_canonical",
+      "label": "VLA: Env → Canonical",
       "position": {
         "x": 840,
         "y": 0
@@ -76,8 +76,8 @@
     },
     {
       "id": "adapt_canonical_to_model",
-      "type": "policy_vla__adapt_canonical_to_model",
-      "label": "VLA: Canonical \u2192 Model",
+      "type": "policy_adapter_vla__adapt_canonical_to_model",
+      "label": "VLA: Canonical → Model",
       "position": {
         "x": 1120,
         "y": 0
@@ -88,7 +88,7 @@
     },
     {
       "id": "predict",
-      "type": "policy_vla__predict",
+      "type": "policy_adapter_vla__predict",
       "label": "VLA: Predict",
       "position": {
         "x": 1400,
@@ -102,8 +102,8 @@
     },
     {
       "id": "adapt_model_to_canonical",
-      "type": "policy_vla__adapt_model_to_canonical",
-      "label": "VLA: Model \u2192 Canonical",
+      "type": "policy_adapter_vla__adapt_model_to_canonical",
+      "label": "VLA: Model → Canonical",
       "position": {
         "x": 1680,
         "y": 0
@@ -112,13 +112,15 @@
     },
     {
       "id": "adapt_canonical_to_env",
-      "type": "policy_vla__adapt_canonical_to_env",
-      "label": "VLA: Canonical \u2192 Env Action",
+      "type": "env_adapter__vla_canonical_to_env",
+      "label": "VLA: Canonical → Env Action",
       "position": {
         "x": 1960,
         "y": 0
       },
-      "config": {}
+      "config": {
+        "robot": "libero_robot"
+      }
     },
     {
       "id": "env_step",
@@ -173,7 +175,7 @@
         "y": -372.65144477868273
       },
       "config": {
-        "markdown": "**Env-side adapters \u2014 bound to LIBERO**\n\n`adapt_env_to_canonical` (stage 1) and `adapt_canonical_to_env` (stage 4) are coupled to whichever env this graph uses.\n\nTo swap env (\u2192 SIMPLER, Franka, \u2026) you must replace **all four** together: the two `env_libero__*` nodes **and** both env-side adapters."
+        "markdown": "**Env-side adapters — bound to LIBERO**\n\n`adapt_env_to_canonical` (stage 1) and `adapt_canonical_to_env` (stage 4) are coupled to whichever env this graph uses.\n\nTo swap env (→ SIMPLER, Franka, …) you must replace **all four** together: the two `env_libero__*` nodes **and** both env-side adapters."
       }
     },
     {
@@ -185,7 +187,7 @@
         "y": -426.59934970988576
       },
       "config": {
-        "markdown": "**Policy \u2014 pick as a triple**\n\nThe `model` dropdown on `adapt_canonical_to_model` drives all three:\n\n1. stage 2 packing (this node)\n2. the policy class in `predict`\n3. stage 3 unpacking (`adapt_model_to_canonical`)\n\nMismatched configs (e.g. `model=pi0` + a SmolVLA `checkpoint_path`) fail at load. Set them to match."
+        "markdown": "**Policy — pick as a triple**\n\nThe `model` dropdown on `adapt_canonical_to_model` drives all three:\n\n1. stage 2 packing (this node)\n2. the policy class in `predict`\n3. stage 3 unpacking (`adapt_model_to_canonical`)\n\nMismatched configs (e.g. `model=pi0` + a SmolVLA `checkpoint_path`) fail at load. Set them to match."
       }
     },
     {

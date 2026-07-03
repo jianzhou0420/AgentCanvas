@@ -608,7 +608,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
   <td><strong><code>shared</code></strong> (default)</td>
   <td>1 (singleton — fan-out ignored)</td>
   <td>1 untagged env panel (<code>"env_X"</code>)</td>
-  <td>Inference-shaped nodesets that don't own per-episode state — <code>policy_vlnce</code>, <code>policy_vla</code>, <code>voxposer</code>, <code>navgpt_mp3d_tools</code> (BLIP-2/RCNN wrappers, lazy-loaded under <code>threading.Lock</code>). All workers share one subprocess</td>
+  <td>Inference-shaped nodesets that don't own per-episode state — <code>policy_adapter_vlnce</code>, <code>policy_adapter_vla</code>, <code>voxposer</code>, <code>navgpt_mp3d_tools</code> (BLIP-2/RCNN wrappers, lazy-loaded under <code>threading.Lock</code>). All workers share one subprocess</td>
 </tr>
 <tr>
   <td><strong><code>replicated</code></strong></td>
@@ -635,7 +635,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <h3 id="114-rollback-on-partial-failure"><span class="num">11.4</span> Rollback on partial failure</h3>
 <p>If any worker fails to start or its <code>RemoteEnvPanelProxy</code> registration fails, the registry stops all already-started workers, removes their <code>_auto_servers</code> entries, and de-registers their proxy node types before re-raising the exception — leaving no half-initialised state.</p>
 <h2 id="12-batched-inference-adr-eval-002-pc"><span class="num">12.</span> Batched Inference (ADR-eval-002 PC)</h2>
-<p>For GPU-heavy nodes like <code>policy_cma__forward</code>, sending one sample per HTTP request wastes throughput. The batched inference tier rendezvous K concurrent requests inside the server subprocess, calls the underlying handler <strong>once</strong> with all K samples stacked, then scatters K result slices back to the K awaiting callers.</p>
+<p>For GPU-heavy nodes like <code>policy_adapter_vla__predict</code>, sending one sample per HTTP request wastes throughput. The batched inference tier rendezvous K concurrent requests inside the server subprocess, calls the underlying handler <strong>once</strong> with all K samples stacked, then scatters K result slices back to the K awaiting callers.</p>
 <p>The rendezvous is <strong>server-side</strong> (inside the <code>AutoServerApp</code> subprocess) because that is where K concurrent proxy calls from K <code>LoopRunner</code> instances naturally converge. This avoids a separate inference-server subprocess — one <code>AutoServerApp</code> per nodeset, one subprocess, one <code>/health</code>.</p>
 <h3 id="121-batchedinferenceserver"><span class="num">12.1</span> BatchedInferenceServer</h3>
 <p><code>BatchedInferenceServer</code> lives inside each <code>AutoServerApp</code> instance. It lazily creates one <code>_BatchQueue</code> per batch key. Handlers are registered eagerly at <code>get_functions()</code> time via <code>_make_handler</code> when <code>type(tool).batched</code> is <code>True</code>.</p>
@@ -676,7 +676,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
     <span class="n">batch_dim</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>   <span class="c1"># name of the input port carrying the batch axis</span>
 </pre>
 <p><code>batched = False</code> (default) — <code>_make_handler</code> creates a plain async handler that calls <code>tool.forward</code> once per request. <code>batched = True</code> — the handler submits to the shared <code>BatchedInferenceServer</code> and awaits its slice. <code>register_node</code> validates the combination at scan time.</p>
-<p><code>policy_cma__forward</code> is the first node to opt in.</p>
+<p>The retired <code>policy_cma__forward</code> was the first node to opt in; today's user is <code>policy_adapter_vla__predict</code>.</p>
 <h3 id="124-handler-contract"><span class="num">12.4</span> Handler contract</h3>
 <p>A batched node's <code>forward</code> receives:</p>
 <pre class="hl"><span class="n">inputs</span> <span class="o">=</span> <span class="p">{</span><span class="n">SAMPLES_KEY</span><span class="p">:</span> <span class="p">[</span><span class="n">inputs_dict_0</span><span class="p">,</span> <span class="n">inputs_dict_1</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">inputs_dict_K</span><span class="o">-</span><span class="mi">1</span><span class="p">]}</span>
