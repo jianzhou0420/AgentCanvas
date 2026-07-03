@@ -190,6 +190,16 @@ class LLMCallNode(BaseCanvasNode):
                     {"value": "auto", "label": "auto"},
                 ],
             ),
+            ConfigField(
+                "image_mime",
+                "select",
+                "Image MIME (b64 passthrough)",
+                default="image/png",
+                options=[
+                    {"value": "image/png", "label": "image/png"},
+                    {"value": "image/jpeg", "label": "image/jpeg"},
+                ],
+            ),
             ConfigField("write_to_state", "text", "Write response to state", default=""),
             ConfigField(
                 "mode",
@@ -308,6 +318,12 @@ class LLMCallNode(BaseCanvasNode):
         max_tokens = int(self.config.get("max_tokens", 1024))
         n = max(1, int(self.config.get("n", 1) or 1))
         image_detail = str(self.config.get("image_detail", "low") or "low")
+        # data-URL MIME for image payloads. b64 strings arriving on the rgb
+        # port are passed through verbatim, so a producer emitting JPEG
+        # (e.g. Three-Step's build_images, mirroring upstream's JPEG
+        # re-encodes) sets image_mime="image/jpeg" on this node's config.
+        # numpy arrays are still encoded PNG — leave the default for those.
+        image_mime = str(self.config.get("image_mime", "image/png") or "image/png")
         mode = self.config.get("mode", "single_turn")
         _has_gs = hasattr(ctx, "graph_state") and ctx.graph_state is not None
 
@@ -357,6 +373,7 @@ class LLMCallNode(BaseCanvasNode):
                     max_tokens=max_tokens,
                     temperature=temp,
                     detail=image_detail,
+                    mime=image_mime,
                 )
                 response = responses_list[0] if responses_list else None
             else:
@@ -369,6 +386,7 @@ class LLMCallNode(BaseCanvasNode):
                     max_tokens=max_tokens,
                     temperature=temp,
                     detail=image_detail,
+                    mime=image_mime,
                 )
                 responses_list = [response] if response else []
         else:

@@ -200,6 +200,13 @@ class HabitatEnvManager:
         self._step_count: int = 0
         self._lock = threading.Lock()
         self._config = None
+        # RGB sensor override (h, w) — None keeps the YAML default (224 for
+        # VLN-CE cma_pm_da). Set before initialize() (pending) or via
+        # ensure_rgb_resolution() (re-creates the env). Depth is never
+        # touched (DDPPO/TRM need 256).
+        self._rgb_hw: tuple[int, int] | None = None
+        # Remembered initialize() args so ensure_rgb_resolution can rebuild.
+        self._init_args: tuple | None = None
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="habitat",
@@ -215,7 +222,7 @@ class HabitatEnvManager:
 
     # ── Lifecycle ──
 
-    def initialize(
+    def initialize(  # noqa: PLR0913
         self,
         exp_config: str,
         split: str = "val_unseen",
@@ -260,6 +267,14 @@ class HabitatEnvManager:
             config = get_config(exp_config)
             config.defrost()
 
+            if self._rgb_hw is not None:
+                h, w = self._rgb_hw
+                # Mirrors the Three-Step fork's vlnce_task.yaml:13-16 RGB
+                # sensor raise (224 → 1024); depth stays at the YAML value.
+                config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.HEIGHT = int(h)
+                config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.WIDTH = int(w)
+                log.info("RGB sensor override: %dx%d", h, w)
+
             config.TASK_CONFIG.DATASET.SPLIT = split
             config.TASK_CONFIG.DATASET.ROLES = ["guide"]
             config.TASK_CONFIG.DATASET.LANGUAGES = config.EVAL.LANGUAGES
@@ -274,6 +289,7 @@ class HabitatEnvManager:
 
             config.freeze()
             self._config = config
+            self._init_args = (exp_config, split, gpu_id, max_steps)
 
             log.info("Creating Habitat env (ENV_NAME=%s) ...", config.ENV_NAME)
             env_cls = get_env_class(config.ENV_NAME)
@@ -298,6 +314,61 @@ class HabitatEnvManager:
                 log.info("Shutting down Habitat env")
                 self._env.close()
                 self._env = None
+
+    def current_rgb_resolution(self) -> int | None:
+        if self._config is None:
+            return None
+        try:
+            return int(self._config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.WIDTH)
+        except Exception:
+            return None
+
+    def ensure_rgb_resolution(self, size: int) -> dict:
+        """Make the RGB sensor render at ``size``×``size`` (per-graph knob).
+
+        Not yet initialized → record as a pending override for initialize().
+        Initialized at a different size → tear the env down and rebuild with
+        the remembered initialize() args, then re-place the SAME episode
+        (set_episode_by_index) so panel-owned placement survives the rebuild.
+        One-time cost per worker (~scene reload); no-op when sizes match.
+        """
+        size = int(size)
+        if size <= 0:
+            return {"error": f"invalid rgb resolution {size}"}
+        self._rgb_hw = (size, size)
+        if self._env is None:
+            log.info("ensure_rgb_resolution(%d): pending until initialize()", size)
+            return {"status": "pending", "rgb": size}
+        if self.current_rgb_resolution() == size:
+            return {"status": "ok", "rgb": size}
+        if self._init_args is None:
+            return {"error": "cannot rebuild env — initialize args unknown"}
+
+        # Capture current episode placement before the rebuild.
+        ep_index: int | None = None
+        with self._lock:
+            try:
+                dataset = self._env._env._dataset
+                cur_id = str(self._env._env.current_episode.episode_id)
+                for i, ep in enumerate(dataset.episodes):
+                    if str(ep.episode_id) == cur_id:
+                        ep_index = i
+                        break
+            except Exception:
+                ep_index = None
+
+        log.info(
+            "ensure_rgb_resolution(%d): rebuilding env (was %s), episode index %s",
+            size,
+            self.current_rgb_resolution(),
+            ep_index,
+        )
+        exp_config, split, gpu_id, max_steps = self._init_args
+        self.shutdown()
+        self.initialize(exp_config, split, gpu_id, max_steps)
+        if ep_index is not None:
+            self.set_episode_by_index(ep_index)
+        return {"status": "rebuilt", "rgb": size, "episode_index": ep_index}
 
     @property
     def initialized(self) -> bool:
@@ -1236,7 +1307,17 @@ def _habitat_step_info(result: dict) -> dict:
 class ResetHabitatTool(BaseCanvasNode):
     node_type = "env_habitat__reset"
     display_name = "Habitat: Reset"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="cyan",
+        config_fields=[
+            ConfigField(
+                "rgb_resolution",
+                "text",
+                label="RGB resolution (px, blank = YAML default)",
+                default="",
+            ),
+        ],
+    )
     description = "Ensure a live episode (re-arm if done) — emit instruction + ids, no observation"
     category = "environment"
     icon = "RotateCcw"
@@ -1257,6 +1338,17 @@ class ResetHabitatTool(BaseCanvasNode):
         # never in observe_* (pure reads): a post-loop re-fire of an observe
         # must not silently roll the env into a new episode under evaluate.
         mgr = _get_env()
+        # Per-graph RGB-resolution knob (Three-Step fork renders 1024; the
+        # VLN-CE YAML default 224 is correct for Open-Nav). Applied here —
+        # the first node to fire each episode — so a mismatched env is
+        # rebuilt once per worker and the placed episode is re-seated.
+        rgb_res = str((self.config or {}).get("rgb_resolution", "") or "").strip()
+        if rgb_res:
+            with contextlib.suppress(ValueError):
+                want = int(rgb_res)
+                if mgr.current_rgb_resolution() != want or not mgr.initialized:
+                    result = await _run_sync(mgr.ensure_rgb_resolution, want)
+                    self._self_log("rgb_resolution", result)
         if mgr._episode_done:
             await _run_sync(mgr.reset_episode)
         info = await _run_sync(mgr.get_episode_info)
