@@ -320,6 +320,7 @@ async def vlm_complete(
     max_tokens: int = 1024,
     temperature: float = 0.3,
     detail: str = "low",
+    mime: str = "image/png",
 ) -> str | None:
     """Call VLM API with text prompt and base64-encoded images.
 
@@ -340,6 +341,9 @@ async def vlm_complete(
             behaviour of every existing caller; ports that need high-resolution
             visual grounding (e.g. Three-Step Nav, whose upstream uses ``high``)
             pass ``detail="high"`` explicitly.
+        mime: data-URL MIME type for the images (``"image/png"`` default;
+            pass ``"image/jpeg"`` when the base64 payloads are JPEG — e.g.
+            Open-Nav-family ports whose upstream sends JPEG re-encodes).
 
     Returns:
         Assistant response text, or ``None`` on failure.
@@ -364,7 +368,7 @@ async def vlm_complete(
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{img}", "detail": detail},
+                    "image_url": {"url": f"data:{mime};base64,{img}", "detail": detail},
                 }
             )
 
@@ -405,6 +409,7 @@ async def vlm_complete_n(
     max_tokens: int = 1024,
     temperature: float = 0.3,
     detail: str = "low",
+    mime: str = "image/png",
 ) -> list[str]:
     """Multi-sample VLM call — vision counterpart to :func:`llm_complete_n`.
 
@@ -434,6 +439,7 @@ async def vlm_complete_n(
             max_tokens=max_tokens,
             temperature=temperature,
             detail=detail,
+            mime=mime,
         )
         return [text] if text else []
 
@@ -458,7 +464,7 @@ async def vlm_complete_n(
         content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img}", "detail": detail},
+                "image_url": {"url": f"data:{mime};base64,{img}", "detail": detail},
             }
         )
     content.append({"type": "text", "text": prompt})
@@ -518,6 +524,7 @@ async def vlm_complete_n(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 detail=detail,
+                mime=mime,
             )
             for _ in range(shortfall)
         ]
