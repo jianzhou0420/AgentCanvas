@@ -60,7 +60,7 @@
     <span class="sep">/</span>
     <span class="here">Template (Gym Interface)</span>
   </div>
-  <div class="last-updated">2026-06-12 14:31</div>
+  <div class="last-updated">2026-07-04</div>
 </div>
   <header class="page-header guide">
   <h1>Env NodeSet Template (Gym-like Interface)</h1>
@@ -128,7 +128,8 @@
 <tr><td><code>waypoint</code></td><td><code>viewpoint_id:TEXT</code></td><td>Navigate to a navigable viewpoint id (discrete graph)</td></tr>
 <tr><td><code>pose</code></td><td><code>target:POSE</code></td><td>Navigate / teleport to a target SE(3) pose</td></tr>
 <tr><td><code>hightolow</code></td><td><code>angle, distance</code></td><td>Macro (turn angle, advance distance) expanded to low-level actions</td></tr>
-<tr><td><code>continuous</code></td><td><code>action:VECTOR</code> (7-DoF)</td><td>Continuous control delta (arm)</td></tr>
+<tr><td><code>continuous</code></td><td><code>action:TEXT</code> (JSON: 7-vec or list of 7-vecs)</td><td>Continuous control delta (arm); accepts a single step or a runtime-variable K-step chunk. The wire-type registry has no <code>VECTOR</code> type — TEXT/JSON is the carrier (<code>env_simpler</code>, <code>env_libero</code>)</td></tr>
+<tr><td><code>ee_pose</code></td><td><code>action:TEXT</code> (JSON 8-vec <code>[x,y,z,qw,qx,qy,qz,grip]</code> or <code>{"pose": […], "hold_steps": N}</code>)</td><td>Drive the end-effector to an absolute world-frame pose + gripper via closed-loop OSC convergence (manipulation). Distinct from <code>pose</code>: carries a gripper bit + optional settle ticks, so it is <em>not</em> <code>target:POSE</code>-shaped. Added 2026-07-03 when <code>env_libero__step_pose</code> was renamed <code>step_ee_pose</code> — its shape never matched the nav <code>pose</code> row</td></tr>
 </tbody>
 </table>
 
@@ -157,7 +158,7 @@
 </ul>
 
 <h3 id="52-step"><span class="num">5.2</span> <code>step_&lt;x&gt;</code></h3>
-<p><strong>Input varies by action space</strong> (§4.1). <strong>Output is fixed across the whole family</strong> — every <code>step_*</code> on every env emits exactly:</p>
+<p><strong>Input varies by action space</strong> (§4.1). <strong>Output is fixed across the whole family</strong> — every <code>step_*</code> on every env emits at least these four control ports:</p>
 <table>
 <thead><tr><th>Port</th><th>Type</th><th>Meaning</th></tr></thead>
 <tbody>
@@ -168,6 +169,7 @@
 </tbody>
 </table>
 <p class="note">The wire-type registry (<code>app/standard/wire_types.py</code>) has no <code>FLOAT</code> or <code>DICT</code> type — <code>ANY</code> is the canonical carrier for scalars and plain dicts. So <code>reward</code> and <code>info</code> ride <code>ANY</code>; <code>terminated</code>/<code>truncated</code> use <code>BOOL</code>.</p>
+<p>Env-specific <strong>extra outputs may sit alongside</strong> the four (mirrored inside <code>info</code>): the manipulation envs (<code>env_simpler</code>, <code>env_libero</code>) add <code>success</code> + <code>step_index</code> convenience taps, and <code>env_libero__step_ee_pose</code> adds <code>converged</code> / <code>final_pose</code> / <code>step_count</code> / <code>error</code>. The four-port contract is a floor, not a ceiling — agents wiring extras accept env coupling, exactly as with reset's env-specific metadata.</p>
 
 <h3 id="53-observe"><span class="num">5.3</span> <code>observe_&lt;y&gt;</code></h3>
 <p>Input is a bare <code>trigger</code> (perception is a read of current state, idempotent). Output ports are the obs-space payload from §4.2. No control signals — observe never advances the env, <strong>and performs no lifecycle action</strong>: observing a finished episode returns the terminal frame unchanged, never a fresh episode. Rollover ownership lives in <code>reset</code> (decision I, §7) — the ADR-012-era auto-reset inside <code>observe_*</code> was removed 2026-06-11 because a post-loop re-fire of an observe could silently roll the env into a new episode under <code>evaluate</code>.</p>
@@ -184,7 +186,7 @@ shipping a new MDP env nodeset under it.</p>
   <li><strong>Classify first</strong> (§1). If there is no action loop, you are building a replay benchmark or a service — this template does not apply.</li>
   <li><strong>Three-layer file shape</strong>: a singleton <em>manager</em> owning the simulator handle (single-thread executor if the sim has GL/thread affinity) · <em>tool nodes</em> implementing the verbs · a <em>NodeSet binding</em> (<code>get_tools</code> / <code>initialize</code> / <code>shutdown</code>).</li>
   <li><strong>Nodes</strong>: <code>reset</code> (§5.1) · one <code>step_&lt;x&gt;</code> per supported action space (§4.1, return contract §5.2) · one <code>observe_&lt;y&gt;</code> per obs space (§4.2, §5.3) · a thin <code>evaluate</code> sink. Reuse existing space suffixes before inventing one.</li>
-  <li><strong>Env panel</strong>: placement cascade fields (e.g. <code>split → episode_index</code>) + the play / pause / stop / reset action quartet; play and reset emit the <code>episode_reset</code> signal carrying the cascade snapshot. See the <a href="../../design-docs/components/env-panels.html">env-panel design doc</a>.</li>
+  <li><strong>Env panel</strong>: placement cascade fields (e.g. <code>split → episode_index</code>) + the play / pause / stop / reset action quartet; field changes and the reset action emit the <code>episode_reset</code> signal carrying the cascade snapshot, while play re-seats the selected episode via <code>set_episode</code> and returns <code>run_start</code> (a panel response carries one side effect — no shipped env emits a signal from play). See the <a href="../../design-docs/components/env-panels.html">env-panel design doc</a>.</li>
   <li><strong>NodeSet ClassVars</strong>: <code>server_python = conda_env_python("&lt;env&gt;", "&lt;VAR&gt;_PYTHON")</code> for a dedicated conda env · <code>parallelism = "replicated"</code> for stateful sims · <code>default_per_step_budget_sec</code> matched to step latency · optional <code>replay_parser</code>.</li>
   <li><strong>Eval integration</strong>: <code>get_eval_metadata()</code> (splits, episode counts, metrics, step budget) so batch eval can drive the env.</li>
   <li><strong>Ship with</strong>: an install script <code>scripts/install/install_&lt;env&gt;.sh</code> (creates the conda env; initializes any <code>third_party/</code> submodules it needs) and a row in the <a href="index.html">env catalog</a> tables.</li>
