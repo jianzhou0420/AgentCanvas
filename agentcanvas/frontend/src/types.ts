@@ -9,12 +9,25 @@ export interface AppConfig {
   active_profile: string;
 }
 
-export interface ProviderDef {
+export interface ProviderInfo {
   label: string;
   base_url: string;
   api_type: string;
   default_model: string;
+  key_env: string;
+  key_set: boolean;
+  key_source: "file" | "env" | "none";
 }
+
+export type ProvidersMap = Record<string, ProviderInfo>;
+
+export interface CapabilityVerdict {
+  kind: "locked" | "required" | "range" | "unsupported" | "min_hint";
+  value: unknown;
+  note: string;
+}
+
+export type Capabilities = Record<string, CapabilityVerdict[]>;
 
 export interface LLMProfile {
   provider: string;
@@ -27,7 +40,6 @@ export interface LLMProfile {
 export interface ProfilesState {
   active: string;
   profiles: Record<string, LLMProfile>;
-  registry: Record<string, ProviderDef>;
 }
 
 // ── Navigate types ──
@@ -86,6 +98,19 @@ export interface NavLLMStepData {
 
 // ── Per-node instance data (for canvas output nodes) ──
 
+/** Last-call LLM usage for one node — from llm_usage WS events (the
+ * executor's per-node usage bucket + wall-clock duration). */
+export interface LlmUsage {
+  calls: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  usd_cost: number;
+  duration_ms?: number;
+}
+
 export interface NodeInstanceData {
   status: NavStatus;
   currentStep: number;
@@ -97,6 +122,8 @@ export interface NodeInstanceData {
   metrics: Record<string, number> | null;
   /** Per-node display data from viewer_data WS events, keyed by port name. */
   fields: Record<string, unknown>;
+  /** Most recent LLM usage for this node (null until it makes a call). */
+  usage: LlmUsage | null;
 }
 
 // ── Manager types (NodeSets, Envs) ──

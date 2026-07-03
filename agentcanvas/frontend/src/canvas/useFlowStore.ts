@@ -72,6 +72,7 @@ const DEFAULT_NODE_OUTPUT: NodeInstanceData = {
   llmSteps: [],
   metrics: null,
   fields: {},
+  usage: null,
 };
 
 /* ── ID generation ── */

@@ -18,8 +18,9 @@ from dataclasses import dataclass
 
 import litellm
 
-from .profiles import get_profile_store
+from .profiles import LLMProfile, get_profile_store
 from .providers import resolve_provider_config
+from .rulebook import finalize_params
 
 log = logging.getLogger("agentcanvas.llm")
 
@@ -88,6 +89,7 @@ class LLMConfig:
     model: str
     api_type: str  # "openai" | "anthropic" | "google" | "ollama"
     litellm_prefix: str  # litellm model prefix (e.g. "openai", "gemini")
+    provider: str = ""  # PROVIDER_REGISTRY key — keys the parameter rulebook
 
 
 def _to_litellm_model(config: LLMConfig) -> str:
@@ -138,7 +140,48 @@ def get_llm_config(profile_name: str = "") -> LLMConfig | None:
         model=cfg["model"],
         api_type=cfg["api_type"],
         litellm_prefix=cfg["litellm_prefix"],
+        provider=profile.provider,
     )
+
+
+def get_llm_config_direct(provider: str, model: str) -> LLMConfig | None:
+    """Build LLMConfig from an inline ``(provider, model)`` reference —
+    the node-pinned Direct mode. Same usability rule as profiles: returns
+    ``None`` (mock mode) when the provider's key is missing (Ollama
+    excepted)."""
+    if not provider or not model:
+        return None
+    cfg = resolve_provider_config(LLMProfile(provider=provider, model=model))
+    if not cfg["api_key"] and cfg["api_type"] != "ollama":
+        log.debug("LLM config: direct (%s, %s) has no API key", provider, model)
+        return None
+    return LLMConfig(
+        api_key=cfg["api_key"],
+        base_url=cfg["base_url"],
+        model=cfg["model"],
+        api_type=cfg["api_type"],
+        litellm_prefix=cfg["litellm_prefix"],
+        provider=provider,
+    )
+
+
+def _finalized_sampling_params(
+    config: LLMConfig,
+    temperature: float | None,
+    max_tokens: int | None,
+) -> dict:
+    """Two-state params → finalize. Only explicitly-set values enter the
+    request; the rulebook then fixes what it knows (locked / required /
+    range), recording every adjustment in the log."""
+    params: dict = {}
+    if temperature is not None:
+        params["temperature"] = temperature
+    if max_tokens is not None:
+        params["max_tokens"] = int(max_tokens)
+    params, adjustments = finalize_params(config.provider, config.model, params)
+    for adj in adjustments:
+        log.info("finalize [%s/%s]: %s", config.provider or "?", config.model, adj)
+    return params
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -193,11 +236,16 @@ async def llm_complete(
     config: LLMConfig,
     messages: list[dict],
     system_prompt: str = "",
-    max_tokens: int = 1024,
-    temperature: float = 0.7,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
     stop: list[str] | None = None,
 ) -> str | None:
     """Call LLM API. Returns assistant text or None on failure.
+
+    ``temperature`` / ``max_tokens`` are two-state: ``None`` (default)
+    means the parameter is omitted from the request entirely, so the
+    vendor's own default applies. Explicit values pass through the
+    rulebook (``finalize_params``) before the wire.
 
     Token usage is accumulated into the per-node bucket set by the graph
     executor (via the ``_current_node_usage`` ContextVar). Nodesets do
@@ -212,15 +260,13 @@ async def llm_complete(
 
         timeout = 120.0 if config.api_type == "ollama" else 60.0
 
-        extra: dict = {}
+        extra: dict = _finalized_sampling_params(config, temperature, max_tokens)
         if stop:
             extra["stop"] = stop
 
         response = await litellm.acompletion(
             model=_to_litellm_model(config),
             messages=all_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
             api_key=config.api_key or None,
             api_base=config.base_url or None,
             timeout=timeout,
@@ -241,8 +287,8 @@ async def llm_complete_n(
     messages: list[dict],
     n: int,
     system_prompt: str = "",
-    max_tokens: int = 1024,
-    temperature: float = 0.7,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
     stop: list[str] | None = None,
 ) -> list[str]:
     """Multi-sample LLM call (OpenAI ``n`` parameter).
@@ -275,15 +321,14 @@ async def llm_complete_n(
 
         timeout = 120.0 if config.api_type == "ollama" else 60.0
 
-        extra: dict = {"n": n}
+        extra: dict = _finalized_sampling_params(config, temperature, max_tokens)
+        extra["n"] = n
         if stop:
             extra["stop"] = stop
 
         response = await litellm.acompletion(
             model=_to_litellm_model(config),
             messages=all_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
             api_key=config.api_key or None,
             api_base=config.base_url or None,
             timeout=timeout,
@@ -317,9 +362,11 @@ async def vlm_complete(
     *,
     image_labels: list[str] | None = None,
     system_prompt: str = "",
-    max_tokens: int = 1024,
-    temperature: float = 0.3,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
     detail: str = "low",
+    prior_messages: list[dict] | None = None,
+    stop: list[str] | None = None,
 ) -> str | None:
     """Call VLM API with text prompt and base64-encoded images.
 
@@ -340,6 +387,11 @@ async def vlm_complete(
             behaviour of every existing caller; ports that need high-resolution
             visual grounding (e.g. Three-Step Nav, whose upstream uses ``high``)
             pass ``detail="high"`` explicitly.
+        prior_messages: Optional conversation history inserted between the
+            system message and the current user turn (llmCall conversation
+            mode). History entries are plain text turns; images ride only
+            the current turn.
+        stop: Optional stop sequences, forwarded verbatim.
 
     Returns:
         Assistant response text, or ``None`` on failure.
@@ -347,10 +399,11 @@ async def vlm_complete(
     if not images:
         return await llm_complete(
             config,
-            [{"role": "user", "content": prompt}],
+            [*(prior_messages or []), {"role": "user", "content": prompt}],
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             temperature=temperature,
+            stop=stop,
         )
 
     try:
@@ -371,19 +424,23 @@ async def vlm_complete(
         all_messages: list[dict] = []
         if system_prompt:
             all_messages.append({"role": "system", "content": system_prompt})
+        all_messages.extend(prior_messages or [])
         all_messages.append({"role": "user", "content": content})
 
         timeout = 120.0 if config.api_type == "ollama" else 90.0
 
+        extra: dict = _finalized_sampling_params(config, temperature, max_tokens)
+        if stop:
+            extra["stop"] = stop
+
         response = await litellm.acompletion(
             model=_to_litellm_model(config),
             messages=all_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
             api_key=config.api_key or None,
             api_base=config.base_url or None,
             timeout=timeout,
             num_retries=0,
+            **extra,
         )
         _accumulate_usage(response)
         return response.choices[0].message.content
@@ -402,9 +459,10 @@ async def vlm_complete_n(
     *,
     image_labels: list[str] | None = None,
     system_prompt: str = "",
-    max_tokens: int = 1024,
-    temperature: float = 0.3,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
     detail: str = "low",
+    stop: list[str] | None = None,
 ) -> list[str]:
     """Multi-sample VLM call — vision counterpart to :func:`llm_complete_n`.
 
@@ -434,6 +492,7 @@ async def vlm_complete_n(
             max_tokens=max_tokens,
             temperature=temperature,
             detail=detail,
+            stop=stop,
         )
         return [text] if text else []
 
@@ -446,6 +505,7 @@ async def vlm_complete_n(
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             temperature=temperature,
+            stop=stop,
         )
 
     # Build the multimodal message once (same interleave shape as
@@ -475,13 +535,13 @@ async def vlm_complete_n(
         response = await litellm.acompletion(
             model=_to_litellm_model(config),
             messages=all_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
             api_key=config.api_key or None,
             api_base=config.base_url or None,
             timeout=timeout,
             num_retries=0,
             n=n,
+            **({"stop": stop} if stop else {}),
+            **_finalized_sampling_params(config, temperature, max_tokens),
         )
         _accumulate_usage(response)
         for choice in getattr(response, "choices", []) or []:
@@ -518,6 +578,7 @@ async def vlm_complete_n(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 detail=detail,
+                stop=stop,
             )
             for _ in range(shortfall)
         ]

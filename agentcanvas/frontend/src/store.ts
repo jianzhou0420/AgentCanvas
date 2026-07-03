@@ -199,6 +199,22 @@ export function subscribeWS() {
     });
   });
 
+  // Per-node LLM usage — executor emits after any node firing that made
+  // LLM calls; the llm card renders it as its last-call gauge line.
+  wsManager.on("llm_usage", (data) => {
+    const { node_id, step, usage } = data as {
+      node_id: string;
+      step: number;
+      usage: import("./types").LlmUsage;
+    };
+    const bridge = getFlowStoreBridge();
+    if (!bridge) return;
+    bridge.updateNodeOutput(node_id, {
+      currentStep: step,
+      usage,
+    });
+  });
+
   wsManager.on("nav_step", (data, raw) => {
     const step = data as NavStepData;
     const executionId = (raw as Record<string, unknown>).execution_id as

@@ -144,7 +144,9 @@ async function putJ<T>(url: string, data: unknown): Promise<T> {
 
 import type {
   AppConfig,
+  Capabilities,
   ProfilesState,
+  ProvidersMap,
   NodeSetInfo,
   SavedGraph,
   EvalRunSummary,
@@ -169,7 +171,6 @@ export const api = {
     name: string;
     provider: string;
     model: string;
-    api_key?: string;
     base_url?: string;
     api_type?: string;
   }) => postJ<{ ok: boolean; name: string }>(`${API_BASE}/api/profiles/`, data),
@@ -187,15 +188,29 @@ export const api = {
       `${API_BASE}/api/profiles/activate`,
       { name },
     ),
-  batchUpsertProfiles: (data: {
-    keys: Record<string, string>;
-    active: string;
-    active_model: string;
-    overrides?: Record<string, Record<string, string>>;
-  }) => putJ<{ ok: boolean }>(`${API_BASE}/api/profiles/batch`, data),
+  // Providers — registry, keys (~/.agentcanvas/.keys), models, rulebook
+  getProviders: () => fetchJ<ProvidersMap>(`${API_BASE}/api/providers/`),
+  setProviderKey: (provider: string, key: string) =>
+    putJ<{ ok: boolean; key_env: string; key_source: string }>(
+      `${API_BASE}/api/providers/${encodeURIComponent(provider)}/key`,
+      { key },
+    ),
+  deleteProviderKey: (provider: string) =>
+    deleteJ<{ ok: boolean; removed: boolean; key_source: string }>(
+      `${API_BASE}/api/providers/${encodeURIComponent(provider)}/key`,
+    ),
+  validateProviderKey: (provider: string) =>
+    postJ<{ ok: boolean; message: string }>(
+      `${API_BASE}/api/providers/${encodeURIComponent(provider)}/validate`,
+      {},
+    ),
   getProviderModels: (provider: string) =>
     fetchJ<{ models: string[]; provider: string }>(
-      `${API_BASE}/api/profiles/${encodeURIComponent(provider)}/models`,
+      `${API_BASE}/api/providers/${encodeURIComponent(provider)}/models`,
+    ),
+  getProviderCapabilities: (provider: string, model: string) =>
+    fetchJ<{ provider: string; model: string; capabilities: Capabilities }>(
+      `${API_BASE}/api/providers/${encodeURIComponent(provider)}/capabilities?model=${encodeURIComponent(model)}`,
     ),
 
   // Eval — status poll (graph-driven runs live under /api/eval/v2; the

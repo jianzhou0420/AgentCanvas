@@ -29,6 +29,12 @@ export interface ConfigFieldSchema {
   port_side?: string;
   /** For field_type "port_list" on iterIn: render a per-port persist checkbox column. */
   show_persist_toggle?: boolean;
+  /** Properties-panel group ("model" | "prompt" | "wiring"); "" = ungrouped. */
+  section?: string;
+  /** Render inline on the canvas card (false: panel-only). Default true. */
+  on_card?: boolean;
+  /** Two-state fields: placeholder shown while unset (value not sent). */
+  unset_label?: string;
 }
 
 export interface DisplayFieldSchema {

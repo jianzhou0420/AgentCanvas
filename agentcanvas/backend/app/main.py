@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from .api.canvas import env_panel, graphs
 from .api.execution import eval as eval_api_v2
 from .api.execution import internal_containers, internal_events, logs, run, websocket
-from .api.platform import components, profiles
+from .api.platform import components, profiles, providers
 from .api.platform import config as config_api
 from .api.platform import errors as errors_api
 from .api.platform import system as system_api
@@ -246,6 +246,7 @@ app.include_router(websocket.router, tags=["websocket"])
 app.include_router(config_api.router, prefix="/api/config", tags=["config"])
 app.include_router(components.router, prefix="/api/components", tags=["components"])
 app.include_router(profiles.router, prefix="/api/profiles", tags=["profiles"])
+app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
 app.include_router(errors_api.router, prefix="/api/errors", tags=["errors"])
 app.include_router(registry_snapshot.router, prefix="/api/registry", tags=["registry"])
 app.include_router(system_api.router, prefix="/api/system", tags=["system"])
