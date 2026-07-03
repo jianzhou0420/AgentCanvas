@@ -28,7 +28,7 @@ Cross-nodeset wiring (resolved by THIS backend node, which has the
 component registry, and passed into the closures / go_next inputs):
 
     vlm_qwen2_5_vl   — ReAct LLM + VisualQATool   (/call/vlm_qwen2_5_vl__generate)
-    env_detany3d     — ObjectLocation2D / 3D       (/call/env_detany3d__locate_2d|3d)
+    model_detany3d     — ObjectLocation2D / 3D       (/call/model_detany3d__locate_2d|3d)
     tooleqa_explore  — GoNextPointTool             (/call/tooleqa_explore__go_next)
     env_hmeqa        — stepped *inside* go_next     (URL forwarded to tooleqa_explore)
 
@@ -251,7 +251,7 @@ class ToolEQAStepNode(BaseCanvasNode):
 
         # ── 2. Resolve sibling server URLs ──
         qwen_url = _resolve_server_url(ctx, "vlm_qwen2_5_vl")
-        detany3d_url = _resolve_server_url(ctx, "env_detany3d")
+        detany3d_url = _resolve_server_url(ctx, "model_detany3d")
         go_next_url = _resolve_server_url(ctx, "tooleqa_explore")
         env_hmeqa_url = _resolve_server_url(ctx, "env_hmeqa")
         if not qwen_url:
@@ -289,7 +289,7 @@ class ToolEQAStepNode(BaseCanvasNode):
 
         async def _detany3d_async(endpoint: str, image: np.ndarray, text: str) -> dict:
             if not detany3d_url:
-                return {"error": "env_detany3d not loaded"}
+                return {"error": "model_detany3d not loaded"}
             payload = {
                 "image": serialize_value(image, "ANY"),
                 "text": serialize_value(text, "TEXT"),
@@ -305,10 +305,10 @@ class ToolEQAStepNode(BaseCanvasNode):
             return fut.result(timeout=180.0)
 
         def _locate_2d(image: np.ndarray, text: str) -> dict:
-            return _detany3d_sync("env_detany3d__locate_2d", image, text)
+            return _detany3d_sync("model_detany3d__locate_2d", image, text)
 
         def _locate_3d(image: np.ndarray, text: str) -> dict:
-            return _detany3d_sync("env_detany3d__locate_3d", image, text)
+            return _detany3d_sync("model_detany3d__locate_3d", image, text)
 
         # go_next: the toolbox passes the *latest* working frame each call. We
         # capture the live frame via a mutable holder so a second go_next in

@@ -11,7 +11,7 @@ stubs ONLY the two sim-driving entry points:
   * ``execute(...)``            -> ``LMP_interface.plan(...)`` (plan, don't drive)
   * ``reset_to_default_pose()`` -> emit a single lift-to-home waypoint
 The returned world-frame trajectory is followed closed-loop by the graph
-via ``env_libero__step_pose``. This is the same plan/follow split the
+via ``env_libero__step_ee_pose``. This is the same plan/follow split the
 verified in-subprocess ``plan_subtask`` used — only the snapshot
 transport differs, which is semantically identical because planning
 never steps the sim.
@@ -186,7 +186,7 @@ class VoxPoserLMPRuntime:
          the ordered subtask strings.
       3. ``plan_subtask(subtask, snapshot)`` — refresh WiredEnv from the
          per-iter snapshot, plan ONE subtask, return the waypoint
-         trajectory (the graph follows it closed-loop via step_pose).
+         trajectory (the graph follows it closed-loop via step_ee_pose).
     """
 
     def __init__(
@@ -306,7 +306,7 @@ class VoxPoserLMPRuntime:
                 grip = float(self._wired_env.get_last_gripper_action())
             # Mirror the retired adapter's reset_to_default_pose: lift toward
             # the (per-scene) workspace ceiling, keep xy + current orientation
-            # + gripper. One waypoint for the follow loop to step_pose toward.
+            # + gripper. One waypoint for the follow loop to step_ee_pose toward.
             # max() guards against a degenerate ceiling below the current EE.
             lift_z = max(
                 float(cur[2]),
@@ -342,7 +342,7 @@ class VoxPoserLMPRuntime:
 
         # Gripper schedule — deterministic, from the composer's subtask STRING.
         # WHY not the vendored gripper_map: it uses the OPPOSITE convention to
-        # our downstream 8-vec (gripper_map 1=open/0=closed vs step_pose
+        # our downstream 8-vec (gripper_map 1=open/0=closed vs step_ee_pose
         # 1=closed/0=open) AND marks the "closed" region as a ~1 cm voxel ball
         # at the object that the planned path's last voxel routinely misses at
         # LIBERO's cm-scale objects. Net effect: the map-sampled gripper was
@@ -402,7 +402,7 @@ class VoxPoserLMPRuntime:
     def _serialize_traj(traj_world: list) -> list:
         """``traj_world`` elements ``(world_xyz[3], rotation[4], velocity, gripper)``
         → JSON-safe 8-vecs ``[x,y,z,qw,qx,qy,qz,gripper]`` (velocity dropped —
-        the step_pose follow loop has its own OSC speed bound)."""
+        the step_ee_pose follow loop has its own OSC speed bound)."""
         out: list[list[float]] = []
         for wp in traj_world:
             xyz = np.asarray(wp[0], dtype=np.float32).reshape(-1)[:3]

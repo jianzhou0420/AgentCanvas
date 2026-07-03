@@ -17,7 +17,7 @@ The single tool::
     model_grounding_dino__detect  (image_b64: TEXT, [text_prompt: TEXT])
         -> result: TEXT  (JSON {boxes:[{xyxy,score,phrase}], count, image_w, image_h, text_prompt})
 
-Inference recipe is lifted verbatim from ``env_detany3d/__init__.py:287-331``
+Inference recipe is lifted verbatim from ``model_detany3d/__init__.py:287-331``
 (``_convert_dino_image`` + ``_dino_predict``), which itself ports DetAny3D
 ``app_mp.py:94-105, 171-187``: the standard GroundingDINO transform
 (RandomResize 800 / ImageNet norm), ``groundingdino.util.inference.predict``,
@@ -98,7 +98,7 @@ def _resolve_groundingdino_config() -> str:
     Defaults to ``GroundingDINO_SwinT_OGC.py`` (AO-Planner's exact backbone);
     ``$GROUNDING_DINO_CONFIG`` overrides the basename (e.g.
     ``GroundingDINO_SwinB_cfg.py`` for the stronger Swin-B). Adapted from
-    ``env_detany3d/__init__.py:113-127`` (which pinned Swin-B).
+    ``model_detany3d/__init__.py:113-127`` (which pinned Swin-B).
     """
     cfg_name = os.environ.get("GROUNDING_DINO_CONFIG", "GroundingDINO_SwinT_OGC.py")
     try:
@@ -147,7 +147,7 @@ def _decode_rgb(b64: str) -> np.ndarray:
 
 def _detect(b64: str, text: str, box_threshold: float, text_threshold: float) -> dict:
     """Run GroundingDINO → list of pixel-xyxy boxes. Recipe from
-    ``env_detany3d/__init__.py:287-331`` (DetAny3D ``app_mp.py:94-105, 171-187``)."""
+    ``model_detany3d/__init__.py:287-331`` (DetAny3D ``app_mp.py:94-105, 171-187``)."""
     import groundingdino.datasets.transforms as T  # type: ignore[import-not-found]
     import torch
     from groundingdino.util.inference import predict as dino_predict

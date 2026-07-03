@@ -15,7 +15,7 @@ Australian Institute for Machine Learning, University of Adelaide
   <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
   <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
   <a href="https://jianzhou0420.github.io/AgentCanvas/"><img src="https://img.shields.io/badge/Docs-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
-  <a href="#9-citation"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+  <a href="#6-citation"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
 </p>
 
 <img src="assets/readme/editor-hero.gif" alt="AgentCanvas editor: the MapGPT executor loads as a node-and-wire graph, then a live R2R episode runs end-to-end" width="760">
@@ -26,7 +26,7 @@ Australian Institute for Machine Learning, University of Adelaide
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
-[![Status: Research Preview](https://img.shields.io/badge/Status-Research_Preview-orange.svg)](#7-project-status)
+[![Status: Research Preview](https://img.shields.io/badge/Status-Research_Preview-orange.svg)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html)
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **A visual agent-design platform for embodied AI research.** One typed graph, two roles: a *harness* that runs embodied agents, and a *scaffold* that coding agents edit and verify.
@@ -35,11 +35,16 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 **Built for**: researchers who want to compose, compare, and share embodied agent architectures without rewriting the execution stack each time. The platform covers VLN (Vision-and-Language Navigation), EQA (Embodied Question Answering), VLA (Vision-Language-Action) policy benchmarks, and adapts to other embodied / agentic settings via the nodeset model.
 
-> **Status**: Research preview, under active development · 46 ADRs · 40+ nodesets across four swappable palettes — **env** (simulators), **method** (reasoning loops), **model** (foundation models), **policy** (neural controllers) · canvas editor, graph executor with multi-scope iteration, state containers, auto-hosted server-mode nodesets, hook system, subprocess-per-run JobScheduler + worker-pool + batched inference, and a unified error bus — all in production.
+> **Status**: research preview, pre-1.0 — 40+ nodesets across four swappable palettes (**env** · **method** · **model** · **policy**); the public API is not yet frozen ([Versioning Policy](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html)).
 
-> **Versioning**: pre-1.0 (v0.x). v1.0 ships when the public API is stable (open-sourced + frozen under SemVer) — independent of any paper. See the [Versioning Policy](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html).
+> **Contributing**: nodesets, graphs, and core PRs all welcome — every contribution is credited on the [Credits](#credits) board. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-> **Contributing**: Two kinds, both welcome. **Content** — write a nodeset (tool or method) or compose a graph, by PR into `workspace/`; you're credited on the [Credits](#credits) board, with a citation link if it has a paper. **Core** — improve the framework (UI, backend, features, refactors); open a [Discussion](https://github.com/jianzhou0420/AgentCanvas/discussions) first for anything big. See [CONTRIBUTING.md](CONTRIBUTING.md).
+---
+
+## What's NEW!
+
+- [2026/07] 🔥 **Edit node source from the canvas** — the new Source tab shows the selected node's scoped slice of its nodeset source (globals, referenced functions, the class itself) and splices edits back with syntax-checked hot-reload. PR: [#5](https://github.com/jianzhou0420/AgentCanvas/pull/5).
+- [2026/07] 🎉 **First public release** — AgentCanvas is open-sourced as a research preview (pre-1.0). Docs: [jianzhou0420.github.io/AgentCanvas](https://jianzhou0420.github.io/AgentCanvas/).
 
 ---
 
@@ -49,12 +54,9 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 2. [Features](#2-features) — the *one JSON = one agent* (§2.2) / *one Python class = one node* (§2.6) principles, plus canvas editor, graph executor, isolated runtime envs, nested graphs, state containers, hooks
 3. [Sim-to-Real Path](#3-sim-to-real-path) — same agent graph on simulator today, real robot tomorrow — via env-as-nodeset + server mode + ROS
 4. [Getting Started](#4-getting-started) — prerequisites, run the web dashboard, run an evaluation, run architecture search, serve the docs
-5. [Architecture](#5-architecture) — frontend · backend · workspace · simulators
-6. [Project Structure](#6-project-structure) — top-level directory map
-7. [Project Status](#7-project-status) — versions: v0.1 experiments → v0.2 preview → v1.0 → v2.0
-8. [Contributing](#8-contributing) — where help is most wanted · credits
-9. [Citation](#9-citation) — cite the AgentCanvas paper
-10. [License](#10-license) — Apache 2.0
+5. [Contributing](#5-contributing) — where help is most wanted · credits
+6. [Citation](#6-citation) — cite the AgentCanvas paper
+7. [License](#7-license) — Apache 2.0
 
 ---
 
@@ -105,6 +107,11 @@ Agent Architecture Search (AAS) already does this for text-domain agents, but em
 ## 2. Features
 
 > **Full reference in the docs** — most features below have an implementation page (mechanism · key files · current status): **[The Nine Capabilities →](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/index.html)**
+
+<details>
+<summary><b>The nine capabilities</b> — canvas editor · graph engine · isolated runtimes · nested graphs · state containers · Python-defined nodes · hooks · batch eval · observability</summary>
+
+<br>
 
 ### 2.1 Visual Canvas Editor
 
@@ -206,11 +213,18 @@ The same graph that runs on the canvas can be submitted as an eval job that scor
 
 Every step streams observations, reasoning, actions, and metrics via WebSocket, routed by `execution_id` so concurrent runs don't cross streams. Errors from any source — node exceptions, server-mode subprocess crashes, and HTTP failures — flow through a unified `ErrorBus` and surface as Report-tab entries + toasts (ADR-observability-004). (React render errors are caught by a client-side error boundary.)
 
+</details>
+
 ---
 
 ## 3. Sim-to-Real Path
 
 AgentCanvas is designed for portability: a single agent graph can execute against a simulator today and migrate to a real robot in the future without graph-level changes. This property follows from two architectural decisions — environments are themselves nodesets (ADR-components-002), and any nodeset can execute in an isolated runtime via *server mode* (ADR-server-001).
+
+<details>
+<summary><b>The full path</b> — today's simulators · a ROS nodeset with the same interface · bidirectional integration · ground-truth visibility</summary>
+
+<br>
 
 ### Today: Simulator Nodesets
 
@@ -235,7 +249,9 @@ The same nodeset abstraction directly addresses two pain points raised in §1. A
 
 ### Status
 
-All currently shipped environment nodesets are simulator-based. A real-robot **ROS nodeset remains a [call-for-contribution](#8-contributing) slot** — the architectural pathway is established and intentional, and the necessary ROS-side components are already available in the ecosystem.
+All currently shipped environment nodesets are simulator-based. A real-robot **ROS nodeset remains a [call-for-contribution](#5-contributing) slot** — the architectural pathway is established and intentional, and the necessary ROS-side components are already available in the ecosystem.
+
+</details>
 
 ---
 
@@ -348,210 +364,144 @@ bash docs/run_dev.sh
 
 ---
 
-## 5. Architecture
-
-```
-Frontend (React 18 + React Flow + Zustand)
-    |
-    |  REST + WebSocket
-    v
-Backend (FastAPI + Python 3.10+)
-    |
-    |-- WorkspaceComponentRegistry  -->  workspace/  (auto-discovery)
-    |-- GraphExecutor   -->  graph execution (DAG + cyclic + multi-scope)
-    |-- AutoServerApp      -->  server-mode nodesets (isolated envs)
-    |-- HookRunner         -->  pre/post interceptors
-    |-- JobScheduler       -->  subprocess-per-run eval admission (ADR-eval-003)
-    |-- ErrorBus           -->  unified error reporting (ADR-observability-004)
-    v
-Simulators (Habitat-Sim, MatterSim/MP3D, HM3D, SAPIEN/ManiSkill2, MuJoCo/robosuite, ...)
-```
-
-**Key design**: The framework has **zero domain knowledge** (ADR-platform-001). All domain-specific code — VLN policies, LLM prompts, navigation tools, environment wrappers — lives in `workspace/`. The framework discovers components at runtime via base class inheritance. It never imports domain code directly; the import boundary is enforced by `agentcanvas/backend/app/test_import_boundary.py`.
-
----
-
-## 6. Project Structure
-
-```
-vlnworkspace/                  # repo root (legacy name; the platform is "AgentCanvas")
-├── agentcanvas/               # Full-stack web application
-│   ├── backend/app/         #   FastAPI backend (execution engine, APIs, services, errors)
-│   ├── frontend/src/        #   React + TypeScript (canvas editor)
-│   └── mcp_server/          #   MCP server for coding-agent integration
-├── workspace/                 # User workspace — all domain components (auto-discovered)
-│   ├── nodesets/            #   Nodesets by palette: env / method / model / policy (+ common, _upstream)
-│   ├── graphs/              #   Saved agent graphs (kind="graph")
-│   ├── graph_nodes/         #   Reusable composite nodes (kind="node")
-│   ├── nodes/               #   Standalone BaseCanvasNode subclasses
-│   ├── architect/           #   AAS search profiles + run scaffolding
-│   └── hooks.json           #   Workspace-level hook definitions
-├── data/                      # Datasets, model weights (gitignored)
-├── outputs/                   # Eval + design-run outputs (eval_runs/, design_runs/, …)
-├── docs/                      # Hand-authored HTML doc-site (run_dev.sh → :8092)
-├── third_party/               # Git submodules (habitat-lab, VLN-CE, MatterSim, vla_workspace, …)
-└── scripts/                   # Data setup + install scripts
-```
-
----
-
-## 7. Project Status
-
-AgentCanvas is **pre-1.0 and under active development**. Status is tracked by version, not a running feature checklist — see the [Versioning Policy](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html) and [`major-versions.html`](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/major-versions.html) for detail.
-
-- **v0.1 — AAS experiments.** The snapshot the paper's Agent Architecture Search runs were executed on — a reproducibility anchor for those results, not a public release.
-- **v0.2 — research preview (current).** The first open-sourced release: the canvas editor, graph executor (DAG + cyclic + multi-scope), state containers, auto-hosted server-mode nodesets, batch eval, and 40+ nodesets (env / method / model / policy) all run in production. The public API is not yet frozen, so minor releases may break it. Shipped inventory: [§2 Features](#2-features) and the [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) support-status pages.
-- **v1.0 — in progress.** Ships when the public API is stable — open-sourced and frozen under SemVer, independent of any paper.
-- **v2.0 — future.** Topology-mutating execution: unbounded subagent spawning, runtime fan-out over runtime lists, new tool types emerging at runtime, self-modifying graphs. See [`major-versions.html`](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/major-versions.html) §2 for the thesis and open questions.
-
----
-
-## 8. Contributing
+## 5. Contributing
 
 Two kinds of contribution, both welcome — see [CONTRIBUTING.md](CONTRIBUTING.md):
 
 - **Content — nodesets & graphs.** Write a nodeset that wraps a tool / simulator / model (e.g. real-time 3D Gaussian Splatting, a voxel-based SLAM system) or encodes a method (e.g. NavGPT, MapGPT), or compose a graph that wires existing nodesets into a complete agent. Open a PR into `workspace/`; review is light.
 - **Core — UI, backend, framework.** Bug fixes, new features, even refactors are welcome. The one ask: if a change is big enough to cost real time, open a [Discussion](https://github.com/jianzhou0420/AgentCanvas/discussions) first so we can align before you build.
 
-Every nodeset and graph is credited to its author/maintainer on the Credits board below — with a citation link if it has an associated paper — so contributing here doesn't cost you authorship. The **canonical, complete inventory** (all bundled nodesets + reference graphs, grouped by role, with per-graph verification status) lives on the [doc-site Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html); the board below is a condensed summary.
+Every nodeset and graph is credited to its author/maintainer on the board below — with a citation link if it has an associated paper — so contributing here doesn't cost you authorship. The **AgentCanvas framework and all first-release components** are by **AC-Team**. The board is names-only by design: the **canonical inventory** with per-graph verification detail lives on the [doc-site Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html) and the [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) support-status pages.
 
 ### Credits
 
+✅ verified — reproduces its paper / reference implementation · 🚧 runs end-to-end, verification in progress
+
 <table>
-<tr><th>Component</th><th>Created by</th></tr>
-<tr>
-<td><b>AgentCanvas framework</b></td>
-<td>AC-Team</td>
-</tr>
-<tr>
-<td>
+  <thead align="center">
+    <tr>
+      <th>Environments</th>
+      <th>Methods</th>
+      <th>Models &amp; Policies</th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/habitat.html">Habitat (VLN-CE)</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/matterport3d.html">MatterSim / MP3D</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">HM-EQA</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">OpenEQA (EM-EQA)</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/simpler.html">SIMPLER</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/libero.html">LIBERO</a> ✅</li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><b>VLN</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/navgpt.html">NavGPT</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/mapgpt.html">MapGPT</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/smartway.html">SmartWay</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/threestepnav.html">Three-Step Nav</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/aoplanner.html">AO-Planner</a> 🚧</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/discussnav.html">DiscussNav</a> 🚧</li>
+              <li>Open-Nav 🚧</li>
+              <li>SpatialNav 🚧</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/tools/basic-agent.html">Basic Agent toolkit</a> ✅</li>
+            </ul>
+          </li>
+          <li><b>EQA</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">EM-EQA baselines</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/explore-eqa.html">Explore-EQA</a> ✅</li>
+              <li>ToolEQA 🚧</li>
+            </ul>
+          </li>
+          <li><b>VLA (zero-shot)</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/voxposer.html">VoxPoser-LIBERO</a> ✅</li>
+            </ul>
+          </li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><b>Policies</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-cma.html">CMA</a> ✅</li>
+              <li>Octo (SIMPLER baseline) ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-vla.html">VLA framework (Pi0 / SmolVLA / DP / DROID-DP)</a> 🚧</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-adapters.html">R2R-CE policy registry (12 variants)</a> 🚧</li>
+            </ul>
+          </li>
+          <li><b>Perception &amp; foundation models</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/tools/sam.html">SAM</a> ✅</li>
+              <li>BLIP-2 + Faster R-CNN ✅</li>
+              <li>InstructBLIP ✅</li>
+              <li>RAM ✅</li>
+              <li>Grounding DINO ✅</li>
+              <li>SpatialBot ✅</li>
+              <li>Qwen2.5-VL ✅</li>
+              <li>DetAny3D ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/foundation-models/vlm-prismatic.html">Prismatic VLM</a> ✅</li>
+              <li>TSDF mapping ✅</li>
+              <li>Semantic scene graph ✅</li>
+            </ul>
+          </li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
-<details open>
-<summary><b>First release</b> — bundled nodesets, reference graphs, doc-site</summary>
+**Call for contribution** — reserved slots, credited to whoever lands them ([how to contribute](CONTRIBUTING.md); IDs are roadmap slots on the [Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)):
 
-<br>
-
-<b>Simulators / environments</b>
-
-- Habitat (VLN-CE continuous navigation)
-- Matterport3D / MatterSim (discrete panoramic navigation)
-- HM-EQA (embodied QA environment)
-- OpenEQA (embodied QA benchmark, EM-EQA mode)
-- SIMPLER (SAPIEN / ManiSkill2 real-to-sim VLA eval)
-- LIBERO (MuJoCo / robosuite manipulation, 5 suites)
-
-<b>Agent methods / reasoning</b>
-
-<i>EQA</i>
-
-- OpenEQA EM-EQA baselines — blind-LLM / single-frame / multi-frame (`openeqa_em_*.json`) ✅ all verified; multi-frame LLM-Match 0.7025 vs paper 0.466 (gpt-4o reasoner+judge outperforms paper's gpt-4 / gpt-4-vision-preview)
-- Explore-EQA (Prismatic-locked frontier exploration on HM-EQA) ✅ verified — SR 0.42 reproduces 0.44 baseline
-- ToolEQA (HM-EQA only — PortBench v1 substrate) — redone monolith-first 2026-06-08; runs end-to-end (ReAct + fused TSDF go_next + Qwen2.5-VL/DetAny3D over server-mode HTTP), SR tuning in progress
-
-<i>VLN</i>
-
-- NavGPT (LLM thought–action reasoning primitives) ✅ verified — only gpt-4 yields a non-zero SR; gpt-4o & other LLMs regress to SR=0 on long ReAct prompts (over-confident STOP)
-- MapGPT (linguistic topo-map LLM agent, ACL 2024) ✅ verified end-to-end on the MapGPT_72 subset (216 ep), paper-comparable (paper SR 0.477 gpt-4v / 0.463 gpt-4o)
-- SmartWay-mono (VLN-CE waypoint-predictor) ✅ paper-comparable — SR 0.270 vs paper 0.29
-- SmartWay-CE (VLN-CE dual-frame, decomposed) ✅ verified (author-verified 2026-06-01) — silent-completion race fixed; runs end-to-end at full multi-worker eval scale
-- SpatialNav (spatial-graph navigation) ⏳ unverified — SR=0 so far (port paused, blocked on SSG category CSV)
-- Open-Nav (open-vocabulary navigation) ⏳ unverified — SR=0 so far
-- DiscussNav (multi-LLM debate, bounded fan-out) ✓ in-progress — runs end-to-end; fitness not yet driven to paper-comparable
-- Three-Step Nav (zero-shot waypoint nav, subclasses Open-Nav) ✓ in-progress — faithful port runs end-to-end (TL≈paper); SR 0/10 with gpt-5-mini @8-step horizon (paper-comparable SR needs gpt-5-full, paper 0.34)
-- AO-Planner (SAM + LLM + 3D path planner, AAAI 2025) ✓ in-progress — runs end-to-end, SR 0.10 / oracle 0.20 @20ep (noisy; gpt-5-mini temp=1.0 variance; paper-comparable needs gpt-5-full + larger slice)
-- Basic Agent (foundational VLN toolkit — 11 nodes across 5 categories)
-
-<i>VLA</i>
-
-- VLA-specific methods (Pi0 / SmolVLA / DP / DROID-DP / Octo / VoxPoser-LIBERO) live under <b>Policies</b> below — they are policy-shaped (env-observation → action) rather than reasoning-shaped, so they're grouped by code structure rather than task family
-
-<b>Perception / vision</b>
-
-- SAM (Segment Anything)
-- BLIP-2 + Faster R-CNN (captioning & detection)
-- InstructBLIP (instruction-tuned captioning — DiscussNav)
-- RAM (recognize-anything model)
-- Grounding DINO (open-vocabulary detection — AO-Planner)
-- SpatialBot (depth-aware VLM)
-- Qwen2.5-VL (VLM — LLM + VQA, ToolEQA)
-- DetAny3D (2D / 3D detection — ToolEQA)
-- Prismatic VLM (token-likelihood scoring + free-form generation)
-- TSDF mapping
-- Semantic scene graph
-
-<b>Policies</b>
-
-- CMA (Cross-Modal Attention VLN-CE baseline) ✅ verified — `straightforward.json` promoted to verified/, SR 0.38 / SPL 0.348, bit-identical to native
-- Octo (VLA generalist, native SIMPLER baseline) ✅ baseline runs on `octo_simpler.json`
-- Generic VLA framework (Pi0 / SmolVLA / DP / DROID-DP adapter) ⏳ unverified — `vla_policy_libero` rewired for the gym-interface contract (2026-06-10), re-eval pending; the pre-migration Pi0 5/5 on libero_spatial task 0 ran on the external vlaworkspace tree, never the vendored path (TODO #66); SIMPLER variant TBD
-- VoxPoser-LIBERO (LMP + voxel-cost-map + OSC) ✅ verified on libero_object — SR 0.88 @50ep (grasp + transport end-to-end); other suites grasp-geometry-limited (full-VAS aggregate 0.29)
-- VLN-CE policy adapter (12-variant R2R-CE registry — 2 upstream-released, 10 ablations placeholder-marked)
-
-<b>Doc-site</b> — Hand-authored HTML (post-MkDocs retirement 2026-05-18) with 46 ADRs, glossary, capability pages, tutorials, design docs
-
-</details>
-
-</td>
-<td>AC-Team</td>
-</tr>
-<tr>
-<td><b>Benchmark:</b> AI2-THOR <i>(ALFRED / TEACh — E4)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Benchmark:</b> RxR-CE <i>(multilingual VLN-CE — E2)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Benchmark:</b> REVERIE <i>(remote object grounding — E3)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Benchmark:</b> OpenEQA A-EQA <i>(active EQA mode — E10)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Method:</b> HAMT <i>(hierarchical history transformer — M5)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Method:</b> DUET <i>(dual-scale graph transformer — M6)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Method:</b> InstructNav <i>(Dynamic CoN + Multi-Sourced Value Maps, CoRL 2024 — M8)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Method:</b> VLN-SIG <i>(sub-instruction grounding — M4)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Feature:</b> Memory nodeset <i>(episodic recall + semantic search — F1)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Feature:</b> Parallel node execution <i>(Pregel superstep model — F3)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Feature:</b> Export graph as standalone Python <i>(headless batch eval — F4)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Infra:</b> Docker server mode <i>(Habitat / MP3D containers — F7)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
-<tr>
-<td><b>Infra:</b> ROS nodeset <i>(real-robot deployment via server mode — §3)</i></td>
-<td><i><a href="CONTRIBUTING.md">call for contribution</a></i></td>
-</tr>
+<table>
+  <thead align="center">
+    <tr>
+      <th>Benchmarks</th>
+      <th>Methods</th>
+      <th>Features &amp; Infra</th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li>AI2-THOR — ALFRED / TEACh <i>(E4)</i></li>
+          <li>RxR-CE — multilingual VLN-CE <i>(E2)</i></li>
+          <li>REVERIE — remote object grounding <i>(E3)</i></li>
+          <li>OpenEQA A-EQA — active EQA <i>(E10)</i></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li>HAMT — hierarchical history transformer <i>(M5)</i></li>
+          <li>DUET — dual-scale graph transformer <i>(M6)</i></li>
+          <li>InstructNav — dynamic CoN + value maps <i>(M8)</i></li>
+          <li>VLN-SIG — sub-instruction grounding <i>(M4)</i></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li>Memory nodeset — episodic recall + semantic search <i>(F1)</i></li>
+          <li>Parallel node execution — Pregel supersteps <i>(F3)</i></li>
+          <li>Export graph as standalone Python <i>(F4)</i></li>
+          <li>Docker server mode — Habitat / MP3D containers <i>(F7)</i></li>
+          <li>ROS nodeset — real-robot deployment (<a href="#3-sim-to-real-path">§3</a>)</li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
 </table>
 
 
 ---
 
-## 9. Citation
+## 6. Citation
 
 If you use AgentCanvas in your research, please cite:
 
@@ -567,6 +517,6 @@ If you use AgentCanvas in your research, please cite:
 }
 ```
 
-## 10. License
+## 7. License
 
 Apache License 2.0 — see [LICENSE](LICENSE).

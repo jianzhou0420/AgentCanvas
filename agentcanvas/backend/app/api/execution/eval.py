@@ -296,7 +296,7 @@ async def start_eval_v2(req: StartEvalV2Request):
         # Compute shared_urls: nodesets the graph needs that are currently
         # loaded as shared singletons in this backend's registry.
         # Also include ALL currently-loaded shared singletons, since some
-        # nodesets (e.g. env_detany3d for ToolEQA) are accessed via
+        # nodesets (e.g. model_detany3d for ToolEQA) are accessed via
         # ``ctx._executor.get_server_url(...)`` from inside method-side
         # nodes rather than as canvas-visible nodes.
         shared_urls: dict[str, str] = {}
