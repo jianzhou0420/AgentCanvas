@@ -128,21 +128,27 @@ def test_sample_waypoints():
     print("[sample_waypoints] grid in mask")
     from PIL import Image
 
-    mask = np.zeros((H, W), dtype=np.uint8)
-    mask[256:, :] = 255  # bottom half navigable
-    buf = io.BytesIO()
-    Image.fromarray(mask, mode="L").save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    def _mask_b64(row0: int) -> str:
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask[row0:, :] = 255
+        buf = io.BytesIO()
+        Image.fromarray(mask, mode="L").save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
 
     node = m.SampleWaypointsNode()
     node.config = {"grid_px": 50, "include_start": True}
-    out = asyncio.run(node.forward({"ground_mask_b64": b64}))
+    # bottom 150 rows navigable → 2 grid rows x 9 cols + foot = 19 candidates
+    out = asyncio.run(node.forward({"ground_mask_b64": _mask_b64(362)}))
     pts = json.loads(out["candidate_pixels"])
     check("returns candidates", out["count"] > 1)
     check("index 0 = foot point (W//2, H-5)", pts[0] == [W // 2, H - 5])
-    # every grid (non-start) point is inside the mask (v>=256)
-    grid_in_mask = all(p[1] >= 256 for p in pts[1:])
-    check("all grid points in mask (v>=256)", grid_in_mask)
+    # every grid (non-start) point is inside the mask (v>=362)
+    grid_in_mask = all(p[1] >= 362 for p in pts[1:])
+    check("all grid points in mask (v>=362)", grid_in_mask)
+    # Upstream early-abort (process_image:354-362): a bottom-half mask on 512
+    # yields 46 candidates > 40 → the view is skipped (face-wall heuristic).
+    out_big = asyncio.run(node.forward({"ground_mask_b64": _mask_b64(256)}))
+    check(">40 candidates → early-abort (upstream cap)", out_big["count"] == 0)
 
 
 def test_annotate_markers():
@@ -170,6 +176,20 @@ def test_annotate_markers():
     dec = np.asarray(Image.open(io.BytesIO(base64.b64decode(ann))).convert("RGB"))
     check("annotated dims preserved", dec.shape == (120, 160, 3))
     check("markers changed pixels", not np.array_equal(dec, rgb))
+
+    # Upstream vis_candidates(multi_start=True): the foot anchor (points[0]) is
+    # never drawn and grid labels start at 1 (grounded_sam_Gemini.py:183-203).
+    node_up = m.AnnotateMarkersNode()
+    node_up.config = {"radius": 8, "font_size": 16, "skip_first": True, "label_start": "1"}
+    out_up = asyncio.run(
+        node_up.forward({"image_b64": b64, "points": json.dumps([[80, 115], [40, 40], [120, 80]])})
+    )
+    dec_up = np.asarray(
+        Image.open(io.BytesIO(base64.b64decode(out_up["annotated_b64"]))).convert("RGB")
+    )
+    foot_region = dec_up[105:120, 70:90]
+    check("skip_first: foot anchor not drawn", np.all(foot_region == 200))
+    check("skip_first: grid markers drawn", not np.array_equal(dec_up, rgb))
 
 
 def test_prompts():
@@ -225,6 +245,13 @@ def test_prompts():
         '{"Waypoints":["id_2"],"Paths":[{"Waypoint":"id_2","Path":["bottom_center","id_1","id_2"]}]}'
     )
     check("C: route labels → [1,2] (pure label dropped)", pr_lbl["paths"] == [[1, 2]])
+    # Upstream count-mismatch branch (llm/utils.py:43-56): list-form Paths whose
+    # count differs from Waypoints → 'use path[-1] as waypoint instead'.
+    pr_mm = m._prompts.parse_proposal('{"Waypoints":[2],"Paths":[[1,2],[1,3]]}')
+    check(
+        "count mismatch → waypoints from path[-1] (upstream branch)",
+        pr_mm["waypoints"] == [2, 3] and pr_mm["paths"] == [[1, 2], [1, 3]],
+    )
 
 
 def _small_rgb_b64(w=80, h=60):
@@ -258,7 +285,11 @@ def test_aggregate_and_decider():
     agg.config = {"radius": 6, "font_size": 12}
     out = asyncio.run(agg.forward({"view_bundles": bundles}))
     manifest = json.loads(out["candidates_dict"])
-    check("3 ghost candidates", out["count"] == 3 and set(manifest.keys()) == {"0", "1", "2"})
+    check(
+        "3 ghost candidates",
+        out["count"] == 3 and set(manifest.keys()) == {"0", "1", "2", "_meta"},
+    )
+    check("_meta.total = ghosts ever minted", manifest["_meta"]["total"] == 3)
     check("action_space_text '0, 1, 2'", out["action_space_text"] == "0, 1, 2")
     vimgs = json.loads(out["view_images_b64"])
     vlabels = json.loads(out["view_labels"])
@@ -270,6 +301,26 @@ def test_aggregate_and_decider():
     check(
         "manifest gid2 = left wp",
         approx(manifest["2"]["angle"], 1.5) and approx(manifest["2"]["distance"], 3.0),
+    )
+    # Upstream packs only CONTRIBUTING views; an empty view yields no image, no
+    # label, and Image {i} counts contributing views (zero_shot_agent.py:727-731).
+    out_sk = asyncio.run(
+        agg.forward(
+            {
+                "view_bundles": [
+                    {"view_dir": "front", "rgb_b64": rgb, "candidates": []},
+                    bundles[1],
+                ]
+            }
+        )
+    )
+    sk_labels = json.loads(out_sk["view_labels"])
+    check(
+        "empty view skipped + Image index by contributing order",
+        len(json.loads(out_sk["view_images_b64"])) == 1
+        and len(sk_labels) == 1
+        and sk_labels[0].startswith("(left)")
+        and "in Image 0" in sk_labels[0],
     )
 
     asm = m.AssemblePromptNode()
@@ -290,6 +341,10 @@ def test_aggregate_and_decider():
         bi.forward({"view_images_b64": out["view_images_b64"], "view_labels": out["view_labels"]})
     )
     check("build_images 2 images", len(bo["images"]) == 2 and len(bo["image_labels"]) == 2)
+    check(
+        "build_images t=0: no Options prefix (Options in the text block)",
+        not bo["image_labels"][0].startswith("Options"),
+    )
 
     pr = m.ParseResponseNode()
     po = asyncio.run(pr.forward({"response": '{"Thought":"x","New Planning":"np","Action":"2"}'}))
@@ -342,24 +397,66 @@ def test_aggregate_and_decider():
         "resolve STOP → (0,0)",
         approx(float(ro_stop["angle"]), 0.0) and approx(float(ro_stop["distance"]), 0.0),
     )
-    # M4b: out-of-range action_id → fallback to most-forward valid candidate (gid0: |0.1| smallest), not (0,0)
-    ro_fb = asyncio.run(
+    # Upstream IndexError→STOP: an id beyond the episode's accumulated ghosts
+    # (>= _meta.total) stops, exactly like waypoint_path_coord[id] raising
+    # (zero_shot_agent.py:838-844).
+    ro_oor = asyncio.run(
         rs.forward({"action_id": "99", "is_stop": False, "candidates_dict": out["candidates_dict"]})
     )
     check(
-        "fallback forward → most-forward cand (gid0 ~0.1/2.0)",
+        "id >= _meta.total → STOP (upstream IndexError path)",
+        approx(float(ro_oor["angle"]), 0.0)
+        and approx(float(ro_oor["distance"]), 0.0)
+        and json.loads(ro_oor["path_angles"]) == [],
+    )
+    # A PAST ghost id (< total, not in the current manifest) has no stored path
+    # (D-3 deferral) → fallback to the most-forward current candidate.
+    stale = json.loads(out["candidates_dict"])
+    stale["_meta"] = {"total": 100}
+    stale_json = json.dumps(stale)
+    ro_fb = asyncio.run(
+        rs.forward({"action_id": "50", "is_stop": False, "candidates_dict": stale_json})
+    )
+    check(
+        "stale in-range id → fallback forward (gid0 ~0.1/2.0)",
         approx(float(ro_fb["angle"]), 0.1) and approx(float(ro_fb["distance"]), 2.0),
     )
     rs_noop = m.ResolveActionNode()
     rs_noop.config = {"fallback": "noop"}
     ro_noop = asyncio.run(
-        rs_noop.forward(
-            {"action_id": "99", "is_stop": False, "candidates_dict": out["candidates_dict"]}
-        )
+        rs_noop.forward({"action_id": "50", "is_stop": False, "candidates_dict": stale_json})
     )
     check(
         "fallback noop → (0,0)",
         approx(float(ro_noop["angle"]), 0.0) and approx(float(ro_noop["distance"]), 0.0),
+    )
+
+    # t>0: the Options line leaves the text block and rides the first option
+    # image's label (upstream content order — prompt_manager.py:69-79).
+    gs3 = _GS()
+    ap1 = asyncio.run(
+        asm.forward(
+            {"instruction": "go on", "action_space_text": out["action_space_text"]}, _Ctx(gs3)
+        )
+    )
+    check(
+        "t>0 prompt ends 'History:\\n', no Options",
+        ap1["prompt"].endswith("History:\n") and "Options" not in ap1["prompt"],
+    )
+    bo1 = asyncio.run(
+        m.BuildImagesNode().forward(
+            {
+                "view_images_b64": out["view_images_b64"],
+                "view_labels": out["view_labels"],
+                "action_space_text": out["action_space_text"],
+            },
+            _Ctx(_GS()),
+        )
+    )
+    check(
+        "t>0 first option label carries Options line",
+        bo1["image_labels"][0].startswith("Options (step 1): Locations {0, 1, 2}\n(front)")
+        and not bo1["image_labels"][1].startswith("Options"),
     )
 
     uh = m.UpdateHistoryNode()

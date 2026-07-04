@@ -202,9 +202,15 @@ class HabitatEnvManager:
         self._config = None
         # RGB sensor override (h, w) — None keeps the YAML default (224 for
         # VLN-CE cma_pm_da). Set before initialize() (pending) or via
-        # ensure_rgb_resolution() (re-creates the env). Depth is never
-        # touched (DDPPO/TRM need 256).
+        # ensure_env_overrides() (re-creates the env). Depth DEFAULT stays
+        # untouched (DDPPO/TRM need 256); a graph that needs parity with a
+        # different upstream (AO-Planner renders 512/512) opts in per-graph
+        # via the reset node's depth_resolution knob.
         self._rgb_hw: tuple[int, int] | None = None
+        self._depth_hw: tuple[int, int] | None = None
+        # MAX_EPISODE_STEPS override — None keeps initialize()'s max_steps
+        # (500). AO-Planner's release task yaml runs 5000.
+        self._max_steps_override: int | None = None
         # Remembered initialize() args so ensure_rgb_resolution can rebuild.
         self._init_args: tuple | None = None
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -274,6 +280,15 @@ class HabitatEnvManager:
                 config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.HEIGHT = int(h)
                 config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.WIDTH = int(w)
                 log.info("RGB sensor override: %dx%d", h, w)
+            if self._depth_hw is not None:
+                h, w = self._depth_hw
+                # AO-Planner's LLM_base_task.yaml renders DEPTH at 512 to match
+                # RGB (pixel-indexed unprojection); opt-in per graph.
+                config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.HEIGHT = int(h)
+                config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH = int(w)
+                log.info("DEPTH sensor override: %dx%d", h, w)
+            if self._max_steps_override is not None:
+                max_steps = int(self._max_steps_override)
 
             config.TASK_CONFIG.DATASET.SPLIT = split
             config.TASK_CONFIG.DATASET.ROLES = ["guide"]
@@ -323,24 +338,58 @@ class HabitatEnvManager:
         except Exception:
             return None
 
-    def ensure_rgb_resolution(self, size: int) -> dict:
-        """Make the RGB sensor render at ``size``×``size`` (per-graph knob).
+    def current_depth_resolution(self) -> int | None:
+        if self._config is None:
+            return None
+        try:
+            return int(self._config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH)
+        except Exception:
+            return None
 
-        Not yet initialized → record as a pending override for initialize().
-        Initialized at a different size → tear the env down and rebuild with
-        the remembered initialize() args, then re-place the SAME episode
+    def ensure_rgb_resolution(self, size: int) -> dict:
+        """Back-compat wrapper — see ensure_env_overrides()."""
+        return self.ensure_env_overrides(rgb=size)
+
+    def ensure_env_overrides(
+        self,
+        rgb: int | None = None,
+        depth: int | None = None,
+        max_episode_steps: int | None = None,
+    ) -> dict:
+        """Apply per-graph env overrides (RGB/DEPTH render size, step cap).
+
+        Not yet initialized → record as pending overrides for initialize().
+        Initialized with a mismatch → tear the env down and rebuild with the
+        remembered initialize() args, then re-place the SAME episode
         (set_episode_by_index) so panel-owned placement survives the rebuild.
-        One-time cost per worker (~scene reload); no-op when sizes match.
+        One-time cost per worker (~scene reload); no-op when everything matches.
         """
-        size = int(size)
-        if size <= 0:
-            return {"error": f"invalid rgb resolution {size}"}
-        self._rgb_hw = (size, size)
+        if rgb is not None:
+            rgb = int(rgb)
+            if rgb <= 0:
+                return {"error": f"invalid rgb resolution {rgb}"}
+            self._rgb_hw = (rgb, rgb)
+        if depth is not None:
+            depth = int(depth)
+            if depth <= 0:
+                return {"error": f"invalid depth resolution {depth}"}
+            self._depth_hw = (depth, depth)
+        if max_episode_steps is not None:
+            max_episode_steps = int(max_episode_steps)
+            if max_episode_steps <= 0:
+                return {"error": f"invalid max_episode_steps {max_episode_steps}"}
+            self._max_steps_override = max_episode_steps
+        wanted = {"rgb": rgb, "depth": depth, "max_episode_steps": max_episode_steps}
         if self._env is None:
-            log.info("ensure_rgb_resolution(%d): pending until initialize()", size)
-            return {"status": "pending", "rgb": size}
-        if self.current_rgb_resolution() == size:
-            return {"status": "ok", "rgb": size}
+            log.info("ensure_env_overrides(%s): pending until initialize()", wanted)
+            return {"status": "pending", **wanted}
+        mismatch = (
+            (rgb is not None and self.current_rgb_resolution() != rgb)
+            or (depth is not None and self.current_depth_resolution() != depth)
+            or (max_episode_steps is not None and self.max_steps != max_episode_steps)
+        )
+        if not mismatch:
+            return {"status": "ok", **wanted}
         if self._init_args is None:
             return {"error": "cannot rebuild env — initialize args unknown"}
 
@@ -358,9 +407,11 @@ class HabitatEnvManager:
                 ep_index = None
 
         log.info(
-            "ensure_rgb_resolution(%d): rebuilding env (was %s), episode index %s",
-            size,
+            "ensure_env_overrides(%s): rebuilding env (was rgb=%s depth=%s max_steps=%s), episode index %s",
+            wanted,
             self.current_rgb_resolution(),
+            self.current_depth_resolution(),
+            self.max_steps,
             ep_index,
         )
         exp_config, split, gpu_id, max_steps = self._init_args
@@ -368,7 +419,7 @@ class HabitatEnvManager:
         self.initialize(exp_config, split, gpu_id, max_steps)
         if ep_index is not None:
             self.set_episode_by_index(ep_index)
-        return {"status": "rebuilt", "rgb": size, "episode_index": ep_index}
+        return {"status": "rebuilt", **wanted, "episode_index": ep_index}
 
     @property
     def initialized(self) -> bool:
@@ -1316,6 +1367,18 @@ class ResetHabitatTool(BaseCanvasNode):
                 label="RGB resolution (px, blank = YAML default)",
                 default="",
             ),
+            ConfigField(
+                "depth_resolution",
+                "text",
+                label="Depth resolution (px, blank = YAML default 256)",
+                default="",
+            ),
+            ConfigField(
+                "max_episode_steps",
+                "text",
+                label="MAX_EPISODE_STEPS (blank = 500)",
+                default="",
+            ),
         ],
     )
     description = "Ensure a live episode (re-arm if done) — emit instruction + ids, no observation"
@@ -1338,17 +1401,37 @@ class ResetHabitatTool(BaseCanvasNode):
         # never in observe_* (pure reads): a post-loop re-fire of an observe
         # must not silently roll the env into a new episode under evaluate.
         mgr = _get_env()
-        # Per-graph RGB-resolution knob (Three-Step fork renders 1024; the
-        # VLN-CE YAML default 224 is correct for Open-Nav). Applied here —
-        # the first node to fire each episode — so a mismatched env is
-        # rebuilt once per worker and the placed episode is re-seated.
-        rgb_res = str((self.config or {}).get("rgb_resolution", "") or "").strip()
-        if rgb_res:
-            with contextlib.suppress(ValueError):
-                want = int(rgb_res)
-                if mgr.current_rgb_resolution() != want or not mgr.initialized:
-                    result = await _run_sync(mgr.ensure_rgb_resolution, want)
-                    self._self_log("rgb_resolution", result)
+        # Per-graph env-override knobs (Three-Step fork renders RGB 1024;
+        # AO-Planner renders RGB+DEPTH 512 with MAX_EPISODE_STEPS 5000; the
+        # VLN-CE YAML defaults are correct for Open-Nav). Applied here — the
+        # first node to fire each episode — so a mismatched env is rebuilt
+        # once per worker and the placed episode is re-seated.
+        cfg = self.config or {}
+
+        def _int_cfg(key: str) -> int | None:
+            raw = str(cfg.get(key, "") or "").strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+
+        want_rgb = _int_cfg("rgb_resolution")
+        want_depth = _int_cfg("depth_resolution")
+        want_max = _int_cfg("max_episode_steps")
+        if want_rgb is not None or want_depth is not None or want_max is not None:
+            mismatch = (
+                not mgr.initialized
+                or (want_rgb is not None and mgr.current_rgb_resolution() != want_rgb)
+                or (want_depth is not None and mgr.current_depth_resolution() != want_depth)
+                or (want_max is not None and mgr.max_steps != want_max)
+            )
+            if mismatch:
+                result = await _run_sync(
+                    mgr.ensure_env_overrides, want_rgb, want_depth, want_max
+                )
+                self._self_log("env_overrides", result)
         if mgr._episode_done:
             await _run_sync(mgr.reset_episode)
         info = await _run_sync(mgr.get_episode_info)
