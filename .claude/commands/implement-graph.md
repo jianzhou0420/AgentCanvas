@@ -12,7 +12,7 @@ Port a published agent-method (paper + upstream repo) into AgentCanvas as a runn
 - `<upstream-repo-path>` — local checkout under `third_party/zz_just_for_refer/<method>/` (clone there first if missing).
 - `env=<env-nodeset>` — target env nodeset name (`env_mp3d` / `env_vlnce` / `simpler` / …); infer from paper if omitted.
 
-The upstream `agent.py` (or equivalent loop driver) is the source of truth: paper text describes intent, code describes behaviour, and behaviour is what you reproduce. Read the paper for context; reproduce against the code.
+The upstream `agent.py` (or equivalent loop driver) **plus the effective run-config chain** (`run.sh` → run yaml → task yaml → code defaults) is the source of truth: paper text describes intent, code + config describe behaviour, and behaviour is what you reproduce. Config overrides code defaults — a port that read only the Python has not read the program. Read the paper for context; reproduce against the code.
 
 ## Where things live
 
@@ -41,14 +41,17 @@ These are mandatory; read each *before* touching the corresponding file type:
 
 ### 1. Read the upstream code
 
-Before writing anything, answer four questions from the upstream `agent.py`:
+Before writing anything, answer five questions from the upstream `agent.py` + its run config:
 
 1. **Loop shape.** What's one iteration? Once per env step (NavGPT)? Once per viewpoint visit with multiple LLM calls inside (MapGPT)? Multiple passes with fan-out + aggregation (DiscussNav)?
 2. **Cross-iter state.** What survives across iterations? A scratchpad string? An action list? A topo-map dict? An accumulated dialogue?
 3. **Action-space bridge.** What does the env actually consume — viewpoint ID? Discrete index? Continuous waypoint? How does the LLM's text get translated?
 4. **Episode-fixed values.** What's computed once at episode start (instruction, landmarks, scene metadata) and read by every iteration?
+5. **Observation pipeline.** What exact bytes does each model consume? Sensor resolution and obs transforms from the *run config* (not the sim's defaults), resize mode/order, normalization, image codec + quality. If the upstream is a fork, run `git diff parent..fork` first — sensor/transform changes hide there. (Three-Step forked Open-Nav to render 1024×1024; the port inherited a sibling's 224 default and lost weeks to it.)
 
 These decide what nodes you need, where state containers go, and what `Initialize` carries vs what `iterIn` re-emits.
+
+**Reuse gate for `env=`.** Before binding an existing env nodeset, diff its effective sensor/obs config against THIS upstream's task yaml. On mismatch, set the per-graph knobs (e.g. `env_habitat__reset.rgb_resolution`) or extend the env nodeset — never silently inherit a sibling port's perception defaults ("correct for Open-Nav, wrong for Three-Step").
 
 ### 2. Draft the nodeset monolithically
 
@@ -106,11 +109,12 @@ Run a smoke + a calibration eval, in that order:
 /experiment:run <profile> <graph_name> episode_count=20 worker_count=20 split=<paper-split>
 ```
 
-The gate passes when **all three** hold:
+The gate passes when **all four** hold:
 
 1. All 20 episodes complete without backend error / timeout.
 2. Per-step `planner_llm.inner_log[rendered_prompt]` (in `outputs/eval_runs/<run_id>/episodes/ep*/log.jsonl`) reads like the paper's described prompt format. Eyeball one episode's first 3 steps.
-3. Headline SR lands within ±5 SR points of the paper-reported number on the same split, OR in a sensible noise band (20 ep at SR=0.2 has ~±9 SR-pt MC noise — be charitable).
+3. **Eyeball the rendered pixels too**: decode one step's image b64 from `log.jsonl`, check resolution + codec magic bytes against the upstream's config (a five-minute check that catches a 224-vs-1024 mismatch on day one, instead of after the paper-tier run refutes your SR).
+4. Headline SR lands in the paper's noise band on the same split — but **first pin how the paper computes that number from the upstream eval code** (measures kept or stripped? stop-gated or distance-only?). Compare with the same ruler; if the upstream ruler differs from the benchmark's official one, record the definition in the exp profile + doc and dual-report. (Three-Step's SR has no STOP gate: the same trajectories score 0.08 official vs 0.24 upstream-ruler — an unpinned ruler reads as a permanent 20-point gap.) For the band itself, compute the binomial noise (20 ep at SR=0.2 has ~±9 SR-pt MC noise — be charitable).
 
 If (3) misses badly, **debug the monolith — do not decompose**. Most common culprits:
 
@@ -127,6 +131,8 @@ Stop after Phase 1 unless you have a concrete reason to split:
 1. You want to **A/B individual stages** (swap one part, hold the rest).
 2. The architect loop will **mutate one stage at a time** — needs explicit seams.
 3. Downstream consumers need a **stable, fine-grained I/O contract** that the split makes explicit.
+
+**Counter-signal — do NOT split** when the mono is already at the framework floor (~2N+1 nodes for N LLM calls) and the only fat node is fat because of a **conditional LLM call** (a static graph cannot express it as a graph-level `llmCall` in any split): the decomposition merely relocates state-writing. `threestepnav`'s Phase-2 decomp was built, proven byte-equivalent (13/13), and later deleted for exactly this reason.
 
 **Keep the validated mono. Decomp goes in a NEW nodeset + NEW graph.** Stage the decomp as a sibling nodeset (e.g. `mapgpt` → `mapgpt2`, or `smartway2` → `smartway3` during development). Once the decomp ships and proves itself you can optionally promote it to the canonical name (`smartway` = decomp, `smartway_mono` = reference baseline), but the validated mono stays alongside as ground truth. The mono stays as ground truth — its `SmartwayMono{PlanStep,DecideAction}` classes are what the byte-equivalence test compares against. Don't in-place edit a validated mono until the decomp has shipped and proved itself.
 
@@ -190,6 +196,8 @@ Then register the page in `method/index.html` and rebuild: `python3 docs/_lib/_w
 - **v3 `iterIn` dual-wire freeze.** Every loop port has `init_<name>` + `iterout_<name>`. Wire both to the same downstream input *and* set `init.persist=true` ⇒ consumer reads the iter-0 value forever. Symptom: agent picks the same action every step. Fix: `persist=false` on init, or wire only the `iterout_<name>` flavour to in-loop consumers. ([[feedback_iterin_dual_wire_obs_freeze]])
 - **Verify model from `log.jsonl`, not the profile name.** Profiles drift; the field `planner_llm.inner_log[model]` is authoritative. ([[feedback_verify_model_from_log]])
 - **Multi-LLM fan-out is sequential.** The executor runs nodes serially per superstep until parallel execution lands. DiscussNav-style "12 directions × VLM + summarize × 12 + pred × 5 retries" works but is slow. Options: chain serially, use one `llmCall` with `batched=true` if prompts are independent, or accept the latency.
+- **Fork upstream? Diff it against its parent first.** A method repo that forks a baseline carries its real deltas in `git diff parent..fork` — sensor config, obs transforms, metric formulas. A port that reuses the parent's substrate inherits exactly the wrong defaults. (Three-Step vs Open-Nav: 1024 camera, CenterCropper→ResizerPerSensor switch, stop-gate removal from the SR formula.)
+- **Silent model-load fallback in shared nodesets.** A try/except around a checkpoint load that degrades to zeros poisons every consumer family-wide, and no eval will tell you. Loads must be FATAL; grep reused components for swallowed load failures before trusting any number that flows through them (the shared DDPPO depth encoder had never loaded in any Open-Nav-family run).
 - **All-zero metrics ≠ your wiring is broken.** Fingerprint: `summary.json` shows N/N episodes `status="completed"` with `step_count=0` and `metrics={}`, elapsed ~20 s each. GraphExecutor silently completes the episode when an upstream node returns `{'error': '...'}` instead of its declared port dict — port routing only forwards declared keys, so the error dict is dropped, downstream stays unready, the loop drains empty and exits "clean". Usually a shared singleton (`smartway_waypoint`, `smartway_perception`, `opennav_*`) controller-registered 404 at session start because its server wasn't ready when proxy generation ran. **First check episode 0's `log.jsonl` for `{'error': ...}` outputs — find the node BEFORE the gap. If it's an env/perception node, restart the backend and resubmit; nothing wrong with your method nodes.** ([[project_silent_episode_completion_on_node_error]])
 
 ## Stop signals
