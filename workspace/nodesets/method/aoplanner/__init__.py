@@ -506,6 +506,18 @@ class AnnotateMarkersNode(BaseCanvasNode):
         config_fields=[
             ConfigField("radius", "text", "Marker circle radius (px)", default="10"),
             ConfigField("font_size", "text", "Label font size (px)", default="20"),
+            ConfigField(
+                "skip_first",
+                "boolean",
+                "Skip points[0] (the foot anchor) — upstream vis_candidates never draws it",
+                default=False,
+            ),
+            ConfigField(
+                "label_start",
+                "text",
+                "First auto-label value (upstream grid labels start at 1)",
+                default="0",
+            ),
         ],
     )
     input_ports = [
@@ -538,6 +550,16 @@ class AnnotateMarkersNode(BaseCanvasNode):
         cfg = getattr(self, "config", None) or {}
         radius = max(1, int(float(cfg.get("radius", 10) or 10)))
         font_size = max(6, int(float(cfg.get("font_size", 20) or 20)))
+        skip_first = bool(cfg.get("skip_first", False))
+        label_start = int(float(cfg.get("label_start", 0) or 0))
+
+        # Upstream vis_candidates(multi_start=True) draws only the GRID points,
+        # labelled 1..N — the foot anchor (candidate 0) is inserted into the id
+        # space afterwards and never shown to VLM#1 (grounded_sam_Gemini.py:346-348).
+        if skip_first and points:
+            points = points[1:]
+        if not labels:
+            labels = [str(label_start + i) for i in range(len(points))]
 
         rgb = _decode_rgb(img_b64)
         annotated = _draw_markers(rgb, points, labels, radius, font_size)
@@ -1197,40 +1219,52 @@ class AggregateCandidatesNode(BaseCanvasNode):
                 pts.append([c.get("u", 0), c.get("v", 0)])
                 ids_here.append(gid)
 
-            if rgb_b64 and pts:
-                rgb_arr = _decode_rgb(rgb_b64)
-                # Draw path polylines before ghost dots (upstream vis_ghost_nodes:
-                # cv2.line per route segment, then vis_points for the ghost label).
-                path_pixels = vb.get("path_pixels") or []
-                if path_pixels:
-                    from PIL import ImageDraw
+            # Upstream only packs views that yielded ghosts: a view with no
+            # llm_result contributes neither an image nor an Options entry, and
+            # "Image {i}" counts CONTRIBUTING views (zero_shot_agent.py:727-731,
+            # prompt_manager.py:54-59). Skip empty views entirely.
+            if not (rgb_b64 and pts):
+                continue
+            rgb_arr = _decode_rgb(rgb_b64)
+            # Draw path polylines before ghost dots (upstream vis_ghost_nodes:
+            # per-route random colour, a bottom-anchor segment from the image
+            # bottom row to the route start (multi_start=True), then cv2.line
+            # per segment, then vis_points for the ghost label).
+            path_pixels = vb.get("path_pixels") or []
+            if path_pixels:
+                from PIL import ImageDraw
 
-                    img_pil = Image.fromarray(rgb_arr)
-                    draw = ImageDraw.Draw(img_pil)
-                    for cand in cands:
-                        idx = cand.get("idx")
-                        if idx is None or idx >= len(path_pixels):
-                            continue
-                        route = path_pixels[idx]
-                        if not isinstance(route, list) or len(route) < 2:
-                            continue
-                        # route is [[u0,v0],[u1,v1],...] ending at the waypoint
-                        pts_line = [(int(p[0]), int(p[1])) for p in route if len(p) >= 2]
-                        if len(pts_line) >= 2:
-                            draw.line(pts_line, fill=(255, 0, 0), width=2)
-                    rgb_arr = np.array(img_pil)
-                annotated = _draw_markers(
-                    rgb_arr, pts, [str(x) for x in ids_here], radius, font_size
-                )
-                buf = io.BytesIO()
-                Image.fromarray(annotated).save(buf, format="PNG")
-                ann_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            else:
-                ann_b64 = rgb_b64
-            view_images.append(ann_b64)
+                img_pil = Image.fromarray(rgb_arr)
+                draw = ImageDraw.Draw(img_pil)
+                img_h = rgb_arr.shape[0]
+                for cand in cands:
+                    idx = cand.get("idx")
+                    if idx is None or idx >= len(path_pixels):
+                        continue
+                    route = path_pixels[idx]
+                    if not isinstance(route, list) or not route:
+                        continue
+                    # route is [[u0,v0],[u1,v1],...] ending at the waypoint
+                    pts_line = [(int(p[0]), int(p[1])) for p in route if len(p) >= 2]
+                    if not pts_line:
+                        continue
+                    color = tuple(int(c) for c in np.random.randint(0, 256, size=3))
+                    # bottom-anchor: upstream draws (x0, 511) -> route start so
+                    # bottom-row waypoints still show a path (llm/utils.py:164-186)
+                    draw.line([(pts_line[0][0], img_h - 1), pts_line[0]], fill=color, width=2)
+                    if len(pts_line) >= 2:
+                        draw.line(pts_line, fill=color, width=2)
+                rgb_arr = np.array(img_pil)
+            annotated = _draw_markers(rgb_arr, pts, [str(x) for x in ids_here], radius, font_size)
+            buf = io.BytesIO()
+            Image.fromarray(annotated).save(buf, format="PNG")
+            ann_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
             view_labels.append(
-                _prompts.image_label(view_dir, ", ".join(str(x) for x in ids_here), i)
+                _prompts.image_label(
+                    view_dir, ", ".join(str(x) for x in ids_here), len(view_images)
+                )
             )
+            view_images.append(ann_b64)
 
         # Persist updated counter.
         _write(gs, "ghost_map", {"next_gid": next_gid})
@@ -1238,8 +1272,13 @@ class AggregateCandidatesNode(BaseCanvasNode):
         action_space_text = ", ".join(str(k) for k in manifest)
         self._self_log("n_candidates", len(manifest))
         self._self_log("action_space_text", action_space_text)
+        # "_meta.total" = ghost ids ever minted this episode == upstream
+        # len(waypoint_path_coord); resolve_action uses it to replicate the
+        # upstream IndexError→STOP on an id beyond the accumulated set.
+        manifest_json: dict[str, Any] = {str(k): v for k, v in manifest.items()}
+        manifest_json["_meta"] = {"total": next_gid}
         return {
-            "candidates_dict": json.dumps({str(k): v for k, v in manifest.items()}),
+            "candidates_dict": json.dumps(manifest_json),
             "action_space_text": action_space_text,
             "view_images_b64": json.dumps(view_images),
             "view_labels": json.dumps(view_labels),
@@ -1304,6 +1343,13 @@ class BuildImagesNode(BaseCanvasNode):
     input_ports = [
         PortDef("view_images_b64", "TEXT", "JSON list of annotated per-view PNGs (from aggregate)"),
         PortDef("view_labels", "TEXT", "JSON list of per-image captions (from aggregate)"),
+        PortDef(
+            "action_space_text",
+            "TEXT",
+            "Comma-joined ghost IDs (from aggregate) — the t>0 Options line rides "
+            "the first option image's label (upstream content order)",
+            optional=True,
+        ),
     ]
     output_ports = [
         PortDef("images", "LIST[IMAGE]", "History + current per-view annotated RGB tiles"),
@@ -1337,11 +1383,25 @@ class BuildImagesNode(BaseCanvasNode):
                     out_labels.append(caption)
 
         # ── current-step option views ─────────────────────────────────────────
+        # At t>0 upstream emits the Options line as its own text item BETWEEN the
+        # history images and the option images (prompt_manager.py:75-79); llmCall
+        # packs one text item per image label, so the line rides the first option
+        # image's label — adjacent text items are semantically identical.
+        t = int(getattr(ctx, "step", 0)) if ctx else 0
+        opts_prefix = ""
+        if t > 0:
+            action_space_text = str(inputs.get("action_space_text", "") or "")
+            opts_prefix = _prompts.options_line(action_space_text, t)
+        first_current = True
         for i, b64 in enumerate(imgs_b64):
             if not b64:
                 continue
             images.append(_decode_rgb(b64))
-            out_labels.append(str(labels[i]) if i < len(labels) else f"Image {i}")
+            caption = str(labels[i]) if i < len(labels) else f"Image {i}"
+            if first_current and opts_prefix:
+                caption = opts_prefix + caption
+                first_current = False
+            out_labels.append(caption)
 
         self._self_log("n_history", len(hist_imgs) if isinstance(hist_imgs, list) else 0)
         self._self_log("n_images", len(images))
@@ -1489,13 +1549,28 @@ class ResolveActionNode(BaseCanvasNode):
             pass
         fallback = (getattr(self, "config", None) or {}).get("fallback", "forward")
 
+        meta = manifest.pop("_meta", None) or {}
+        try:
+            total_ghosts = int(meta.get("total"))
+        except (TypeError, ValueError):
+            total_ghosts = None
+
         chosen = None
+        if not is_stop and total_ghosts is not None and aid >= total_ghosts:
+            # Upstream: waypoint_path_coord[id] raises IndexError for an id
+            # beyond the episode's accumulated ghosts → except → 'stop'
+            # (zero_shot_agent.py:838-844). Replicate: STOP, no fallback.
+            is_stop = True
+            self._self_log("stop_out_of_range", aid)
         if not is_stop:
             entry = manifest.get(str(aid)) if aid >= 0 else None
             if isinstance(entry, dict):
                 chosen = entry
             else:
-                # action_id is not a valid ghost id — recover per `fallback`.
+                # action_id names a PAST ghost (< total but not in the current
+                # manifest). Upstream would replay that ghost's stored world-coord
+                # path from the current pose; the port keeps no cross-step path
+                # store (D-3 deferral) and recovers per `fallback` instead.
                 valid = []
                 for k, e in manifest.items():
                     if not isinstance(e, dict):

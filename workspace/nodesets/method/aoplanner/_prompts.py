@@ -161,6 +161,14 @@ def parse_proposal(text: str) -> dict[str, Any]:
                 positional.append(_ints(p))
             else:
                 positional.append(_ints([p]))
+    # Upstream count-mismatch branch (llm/utils.py:43-56): for list-form Paths
+    # whose count differs from Waypoints, ignore the Waypoints list and use each
+    # path's LAST point as its destination ("use path[-1] as waypoint instead").
+    # Object-form routes (gpt-5-mini) carry their own Waypoint id, so the branch
+    # only applies when every route is positional.
+    if not route_by_wp and positional and len(waypoints) != len(positional):
+        kept = [r for r in positional if r]
+        return {"waypoints": [r[-1] for r in kept], "paths": kept}
     # One route per waypoint: by waypoint id (object form) else positional.
     paths: list[list[int]] = []
     for i, w in enumerate(waypoints):
@@ -239,6 +247,11 @@ def build_task_description() -> str:
     )
 
 
+def options_line(action_space_text: str, t: int) -> str:
+    """The verbatim Options content item (prompt_manager.py:65/75)."""
+    return f"Options (step {t}): Locations {{{action_space_text}}}\n"
+
+
 def assemble_pathagent_prompt(
     instruction: str,
     planning_latest: str,
@@ -249,19 +262,19 @@ def assemble_pathagent_prompt(
     """Build the PathAgent user prompt text (verbatim layout).
 
     Step 0:  Instruction / History: <init> / Previous Planning / Options
-    Step >0: Instruction / Previous Planning / History:\\n / Options
-             (history images are prepended by BuildImagesNode before the option
-             views; the "History:\\n" header marks where they begin)
+             (one text block, then the option images — upstream user_content[0])
+    Step >0: Instruction / Previous Planning / History:\\n
+             History images follow, then the Options line rides the FIRST
+             option image's label (BuildImagesNode) so the content order is
+             upstream's exactly: text → history images → Options text → option
+             images (prompt_manager.py:69-79).
     """
-    opt = f"Options (step {t}): Locations {{{action_space_text}}}\n"
     if t == 0:
         return (
             f"Instruction: {instruction}\nHistory: {INIT_HISTORY}\n"
-            f"Previous Planning: {planning_latest}\n{opt}"
+            f"Previous Planning: {planning_latest}\n{options_line(action_space_text, t)}"
         )
-    # At t>0 history images are prepended by build_images before the option views;
-    # the "History:\n" header marks where those images begin in the multimodal content.
-    return f"Instruction: {instruction}\nPrevious Planning: {planning_latest}\nHistory:\n{opt}"
+    return f"Instruction: {instruction}\nPrevious Planning: {planning_latest}\nHistory:\n"
 
 
 _DIRECTION_PHRASES: dict[str, str] = {
