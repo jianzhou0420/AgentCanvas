@@ -38,9 +38,23 @@ checkpoint (+ ``$GROUNDING_DINO_CONFIG``) for the stronger backbone. Thresholds
 default to AO-Planner's 0.4 / 0.4, caption ``"ground"`` (C-2 fidelity alignment
 2026-06-17: was Swin-B @ 0.25 / "floor . ground .").
 
+BACKEND SELECTION (2026-07-04, TODO #56 sweep): ``$GROUNDING_DINO_BACKEND``
+picks the implementation at load time (SAM-style env-var selection):
+
+    native   (default)  groundingdino-py + Swin-T OGC ckpt, ``ac-detany3d`` env
+    hf_tiny             HF transformers ``IDEA-Research/grounding-dino-tiny``
+                        (the variant the retired navgpt open_vocab_detect node
+                        ran). Requires transformers>=4.40 — point
+                        ``$GROUNDING_DINO_PYTHON`` at the ``agentcanvas`` env
+                        (4.45.2) for this backend; ac-detany3d predates it.
+
+Both backends emit the same ``result`` JSON schema, so graphs are
+backend-agnostic; NavGPT-style post-processing lives in the pure
+``navgpt_mp3d_tools__format_detections`` node.
+
 Load:  POST /api/components/nodesets/model_grounding_dino/load
 
-last updated: 2026-06-16
+last updated: 2026-07-04
 """
 
 import asyncio
@@ -83,10 +97,17 @@ _DEFAULT_TEXT_PROMPT = "ground"
 _DEFAULT_BOX_THRESHOLD = 0.4
 _DEFAULT_TEXT_THRESHOLD = 0.4
 
+# Backend selection: "native" (groundingdino-py, Swin-T OGC) | "hf_tiny"
+# (HF transformers grounding-dino-tiny; needs transformers>=4.40).
+_BACKEND = os.environ.get("GROUNDING_DINO_BACKEND", "native")
+_HF_MODEL_ID = os.environ.get("GROUNDING_DINO_HF_MODEL", "IDEA-Research/grounding-dino-tiny")
+
 # Lazy singleton (per server subprocess) + single-thread executor for GPU
 # affinity (mirrors DetAny3DEnvManager's executor pattern).
 _model = None
 _device = None
+_hf_model = None
+_hf_processor = None
 _sam_predictor = None
 _load_lock = threading.Lock()
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="gdino")
@@ -145,9 +166,74 @@ def _decode_rgb(b64: str) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"), dtype=np.uint8)
 
 
+def _ensure_hf_model():
+    """Lazy-load the HF grounding-dino-tiny backend (verbatim from the retired
+    navgpt ``_get_gdino``; requires transformers>=4.40)."""
+    global _hf_model, _hf_processor, _device
+    if _hf_model is not None:
+        return _hf_model, _hf_processor, _device
+    with _load_lock:
+        if _hf_model is not None:
+            return _hf_model, _hf_processor, _device
+        import torch
+        from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        log.info("Loading GroundingDINO (hf backend) %s on %s …", _HF_MODEL_ID, device)
+        _hf_processor = AutoProcessor.from_pretrained(_HF_MODEL_ID)
+        _hf_model = AutoModelForZeroShotObjectDetection.from_pretrained(_HF_MODEL_ID).to(device)
+        _hf_model.eval()
+        _device = device
+        log.info("GroundingDINO hf backend loaded (%s)", device)
+        return _hf_model, _hf_processor, _device
+
+
+def _detect_hf(b64: str, text: str, box_threshold: float, text_threshold: float) -> dict:
+    """HF-transformers detect path — same output schema as the native path.
+    Inference recipe verbatim from the retired navgpt ``OpenVocabDetectNode``."""
+    import torch
+    from PIL import Image
+
+    model, processor, device = _ensure_hf_model()
+    img = _decode_rgb(b64)
+    pil = Image.fromarray(img, "RGB")
+    proc_inputs = processor(images=pil, text=text, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = model(**proc_inputs)
+    results = processor.post_process_grounded_object_detection(
+        outputs,
+        proc_inputs.input_ids,
+        threshold=box_threshold,
+        text_threshold=text_threshold,
+        target_sizes=[pil.size[::-1]],
+    )[0]
+    h, w = img.shape[:2]
+    out_boxes: list[dict] = []
+    for box, score, label in zip(
+        results["boxes"].cpu().numpy(), results["scores"].cpu().numpy(), results["labels"]
+    ):
+        out_boxes.append(
+            {
+                "xyxy": [int(c) for c in box],
+                "score": float(score),
+                "phrase": str(label).strip(),
+            }
+        )
+    return {
+        "boxes": out_boxes,
+        "count": len(out_boxes),
+        "image_w": int(w),
+        "image_h": int(h),
+        "text_prompt": text,
+    }
+
+
 def _detect(b64: str, text: str, box_threshold: float, text_threshold: float) -> dict:
-    """Run GroundingDINO → list of pixel-xyxy boxes. Recipe from
+    """Run GroundingDINO → list of pixel-xyxy boxes. Backend picked by
+    ``$GROUNDING_DINO_BACKEND``; native recipe from
     ``model_detany3d/__init__.py:287-331`` (DetAny3D ``app_mp.py:94-105, 171-187``)."""
+    if _BACKEND == "hf_tiny":
+        return _detect_hf(b64, text, box_threshold, text_threshold)
     import groundingdino.datasets.transforms as T  # type: ignore[import-not-found]
     import torch
     from groundingdino.util.inference import predict as dino_predict

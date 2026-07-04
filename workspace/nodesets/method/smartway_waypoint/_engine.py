@@ -107,8 +107,6 @@ class WaypointEngine:
         self.ddppo_ckpt_path = SMARTWAY_DDPPO_CKPT_DEFAULT
         self.device = None
         self.predictor = None
-        self.rgb_encoder_dino = None
-        self.dino_processor = None
         self.depth_encoder = None
         self._loaded = False
 
@@ -188,32 +186,11 @@ class WaypointEngine:
             predictor.eval()
             self.predictor = predictor
 
-            # ──── DINOv2-small (with registers) — RGB feature backbone ────
-            # Upstream Policy_ViewSelection_VLNBERT.py:111
-            # ``torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')``
-            try:
-                self.rgb_encoder_dino = (
-                    torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
-                    .to(self.device)
-                )
-                self.rgb_encoder_dino.eval()
-                for p in self.rgb_encoder_dino.parameters():
-                    p.requires_grad = False
-            except Exception as exc:
-                log.warning("DINOv2 load failed: %s — running with random init", exc)
-                self.rgb_encoder_dino = None
-
-            # ──── DINO image processor (preprocess to ViT-14 input) ────
-            # Upstream base_il_trainer.py:356.
-            try:
-                from transformers import AutoImageProcessor  # type: ignore
-
-                self.dino_processor = AutoImageProcessor.from_pretrained(
-                    "facebook/dinov2-small"
-                )
-            except Exception as exc:
-                log.warning("DINO processor load failed: %s", exc)
-                self.dino_processor = None
+            # ──── RGB backbone: DINOv2 extracted to model_dinov2 (TODO #56,
+            # 2026-07-04). ``predict()`` now takes the per-view features as an
+            # argument (wired from ``model_dinov2__extract_features``) instead
+            # of computing them here. The DDPPO depth encoder below stays —
+            # it is a task-specific trained component, not an FM.
 
             # ──── DDPPO depth encoder — mirrors Open-Nav ────
             try:
@@ -268,6 +245,7 @@ class WaypointEngine:
         self,
         rgb_views: list[np.ndarray],
         depth_views: list[np.ndarray],
+        rgb_features: "np.ndarray | None" = None,
     ) -> dict[int, dict[str, Any]]:
         """Return ``{idx: {angle, distance, rgb_base64}}`` keyed by 0..K-1.
 
@@ -277,6 +255,14 @@ class WaypointEngine:
         lines 198-205). The angle output is in **counter-clockwise**
         radians (``2π - idx/120 * 2π``) — the same convention as the
         ``env_habitat__step_hightolow`` action arg.
+
+        ``rgb_features`` is the (N, 384) DINOv2 per-view embedding matrix in
+        the SAME env order as ``rgb_views`` (from
+        ``model_dinov2__extract_features``; TODO #56 extraction). The
+        clockwise remap below applies to it exactly as to the raw views —
+        DINOv2 is per-image, so features computed in env order and placed at
+        the CW slot are byte-identical to the old in-engine forward. ``None``
+        → zeros (degraded mode, mirrors the old load-failure fallback).
         """
         self._ensure_loaded()
 
@@ -291,11 +277,14 @@ class WaypointEngine:
         n_views = min(12, len(rgb_views))
         rgb_cw = [None] * 12  # type: list[np.ndarray | None]
         depth_cw = [None] * 12  # type: list[np.ndarray | None]
+        emb_cw = [None] * 12  # type: list[np.ndarray | None]
         for a in range(n_views):
             ra = (12 - a) % 12
             rgb_cw[ra] = rgb_views[a]
             if a < len(depth_views):
                 depth_cw[ra] = depth_views[a]
+            if rgb_features is not None and a < len(rgb_features):
+                emb_cw[ra] = rgb_features[a]
 
         # Pad missing views with the first valid view.
         first_rgb = next((v for v in rgb_cw if v is not None), rgb_views[0])
@@ -303,6 +292,13 @@ class WaypointEngine:
             if rgb_cw[i] is None:
                 rgb_cw[i] = first_rgb
         rgb_batch = np.stack(rgb_cw, axis=0)  # (12, H, W, 3) uint8
+
+        if rgb_features is not None:
+            first_emb = next((v for v in emb_cw if v is not None), None)
+            if first_emb is not None:
+                for i in range(12):
+                    if emb_cw[i] is None:
+                        emb_cw[i] = first_emb
 
         first_depth = next(
             (v for v in depth_cw if v is not None),
@@ -327,17 +323,16 @@ class WaypointEngine:
         else:
             depth_embedding = torch.zeros(12, 128, 4, 4, device=self.device)
 
-        # ─── RGB encoding (DINOv2) ───
-        # Upstream feeds the processor a CHW int tensor; AutoImageProcessor
-        # also accepts HWC numpy. We pass the numpy (12, H, W, 3) directly.
-        if self.rgb_encoder_dino is not None and self.dino_processor is not None:
-            pp = self.dino_processor(
-                images=[rgb_batch[i] for i in range(12)], return_tensors="pt"
-            )
-            dino_img = pp["pixel_values"].to(self.device)
-            with torch.no_grad():
-                rgb_embedding = self.rgb_encoder_dino(dino_img)  # (12, 384)
+        # ─── RGB embedding (DINOv2, computed upstream by model_dinov2) ───
+        # emb_cw carries the per-view features remapped to the same clockwise
+        # order the old in-engine DINOv2 forward produced from rgb_batch.
+        if rgb_features is not None and all(v is not None for v in emb_cw):
+            rgb_embedding = torch.from_numpy(
+                np.stack(emb_cw, axis=0).astype(np.float32)
+            ).to(self.device)  # (12, 384)
         else:
+            if rgb_features is None:
+                log.warning("predict: no rgb_features wired — RGB features zeroed")
             rgb_embedding = torch.zeros(12, 384, device=self.device)
 
         # ─── TRM predictor with cross-attention ───

@@ -246,7 +246,7 @@ class DiscussNavInitDecomposeNode(BaseCanvasNode):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Panorama → views base64 (feeds opennav_perception__tag_panorama)
+# Panorama → views base64 (feeds model_ram__tag_panorama)
 # ══════════════════════════════════════════════════════════════════════
 
 

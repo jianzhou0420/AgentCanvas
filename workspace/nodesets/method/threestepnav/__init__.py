@@ -13,7 +13,7 @@ so this nodeset pairs with the SAME tool nodesets:
 
     env_habitat                         — VLN-CE simulator (server mode)
     opennav_waypoint                    — frozen TRM waypoint predictor (12-dir)
-    opennav_perception                  — RAM tags + SpatialBot-3B captions
+    model_ram / vlm_spatialbot          — RAM tags + SpatialBot-3B captions (FM wrappers)
 
 This nodeset implements the **method-side reasoning** — the three steps:
 
@@ -1082,6 +1082,46 @@ class JudgeDecideNode(BaseCanvasNode):
         return out or ""
 
 
+class SelectCandidateViewsNode(BaseCanvasNode):
+    """Filter panorama views down to the waypoint candidates, keyed by dir_id.
+
+    Method glue extracted from ``opennav_perception`` (TODO #56), duplicated
+    from ``opennav.SelectCandidateViewsNode`` so this nodeset stays
+    self-contained: only candidate directions get the expensive
+    RAM/SpatialBot passes; the FM wrappers (``model_ram__tag_views`` /
+    ``vlm_spatialbot__caption_views``) consume the keyed dict as-is.
+    Empty ``candidates`` → all views pass through (legacy semantics).
+    """
+
+    node_type: ClassVar[str] = "threestepnav__select_candidate_views"
+    display_name: ClassVar[str] = "Three-Step: Select Candidate Views"
+    description: ClassVar[str] = "views + candidates → {dir_id: view} for candidate dirs only"
+    category: ClassVar[str] = "perception"
+    icon: ClassVar[str] = "Filter"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("views", "ANY", "List of {dir_id, rgb_base64, depth_*} from panorama_rgbd"),
+        PortDef("candidates", "ANY", "{dir_id: ...} from waypoint predictor"),
+    ]
+    output_ports = [
+        PortDef("candidate_views", "ANY", "{dir_id: view dict} in panorama order"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any = None) -> dict:
+        views = inputs.get("views") or []
+        candidates = inputs.get("candidates") or {}
+        keys = {str(k) for k in candidates.keys()} if candidates else None
+        out: dict = {}
+        for v in views:
+            if not isinstance(v, dict):
+                continue
+            dir_id = str(v.get("dir_id"))
+            if keys is None or dir_id in keys:
+                out[dir_id] = v
+        self._self_log("num_candidates", len(out))
+        return {"candidate_views": out}
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # NodeSet registration
 # ═══════════════════════════════════════════════════════════════════════
@@ -1095,7 +1135,7 @@ class ThreeStepNavNodeSet(BaseNodeSet):
         "Three-Step Nav (arXiv 2604.26946) zero-shot VLN-CE: instruction decomposition, "
         "MapGPT-style image navigator with folded completion estimation, and a "
         "continue/stay/backtrack/look-around judge driving a sub-instruction pointer. "
-        "Pairs with env_habitat + opennav_waypoint + opennav_perception."
+        "Pairs with env_habitat + opennav_waypoint + model_ram + vlm_spatialbot."
     )
     # ~4 LLM calls/step (navigator + 2 summaries + gated judge) over 1024px tiles.
     default_per_step_budget_sec = 60.0
@@ -1116,4 +1156,5 @@ class ThreeStepNavNodeSet(BaseNodeSet):
             BuildHistoryEntryNode(),
             JudgeDecideNode(),
             StuckDetectNode(),
+            SelectCandidateViewsNode(),
         ]

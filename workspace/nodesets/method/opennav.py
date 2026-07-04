@@ -15,7 +15,7 @@ This nodeset implements the **method-side** of Open-Nav: prompts, parsers,
 ensemble + fusion + tie-break logic, and history accumulation. It does
 NOT touch the simulator (use ``env_habitat`` for that), the waypoint
 predictor (use ``env_habitat_opennav_waypoint``), or the scene perception
-models RAM/SpatialBot (use ``env_habitat_opennav_perception``).
+models RAM/SpatialBot (use ``model_ram`` / ``vlm_spatialbot``).
 
 All prompts and parsers below are copied character-for-character from the
 reference implementation; each constant cites the source file:line it was
@@ -27,7 +27,7 @@ faithfulness/simplicity tradeoff approved at the ralplan checkpoint.
 Companion files:
 
     workspace/nodesets/method/opennav_waypoint/     — frozen TRM_net
-    workspace/nodesets/method/opennav_perception.py   — RAM + SpatialBot
+    workspace/nodesets/model/{model_ram,vlm_spatialbot}.py — RAM + SpatialBot (FM wrappers)
     workspace/graphs/opennav_habitat.json             — wired graph
 
 last updated: 2026-04-15
@@ -1183,6 +1183,46 @@ class StepCapCompareNode(BaseCanvasNode):
         return {"done": done}
 
 
+class SelectCandidateViewsNode(BaseCanvasNode):
+    """Filter panorama views down to the waypoint candidates, keyed by dir_id.
+
+    Method glue extracted from ``opennav_perception`` (TODO #56): the
+    candidate filter is Open-Nav's compute-saving policy (only candidate
+    directions get the expensive RAM/SpatialBot passes), so it lives with
+    the method; the FM wrappers (``model_ram__tag_views`` /
+    ``vlm_spatialbot__caption_views``) consume the keyed dict as-is.
+    Empty ``candidates`` → all views pass through (legacy semantics).
+    """
+
+    node_type: ClassVar[str] = "opennav__select_candidate_views"
+    display_name: ClassVar[str] = "Open-Nav: Select Candidate Views"
+    description: ClassVar[str] = "views + candidates → {dir_id: view} for candidate dirs only"
+    category: ClassVar[str] = "perception"
+    icon: ClassVar[str] = "Filter"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("views", "ANY", "List of {dir_id, rgb_base64, depth_*} from panorama_rgbd"),
+        PortDef("candidates", "ANY", "{dir_id: ...} from waypoint predictor"),
+    ]
+    output_ports = [
+        PortDef("candidate_views", "ANY", "{dir_id: view dict} in panorama order"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any = None) -> dict:
+        views = inputs.get("views") or []
+        candidates = inputs.get("candidates") or {}
+        keys = {str(k) for k in candidates.keys()} if candidates else None
+        out: dict[str, dict] = {}
+        for v in views:
+            if not isinstance(v, dict):
+                continue
+            dir_id = str(v.get("dir_id"))
+            if keys is None or dir_id in keys:
+                out[dir_id] = v
+        self._self_log("num_candidates", len(out))
+        return {"candidate_views": out}
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # NodeSet registration
 # ═══════════════════════════════════════════════════════════════════════
@@ -1195,7 +1235,7 @@ class OpenNavNodeSet(BaseNodeSet):
     description = (
         "Open-Nav (ICRA 2025) method-side nodes: spatial-temporal CoT prompts, "
         "string-split parsers, 3-sample ensemble + fusion + tie-break decision policy. "
-        "Pairs with env_habitat + opennav_waypoint + opennav_perception."
+        "Pairs with env_habitat + opennav_waypoint + model_ram + vlm_spatialbot."
     )
 
     def get_tools(self) -> list:
@@ -1219,4 +1259,5 @@ class OpenNavNodeSet(BaseNodeSet):
             AppendHistoryNode(),
             IncrementNode(),
             StepCapCompareNode(),
+            SelectCandidateViewsNode(),
         ]

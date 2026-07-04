@@ -1,18 +1,25 @@
-"""NavGPT MP3D Tools — BLIP-2 captioning and Faster R-CNN object detection.
+"""NavGPT MP3D Tools — method-side glue + caches for NavGPT perception.
 
-Online vision nodes that replicate NavGPT's offline preprocessing pipeline
-at runtime.  Designed to run in the **agentcanvas** env (Python 3.10+,
-torch 2.x, transformers, torchvision) in local mode.
+Original NavGPT pre-computes scene descriptions offline (BLIP-2 ViT-G
+FlanT5-XL over 24 egocentric views; object detection within 3 m). The
+foundation models were extracted to generic ``model/`` wrappers per the
+method / FM boundary (roadmap TODO #56, 2026-07-04):
 
-Original NavGPT pre-computes scene descriptions offline using:
-  - BLIP-2 ViT-G FlanT5-XL for captioning 24 egocentric views per viewpoint
-  - Faster R-CNN for object detection within 3 m
+  - BLIP-2             → ``model_blip2__caption``
+                         (+ ``__views_to_base64`` / ``__format_captions`` glue here)
+  - InstructBLIP       → ``model_instructblip__caption`` (extracted earlier)
+  - GroundingDINO-tiny → ``model_grounding_dino__detect`` (hf_tiny backend)
+                         (+ ``__format_detections`` glue here)
 
-These nodes do the same work online, accepting the env per-view primitive
-(``views`` LIST[IMAGE] + ``view_meta``) from env_mp3d and returning text
-descriptions / object lists matching the original NavGPT observation format.
+What remains in this nodeset: the pure adapter/format glue above, the
+paper-cache nodes (offline preprocessing replays), NavGPT's reasoning nodes
+(parse / scratchpad / observation format), and the legacy Faster R-CNN
+detector (COCO; deprecated, kept for v0 snapshots — still an in-process
+model load, out of the TODO #56 extraction scope).
 
-last updated: 2026-04-10
+Runs in the **agentcanvas** env (Python 3.10+) in local mode.
+
+last updated: 2026-07-04
 """
 
 from __future__ import annotations
@@ -34,10 +41,6 @@ log = logging.getLogger("agentcanvas.navgpt_mp3d_tools")
 # Lazy model singletons — loaded once on first use, stay in GPU memory
 # ══════════════════════════════════════════════════════════════════════
 
-_blip2_model = None
-_blip2_processor = None
-_blip2_device = None
-_blip2_load_lock = threading.Lock()
 
 _rcnn_model = None
 _rcnn_device = None
@@ -45,20 +48,12 @@ _rcnn_load_lock = threading.Lock()
 # COCO class names (91 classes, index 0 = __background__)
 _COCO_CLASSES: list[str] = []
 
-_gdino_model = None
-_gdino_processor = None
-_gdino_device = None
-_gdino_load_lock = threading.Lock()
 
-_instructblip_model = None
-_instructblip_processor = None
-_instructblip_device = None
-_instructblip_load_lock = threading.Lock()
-
-# R2R-relevant indoor vocabulary for GroundingDINO open-vocab detection.
-# Period-delimited per GroundingDINO convention. Covers terminal landmarks
-# the original NavGPT BUTD detector (Visual Genome 1600 classes) saw, that
-# COCO 80 classes miss.
+# R2R-relevant indoor vocabulary for open-vocab detection. Period-delimited
+# per GroundingDINO convention. Covers terminal landmarks the original NavGPT
+# BUTD detector (Visual Genome 1600 classes) saw, that COCO 80 classes miss.
+# Since the TODO #56 extraction the detector lives in model_grounding_dino;
+# graphs pass this string as that node's `text_prompt` config.
 _R2R_INDOOR_VOCAB = (
     "chair . table . sofa . bed . bathtub . toilet . sink . door . window . "
     "television . nightstand . wardrobe . mirror . lamp . plant . staircase . "
@@ -73,39 +68,9 @@ _R2R_INDOOR_VOCAB = (
 )
 
 
-def _get_blip2(model_name: str = "Salesforce/blip2-flan-t5-xl", device: str = "auto"):
-    """Lazy-load BLIP-2 model and processor."""
-    global _blip2_model, _blip2_processor, _blip2_device
-
-    if _blip2_model is not None:
-        return _blip2_model, _blip2_processor, _blip2_device
-
-    with _blip2_load_lock:
-        if _blip2_model is not None:
-            return _blip2_model, _blip2_processor, _blip2_device
-
-        import torch
-        from transformers import Blip2ForConditionalGeneration, Blip2Processor
-
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        log.info("Loading BLIP-2 model %s on %s …", model_name, device)
-        processor = Blip2Processor.from_pretrained(model_name)
-        model = Blip2ForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        ).to(device)
-        model.eval()
-        _blip2_processor = processor
-        _blip2_model = model
-        _blip2_device = device
-        log.info("BLIP-2 loaded (%s)", device)
-        return _blip2_model, _blip2_processor, _blip2_device
-
-
 def _get_rcnn(device: str = "auto"):
-    """DEPRECATED — kept for back-compat with v0 snapshots; use ``_get_gdino`` instead."""
+    """DEPRECATED — kept for back-compat with v0 snapshots; new graphs should
+    use ``model_grounding_dino__detect`` + ``__format_detections`` instead."""
     global _rcnn_model, _rcnn_device, _COCO_CLASSES
 
     if _rcnn_model is not None:
@@ -133,79 +98,6 @@ def _get_rcnn(device: str = "auto"):
         _COCO_CLASSES = weights.meta["categories"]
         log.info("Faster R-CNN loaded (%s, %d classes)", device, len(_COCO_CLASSES))
         return _rcnn_model, _rcnn_device
-
-
-def _get_instructblip(
-    model_name: str = "Salesforce/instructblip-flan-t5-xl",
-    device: str = "auto",
-):
-    """Lazy-load InstructBLIP (FlanT5-XL) for DiscussNav-style scene description.
-
-    Source: DiscussNav.py:133 (LAVIS load_model_and_preprocess
-    'blip2_t5_instruct/flant5xl'). We use the HuggingFace transformers
-    equivalent because LAVIS is not installed in the agentcanvas env.
-    """
-    global _instructblip_model, _instructblip_processor, _instructblip_device
-
-    if _instructblip_model is not None:
-        return _instructblip_model, _instructblip_processor, _instructblip_device
-
-    with _instructblip_load_lock:
-        if _instructblip_model is not None:
-            return _instructblip_model, _instructblip_processor, _instructblip_device
-
-        import torch
-        from transformers import InstructBlipForConditionalGeneration, InstructBlipProcessor
-
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        log.info("Loading InstructBLIP %s on %s …", model_name, device)
-        processor = InstructBlipProcessor.from_pretrained(model_name)
-        model = InstructBlipForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        ).to(device)
-        model.eval()
-        _instructblip_processor = processor
-        _instructblip_model = model
-        _instructblip_device = device
-        log.info("InstructBLIP loaded (%s)", device)
-        return _instructblip_model, _instructblip_processor, _instructblip_device
-
-
-def _get_gdino(device: str = "auto"):
-    """Lazy-load GroundingDINO-tiny for open-vocabulary text-conditioned detection.
-
-    Replaces COCO 80-class Faster R-CNN. Original NavGPT used BUTD Faster R-CNN
-    on Visual Genome 1600 classes; GroundingDINO's open-vocab text conditioning
-    is a paper-near substitute (queries via ``_R2R_INDOOR_VOCAB``).
-    """
-    global _gdino_model, _gdino_processor, _gdino_device
-
-    if _gdino_model is not None:
-        return _gdino_model, _gdino_processor, _gdino_device
-
-    with _gdino_load_lock:
-        if _gdino_model is not None:
-            return _gdino_model, _gdino_processor, _gdino_device
-
-        import torch
-        from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
-
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        model_id = "IDEA-Research/grounding-dino-tiny"
-        log.info("Loading GroundingDINO-tiny (%s) on %s …", model_id, device)
-        processor = AutoProcessor.from_pretrained(model_id)
-        model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device)
-        model.eval()
-        _gdino_processor = processor
-        _gdino_model = model
-        _gdino_device = device
-        log.info("GroundingDINO-tiny loaded (%s)", device)
-        return _gdino_model, _gdino_processor, _gdino_device
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -241,338 +133,6 @@ def _infer_n_headings(n_views: int) -> int:
     if n_views >= _N_ELEVATIONS and n_views % _N_ELEVATIONS == 0:
         return n_views // _N_ELEVATIONS
     return n_views
-
-
-# ══════════════════════════════════════════════════════════════════════
-# BLIP-2 Caption Node
-# ══════════════════════════════════════════════════════════════════════
-
-
-class BLIP2CaptionNode(BaseCanvasNode):
-    """Caption panorama views using BLIP-2, matching NavGPT's offline pipeline.
-
-    Accepts the env per-view primitive (``views`` LIST[IMAGE] + ``view_meta``)
-    from env_mp3d, runs BLIP-2 captioning on each view, and returns:
-
-    - ``descriptions``: 8-direction scene descriptions as formatted text
-    - ``summary``: GPT-3.5-style 1-sentence summary (approximated by
-      concatenating the front-facing caption)
-    - ``descriptions_json``: raw JSON array of per-direction captions
-
-    The original NavGPT uses BLIP-2 ViT-G FlanT5-XL with the prompt
-    *"This is a scene of"*.
-    """
-
-    node_type = "navgpt_mp3d_tools__blip2_caption"
-    display_name = "BLIP-2 NavGPT"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet",
-        config_fields=[
-            ConfigField(
-                "model_name", "text", "HuggingFace model ID", default="Salesforce/blip2-flan-t5-xl"
-            ),
-            ConfigField("prompt", "text", "Captioning prompt", default="This is a scene of"),
-            ConfigField(
-                "device",
-                "select",
-                "Device",
-                options=[
-                    {"value": "auto", "label": "Auto"},
-                    {"value": "cuda", "label": "CUDA"},
-                    {"value": "cpu", "label": "CPU"},
-                ],
-                default="auto",
-            ),
-            ConfigField(
-                "max_new_tokens",
-                "slider",
-                "Max tokens per caption",
-                default=64,
-                min=16,
-                max=256,
-                step=16,
-            ),
-            ConfigField(
-                "merge_elevations",
-                "toggle",
-                "Merge 3 elevation views per heading (NavGPT 24-view mode)",
-                default=True,
-            ),
-            ConfigField(
-                "merge_style",
-                "select",
-                "Elevation merge style",
-                options=[
-                    {"value": "primary", "label": "Primary (ahead only)"},
-                    {"value": "concat", "label": "Concat (down/ahead/up)"},
-                ],
-                default="primary",
-            ),
-        ],
-    )
-    description = "Caption panorama views using BLIP-2 (NavGPT perception)"
-    category = "perception"
-    icon = "ScanEye"
-    input_ports = [
-        PortDef("views", "LIST[IMAGE]", "Per-view panorama images from env_mp3d"),
-        PortDef("view_meta", "TEXT", "Per-view metadata JSON aligned 1:1 with views"),
-    ]
-    output_ports = [
-        PortDef("descriptions", "TEXT", "8-direction scene descriptions (formatted text)"),
-        PortDef("summary", "TEXT", "1-sentence scene summary"),
-        PortDef("descriptions_json", "TEXT", "Per-direction captions as JSON array"),
-    ]
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        import asyncio
-
-        import torch
-        from PIL import Image
-
-        raw_views = inputs.get("views")
-        views = list(raw_views) if isinstance(raw_views, list) else []
-        directions = _parse_view_meta(inputs.get("view_meta"))
-
-        if not views:
-            self._self_log("error", "No views received")
-            return {"descriptions": "", "summary": "", "descriptions_json": "[]"}
-
-        n_views = len(views)
-
-        config = getattr(self, "config", None) or {}
-        model_name = config.get("model_name", "Salesforce/blip2-flan-t5-xl")
-        prompt = config.get("prompt", "This is a scene of")
-        device = config.get("device", "auto")
-        max_new_tokens = int(config.get("max_new_tokens", 64))
-        merge_elevations = bool(config.get("merge_elevations", True))
-        merge_style = config.get("merge_style", "primary")
-
-        self._self_log("model", model_name)
-        self._self_log("n_views", n_views)
-        self._self_log("merge_elevations", merge_elevations)
-        self._self_log("views_received", len(views))
-
-        # Run BLIP-2 captioning in thread (model is synchronous)
-        loop = asyncio.get_running_loop()
-
-        def _caption_all() -> list[str]:
-            model, processor, dev = _get_blip2(model_name, device)
-            captions: list[str] = []
-            for view_arr in views:
-                pil_img = Image.fromarray(view_arr).convert("RGB")
-                inputs_blip = processor(images=pil_img, text=prompt, return_tensors="pt").to(
-                    dev,
-                    dtype=torch.float16 if dev == "cuda" else torch.float32,
-                )
-                with torch.no_grad():
-                    out = model.generate(**inputs_blip, max_new_tokens=max_new_tokens)
-                caption = processor.decode(out[0], skip_special_tokens=True).strip()
-                captions.append(caption)
-            return captions
-
-        captions = await loop.run_in_executor(None, _caption_all)
-
-        # Elevation merging: group views by heading across elevation levels.
-        # env_mp3d renders OUTER=elevation, INNER=heading (3 elevations),
-        # so heading h at elevation e is at index: h + e * n_headings.
-        n_headings = _infer_n_headings(n_views)
-        n_elevs = n_views // n_headings if n_headings else 1
-        _elevation_labels = ("Looking down", "Ahead", "Looking up")  # elev -30, 0, +30
-        _did_merge = False
-        if merge_elevations and n_elevs > 1 and n_views == n_headings * n_elevs:
-            merged: list[str] = []
-            for h in range(n_headings):
-                group = [captions[h + e * n_headings] for e in range(n_elevs)]
-                if merge_style == "primary":
-                    # Use only the ahead/0° elevation (index 1 for [-30,0,30])
-                    merged.append(group[1] if len(group) > 1 else group[0])
-                else:
-                    parts = [f"{_elevation_labels[e]}: {group[e]}" for e in range(len(group))]
-                    merged.append(", ".join(parts))
-            self._self_log("merged_headings", n_headings)
-            output_captions = merged
-            _did_merge = True
-        else:
-            output_captions = captions
-
-        # Format output — one line per heading direction
-        desc_lines: list[str] = []
-        dir_labels = [
-            "Front",
-            "Front Right",
-            "Right",
-            "Rear Right",
-            "Rear",
-            "Rear Left",
-            "Left",
-            "Front Left",
-        ]
-        n_output = len(output_captions)
-        for i, caption in enumerate(output_captions):
-            label = dir_labels[i] if i < len(dir_labels) else f"View {i}"
-            if not _did_merge and directions and i < len(directions):
-                # Non-merge mode: use per-view direction metadata directly
-                label = directions[i].get("direction", label)
-            desc_lines.append(f"{label}: {caption}")
-
-        descriptions = "\n".join(desc_lines)
-        # Summary: use front-facing merged (or raw) caption as a 1-sentence approximation
-        summary = output_captions[0] if output_captions else ""
-
-        self._self_log("output_captions_count", n_output)
-        for i, c in enumerate(output_captions):
-            self._self_log(f"caption_{i}", c[:200])
-        self._self_log("summary", summary[:200])
-
-        return {
-            "descriptions": descriptions,
-            "summary": summary,
-            "descriptions_json": json.dumps(output_captions),
-        }
-
-
-# ══════════════════════════════════════════════════════════════════════
-# InstructBLIP Caption Node — DiscussNav per-direction VLM
-# ══════════════════════════════════════════════════════════════════════
-
-
-# Source: DiscussNav.py:140 (Vision_Perception_Experts.instructblip_description).
-_INSTRUCTBLIP_PROMPT = "Describe this indoor scene in details"
-
-
-class InstructBlipCaptionNode(BaseCanvasNode):
-    """Per-direction scene description with InstructBLIP — DiscussNav perception.
-
-    Consumes the env per-view primitive (``views`` LIST[IMAGE] + ``view_meta``)
-    and runs InstructBLIP-FlanT5-XL on each view with the verbatim DiscussNav
-    prompt *"Describe this indoor scene in details"*.
-
-    Output ``captions_per_dir`` is a ``LIST[TEXT]`` aligned 1:1 with the
-    ``directions`` JSON (index = view_index). Empty entries when a view is
-    blocked / out of bounds preserve length.
-    """
-
-    node_type = "navgpt_mp3d_tools__instructblip_caption"
-    display_name = "InstructBLIP Caption (DiscussNav)"
-    description = "Describe each panorama direction with InstructBLIP-FlanT5-XL"
-    category = "perception"
-    icon = "ScanEye"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet",
-        config_fields=[
-            ConfigField(
-                "model_name",
-                "text",
-                "HuggingFace model ID",
-                default="Salesforce/instructblip-flan-t5-xl",
-            ),
-            ConfigField("prompt", "text", "Description prompt", default=_INSTRUCTBLIP_PROMPT),
-            ConfigField(
-                "device",
-                "select",
-                "Device",
-                options=[
-                    {"value": "auto", "label": "Auto"},
-                    {"value": "cuda", "label": "CUDA"},
-                    {"value": "cpu", "label": "CPU"},
-                ],
-                default="auto",
-            ),
-            ConfigField(
-                "max_new_tokens",
-                "slider",
-                "Max tokens per caption",
-                default=128,
-                min=32,
-                max=384,
-                step=16,
-            ),
-        ],
-    )
-    input_ports = [
-        PortDef("views", "LIST[IMAGE]", "Per-view panorama images from env_mp3d"),
-        PortDef("view_meta", "TEXT", "Per-view metadata JSON aligned 1:1 with views"),
-    ]
-    output_ports = [
-        PortDef(
-            "captions_per_dir",
-            "LIST[TEXT]",
-            "Per-direction descriptions, aligned 1:1 with `views` / `view_meta`",
-        ),
-        PortDef("captions_json", "TEXT", "Same list serialised as JSON"),
-    ]
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        import asyncio
-
-        import torch
-        from PIL import Image
-
-        raw_views = inputs.get("views")
-        views = list(raw_views) if isinstance(raw_views, list) else []
-
-        if not views:
-            self._self_log("error", "No views received")
-            return {"captions_per_dir": [], "captions_json": "[]"}
-
-        n_views = len(views)
-
-        config = getattr(self, "config", None) or {}
-        model_name = config.get("model_name", "Salesforce/instructblip-flan-t5-xl")
-        prompt = config.get("prompt", _INSTRUCTBLIP_PROMPT)
-        device = config.get("device", "auto")
-        max_new_tokens = int(config.get("max_new_tokens", 128))
-
-        self._self_log("model", model_name)
-        self._self_log("n_views", n_views)
-        self._self_log("views_received", len(views))
-
-        loop = asyncio.get_running_loop()
-
-        def _caption_all() -> list[str]:
-            # Manual unpacking — transformers' InstructBlipProcessor.__call__
-            # concatenates image-token list with text Tensor (processing_
-            # instructblip.py:134-136) and trips "list + Tensor" TypeError.
-            # We bypass by calling the sub-tokenizers/image-processor
-            # directly and prepending image tokens to the prompt ourselves.
-            model, processor, dev = _get_instructblip(model_name, device)
-            num_q = processor.num_query_tokens or 32
-            img_token_str = processor.image_token.content * num_q
-            cast_dtype = torch.float16 if dev == "cuda" else torch.float32
-            out: list[str] = ["" for _ in views]
-            for i, view_arr in enumerate(views):
-                if view_arr is None or view_arr.size == 0:
-                    continue
-                pil = Image.fromarray(view_arr).convert("RGB")
-                full_text = img_token_str + prompt
-                text_enc = processor.tokenizer(full_text, return_tensors="pt")
-                qf_enc = processor.qformer_tokenizer(prompt, return_tensors="pt")
-                img_enc = processor.image_processor(pil, return_tensors="pt")
-                proc_inputs = {
-                    "input_ids": text_enc["input_ids"].to(dev),
-                    "attention_mask": text_enc["attention_mask"].to(dev),
-                    "qformer_input_ids": qf_enc["input_ids"].to(dev),
-                    "qformer_attention_mask": qf_enc["attention_mask"].to(dev),
-                    "pixel_values": img_enc["pixel_values"].to(dev, dtype=cast_dtype),
-                }
-                with torch.no_grad():
-                    gen = model.generate(
-                        **proc_inputs,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                    )
-                decoded = processor.tokenizer.batch_decode(gen, skip_special_tokens=True)
-                out[i] = (decoded[0] if decoded else "").strip()
-            return out
-
-        captions = await loop.run_in_executor(None, _caption_all)
-        for i, c in enumerate(captions):
-            self._self_log(f"caption_{i}", c[:200])
-
-        return {
-            "captions_per_dir": captions,
-            "captions_json": json.dumps(captions),
-        }
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -769,58 +329,194 @@ class FasterRCNNDetectNode(BaseCanvasNode):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Open-Vocab Detection Node (GroundingDINO-tiny — text-conditioned)
+# Pure glue nodes (TODO #56) — adapters/formatters around the extracted
+# FM wrappers (model_blip2 / model_grounding_dino). No model code here.
 # ══════════════════════════════════════════════════════════════════════
 
 
-class OpenVocabDetectNode(BaseCanvasNode):
-    """Open-vocabulary object detection via GroundingDINO-tiny.
+class ViewsToBase64Node(BaseCanvasNode):
+    """Encode env raw views (LIST[IMAGE]) into base64 view-tile dicts.
 
-    Drop-in replacement for ``FasterRCNNDetectNode`` (COCO 80-class) with
-    text-conditioned detection over ``_R2R_INDOOR_VOCAB`` (~75 R2R-relevant
-    indoor nouns). Approximates the paper's Visual Genome 1600-class BUTD
-    coverage of indoor objects (bathtub, urn, archway, credenza, nightstand,
-    etc.) that COCO misses entirely.
-
-    Distance estimation uses the same bbox-height heuristic as the legacy
-    node — Phase 3 of the fidelity-recovery plan replaces this with real
-    MatterSim depth.
+    Adapter between ``env_mp3d``'s numpy per-view primitive and the
+    server-mode FM wrappers (``model_blip2__caption`` etc.), which need
+    JSON-safe ``[{dir_id, rgb_base64}]`` payloads across the HTTP boundary.
+    PNG encoding — lossless, so FM outputs match the in-process era byte
+    for byte. Order preserved (dir_id = view index as string).
     """
 
-    node_type = "navgpt_mp3d_tools__open_vocab_detect"
-    display_name = "Open-Vocab Detector NavGPT"
+    node_type = "navgpt_mp3d_tools__views_to_base64"
+    display_name = "Views → Base64 Tiles"
+    description = "LIST[IMAGE] → [{dir_id, rgb_base64}] (PNG, order preserved)"
+    category = "perception"
+    icon = "Images"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("views", "LIST[IMAGE]", "Per-view panorama images from env_mp3d"),
+        PortDef("view_meta", "TEXT", "Per-view metadata JSON (passthrough alignment aid)", optional=True),
+    ]
+    output_ports = [
+        PortDef("views", "ANY", "[{dir_id, rgb_base64}] aligned 1:1 with input views"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        import base64
+        import io
+
+        from PIL import Image
+
+        raw_views = inputs.get("views")
+        views = list(raw_views) if isinstance(raw_views, list) else []
+        out: list[dict] = []
+        for i, arr in enumerate(views):
+            buf = io.BytesIO()
+            Image.fromarray(np.asarray(arr).astype("uint8")).convert("RGB").save(buf, format="PNG")
+            out.append({
+                "dir_id": str(i),
+                "rgb_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+            })
+        self._self_log("n_views", len(out))
+        return {"views": out}
+
+
+class FormatCaptionsNode(BaseCanvasNode):
+    """NavGPT caption post-processing — elevation merge + compass labelling.
+
+    The task glue formerly baked into ``BLIP2CaptionNode.forward`` (the model
+    call now lives in ``model_blip2__caption``): group 24 captions by heading
+    across 3 elevation levels, merge (primary/concat), and format one line per
+    8-compass direction. Pure — no model.
+    """
+
+    node_type = "navgpt_mp3d_tools__format_captions"
+    display_name = "Format Captions (NavGPT)"
+    description = "Merge elevations + label 8-compass directions from per-view captions"
+    category = "perception"
+    icon = "AlignLeft"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet",
+        color="cyan",
         config_fields=[
             ConfigField(
-                "device",
+                "merge_elevations",
+                "toggle",
+                "Merge 3 elevation views per heading (NavGPT 24-view mode)",
+                default=True,
+            ),
+            ConfigField(
+                "merge_style",
                 "select",
-                "Device",
+                "Elevation merge style",
                 options=[
-                    {"value": "auto", "label": "Auto"},
-                    {"value": "cuda", "label": "CUDA"},
-                    {"value": "cpu", "label": "CPU"},
+                    {"value": "primary", "label": "Primary (ahead only)"},
+                    {"value": "concat", "label": "Concat (down/ahead/up)"},
                 ],
-                default="auto",
+                default="primary",
             ),
-            ConfigField(
-                "box_threshold",
-                "slider",
-                "Min box-confidence threshold",
-                default=0.3,
-                min=0.1,
-                max=0.7,
-                step=0.05,
-            ),
-            ConfigField(
-                "text_threshold",
-                "slider",
-                "Min text-confidence threshold",
-                default=0.25,
-                min=0.1,
-                max=0.7,
-                step=0.05,
-            ),
+        ],
+    )
+    input_ports = [
+        PortDef("captions", "ANY", "Per-view captions: LIST[TEXT] or JSON array string"),
+        PortDef("view_meta", "TEXT", "Per-view metadata JSON aligned 1:1 with captions"),
+    ]
+    output_ports = [
+        PortDef("descriptions", "TEXT", "8-direction scene descriptions (formatted text)"),
+        PortDef("summary", "TEXT", "1-sentence scene summary"),
+        PortDef("descriptions_json", "TEXT", "Per-direction captions as JSON array"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        raw = inputs.get("captions")
+        if isinstance(raw, str):
+            try:
+                captions = list(json.loads(raw))
+            except Exception:
+                captions = []
+        else:
+            captions = list(raw) if isinstance(raw, list) else []
+        directions = _parse_view_meta(inputs.get("view_meta"))
+
+        if not captions:
+            self._self_log("error", "No captions received")
+            return {"descriptions": "", "summary": "", "descriptions_json": "[]"}
+
+        n_views = len(captions)
+        config = getattr(self, "config", None) or {}
+        merge_elevations = bool(config.get("merge_elevations", True))
+        merge_style = config.get("merge_style", "primary")
+
+        # Elevation merging: group views by heading across elevation levels.
+        # env_mp3d renders OUTER=elevation, INNER=heading (3 elevations),
+        # so heading h at elevation e is at index: h + e * n_headings.
+        n_headings = _infer_n_headings(n_views)
+        n_elevs = n_views // n_headings if n_headings else 1
+        _elevation_labels = ("Looking down", "Ahead", "Looking up")  # elev -30, 0, +30
+        _did_merge = False
+        if merge_elevations and n_elevs > 1 and n_views == n_headings * n_elevs:
+            merged: list[str] = []
+            for h in range(n_headings):
+                group = [captions[h + e * n_headings] for e in range(n_elevs)]
+                if merge_style == "primary":
+                    # Use only the ahead/0° elevation (index 1 for [-30,0,30])
+                    merged.append(group[1] if len(group) > 1 else group[0])
+                else:
+                    parts = [f"{_elevation_labels[e]}: {group[e]}" for e in range(len(group))]
+                    merged.append(", ".join(parts))
+            self._self_log("merged_headings", n_headings)
+            output_captions = merged
+            _did_merge = True
+        else:
+            output_captions = captions
+
+        # Format output — one line per heading direction
+        desc_lines: list[str] = []
+        dir_labels = [
+            "Front",
+            "Front Right",
+            "Right",
+            "Rear Right",
+            "Rear",
+            "Rear Left",
+            "Left",
+            "Front Left",
+        ]
+        for i, caption in enumerate(output_captions):
+            label = dir_labels[i] if i < len(dir_labels) else f"View {i}"
+            if not _did_merge and directions and i < len(directions):
+                # Non-merge mode: use per-view direction metadata directly
+                label = directions[i].get("direction", label)
+            desc_lines.append(f"{label}: {caption}")
+
+        descriptions = "\n".join(desc_lines)
+        # Summary: use front-facing merged (or raw) caption as a 1-sentence approximation
+        summary = output_captions[0] if output_captions else ""
+
+        self._self_log("output_captions_count", len(output_captions))
+        self._self_log("summary", summary[:200])
+
+        return {
+            "descriptions": descriptions,
+            "summary": summary,
+            "descriptions_json": json.dumps(output_captions),
+        }
+
+
+class FormatDetectionsNode(BaseCanvasNode):
+    """NavGPT detection post-processing — heading/distance/filter/compass.
+
+    The task glue formerly baked into ``OpenVocabDetectNode.forward`` (the
+    model call now lives in ``model_grounding_dino__detect``): per-box
+    relative heading over the 45° view FOV, distance from real depth when
+    available (bbox-height heuristic otherwise), the paper-faithful 3 m
+    filter, and the 8-compass observation format. Pure — no model.
+    """
+
+    node_type = "navgpt_mp3d_tools__format_detections"
+    display_name = "Format Detections (NavGPT)"
+    description = "Raw GroundingDINO boxes → NavGPT objects text (FOV heading, ≤3m filter)"
+    category = "perception"
+    icon = "BoxSelect"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="cyan",
+        config_fields=[
             ConfigField(
                 "max_objects_per_view",
                 "slider",
@@ -831,151 +527,109 @@ class OpenVocabDetectNode(BaseCanvasNode):
                 step=1,
             ),
             ConfigField(
-                "text_queries",
-                "text",
-                "Period-delimited candidate classes (GroundingDINO format)",
-                default=_R2R_INDOOR_VOCAB,
+                "max_distance_m",
+                "slider",
+                "Paper-faithful distance filter (metres)",
+                default=3.0,
+                min=1.0,
+                max=10.0,
+                step=0.5,
             ),
         ],
     )
-    description = "Open-vocabulary detection (GroundingDINO-tiny, text-conditioned)"
-    category = "perception"
-    icon = "BoxSelect"
     input_ports = [
-        PortDef("views", "LIST[IMAGE]", "Per-view panorama images from env_mp3d"),
-        PortDef("view_meta", "TEXT", "Per-view metadata JSON aligned 1:1 with views"),
+        PortDef(
+            "detections", "ANY",
+            "Per-view raw detect results (list of model_grounding_dino__detect"
+            " JSON payloads: {boxes:[{xyxy,score,phrase}], image_w, image_h})",
+        ),
+        PortDef("view_meta", "TEXT", "Per-view metadata JSON aligned 1:1 with detections"),
         PortDef(
             "depth_views",
             "LIST[DEPTH]",
-            "Per-view depth (metres) aligned 1:1 with views (optional)",
+            "Per-view depth (metres) aligned 1:1 with detections (optional)",
             optional=True,
         ),
     ]
     output_ports = [
-        PortDef("objects_json", "TEXT", "Per-direction objects as JSON (list of 8 dicts)"),
+        PortDef("objects_json", "TEXT", "Per-direction objects as JSON (list of dicts)"),
         PortDef("objects_text", "TEXT", "Formatted objects text for LLM prompt"),
         PortDef("total_count", "TEXT", "Total objects detected across all views"),
     ]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        import asyncio
-
-        import torch
-        from PIL import Image
-
-        raw_views = inputs.get("views")
-        views = list(raw_views) if isinstance(raw_views, list) else []
+        raw = inputs.get("detections")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = []
+        det_per_view = list(raw) if isinstance(raw, list) else []
         directions = _parse_view_meta(inputs.get("view_meta"))
         raw_depth = inputs.get("depth_views")
-
-        if not views:
-            self._self_log("error", "No views received")
-            return {"objects_json": "[]", "objects_text": "", "total_count": "0"}
-
-        n_views = len(views)
+        depth_views = list(raw_depth) if isinstance(raw_depth, list) and raw_depth else None
 
         config = getattr(self, "config", None) or {}
-        device = config.get("device", "auto")
-        box_thr = float(config.get("box_threshold", 0.3))
-        text_thr = float(config.get("text_threshold", 0.25))
         max_per_view = int(config.get("max_objects_per_view", 10))
-        # NavGPT paper filters detections to ≤ 3m via real MatterSim depth.
         max_distance_m = float(config.get("max_distance_m", 3.0))
-        text_queries = str(config.get("text_queries", _R2R_INDOOR_VOCAB)).strip()
-        if not text_queries.endswith("."):
-            text_queries = text_queries + " ."
+        fov_deg = 45.0
 
-        self._self_log("n_views", n_views)
-        self._self_log("box_threshold", box_thr)
-        self._self_log("text_threshold", text_thr)
-        self._self_log("vocab_chars", len(text_queries))
-        self._self_log("max_distance_m", max_distance_m)
-        self._self_log("views_received", len(views))
+        all_objects: list[list[dict]] = []
+        for view_idx, det in enumerate(det_per_view):
+            if isinstance(det, str):
+                try:
+                    det = json.loads(det)
+                except Exception:
+                    det = {}
+            det = det if isinstance(det, dict) else {}
+            boxes = det.get("boxes") or []
+            w = float(det.get("image_w") or 1)
+            h = float(det.get("image_h") or 1)
+            depth_view = depth_views[view_idx] if depth_views is not None and view_idx < len(depth_views) else None
 
-        depth_views: list[np.ndarray] | None = None
-        if isinstance(raw_depth, list) and raw_depth:
-            depth_views = list(raw_depth)
-            self._self_log("depth_source", "real_mattersim_skybox")
-            self._self_log("depth_views_count", len(depth_views))
-        else:
-            self._self_log("depth_source", "heuristic_fallback")
-
-        loop = asyncio.get_running_loop()
-
-        def _detect_all() -> list[list[dict]]:
-            model, processor, dev = _get_gdino(device)
-            all_objects: list[list[dict]] = []
-            for view_idx, view_arr in enumerate(views):
-                depth_view = depth_views[view_idx] if depth_views is not None else None
-                pil = Image.fromarray(view_arr.astype("uint8"))
-                proc_inputs = processor(
-                    images=pil,
-                    text=text_queries,
-                    return_tensors="pt",
-                ).to(dev)
-                with torch.no_grad():
-                    outputs = model(**proc_inputs)
-                results = processor.post_process_grounded_object_detection(
-                    outputs,
-                    proc_inputs.input_ids,
-                    threshold=box_thr,
-                    text_threshold=text_thr,
-                    target_sizes=[pil.size[::-1]],
-                )[0]
-
-                boxes = results["boxes"].cpu().numpy()
-                scores = results["scores"].cpu().numpy()
-                labels = results["labels"]  # list of strings — no index lookup needed
-                h, w = view_arr.shape[:2]
-                fov_deg = 45.0
-
-                view_objects: list[dict] = []
-                for box, score, label in zip(boxes, scores, labels, strict=True):
-                    if len(view_objects) >= max_per_view:
-                        break
-                    x1, y1, x2, y2 = box
-                    cx = (x1 + x2) / 2
-                    cy = (y1 + y2) / 2
-                    rel_heading_in_view = (cx / w - 0.5) * fov_deg
-                    if depth_view is not None:
-                        cy_i = int(np.clip(cy, 0, depth_view.shape[0] - 1))
-                        cx_i = int(np.clip(cx, 0, depth_view.shape[1] - 1))
-                        depth_m = float(depth_view[cy_i, cx_i])
-                        # depth_view is float32 metres (converted at the
-                        # MP3DGraphPanoramaTool boundary). 0 = unknown
-                        # (rendering hole or out of range).
-                        if depth_m > 0:
-                            estimated_distance = depth_m
-                            distance_source = "real_depth"
-                        else:
-                            box_ratio = (y2 - y1) / h
-                            estimated_distance = max(0.3, min(5.0, 1.5 / max(box_ratio, 0.01)))
-                            distance_source = "heuristic_hole"
+            view_objects: list[dict] = []
+            for b in boxes:
+                if len(view_objects) >= max_per_view:
+                    break
+                x1, y1, x2, y2 = [float(c) for c in (b.get("xyxy") or [0, 0, 0, 0])]
+                score = float(b.get("score") or 0.0)
+                label = str(b.get("phrase") or "").strip()
+                cx = (x1 + x2) / 2
+                cy = (y1 + y2) / 2
+                rel_heading_in_view = (cx / w - 0.5) * fov_deg
+                if depth_view is not None:
+                    cy_i = int(np.clip(cy, 0, np.asarray(depth_view).shape[0] - 1))
+                    cx_i = int(np.clip(cx, 0, np.asarray(depth_view).shape[1] - 1))
+                    depth_m = float(np.asarray(depth_view)[cy_i, cx_i])
+                    if depth_m > 0:
+                        estimated_distance = depth_m
+                        distance_source = "real_depth"
                     else:
                         box_ratio = (y2 - y1) / h
                         estimated_distance = max(0.3, min(5.0, 1.5 / max(box_ratio, 0.01)))
-                        distance_source = "heuristic_no_depth"
+                        distance_source = "heuristic_hole"
+                else:
+                    box_ratio = (y2 - y1) / h
+                    estimated_distance = max(0.3, min(5.0, 1.5 / max(box_ratio, 0.01)))
+                    distance_source = "heuristic_no_depth"
 
-                    # Paper-faithful 3m filter — only retain objects within reach.
-                    if estimated_distance > max_distance_m:
-                        continue
+                # Paper-faithful 3m filter — only retain objects within reach.
+                if estimated_distance > max_distance_m:
+                    continue
 
-                    view_objects.append(
-                        {
-                            "name": str(label).strip(),
-                            "confidence": round(float(score), 3),
-                            "rel_heading_deg": round(float(rel_heading_in_view), 1),
-                            "estimated_distance_m": round(float(estimated_distance), 2),
-                            "distance_source": distance_source,
-                            "bbox": [round(float(c), 1) for c in [x1, y1, x2, y2]],
-                        }
-                    )
-                all_objects.append(view_objects)
-            return all_objects
+                view_objects.append(
+                    {
+                        "name": label,
+                        "confidence": round(score, 3),
+                        "rel_heading_deg": round(float(rel_heading_in_view), 1),
+                        "estimated_distance_m": round(float(estimated_distance), 2),
+                        "distance_source": distance_source,
+                        "bbox": [round(float(c), 1) for c in [x1, y1, x2, y2]],
+                    }
+                )
+            all_objects.append(view_objects)
 
-        all_objects = await loop.run_in_executor(None, _detect_all)
-
-        # Format output — identical schema to FasterRCNNDetectNode
+        # Format output — identical schema to the retired OpenVocabDetectNode
         dir_labels = [
             "Front",
             "Front Right",
@@ -1002,16 +656,10 @@ class OpenVocabDetectNode(BaseCanvasNode):
             else:
                 text_lines.append(f"{label} Objects: None")
 
-        objects_text = "\n".join(text_lines)
-
         self._self_log("total_objects", total)
-        for i, objs in enumerate(all_objects):
-            if objs:
-                self._self_log(f"view_{i}_objects", [o["name"] for o in objs])
-
         return {
             "objects_json": json.dumps(all_objects),
-            "objects_text": objects_text,
+            "objects_text": "\n".join(text_lines),
             "total_count": str(total),
         }
 
@@ -2046,11 +1694,15 @@ class NavGPTObservationFormatNode(BaseCanvasNode):
 
 
 class NavGPTMP3DToolsNodeSet(BaseNodeSet):
-    """NavGPT MP3D tools — perception + method-specific reasoning nodes.
+    """NavGPT MP3D tools — glue, caches, and method-specific reasoning nodes.
 
-    Perception nodes (online vision pipeline):
-    - ``BLIP2CaptionNode``: BLIP-2 ViT-G FlanT5-XL image captioning
-    - ``FasterRCNNDetectNode``: Faster R-CNN object detection
+    FM glue nodes (pure; pair with the model/ wrappers per TODO #56):
+    - ``ViewsToBase64Node``: LIST[IMAGE] → base64 view tiles for server-mode FMs
+    - ``FormatCaptionsNode``: elevation merge + compass labels (ex-BLIP2CaptionNode glue)
+    - ``FormatDetectionsNode``: heading/distance/3m-filter format (ex-OpenVocabDetectNode glue)
+
+    Legacy perception (deprecated, in-process):
+    - ``FasterRCNNDetectNode``: Faster R-CNN COCO detection (v0 snapshots)
 
     Method nodes (NavGPT-specific agent logic, decoupled from env):
     - ``MP3DGetInstructionNode``: Read current episode instruction
@@ -2060,21 +1712,21 @@ class NavGPTMP3DToolsNodeSet(BaseNodeSet):
     - ``NavGPTScratchpadWriterNode``: Build ReAct scratchpad entries
 
     All run in the agentcanvas environment (Python 3.10+, local mode).
-    Vision models are lazy-loaded on first use and stay in GPU memory.
     """
 
     name = "navgpt_mp3d_tools"
     display_name = "NavGPT MP3D Tools"
     description = (
-        "NavGPT MP3D: perception (BLIP-2 + Faster R-CNN) + reasoning (parse, scratchpad, init)"
+        "NavGPT MP3D: FM glue (base64/caption/detection formatting) + caches + "
+        "reasoning (parse, scratchpad, init)"
     )
 
     def get_tools(self) -> list:
         return [
-            BLIP2CaptionNode(),
-            InstructBlipCaptionNode(),
             FasterRCNNDetectNode(),
-            OpenVocabDetectNode(),
+            ViewsToBase64Node(),
+            FormatCaptionsNode(),
+            FormatDetectionsNode(),
             PaperObjectsCacheNode(),
             PaperCaptionsCacheNode(),
             MP3DGetInstructionNode(),
@@ -2088,39 +1740,15 @@ class NavGPTMP3DToolsNodeSet(BaseNodeSet):
         log.info("NavGPT MP3D Tools nodeset initialised (models load on first use)")
 
     async def shutdown(self) -> None:
-        global _blip2_model, _blip2_processor, _blip2_device
         global _rcnn_model, _rcnn_device
 
         import torch
-
-        if _blip2_model is not None:
-            del _blip2_model, _blip2_processor
-            _blip2_model = None
-            _blip2_processor = None
-            _blip2_device = None
-            log.info("BLIP-2 model unloaded")
 
         if _rcnn_model is not None:
             del _rcnn_model
             _rcnn_model = None
             _rcnn_device = None
             log.info("Faster R-CNN model unloaded")
-
-        global _gdino_model, _gdino_processor, _gdino_device
-        if _gdino_model is not None:
-            del _gdino_model, _gdino_processor
-            _gdino_model = None
-            _gdino_processor = None
-            _gdino_device = None
-            log.info("GroundingDINO-tiny model unloaded")
-
-        global _instructblip_model, _instructblip_processor, _instructblip_device
-        if _instructblip_model is not None:
-            del _instructblip_model, _instructblip_processor
-            _instructblip_model = None
-            _instructblip_processor = None
-            _instructblip_device = None
-            log.info("InstructBLIP model unloaded")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
