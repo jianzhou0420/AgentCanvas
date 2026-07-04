@@ -56,7 +56,7 @@ def test_resolve_source_single_file(ws: Path) -> None:
 
 
 def test_resolve_source_package(ws: Path) -> None:
-    anchor, pkg = resolve_source(ws / "nodesets/method/tooleqa/__init__.py")
+    _anchor, pkg = resolve_source(ws / "nodesets/method/tooleqa/__init__.py")
     assert pkg == ws / "nodesets/method/tooleqa"
 
 
