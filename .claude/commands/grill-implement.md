@@ -64,15 +64,41 @@ LOOP:
 ### PHASE 1 — Upstream inventory (walk upstream source cold)
 
 Identify the upstream files for the core loop and read them in this order:
-1. The rollout / eval script (main loop, step budget, termination)
+0. **The run-config chain FIRST** — the actual paper-run invocation (`run.sh` → run
+   yaml → task yaml → code defaults). Enumerate every EFFECTIVE value: horizon,
+   enabled abilities, sensor resolutions, obs transforms, model id, sampling params.
+   Config overrides code defaults — a loop walked without its config is a different
+   program. (Three-Step: abilities `[continue,stay]`, horizon 8 AND the 1024×1024
+   RGB camera all lived in this layer; the camera survived three code-only passes.)
+1. The rollout / eval script (main loop, step budget, termination) — **including its
+   metric computation**: which measures are enabled/stripped, hand-computed vs
+   official, stop-gated or not. The paper's headline number is *defined* here, not
+   in the benchmark's docs. (Three-Step strips habitat's measures and hand-computes
+   `success = distance ≤ 3` with no STOP gate — the same trajectories score 0.08
+   official vs 0.24 upstream-ruler.)
 2. The VLM call sites (prompts, parse functions, fallback paths)
 3. The env interaction class (action encoding, state access)
 4. Geometry / projection utilities
 5. State management / graph structures
+6. **The observation/pixel pipeline, per consumer** — for each model that eats
+   pixels (VLM, perception models, policy nets), trace render → transforms → encode
+   → final bytes: resolution, resize mode and order, crop, dtype promotions,
+   normalization, image codec + quality, channel packing. (Three-Step: five separate
+   defects lived in this one category — 1024 render, ResizerPerSensor(area),
+   ImageNet Normalize, JPEG q75, uint8 depth packing.)
+
+**Fork rule.** If the pinned upstream is a fork (or its README/code says "subclasses
+X" / "based on X"), `git diff <parent>..<fork>` is a MANDATORY Phase-1 artifact —
+every fork-side delta is an inventory item. The fork's deltas are exactly what the
+port must NOT inherit from a sibling port of the parent. (Three-Step vs Open-Nav:
+the diff contained the 1024 camera, the obs-transform switch, and the stop-gate
+removal from the SR formula — the three most expensive misses of the campaign.)
 
 For each file, enumerate **every** behaviour-bearing element:
 - String constants and format strings (prompts, seeds, fallbacks, captions)
 - Numeric constants and thresholds (grid spacing, depth scale, merge distances, step sizes)
+- Sensor & preprocessing constants (resolution, resize/crop mode, normalization, image codec/quality, dtype promotions)
+- The metric ruler (the success/SPL formulas actually computed — see file 1)
 - Conditional branches and fallback paths (early-exits, error handlers, parse failures)
 - Ordering decisions (which call precedes which)
 - State accumulations (what grows across steps, what resets per episode, what resets per step)
@@ -86,6 +112,17 @@ For each upstream element from Phase 1:
 - Is the behaviour path replicated, approximated, or absent?
 
 Classify each as: **match** / **near-match** (note the difference) / **gap**.
+
+**The port inventory INCLUDES every shared/env nodeset the port consumes** (env,
+waypoint, perception). "Reused unchanged from <sibling port>" is a claim to verify
+against THIS upstream, not an exemption. Two mandatory sub-audits on reused
+components:
+- **Config match** — the reused component's effective config (sensor H×W,
+  transforms, preprocessing) vs this upstream's run-config chain.
+- **Silent-fallback audit** — grep the reused components for try/except around
+  model/checkpoint loads; a swallowed load failure must be made FATAL before any
+  eval is trusted. (The shared DDPPO depth encoder had silently never loaded —
+  every Open-Nav-family run to date ran on zero depth features, and no eval said so.)
 
 ### PHASE 3 — Adjudicate & triage
 
@@ -102,6 +139,14 @@ Also re-examine every existing B/C/D row:
 - **D row re-check:** Is the rationale citable? If invented → E. Is it still the right call? If not → fix it (E → A).
 - **C row re-check:** Is it truly a constraint, or a choice? Choice → D (cite the decision source).
 
+**Attribution discipline for headline-metric gaps.** Filing the *gap itself* under C
+("model tier", "cost") is a HYPOTHESIS, not an adjudication — it stays marked
+`hypothesis` until a control run at the paper's tier confirms it, and the doc may
+not state it as the explanation before then. Statistical claims about the gap use a
+computed binomial P, never eyeballing. (The "residual SR is model-tier" C-row stood
+in the doc for ten days and was refuted by the paper-tier control run: 0/25,
+P ≈ 3×10⁻⁵.)
+
 ### PHASE 4 — Fix E rows (code)
 
 For each open E row, from highest severity first:
@@ -110,7 +155,13 @@ For each open E row, from highest severity first:
 2. Apply the minimal fix — only what the fidelity gap requires; no surrounding refactor.
 3. If the fix changes ports or edges, update the graph JSON.
 4. Syntax check: `python3 -c "import ast; ast.parse(open(path).read()); print('ok')"`
-5. If a unit test exists, run it.
+5. Verify with the strongest available oracle. For any row claiming byte-identity,
+   the evidence bar is an **upstream-import harness**: import the REAL upstream
+   modules (stub external clients via `sys.modules`), AST-extract-and-exec the
+   un-importable methods, and byte-compare port vs upstream function-by-function on
+   identical inputs. Re-typed expected strings are NOT byte evidence — three cold
+   passes re-reading the same code missed what the harness caught in one run.
+   Reference impl: `tmp/verify/threestepnav_upstream_equiv.py` (82 checks).
 6. Mark the E row "fixed YYYY-MM-DD" in the doc; plan the row's destination bucket.
 
 ### PHASE 5 — Rehabilitate misplaced B/C/D rows
@@ -142,6 +193,12 @@ self-contradiction, not a live finding.
 
 ### PHASE 6 — Update doc + verify
 
+0. **In-vivo check before the doc claims anything.** Run a small smoke and assert
+   against `log.jsonl`, not just static checks: decode one image b64 and verify
+   resolution + codec magic bytes (`/9j/` = JPEG); read the model id from
+   `inner_log[model]`; check perception outputs non-empty; count gate/judge firings.
+   Static byte-equality can be green while the runtime path is broken (NumPy ≥ 2
+   raised OverflowError on an upstream-faithful expression — visible only in-vivo).
 1. Apply all row moves and additions to `docs/pages/developer-guide/nodesets/method/<nodeset>.html`.
 2. Update the **Fidelity** at-a-glance cell:
    - `faithful` — E empty, D rows all have cited rationale, no open B row that could be A
@@ -178,6 +235,7 @@ The loop STOPS only when ALL of the following are true:
 - [ ] **Every B row** was re-examined this session and confirmed: the mechanism must differ due to the graph substrate AND making it equivalent would require an AgentCanvas architectural change that does not currently exist.
 - [ ] **Every C row** was re-examined this session and confirmed: the upstream resource (model, dataset, API) is genuinely unavailable at the current cost/access tier — not just inconvenient.
 - [ ] **Every D row** has a **cited source** for its rationale — a real docstring line, commit hash, memory file path, or explicit in-session decision that the user confirmed. "This seems reasonable" is not a citation.
+- [ ] **The metric rulers are pinned on both sides** — the upstream's actual success/SPL computation (measures kept/stripped, stop-gated or not) and ours. Any "reproduced / not reproduced vs paper" claim states which ruler it used; if the rulers diverge, §4 dual-reports (SR* under the upstream rule alongside the official metric) and never compares numbers across rulers.
 - [ ] The doc reflects the current code **and the final eval** — **no stale claim survives on any summary surface** (at-a-glance Status row · §4 · §5 usage config · §6 · `index.html` row · changelog). A `grep` of the page for the superseded numbers/config returns zero hits (per PHASE 6 step 3); the page does not contradict itself.
 
 If any box is unchecked, do another iteration.
