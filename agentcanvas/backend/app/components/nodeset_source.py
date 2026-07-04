@@ -15,8 +15,8 @@ belong to no nodeset and are unreachable through this module.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 _EXCLUDED_DIR_NAMES = {"__pycache__"}
 
