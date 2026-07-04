@@ -9,8 +9,11 @@ terminal step's value.
 History: before the settle loop landed (2026-05-07), the executor
 exited straight from the stop pull-check and sibling ``evaluate`` sinks
 kept stale step-N-1 metrics — manifesting as 0/60 SR for RT-1-X on
-SIMPLER while the env itself flagged success. This file pins the fix
-so an executor refactor cannot silently reintroduce it.
+SIMPLER while the env itself flagged success. The multi-scope refactor
+later re-opened the hole for dead-end sinks (graph-scope, skipped by
+the settle drain's same-scope filter) until the root-boundary exception
+landed 2026-07-04. This file pins the fix so an executor refactor
+cannot silently reintroduce either regression.
 
 The sink edge is declared AFTER the iterOut edges on purpose: the
 propagation loop then enqueues iterOut ahead of the sink, so on the
@@ -61,24 +64,17 @@ def _sibling_sink_graph() -> GraphDefinition:
     )
 
 
-def test_sibling_sink_currently_misses_the_terminal_step() -> None:
-    """EXPOSURE — pins a hole, not the desired behavior.
-
-    A dead-end sink is never on a path to the iterOut, so scope
-    analysis leaves it in the graph scope (``''``), and the settle
-    drain's same-scope filter skips it on the terminal wave: the sink
-    misses the terminal step (fires N-1 times, last value N-1). That
-    contradicts the settle phase's stated purpose and quietly re-opens
-    the 2026-05-07 SIMPLER pathology for any in-loop dead-end sink.
-
-    Impact today: all production graphs wiring ``__evaluate`` also use
-    the ``final_*`` after-loop band (audited 2026-07-04), so metrics
-    are safe; in-loop viewers/telemetry silently lose the last frame.
-
-    When the settle drain learns to include graph-scope sinks on the
-    root-terminal wave, flip these assertions to ``== _LOOP_ITERS``.
+def test_sibling_sink_fires_on_terminal_step() -> None:
+    """A dead-end sink is never on a path to the iterOut, so scope
+    analysis leaves it in the graph scope (``''``). The settle drain's
+    same-scope filter therefore has a root-boundary exception: graph-
+    scope nodes are drained too, so the sink still observes the terminal
+    step instead of being left in the queue when the run exits (fixed
+    2026-07-04; before that it fired N-1 times with the step-N-1 value).
     """
     exe = _run(_sibling_sink_graph())
     sink = exe.nodes["sink"].state
-    assert sink["total_fires"] == _LOOP_ITERS - 1
-    assert sink.get("last_trigger") == _LOOP_ITERS - 1
+    # Every iteration including the terminal one — not loop_iters - 1.
+    assert sink["total_fires"] == _LOOP_ITERS
+    # And it saw the terminal step's value, not a stale step-N-1 one.
+    assert sink.get("last_trigger") == _LOOP_ITERS
