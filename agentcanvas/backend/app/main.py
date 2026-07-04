@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.canvas import env_panel, graphs
+from .api.execution import coding_agent as coding_agent_api
 from .api.execution import eval as eval_api_v2
 from .api.execution import internal_containers, internal_events, logs, run, websocket
 from .api.platform import components, profiles, providers
@@ -175,6 +176,13 @@ async def lifespan(app: FastAPI):
 
     sched_task = asyncio.create_task(_scheduler_loop())
 
+    # ── Coding-agent runner (Coding-Agent Monitor tab, one run at a time) ──
+    from .services.coding_agent_runner import CodingAgentRunner
+
+    state.coding_agent_runner = CodingAgentRunner(
+        registry=state.workspace_component_registry
+    )
+
     # ── Resource sampler (System Log) — 1 Hz machine snapshot to disk ──
     from .services.resource_sampler import ResourceSampler, set_sampler
 
@@ -202,6 +210,8 @@ async def lifespan(app: FastAPI):
     watch_task.cancel()
     sched_task.cancel()
     await resource_sampler.stop()
+    if getattr(state, "coding_agent_runner", None) is not None:
+        await asyncio.to_thread(state.coding_agent_runner.shutdown)
     if state.job_scheduler is not None:
         await state.job_scheduler.shutdown()
 
@@ -239,6 +249,7 @@ app.include_router(internal_containers.router, prefix="/api/internal", tags=["in
 # republished on the ErrorBus → canvas WebSocket (Move 3, #54). Not public.
 app.include_router(internal_events.router, prefix="/api/internal", tags=["internal"])
 app.include_router(eval_api_v2.router, prefix="/api/eval/v2", tags=["eval-v2"])
+app.include_router(coding_agent_api.router, prefix="/api/coding-agent", tags=["coding-agent"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(replay_router, prefix="/api/replay", tags=["replay"])
 app.include_router(websocket.router, tags=["websocket"])

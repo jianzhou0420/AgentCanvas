@@ -198,6 +198,7 @@
 <tr><td><code>websocket.py</code></td><td>47</td><td><code>/ws</code></td><td><strong>WebSocket endpoint</strong> — accepts connections, registers/unregisters clients with <code>state.py</code>. Broadcast logic lives in <code>state.broadcast()</code></td></tr>
 <tr><td><code>internal_containers.py</code></td><td>136</td><td><code>/api/internal</code></td><td><strong>Cross-process container broker</strong> (not a public API) — lets server-mode subprocess nodes read/write state containers regardless of which process homes them; called by <code>server/remote_container.py::RemoteContainerProxy</code>, msgpack payload path</td></tr>
 <tr><td><code>internal_events.py</code></td><td>72</td><td><code>/api/internal</code></td><td><strong>Subprocess event push</strong> — receives structured log/error events POSTed by server-mode subprocesses (<code>server/event_push.py</code>) and republishes them on the <code>ErrorBus</code> → <code>error_event</code> WS frame</td></tr>
+<tr><td><code>coding_agent.py</code></td><td>106</td><td><code>/api/coding-agent</code></td><td><strong>Coding-agent run API</strong> (experimental) — <code>POST /start</code>/<code>/stop</code>, <code>GET /status</code>, plus per-episode <code>textlog</code> (offset-based JSONL slices) and <code>frames</code>/<code>frame/{name}</code> endpoints; thin HTTP shell over <code>services/coding_agent_runner.py</code> (§9)</td></tr>
 </table>
 
 <h3>2.3 Platform — config, components, LLM profiles</h3>
@@ -479,6 +480,7 @@
 <tr><td><code>resource_sampler.py</code></td><td>346</td><td></td><td><strong>ResourceSampler</strong> — always-on ~1 Hz machine resource time-series written to <code>outputs/system/system-YYYYMMDD.jsonl</code>; feeds <code>/api/system/usage</code> + <code>/history</code> and the Monitor page (§17)</td></tr>
 <tr><td><code>run_state_io.py</code></td><td>137</td><td></td><td><strong>Run-dir file protocol</strong> — the contract between JobScheduler (parent) and <code>eval_subprocess_main</code> (subprocess) under <code>outputs/eval_runs/{run_id}/</code>: <code>spec.json</code>, <code>shared_urls.json</code>, <code>_DONE</code>, …</td></tr>
 <tr><td><code>system_runs.py</code></td><td>279</td><td></td><td><strong>System Log per-run aggregation</strong> — joins a run's execution logs with tee'd resource samples into a per-run performance summary for the Monitor page's Run view</td></tr>
+<tr><td><code>coding_agent_runner.py</code></td><td>248</td><td></td><td><strong>CodingAgentRunner</strong> (experimental) — singleton owned by <code>ProcessServices</code>; one-click host for the <code>scripts/agent20/</code> vanilla coding-agent VLN experiment: spawns an <code>env_habitat</code> auto_host via <code>BaseServer</code> on a free port + the episode driver as a process-group child, derives run status from the driver's artifacts (<code>summary.json</code> + per-episode JSONL) under <code>outputs/agent20/</code>. v1: single worker, one run at a time</td></tr>
 </table>
 
 <div class="pkg-header">agentcanvas/backend/app/replay/</div>
@@ -540,7 +542,7 @@
 <table class="file-table">
 <tr><th>File</th><th></th><th></th><th>Role</th></tr>
 <tr><td><code>main.tsx</code></td><td></td><td></td><td>React entry point — mounts <code>&lt;App /&gt;</code> into <code>#root</code></td></tr>
-<tr><td><code>App.tsx</code></td><td></td><td></td><td>Top-level router — switches between <code>CanvasPage</code>, <code>EvalPage</code>, <code>LogViewerPage</code>, <code>NodeSetManager</code> based on <code>appMode</code></td></tr>
+<tr><td><code>App.tsx</code></td><td></td><td></td><td>Top-level router — switches between <code>CanvasPage</code>, <code>NodeSetManager</code>, <code>EvalPage</code>, <code>LogViewerPage</code>, <code>ReplayPage</code>, <code>MonitorPage</code>, <code>CodingAgentPage</code> based on <code>appMode</code></td></tr>
 <tr><td><code>store.ts</code></td><td></td><td></td><td>Zustand global store — <code>connected</code>, <code>appMode</code>, eval run state, nav status, env context bar data</td></tr>
 <tr><td><code>api.ts</code></td><td></td><td></td><td>REST client — <code>fetchJ</code>, <code>postJ</code>, <code>deleteJ</code>, <code>putJ</code> wrappers around <code>fetch</code> with JSON handling</td></tr>
 <tr><td><code>ws.ts</code></td><td></td><td></td><td>WebSocket manager — connects to <code>/ws</code>, dispatches typed events to listeners; reconnects on drop</td></tr>
@@ -700,14 +702,15 @@
 
 <!-- 17 -->
 <h2 id="s17"><span class="num">§17</span>Frontend: Replay &amp; Monitor</h2>
-<div class="pkg-header">agentcanvas/frontend/src/replay/ · src/pages/monitor/</div>
-<p>Two post-hoc inspection pages beyond the log viewer: episode replay and system/run performance monitoring.</p>
+<div class="pkg-header">agentcanvas/frontend/src/replay/ · src/pages/monitor/ · src/pages/coding/</div>
+<p>Inspection pages beyond the log viewer: episode replay, system/run performance monitoring, and the experimental coding-agent monitor.</p>
 <table class="file-table">
 <tr><td><code>replay/ReplayPage.tsx</code></td><td></td><td></td><td>Episode replay page — steps through the env-agnostic replay timeline served by <code>/api/replay</code> (§2.5), with frame scrubbing</td></tr>
 <tr><td><code>replay/replayApi.ts</code></td><td></td><td></td><td>Replay API client — timeline + frame fetch wrappers</td></tr>
 <tr><td><code>pages/monitor/MonitorPage.tsx</code></td><td></td><td></td><td>Monitor page — machine resource sparklines (polls <code>/api/system/usage</code>, §2.3) + the JobScheduler queue view (polls <code>/api/eval/v2/queue</code>) + per-run performance view (System Log)</td></tr>
 <tr><td><code>pages/monitor/NodeTimingTable.tsx</code></td><td></td><td></td><td>Per-node timing table — where a run's wall-clock went, node by node</td></tr>
 <tr><td><code>pages/monitor/Sparkline.tsx</code></td><td></td><td></td><td>Inline sparkline chart for resource/timing series</td></tr>
+<tr><td><code>pages/coding/CodingAgentPage.tsx</code></td><td></td><td></td><td>Coding-Agent Monitor page (experimental) — one-click run control panel for <code>/api/coding-agent</code> (§2.2) + unified live log at 1 Hz polling: trajectory events with the agent's <code>observe()</code> frames embedded inline (click-to-zoom lightbox), per-episode selector with success badges</td></tr>
 </table>
 
 <!-- 18 -->

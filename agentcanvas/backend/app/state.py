@@ -136,6 +136,9 @@ class ProcessServices:
         # leaves ExecutionGuard.eval mode in place for the legacy in-process
         # path; the subprocess path goes through this scheduler instead.
         self.job_scheduler: Any = None
+        # CodingAgentRunner — created in main.py lifespan (Coding-Agent
+        # Monitor tab); None in eval subprocesses and tests.
+        self.coding_agent_runner: Any = None
 
 
 # Module-level singleton

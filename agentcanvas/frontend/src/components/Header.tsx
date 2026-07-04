@@ -103,6 +103,17 @@ export default function Header() {
           >
             Monitor
           </button>
+          <button
+            onClick={() => setAppMode("coding")}
+            className={clsx(
+              "px-3 py-1 text-sm font-medium",
+              appMode === "coding"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-800 text-gray-400 hover:text-gray-200",
+            )}
+          >
+            Coding Agent
+          </button>
         </div>
 
         <div className="flex-1" />
