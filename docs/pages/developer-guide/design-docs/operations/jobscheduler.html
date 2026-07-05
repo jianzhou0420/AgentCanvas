@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JobScheduler — AgentCanvas</title>
+<meta name="description" content="submit → queue → measured resource admission (VRAM + RAM) → setsid spawn → reap · ResourceStatsTracker attribution + calibration · reservation decay · per-run quota cap">
+<meta property="og:title" content="JobScheduler — AgentCanvas">
+<meta property="og:description" content="submit → queue → measured resource admission (VRAM + RAM) → setsid spawn → reap · ResourceStatsTracker attribution + calibration · reservation decay · per-run quota cap">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/jobscheduler.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="JobScheduler">
+<style id="js-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#jsa); }
+  .rxsvg .edge-dash { stroke: var(--muted); stroke-width:1.2; fill:none; stroke-dasharray:4 4; marker-end:url(#jsa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/jobscheduler.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">JobScheduler</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>JobScheduler</h1>
+  <p class="tagline">submit → queue → measured resource admission (VRAM + RAM) → setsid spawn → reap · ResourceStatsTracker attribution + calibration · reservation decay · per-run quota cap</p>
+</header>
+
+<p class="lede">The <code>JobScheduler</code> is the backend's single gatekeeper for batch-eval runs: <code>POST /api/eval/v2/start</code> only <em>queues</em> a job; a 1-second tick loop decides when it may start, spawns it as an isolated process group, watches it, and accounts for GPU <em>and</em> system memory with <strong>real measurements</strong> rather than trusted declarations. Its hard promise is that <strong>every admission decision is explainable from one <code>GET /api/eval/v2/queue</code> snapshot</strong> — the per-resource charges (<code>admit_charges</code>), where they came from (<code>admit_basis</code>), the measured free per resource, and the standing reservations are all in the response. For the run that executes <em>inside</em> the spawned subprocess see <a href="../graph/batch-eval.html">batch-eval</a>; for how auto_host server processes work see <a href="server-mode.html">server-mode</a>.</p>
+
+<p class="diagram-label"><strong>One scheduler, one closed loop.</strong> Submit persists intent to disk and queues; the tick loop observes the machine (GPU per-PID via the sampler, RAM per-PID via one /proc walk), reaps finished children (sedimenting what it measured into the calibration store), and admits the next job by comparing its calibrated per-resource estimates against measured free minus standing reservations — one inequality per measurable resource. The spawned subprocess's own usage flows back into the next observation — closing the loop.</p>
+<svg class="rxsvg" viewBox="0 0 720 640" role="img" aria-label="JobScheduler architecture. A client POSTs to /api/eval/v2/start; eval.py start_eval_v2 loads shared singletons then calls submit(spec), which writes spec.json to the run dir on disk and enqueues. Inside the long-lived backend process, JobScheduler's 1 Hz tick runs observe, reap, admit, drain. Admission compares the job's per-resource estimates (VRAM and RAM) against measured free minus the sum of reservations, one inequality per measurable resource. ResourceStatsTracker attributes per-PID GPU memory (sampled by ResourceSampler via nvidia-smi pmon, compute plus graphics) and per-PID RSS (one /proc walk) to shared servers, job process trees, or external, and sediments per-resource peaks into outputs/system/resource_calibration.json when a job is reaped. Admit spawns the eval subprocess via Popen with setsid and the AGENTCANVAS_VRAM_CAP_MB env var; the subprocess arms PR_SET_PDEATHSIG, applies a torch memory-fraction cap, spawns its own tagged env servers, writes summary.json and _DONE to the run dir, and its usage is sampled back into the tracker so its reservations decay.">
+  <defs>
+    <marker id="jsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+
+  <!-- client -->
+  <rect class="box" x="20" y="14" width="220" height="34" rx="6"/>
+  <text class="mono" x="130" y="35" text-anchor="middle">POST /api/eval/v2/start</text>
+  <path class="edge" d="M130 48 V84"/>
+
+  <!-- backend process -->
+  <rect class="ghost" x="20" y="64" width="500" height="392" rx="10"/>
+  <text class="dim" x="510" y="80" text-anchor="end">backend process (long-lived)</text>
+
+  <!-- start_eval_v2 -->
+  <rect class="box" x="40" y="88" width="210" height="58" rx="6"/>
+  <text class="mono" x="145" y="106" text-anchor="middle">eval.py · start_eval_v2</text>
+  <text class="dim" x="145" y="122" text-anchor="middle">load shared singletons,</text>
+  <text class="dim" x="145" y="136" text-anchor="middle">submit(spec) → "queued"</text>
+
+  <!-- shared singleton -->
+  <rect class="ghost" x="340" y="94" width="170" height="52" rx="6"/>
+  <text class="dim" x="425" y="112" text-anchor="middle">auto_host singleton</text>
+  <text class="mono" x="425" y="128" text-anchor="middle">child proc · own pgid</text>
+  <path class="edge-dash" d="M250 112 H336"/>
+
+  <!-- JobScheduler -->
+  <rect class="accent" x="40" y="172" width="280" height="148" rx="8"/>
+  <text class="at" x="180" y="192" text-anchor="middle">JobScheduler</text>
+  <text class="mono" x="180" y="208" text-anchor="middle">services/job_scheduler.py</text>
+  <text class="dim" x="180" y="228" text-anchor="middle">queue (FIFO, skip-if-blocked)</text>
+  <text class="dim" x="180" y="246" text-anchor="middle">tick() 1 Hz: observe → _reap →</text>
+  <text class="dim" x="180" y="262" text-anchor="middle">_admit → _drain_pending_unloads</text>
+  <text class="mono" x="180" y="284" text-anchor="middle">admit iff ∀r: est ≤ free − Σ resv</text>
+  <text class="mono" x="180" y="300" text-anchor="middle">est: calibrated | declared | cold-start</text>
+  <path class="edge" d="M145 146 V168"/>
+
+  <!-- ResourceStatsTracker -->
+  <rect class="box" x="40" y="352" width="280" height="84" rx="6"/>
+  <text class="mono" x="180" y="372" text-anchor="middle">resource_stats.py · ResourceStatsTracker</text>
+  <text class="dim" x="180" y="390" text-anchor="middle">PID → shared server | job tree | external</text>
+  <text class="dim" x="180" y="406" text-anchor="middle">per-window peaks (vram + ram) · estimator</text>
+  <text class="mono" x="180" y="424" text-anchor="middle">estimate(graph, wc)</text>
+  <path class="edge" d="M180 352 V324"/>
+  <text class="dim" x="188" y="342">measured_free · jobs_mb</text>
+
+  <!-- ResourceSampler -->
+  <rect class="box" x="350" y="352" width="160" height="84" rx="6"/>
+  <text class="mono" x="430" y="374" text-anchor="middle">resource_sampler.py</text>
+  <text class="dim" x="430" y="392" text-anchor="middle">1 Hz · nvidia-smi pmon</text>
+  <text class="dim" x="430" y="408" text-anchor="middle">GPU PIDs · psutil RAM totals</text>
+  <path class="edge" d="M350 394 H324"/>
+
+  <!-- disk: run dir -->
+  <rect class="ghost" x="560" y="88" width="140" height="150" rx="6"/>
+  <text class="dim" x="630" y="108" text-anchor="middle">outputs/eval_runs/</text>
+  <text class="mono" x="630" y="124" text-anchor="middle">{run_id}/</text>
+  <text class="mono" x="630" y="146" text-anchor="middle">spec.json</text>
+  <text class="mono" x="630" y="164" text-anchor="middle">shared_urls.json</text>
+  <text class="mono" x="630" y="182" text-anchor="middle">summary.json</text>
+  <text class="mono" x="630" y="200" text-anchor="middle">_DONE</text>
+  <path class="edge" d="M250 100 H556"/>
+  <path class="edge-dash" d="M560 210 C 460 250, 380 250, 324 262"/>
+  <text class="dim" x="392" y="240">_reap: rc + _DONE</text>
+
+  <!-- calibration store -->
+  <rect class="ghost" x="560" y="330" width="140" height="66" rx="6"/>
+  <text class="dim" x="630" y="352" text-anchor="middle">outputs/system/</text>
+  <text class="mono" x="630" y="370" text-anchor="middle">resource_calibration</text>
+  <text class="mono" x="630" y="384" text-anchor="middle">.json</text>
+  <path class="edge" d="M320 392 C 420 392, 480 372, 556 366"/>
+  <text class="dim" x="384" y="380">sediment on _reap</text>
+
+  <!-- eval subprocess -->
+  <rect class="accent" x="40" y="490" width="480" height="130" rx="8"/>
+  <text class="at" x="280" y="512" text-anchor="middle">eval subprocess (one per run)</text>
+  <text class="mono" x="280" y="530" text-anchor="middle">app/eval_subprocess_main.py</text>
+  <text class="dim" x="280" y="548" text-anchor="middle">setsid → own pgid · PR_SET_PDEATHSIG</text>
+  <text class="mono" x="280" y="566" text-anchor="middle">_apply_vram_cap: torch fraction = cap / total</text>
+  <rect class="ghost" x="120" y="578" width="320" height="30" rx="6"/>
+  <text class="dim" x="280" y="597" text-anchor="middle">N tagged env auto_host children (owned)</text>
+  <path class="edge" d="M110 320 V486"/>
+  <text class="dim" x="118" y="410">_spawn: Popen(setsid)</text>
+  <text class="mono" x="118" y="426">AGENTCANVAS_VRAM_CAP_MB</text>
+
+  <!-- subprocess artifacts + GPU loop -->
+  <path class="edge" d="M520 555 C 600 555, 630 400, 630 242"/>
+  <text class="dim" x="596" y="470">summary.json</text>
+  <text class="dim" x="596" y="486">_DONE</text>
+  <path class="edge-dash" d="M520 590 C 640 590, 560 460, 512 436"/>
+  <text class="dim" x="560" y="576">GPU usage → sampled</text>
+</svg>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+
+<p><strong>One machine, one GPU, one pool of RAM, many uncoordinated eval jobs — the scheduler is the only place they meet.</strong> Every batch eval in AgentCanvas goes through it: submitting a run writes its full spec to disk and puts it in a FIFO queue; nothing executes until the scheduler's once-per-second tick decides the machine can take it. The decision is made against the <em>measured</em> machine: a <code>ResourceSampler</code> reads per-process GPU memory once a second, one /proc walk reads every process's RSS, and a <code>ResourceStatsTracker</code> attributes each PID to a shared model server, a running job's process tree, or "external" (anything the scheduler doesn't own — another session's backend, Xorg, the OS itself), and admission asks the same question once per resource: <em>does this job's estimated need fit in what is physically free, after subtracting what already-admitted jobs are still expected to claim?</em> A resource the machine cannot measure is simply not gated — a CPU-only host has no VRAM dimension and gates on RAM alone.</p>
+
+<p>The estimates come from a <strong>calibration store that the scheduler feeds by watching real runs</strong> (<code>resource_stats.py · CalibrationStore</code>). There is no offline profiling step and no pre-run probe: the first run of a graph admits on its declared fallback (or alone, if nothing was declared), and everything measured during that run — each shared singleton's peak, the job tree's peak at that worker count, on every resource at once — is written to <code>outputs/system/resource_calibration.json</code> when the job is reaped. From the second run on, admission charges the measured numbers, keyed to the nodeset's source hash so code edits automatically invalidate stale statistics. Pre-rename VRAM-only stores (<code>vram_calibration.json</code>, v1) are adopted and migrated on first load; their RAM slice refills on the next run per graph.</p>
+
+<p>Once admitted, a run executes in its own OS process (<code>app/eval_subprocess_main.py</code>), in its own <code>setsid</code> process group — cancel is one <code>killpg</code>, and a crash cannot take the backend down. The subprocess additionally caps its own torch allocator at the admission charge (<code>AGENTCANVAS_VRAM_CAP_MB</code>), so a run that blows past its estimate OOMs itself rather than its neighbors (VRAM only — RAM has no enforceable per-process cap; see §6).</p>
+
+<h3 id="11-smallest-run"><span class="num">1.1</span> The smallest run</h3>
+
+<p>A graph name and an episode count; everything else defaults. The response is immediate — the run is queued, not started:</p>
+
+<pre class="hl">
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/api/eval/v2/start<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#x27;{&quot;graph_name&quot;: &quot;straightforward&quot;, &quot;episode_count&quot;: 1}&#x27;</span>
+<span class="c1"># → {&quot;run_id&quot;: &quot;20260704_200243&quot;, &quot;status&quot;: &quot;queued&quot;, &quot;via_subprocess&quot;: true}</span>
+</pre>
+
+<p>Within a tick or two the job admits (this graph is calibrated, so the charges are the measured per-resource estimates — not the profile's declaration), spawns, runs one episode, writes <code>summary.json</code> + <code>_DONE</code>, and is reaped; the calibration store gains one more observation.</p>
+
+<h2 id="2-lifecycle"><span class="num">2.</span> Lifecycle of one job</h2>
+
+<p><strong>A job is disk-first: every state transition is visible in <code>outputs/eval_runs/{run_id}/</code> before or as it happens in memory.</strong></p>
+
+<ul>
+<li><strong>submit</strong> (<code>job_scheduler.py · JobScheduler.submit</code>) — rejects declarations that exceed the machine's physical ceiling with <code>ValueError</code> → HTTP 400 (<code>eval.py · start_eval_v2</code>), so an impossible job fails loudly instead of pending forever. Then writes <code>spec.json</code> + <code>shared_urls.json</code> + an initial <code>pending</code> summary, bumps the shared-singleton refcounts, and enqueues. Shared model singletons were already loaded by the endpoint <em>before</em> submit (<code>registry.py · ensure_shared_nodesets_for_graph</code>) — which is why a calibrated estimate at admit time counts them at ~0 marginal.</li>
+<li><strong>admitted</strong> (<code>JobScheduler._admit</code>, §3) — picked FIFO when the gates clear.</li>
+<li><strong>running</strong> (<code>JobScheduler._spawn</code>) — <code>Popen(python -m app.eval_subprocess_main, start_new_session=True)</code>; the child group is captured for cancel, stdout/stderr tee to the run dir, and the admission charge rides in as <code>AGENTCANVAS_VRAM_CAP_MB</code>. The tracker opens an observation window (<code>resource_stats.py · note_job_started</code>) covering the job's shared nodesets — including <em>local</em> in-process ones, via a graph-derived union (<code>JobScheduler._graph_shared_nodesets</code>).</li>
+<li><strong>reaped</strong> (<code>JobScheduler._reap</code>) — on child exit: terminal status from the <code>rc × _DONE</code> matrix below, ephemeral servers released, refcounts dropped (zero-refcount singletons auto-unload next tick), and the observation window sediments into the calibration store (<code>resource_stats.py · note_job_finished</code>).</li>
+</ul>
+
+<table>
+<thead><tr><th>child exit</th><th><code>_DONE</code> on disk</th><th>terminal status</th></tr></thead>
+<tbody>
+<tr><td>any <code>rc</code></td><td>present</td><td>whatever <code>summary.json</code> says (<code>completed</code> / <code>error</code> / <code>cancelled</code>)</td></tr>
+<tr><td>any <code>rc</code></td><td>absent</td><td><code>aborted</code> (external kill or crash mid-run; <code>rc=-15</code> = SIGTERM)</td></tr>
+</tbody>
+</table>
+
+<h2 id="3-admission"><span class="num">3.</span> The measured admission gate</h2>
+
+<p><strong>Admission compares an estimate against physics, not a declaration against a constant.</strong> Per queued job, in FIFO order, <code>JobScheduler._admit</code> applies four gates:</p>
+
+<ol>
+<li><strong>canvas lock</strong> — canvas Play holds the GPU; nothing admits.</li>
+<li><strong>exclusive</strong> — an <code>exclusive_gpu</code> job waits for an empty machine, and blocks everything while running.</li>
+<li><strong>the measured gate</strong> — <code>estimate ≤ measured_free − Σ reservations</code>, checked once per resource (VRAM, RAM); a resource that is unmeasurable on this machine is skipped. A job that doesn't fit is <em>skipped</em>, not blocking (smaller jobs behind it may admit first).</li>
+<li><strong>fallback</strong> — when <em>no</em> resource is measurable (no sampler at all: unit tests), the gate reverts to the pre-2026-07 declared ledger: <code>marginal_vram_mb ≤ usable − Σ declared</code>.</li>
+</ol>
+
+<p>The estimate is resolved per job at admit time (<code>JobScheduler._resolve_estimate</code>), against the registry's <em>current</em> loaded state:</p>
+
+<table>
+<thead><tr><th><code>admit_basis</code></th><th>when</th><th>charge</th></tr></thead>
+<tbody>
+<tr><td><code>calibrated</code></td><td>every component the graph needs has calibration data on every resource</td><td>per-resource <code>estimate_mb</code> from the estimator (§4) — includes safety margins (1500&nbsp;MB VRAM, 1024&nbsp;MB RAM); already-loaded singletons count ~0</td></tr>
+<tr><td><code>hint</code></td><td>estimate complete, but ≥1 singleton was priced by its author preset (<code>BaseNodeSet.expected_vram_mb</code> / <code>expected_ram_mb</code>) instead of a measurement</td><td>same formula, preset bases for the unmeasured singletons</td></tr>
+<tr><td><code>declared</code></td><td>calibration incomplete, <code>marginal_vram_mb &gt; 0</code></td><td>the declaration, verbatim — VRAM only; RAM rides ungated on this rung (nothing ever declared it)</td></tr>
+<tr><td><code>cold-start</code></td><td>no calibration <em>and</em> no declaration</td><td>0 on every resource — but only admitted on an otherwise-idle scheduler; the first run doubles as the calibration run</td></tr>
+<tr><td><code>legacy</code></td><td>no sampler at all</td><td><code>marginal_vram_mb</code> against the static budget</td></tr>
+</tbody>
+</table>
+
+<p><strong>Reservation decay</strong> closes the lazy-loading race. A just-admitted job holds a reservation equal to its full charge; models take a minute to load, so without it the next tick would see the GPU still free and over-admit. As the sampler sees the job's real allocation, the reservation shrinks — per resource, <code>max(0, admit charge − measured tree)</code> per running job (<code>JobScheduler._pending_reservations</code>) — until the ledger has fully handed over to measurement. No timers, no double-counting:</p>
+
+<svg class="rxsvg" viewBox="0 0 720 216" role="img" aria-label="Reservation decay timeline. Four stacked bars over time. At admit, the reservation equals the full estimate and nothing is measured. During model loading the measured tree usage grows and the reservation shrinks by the same amount. By the first episode most of the estimate is measured. At steady state the reservation is zero and admission runs purely on measured values.">
+  <path d="M60 46 H660" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="5 4"/>
+  <text class="dim" x="664" y="50">estimate</text>
+  <rect x="80" y="46" width="90" height="114" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <rect x="230" y="46" width="90" height="72" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <rect x="230" y="118" width="90" height="42" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <rect x="380" y="46" width="90" height="20" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <rect x="380" y="66" width="90" height="94" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <rect x="530" y="48" width="90" height="112" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <path d="M60 160 H660" stroke="var(--muted)" stroke-width="1.4"/>
+  <g font-size="12">
+    <text class="dim" x="125" y="180" text-anchor="middle">admit</text>
+    <text class="dim" x="275" y="180" text-anchor="middle">models loading</text>
+    <text class="dim" x="425" y="180" text-anchor="middle">first episode</text>
+    <text class="dim" x="575" y="180" text-anchor="middle">steady state</text>
+  </g>
+  <rect x="80" y="196" width="11" height="11" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text class="dim" x="98" y="206">reservation = max(0, estimate − measured)</text>
+  <rect x="360" y="196" width="11" height="11" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <text class="dim" x="378" y="206">measured tree usage (sampler)</text>
+</svg>
+
+<h2 id="4-calibration"><span class="num">4.</span> Measurement, calibration, estimation</h2>
+
+<p><strong>The tracker turns two raw per-PID streams — GPU memory from the sampler, RSS from /proc — into per-nodeset and per-graph statistics on each resource, and the estimator turns those back into admission charges.</strong> All of it lives in one module, <code>services/resource_stats.py</code>, owned by the scheduler.</p>
+
+<h3 id="41-attribution"><span class="num">4.1</span> Attribution — whose memory is this?</h3>
+
+<p>Each tick, two per-PID usage lists — GPU PIDs from the latest sample (<code>nvidia-smi pmon</code>, which lists <em>graphics</em>-type contexts too — habitat/MatterSim render via EGL and are invisible to the compute-only query; <code>resource_sampler.py · _gpu_processes</code>) and every live process's RSS from one /proc walk (<code>resource_stats.py · _proc_table</code>) — are attributed with the same ancestor walk (<code>resource_stats.py · _attribute_pid</code>):</p>
+
+<ol>
+<li><strong>shared nodeset server</strong> — the PID, or one of its ancestors, matches the registry's <code>_auto_servers</code> table;</li>
+<li><strong>running job</strong> — the PID's PPID-ancestor chain reaches a job's subprocess (PPID walk, not pgid match: the job's replicated auto_host children <code>setsid</code> into their own groups but keep the parent link);</li>
+<li><strong>external</strong> — everything else (other sessions' backends, Xorg, and on the RAM side the OS itself). Visible in the <code>/queue</code> snapshot; measured free already excludes it.</li>
+</ol>
+
+<h3 id="42-sediment"><span class="num">4.2</span> Sedimentation — writing the calibration store</h3>
+
+<p>While a job runs, its window records peaks on each resource: the job tree's total, and each of its shared singletons' server usage plus the concurrent worker pressure. On reap the window is written to <code>outputs/system/resource_calibration.json</code> (EWMA + observed max, per resource, per nodeset and per <code>(graph, worker_count)</code>). Two honesty guards: a window with <em>zero</em> attribution samples sediments nothing (no blind zeros when the sampler was down), and a resident server observed at 0&nbsp;MB is recorded as a real "none of this resource" measurement — distinct from "never observed". The calibration key includes the nodeset's source-tree hash (<code>content_hash.py · hash_nodeset_tree</code>): edit the code, and its old statistics silently retire. Legacy v1 stores (<code>vram_calibration.json</code>, VRAM-only) are adopted on first load (<code>resource_stats.py · _migrate_v1</code>): their statistics survive as the <code>vram</code> slice, and the <code>ram</code> slice starts uncalibrated.</p>
+
+<h3 id="43-estimator"><span class="num">4.3</span> Estimation — <code>GET /api/eval/v2/estimate</code></h3>
+
+<p>The estimator (<code>resource_stats.py · estimate_tree_mb / estimate_shared_mb</code>) prices a run per resource as: one-time bases for needed-but-unloaded singletons, a worker-pressure slope for loaded ones, the job tree at the requested worker count, plus the safety margin. Basis degrades explicitly: <code>measured</code> (exact worker count seen) → <code>fitted</code> (linear fit over ≥2 worker counts) → <code>scaled</code> (single point, proportional). For singletons there is one more rung below measurement: the <strong>author preset</strong> — a nodeset may declare <code>expected_vram_mb</code> / <code>expected_ram_mb</code> as ClassVars (<code>bases.py · BaseNodeSet</code>, e.g. a SAM nodeset shipping "≈600&nbsp;MB"), which prices it (basis <code>hint</code>) whenever no valid measurement exists on this machine — fresh installs, or right after a source edit retired the measured stats. Presets are deliberately <em>not</em> hash-gated: weights dominate an FM's footprint, so the preset is a long-term assertion that survives code churn; measurement always wins once available. The honesty rule, applied per resource: <code>estimate_mb</code> is <code>null</code> unless <em>every</em> component is calibrated or preset — a missing singleton could be 10&nbsp;GB, so a partial sum never masquerades as a total. The endpoint (<code>eval.py · estimate_eval_v2</code>) is read-only and also reports per-resource <code>max_workers</code> plus a combined one — the minimum across the resources measurable on this machine.</p>
+
+<h2 id="5-observability"><span class="num">5.</span> Observability — one snapshot explains the decision</h2>
+
+<p>Everything admission used is in <code>GET /api/eval/v2/queue</code> (<code>JobScheduler.list_active</code>). A real snapshot, taken mid-run seconds after a calibrated job admitted — note the per-resource charges (VRAM 2049&nbsp;MB, RAM 3515&nbsp;MB) and both reservations already partly decayed: the sampler has seen 543&nbsp;MB of GPU and 2480&nbsp;MB of RSS materialize, so the standing reservations are down to 1506&nbsp;/&nbsp;1035:</p>
+
+<pre class="hl">
+<span class="p">{</span>
+  <span class="nt">&quot;running&quot;</span><span class="p">:</span> <span class="p">[</span><span class="p">{</span><span class="nt">&quot;run_id&quot;</span><span class="p">:</span> <span class="s2">&quot;20260705_140954&quot;</span><span class="p">,</span>
+               <span class="nt">&quot;admit_charges&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="mi">2049</span><span class="p">,</span> <span class="nt">&quot;ram&quot;</span><span class="p">:</span> <span class="mi">3515</span><span class="p">}</span><span class="p">,</span>
+               <span class="nt">&quot;admit_basis&quot;</span><span class="p">:</span> <span class="s2">&quot;calibrated&quot;</span><span class="p">,</span> <span class="nt">&quot;marginal_vram_mb&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span><span class="p">]</span><span class="p">,</span>
+  <span class="nt">&quot;queued&quot;</span><span class="p">:</span> <span class="p">[</span><span class="p">]</span><span class="p">,</span>
+  <span class="nt">&quot;measured_free_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="mi">23811</span><span class="p">,</span> <span class="nt">&quot;ram&quot;</span><span class="p">:</span> <span class="mi">46346</span><span class="p">}</span><span class="p">,</span>
+  <span class="nt">&quot;pending_reservation_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="mi">1506</span><span class="p">,</span> <span class="nt">&quot;ram&quot;</span><span class="p">:</span> <span class="mi">1035</span><span class="p">}</span><span class="p">,</span>
+  <span class="nt">&quot;attribution&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;resources&quot;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;used_total_mb&quot;</span><span class="p">:</span> <span class="mi">765</span><span class="p">,</span> <span class="nt">&quot;attributed_mb&quot;</span><span class="p">:</span> <span class="mi">543</span><span class="p">,</span> <span class="nt">&quot;external_mb&quot;</span><span class="p">:</span> <span class="mi">222</span><span class="p">,</span>
+             <span class="nt">&quot;shared_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="p">}</span><span class="p">,</span> <span class="nt">&quot;jobs_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;20260705_140954&quot;</span><span class="p">:</span> <span class="mi">543</span><span class="p">}</span><span class="p">}</span><span class="p">,</span>
+    <span class="nt">&quot;ram&quot;</span><span class="p">:</span>  <span class="p">{</span><span class="nt">&quot;used_total_mb&quot;</span><span class="p">:</span> <span class="mi">13540</span><span class="p">,</span> <span class="nt">&quot;attributed_mb&quot;</span><span class="p">:</span> <span class="mi">4154</span><span class="p">,</span> <span class="nt">&quot;external_mb&quot;</span><span class="p">:</span> <span class="mi">9386</span><span class="p">,</span>
+             <span class="nt">&quot;shared_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;policy_adapter_vlnce&quot;</span><span class="p">:</span> <span class="mi">1674</span><span class="p">}</span><span class="p">,</span>
+             <span class="nt">&quot;jobs_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;20260705_140954&quot;</span><span class="p">:</span> <span class="mi">2480</span><span class="p">}</span><span class="p">}</span><span class="p">}</span><span class="p">}</span>
+<span class="p">}</span>
+</pre>
+
+<p><code>usable_vram_mb</code> / <code>reserved_vram_mb</code> (elided above) are the legacy declared ledger, kept for the no-sampler fallback and for clients that still read them; the decision fields are <code>measured_free_mb</code> and <code>pending_reservation_mb</code> (both per resource) and the per-job <code>admit_charges</code> / <code>admit_basis</code> pair. Cancel is <code>POST /runs/{run_id}/cancel</code> — queued jobs cancel immediately, running jobs get a <code>SIGTERM</code> to their whole process group.</p>
+
+<h2 id="6-deviations"><span class="num">6.</span> Where it deviates from the model</h2>
+
+<div class="callout warn"><strong>Queued jobs do not survive a backend restart.</strong> The model says "disk-first, so state survives"; in reality <code>reconcile_aborted_runs</code> (<code>job_scheduler.py</code>) marks both <code>running</code> <em>and</em> <code>pending</code> runs as <code>aborted</code> at startup — the spec is on disk but nothing re-enqueues it (M1; queue durability is an acknowledged gap in the code comment).</div>
+
+<div class="callout warn"><strong>Local in-process nodesets are calibrated at 0 by fiat, not by measurement.</strong> A <code>parallelism="shared"</code> nodeset loaded in-process (no auto_host server, e.g. <code>env_adapter</code>) has no PID of its own; per-PID attribution structurally cannot see it. It is recorded as 0&nbsp;MB on every resource so it never blocks estimate coverage (<code>resource_stats.py · _is_loaded_local</code>) — a local nodeset that secretly loads a model into the backend process would be under-estimated.</div>
+
+<div class="callout warn"><strong>The quota cap is best-effort, not a hard sandbox.</strong> <code>AGENTCANVAS_VRAM_CAP_MB</code> caps the torch allocator of the eval subprocess itself (<code>eval_subprocess_main.py · _apply_vram_cap</code>). Its child env servers, non-torch CUDA allocations, and EGL contexts are uncapped. The measured gate is the primary defense; the cap is a backstop.</div>
+
+<div class="callout warn"><strong>RAM is gate-only — there are no RAM quota teeth.</strong> There is no RAM sibling of <code>AGENTCANVAS_VRAM_CAP_MB</code>: <code>RLIMIT_AS</code> counts virtual address space and would kill mmap-heavy simulators, and cgroup memory limits need privileges the backend doesn't assume. The defenses are the gate itself and the permanent floor held out of the budget (<code>resource_stats.py · RAM_FLOOR_MB</code>, 4&nbsp;GB below MemAvailable).</div>
+
+<div class="callout warn"><strong>Job-tree RAM over-counts shared pages.</strong> Per-process RSS counts copy-on-write pages once per process, so a forked worker tree's summed RSS exceeds its true footprint. Errs conservative for admission; PSS would be exact but costs a <code>smaps_rollup</code> read per process per tick.</div>
+
+<div class="callout warn"><strong>A declared job's RAM rides ungated.</strong> The <code>declared</code> rung predates the RAM dimension — profiles only ever declared <code>marginal_vram_mb</code> — so when calibration is incomplete and a declaration exists, admission gates VRAM on the declaration and RAM not at all, until the first run calibrates both.</div>
+
+<div class="callout warn"><strong>Attribution lags reality by up to ~5 seconds.</strong> Per-PID data refreshes on the sampler's slow cadence (<code>resource_sampler.py</code>: gpu_procs cache ~5s; totals 1s). Reservation decay therefore lags, which errs conservative — and a sub-5-second job can be reaped with an empty window (nothing sediments; guarded by <code>samples_seen</code>).</div>
+
+<div class="callout warn"><strong>FIFO admission can starve a large job.</strong> A job that doesn't fit is skipped, not blocking (<code>_admit</code> walks on), so a continuous stream of small jobs can overtake a large one indefinitely. The <code>priority</code> field is accepted and persisted but ignored (M1 FIFO).</div>
+
+<div class="callout warn"><strong>The VRAM ledger is a scalar.</strong> Totals and free are summed across all visible GPUs (<code>detect_total_vram_mb</code>, sampler totals); there is no per-GPU accounting or placement. Correct on this single-GPU box, wrong in both directions on a multi-GPU one.</div>
+
+<div class="callout warn"><strong>Unseen worker counts are extrapolated, not measured.</strong> With one calibration point the tree cost scales proportionally (<code>estimate_tree_mb</code>, basis <code>scaled</code>); a fixed per-run overhead makes this over-estimate at high worker counts and the safety margin absorbs the reverse error. Real multi-worker runs upgrade the basis to <code>fitted</code> automatically.</div>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h3" href="#11-smallest-run">1.1 The smallest run</a>
+      <a class="toc-h2" href="#2-lifecycle">2. Lifecycle of one job</a>
+      <a class="toc-h2" href="#3-admission">3. The measured admission gate</a>
+      <a class="toc-h2" href="#4-calibration">4. Measurement, calibration, estimation</a>
+      <a class="toc-h3" href="#41-attribution">4.1 Attribution — whose memory is this?</a>
+      <a class="toc-h3" href="#42-sediment">4.2 Sedimentation — writing the calibration store</a>
+      <a class="toc-h3" href="#43-estimator">4.3 Estimation — GET /api/eval/v2/estimate</a>
+      <a class="toc-h2" href="#5-observability">5. Observability — one snapshot explains the decision</a>
+      <a class="toc-h2" href="#6-deviations">6. Where it deviates from the model</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
