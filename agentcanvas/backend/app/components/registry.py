@@ -1434,7 +1434,7 @@ class WorkspaceComponentRegistry:
             else:
                 # Bucket mode — scan nested .py files as standalone modules,
                 # plus any package subdirs inside the bucket (so a folder-style
-                # nodeset like ``server/policy_vla/__init__.py`` is discovered
+                # nodeset like ``policy/policy_adapter_vla/__init__.py`` is discovered
                 # under the ``server/`` bucket).
                 nested = f"{subdir}/{child.name}"
                 for py_file in sorted(child.glob("*.py")):

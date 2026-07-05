@@ -21,7 +21,7 @@
 #       gs://openpi-assets/checkpoints/pi0_libero . These back the (currently
 #       vestigial) data/vla_policy/norm_stats/libero_pi0.json reference. The
 #       runtime policies default to the VENDORED JianZhou0420 stats
-#       (policy_vla/_assets/norm_stats/), so this section is OPTIONAL — only
+#       (policy_adapter_vla/_assets/norm_stats/), so this section is OPTIONAL — only
 #       needed if you want to run against the official pi0 baseline stats.
 #
 #   NOT fetched: the dp / smolvla "physical-intelligence" norm_stats variants.
@@ -96,7 +96,7 @@ if [ "$DO_NORM_STATS" = true ]; then
         PYTHONPATH="$PROJECT_ROOT" "$VLA_PYTHON" - "$NORM_STATS_DIR" <<'PYEOF'
 import sys, shutil, pathlib
 dst = pathlib.Path(sys.argv[1])
-from workspace.nodesets.policy.policy_vla.models.openpi.shared import download
+from workspace.nodesets.policy.policy_adapter_vla.models.openpi.shared import download
 ckpt = download.maybe_download("gs://openpi-assets/checkpoints/pi0_libero")
 # norm_stats.json is shipped under the checkpoint's assets/ tree.
 hits = list(pathlib.Path(ckpt).rglob("norm_stats.json"))

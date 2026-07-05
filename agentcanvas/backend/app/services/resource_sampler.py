@@ -111,11 +111,68 @@ def _owner_label(pid: int) -> str:
         return f"pid {pid}"
 
 
+def _parse_pmon(text: str) -> list[dict[str, Any]]:
+    """Parse ``nvidia-smi pmon -c 1 -s m`` output into per-PID rows.
+
+    Columns: gpu_idx, pid, type (C/G), fb MB, ccpm MB, command. Idle GPUs
+    emit ``-`` placeholder rows; multi-GPU PIDs are summed. Pure function
+    so the format assumption is unit-testable without a GPU.
+    """
+    mem_by_pid: dict[int, int] = {}
+    type_by_pid: dict[int, str] = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            pid = int(parts[1])
+            fb = int(parts[3])
+        except ValueError:
+            continue  # '-' placeholder row on idle GPUs
+        mem_by_pid[pid] = mem_by_pid.get(pid, 0) + fb
+        type_by_pid[pid] = parts[2]
+    return [
+        {"pid": pid, "mem_mb": mem, "gpu_ctx": type_by_pid.get(pid, "?")}
+        for pid, mem in mem_by_pid.items()
+    ]
+
+
 def _gpu_processes() -> list[dict[str, Any]]:
-    """Per-process GPU memory (best-effort), so the Monitor page can answer
-    'who is holding VRAM'. ``[]`` when nvidia-smi is unavailable."""
+    """Per-process GPU memory (best-effort), so the Monitor page and the
+    VRAM attribution (resource_stats) can answer 'who is holding VRAM'.
+
+    Uses ``nvidia-smi pmon`` because it lists graphics-type contexts too —
+    habitat / MatterSim render via EGL and appear as type ``G``, which
+    ``--query-compute-apps`` misses entirely (confirmed live 2026-07-04:
+    a habitat env held 295 MB invisible to the compute-apps query).
+    Falls back to the compute-only query where pmon is unsupported.
+    ``[]`` when nvidia-smi is unavailable."""
     if _NVIDIA_SMI is None:
         return []
+    procs: list[dict[str, Any]] | None = None
+    try:
+        out = subprocess.run(
+            [_NVIDIA_SMI, "pmon", "-c", "1", "-s", "m"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=True,
+        ).stdout
+        procs = _parse_pmon(out)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+        procs = None
+    if procs is None:
+        procs = _compute_apps_processes()
+    for p in procs:
+        p["owner"] = _owner_label(p["pid"])
+    procs.sort(key=lambda p: p["mem_mb"], reverse=True)
+    return procs
+
+
+def _compute_apps_processes() -> list[dict[str, Any]]:
+    """Fallback: compute contexts only (misses EGL renderers — see above)."""
     try:
         out = subprocess.run(
             [
@@ -140,8 +197,7 @@ def _gpu_processes() -> list[dict[str, Any]]:
             mem = int(parts[1])
         except ValueError:
             continue
-        procs.append({"pid": pid, "mem_mb": mem, "owner": _owner_label(pid)})
-    procs.sort(key=lambda p: p["mem_mb"], reverse=True)
+        procs.append({"pid": pid, "mem_mb": mem, "gpu_ctx": "C"})
     return procs
 
 
@@ -250,7 +306,9 @@ class ResourceSampler:
                 for rj in sched.list_active().get("running", []):
                     rid = rj.get("run_id")
                     if rid:
-                        d = self._outputs_dir / "eval_runs" / rid
+                        # Scheduler's own pool, not a hardcoded eval_runs/ —
+                        # slot backends (/host) run against eval_runs_<suffix>.
+                        d = sched.runs_dir / rid
                         if d.is_dir():
                             dirs.append(d)
         except Exception:

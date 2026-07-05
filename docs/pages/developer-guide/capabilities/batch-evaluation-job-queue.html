@@ -57,7 +57,7 @@
     <span class="sep">/</span>
     <span class="here">8Batch Evaluation &amp; Job Queue</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-07-05</div>
 </div>
   <header class="page-header capability">
     <h1><span class="capability-num">8</span>Batch Evaluation &amp; Job Queue</h1>
@@ -94,7 +94,7 @@
       <h3>Layer A — JobScheduler (in backend)</h3>
       <ul style="margin: 0; padding-left: 1.2rem; font-size:.9rem;">
         <li>Singleton owned by <code>ProcessServices</code>. Per-second <code>tick()</code> loop.</li>
-        <li><strong>Admission rule</strong>: <code>Σ active.marginal_vram_mb ≤ usable_vram_mb</code> AND canvas-lock not held.</li>
+        <li><strong>Admission rule</strong>: per measurable resource (VRAM + RAM), calibrated <code>estimate ≤ measured_free − Σ reservations</code> AND canvas-lock not held; estimates come from run-fed calibration, with declared <code>marginal_vram_mb</code> as the fallback rung. See the <a href="../design-docs/operations/jobscheduler.html">JobScheduler design doc</a>.</li>
         <li>Cross-session: every <code>POST /api/eval/v2/start</code> from every Claude / browser session hits the <em>same</em> queue (<a href="../core/decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>).</li>
         <li>Spawns each admitted job as a fresh subprocess (<code>python -m app.eval_subprocess_main --run-dir …</code>).</li>
         <li>Refcounts shared singletons; auto-unloads job-loaded ones at refcount-zero (canvas-loaded ones stay).</li>
@@ -153,7 +153,7 @@
   <p>One <code>tick()</code> per second from the FastAPI lifespan. For each queued job, in priority order:</p>
   <ol>
     <li><strong>Canvas-lock check</strong>: if a canvas Play is running (<code>ExecutionGuard.current()['mode'] == 'canvas'</code>), no new jobs admit. Set via <code>set_canvas_lock_callback</code>. Canvas always wins — preempts even high-priority queued jobs.</li>
-    <li><strong>Budget check</strong>: <code>Σ active.marginal_vram_mb + this_job.marginal_vram_mb ≤ usable_vram_mb</code>. <code>marginal_vram_mb</code> declares <em>only</em> the env-side workers + per-job adapters; shared singletons are implicit in <code>usable_vram_mb</code> (the parent backend's quota).</li>
+    <li><strong>Budget check</strong>: per measurable resource, calibrated <code>estimate ≤ measured_free − Σ reservations</code> (measured admission, 2026-07). <code>marginal_vram_mb</code> is now the declared <em>fallback</em> when calibration is incomplete; already-loaded shared singletons count ~0 in the estimate.</li>
     <li><strong>Exclusive-GPU jobs</strong>: if a queued job has <code>exclusive_gpu=True</code>, it admits only when no other jobs are running. Used by SLAM / VoxPoser-class graphs that don't share GPU memory cleanly.</li>
     <li>If admitted, spawn the subprocess in its own session (<code>start_new_session=True</code>); the child self-arms <code>PR_SET_PDEATHSIG</code> at startup (<code>eval_subprocess_main.py · _set_pdeathsig</code>) so the kernel reaps it if the backend dies (no orphan VRAM squatting).</li>
   </ol>

@@ -58,7 +58,7 @@ package:
    one nodeset).
 2. **Nesting ceiling**: the entry module sits at `{role}/{name}.py` or
    `{role}/{name}/__init__.py` — the scanner descends no further. *Inside* a
-   folder package, organize freely (`policy/policy_vla/adapters/…`).
+   folder package, organize freely (`policy/policy_adapter_vla/adapters/…`).
 3. **The root holds only the seven directories above.** No loose `.py` at
    root.
 4. **No new role directories without an ADR** — each bucket is a top-level
@@ -126,7 +126,7 @@ or a root-level dump. It is a holding pen, not a home:
    | Prefix | Used in | Example |
    |---|---|---|
    | `env_{sim}` | `env/` | `env_libero` |
-   | `policy_{name}` | `policy/` | `policy_cma` |
+   | `policy_{name}` | `policy/` | `policy_adapter_vlnce` |
    | `vlm_{name}` | `model/` (vision-language models) | `vlm_prismatic` |
    | `model_{name}` | `model/` (other generic models) | `model_sam`, `model_ram` |
    | *(bare)* `{method}` | `method/` core | `navgpt`, `voxposer` |
@@ -178,7 +178,7 @@ references while moving:
 | Current | Target |
 |---|---|
 | `server/habitat.py` / `hmeqa.py` / `matterport3d.py` / `openeqa.py` | `env/env_habitat.py` / `env_hmeqa/` (absorbing `hmeqa_renderer.py`, `hmeqa_replay.py`) / `env_mp3d/` (absorbing `test_matterport3d_path_resolution.py`) / `env_openeqa_em.py` |
-| `server/libero/`, `server/simpler/`, `server/env_detany3d/` | `env/env_libero/`, `env/env_simpler/`, `env/env_detany3d/` |
+| `server/libero/`, `server/simpler/`, `server/env_detany3d/` | `env/env_libero/`, `env/env_simpler/`, `env/env_detany3d/` (detany3d moved on to `model/model_detany3d/` 2026-07-04 — stateless service, role test) |
 | `server/policy_cma.py`, `policy_octo.py`, `policy_vla/`, `policy_vlnce/` | `policy/…` (names unchanged) |
 | `server/vlm_prismatic.py`, `vlm_qwen2_5_vl.py` | `model/…` (names unchanged) |
 | `navgpt.py`, `navgpt_mp3d_tools.py`, `mapgpt.py`, `discussnav.py`, `opennav.py`, `spatialnav.py`, `ssg.py` | `method/…` (names unchanged) |

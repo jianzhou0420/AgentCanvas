@@ -296,7 +296,7 @@ async def start_eval_v2(req: StartEvalV2Request):
         # Compute shared_urls: nodesets the graph needs that are currently
         # loaded as shared singletons in this backend's registry.
         # Also include ALL currently-loaded shared singletons, since some
-        # nodesets (e.g. env_detany3d for ToolEQA) are accessed via
+        # nodesets (e.g. model_detany3d for ToolEQA) are accessed via
         # ``ctx._executor.get_server_url(...)`` from inside method-side
         # nodes rather than as canvas-visible nodes.
         shared_urls: dict[str, str] = {}
@@ -353,7 +353,12 @@ async def start_eval_v2(req: StartEvalV2Request):
             # JobScheduler._spawn(). None = run against frozen workspace.
             "active_workspace_dir": req.active_workspace_dir,
         }
-        run_id = scheduler.submit(spec)
+        try:
+            run_id = scheduler.submit(spec)
+        except ValueError as exc:
+            # P3 feasibility rejection (e.g. declaration exceeds the
+            # machine's physical ceiling) — a client error, not a 500.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"run_id": run_id, "status": "queued", "via_subprocess": True}
 
     # ── Legacy in-process path (default) ──
@@ -476,6 +481,25 @@ async def cancel_subprocess_run(run_id: str):
     if new_status == "unknown":
         raise HTTPException(status_code=404, detail=f"run {run_id} not in scheduler")
     return {"run_id": run_id, "status": new_status}
+
+
+@router.get("/estimate")
+async def estimate_eval_v2(graph_name: str, worker_count: int = 1):
+    """Advisory resource estimate for a run (VRAM + RAM, one entry per
+    resource under ``resources``).
+
+    Read-only: resolves the graph and consults the calibration store —
+    loads no nodesets, reserves nothing. Per resource, ``estimate_mb`` is
+    null until every component the graph needs has calibration data (run
+    it once to calibrate); ``uncalibrated`` lists the gaps. Top-level
+    ``max_workers`` is the largest worker_count whose estimate fits the
+    measured free of every measurable resource.
+    """
+    scheduler = get_services().job_scheduler
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="JobScheduler not initialized")
+    graph = _load_graph_by_name(graph_name, None)
+    return scheduler.estimate_run(graph_name, [n.type for n in graph.nodes], worker_count)
 
 
 @router.post("/introspect")

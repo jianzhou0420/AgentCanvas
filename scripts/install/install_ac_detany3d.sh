@@ -5,8 +5,8 @@
 # Creates the `detany3d` conda env (Python 3.9 + CUDA 11.8) for DetAny3D
 # (3D detection model used by ToolEQA).
 #
-# Used in server mode by `env_detany3d` nodeset at
-# `workspace/nodesets/server/env_detany3d/` (folder form; DetAny3D source
+# Used in server mode by `model_detany3d` nodeset at
+# `workspace/nodesets/model/model_detany3d/` (folder form; DetAny3D source
 # is vendored locally inside `_vendor/`).
 #
 # Workspace-standalone: this script does NOT reference `third_party/`. All
@@ -38,7 +38,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-NODESET_ROOT="$PROJECT_ROOT/workspace/nodesets/server/env_detany3d"
+NODESET_ROOT="$PROJECT_ROOT/workspace/nodesets/model/model_detany3d"
 VENDOR_ROOT="$NODESET_ROOT/_vendor"
 DATA_ROOT="$PROJECT_ROOT/data/detany3d"
 WEIGHTS_DIR="$DATA_ROOT/weights"
@@ -64,7 +64,7 @@ echo "Using: $CONDA_CMD"
 
 if [ ! -d "$VENDOR_ROOT/detect_anything" ]; then
     echo "[ERROR] DetAny3D source not vendored at $VENDOR_ROOT"
-    echo "  The folder-form nodeset workspace/nodesets/server/env_detany3d/"
+    echo "  The folder-form nodeset workspace/nodesets/model/model_detany3d/"
     echo "  must contain _vendor/{detect_anything,wrap_model.py,train_utils.py,utils.py}."
     exit 1
 fi
@@ -99,7 +99,7 @@ if [ -f "$VENDOR_ROOT/requirements.txt" ]; then
         echo "[WARN] some entries in vendored requirements.txt failed — continuing"
 fi
 
-# Common deps shared by env_detany3d/__init__.py + vendored model code
+# Common deps shared by model_detany3d/__init__.py + vendored model code
 $DETANY3D_PIP install \
     flask==3.0.0 \
     pyyaml \
@@ -185,4 +185,4 @@ echo ""
 echo "Add to your shell rc:"
 echo "  export DETANY3D_PYTHON=$DETANY3D_PYTHON"
 echo ""
-echo "Then load env_detany3d from the AgentCanvas NodeSet Manager."
+echo "Then load model_detany3d from the AgentCanvas NodeSet Manager."

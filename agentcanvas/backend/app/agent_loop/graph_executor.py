@@ -133,6 +133,19 @@ class NodeInstance:
     port_slots: dict = field(default_factory=dict)
 
 
+class NodeErrorAggregate(RuntimeError):
+    """Raised at the end of a run when one or more nodes failed mid-run.
+
+    A failed node (exception, or an ``{"error": ...}`` result from e.g.
+    a server-mode proxy) starves its downstream but does not stop the
+    dataflow loop — without this, the run would finish indistinguishable
+    from a clean completion (the ``status="completed"``/``step_count=0``
+    eval pathology). The executor records every node error and convicts
+    the run here, AFTER the verdict stage, so final-side metrics are
+    still collected on the error path.
+    """
+
+
 # ── iterIn helpers ──
 
 
@@ -452,6 +465,9 @@ class GraphExecutor:
             pause.set()
 
         session._status = "running"
+        # Node failures recorded during this run — convicts the run at the
+        # finalise stage (see NodeErrorAggregate).
+        self.node_errors: list[dict] = []
         _suppress = getattr(getattr(session, "principles", None), "suppress_nav_events", False)
         if not _suppress:
             await broadcast(session._ws("nav_status", {"status": "running", "step": 0}))
@@ -575,6 +591,7 @@ class GraphExecutor:
                     )
 
                 # Fire the node
+                _error_from_exception = False
                 try:
                     result = await self._fire_node(node, session)
                 except StopExecution as e:
@@ -612,6 +629,44 @@ class GraphExecutor:
                     ):
                         raise
                     result = {"error": str(e)}
+                    _error_from_exception = True
+
+                # Error-shaped result — the node reported failure by returning
+                # {"error": ...} instead of its declared ports (server-mode
+                # proxies surface HTTP failures this way; the exception path
+                # above converts to the same shape). Routing would silently
+                # drop it: downstream starves and the run drains away as if
+                # completed. Record it for the end-of-run conviction, and put
+                # returned errors on the bus (the exception path already
+                # emitted NODE_EXEC_FAIL). Nodes that legitimately declare an
+                # ``error`` output port (e.g. env_libero tools) are exempt.
+                if (
+                    isinstance(result, dict)
+                    and "error" in result
+                    and not self._declares_error_output(node)
+                ):
+                    self.node_errors.append(
+                        {
+                            "node_id": node.id,
+                            "node_type": node.type,
+                            "step": self.step_counter,
+                            "error": str(result["error"]),
+                        }
+                    )
+                    if not _error_from_exception:
+                        get_bus().emit(
+                            severity="error",
+                            source="node",
+                            code="NODE_RESULT_ERROR",
+                            title=f"Node {node.id} ({node.type}) returned an error result",
+                            message=str(result["error"]),
+                            scope={
+                                "node_id": node.id,
+                                "node_type": node.type,
+                                "step": self.step_counter,
+                                "execution_id": getattr(session, "_execution_id", None),
+                            },
+                        )
 
                 total_firings += 1
 
@@ -702,8 +757,21 @@ class GraphExecutor:
                             # as the iterOut that triggered this settle pass.
                             # Single-scope graphs: every body node is in the
                             # outermost scope, so this matches today's behaviour.
+                            # Exception — ROOT boundaries also drain graph-scope
+                            # nodes: dead-end sinks are never on a path to any
+                            # iterOut, so scope analysis leaves them in the
+                            # graph scope; without this they miss the terminal
+                            # step entirely (the run exits with them still
+                            # queued). Mid-loop this only fires them earlier
+                            # than the main loop would have. Inner boundaries
+                            # keep the strict filter — the run continues and
+                            # the main loop drains them.
                             _n_scope = self._scope_of(_nid)
-                            if _io_scope is not None and _n_scope != _io_scope_id:
+                            if (
+                                _io_scope is not None
+                                and _n_scope != _io_scope_id
+                                and not (_is_root_scope and _n_scope == GRAPH_SCOPE_ID)
+                            ):
                                 continue
                             _next_idx = _i
                             break
@@ -914,6 +982,20 @@ class GraphExecutor:
             self._emit_final_fallback()
             await self._after_loop_pass(session)
 
+            # ─── conviction — surface node failures at end of run ───
+            # Runs AFTER the verdict stage so final-side metrics are already
+            # collected; the raise routes through the error path below and
+            # the run finishes with status="error" instead of masquerading
+            # as completed (both stages are idempotent on the re-entry).
+            if self.node_errors:
+                _n_err = len(self.node_errors)
+                _head = "; ".join(
+                    f"{e['node_id']}@step{e['step']}: {e['error']}" for e in self.node_errors[:3]
+                )
+                raise NodeErrorAggregate(
+                    f"{_n_err} node error(s) during run: {_head}" + ("; ..." if _n_err > 3 else "")
+                )
+
             # ─── finalise — clean exit ───
             session._status = "done"
             metrics = None
@@ -968,12 +1050,16 @@ class GraphExecutor:
             get_bus().from_exception(
                 e,
                 source="graph",
-                code="GRAPH_CRASH",
+                code="NODE_ERRORS" if isinstance(e, NodeErrorAggregate) else "GRAPH_CRASH",
                 scope={
                     "step": self.step_counter,
                     "execution_id": getattr(session, "_execution_id", None),
                 },
-                title=f"Graph execution crashed at step {self.step_counter}",
+                title=(
+                    f"Run finished with node errors at step {self.step_counter}"
+                    if isinstance(e, NodeErrorAggregate)
+                    else f"Graph execution crashed at step {self.step_counter}"
+                ),
             )
             session._status = "error"
             # run_end also fires on the error path so lifetime="run"
@@ -1004,6 +1090,22 @@ class GraphExecutor:
             return
         ready_queue.append(node_id)
         self._t_ready[node_id] = time.perf_counter()
+
+    def _declares_error_output(self, node: NodeInstance) -> bool:
+        """True when the node's handler legitimately declares an ``error``
+        output port (e.g. env_libero tools, navgpt navigate) — for those,
+        an ``error`` key in the result is data, not a failure report."""
+        node_cls = NODE_HANDLERS.get(node.type)
+        if node_cls is None:
+            return False
+        resolver = getattr(node_cls, "_resolve_ports", None)
+        if callable(resolver):
+            try:
+                _ins, outs = resolver(node.config or {})
+                return any(getattr(p, "name", None) == "error" for p in outs)
+            except Exception:
+                return True  # can't resolve — don't misconvict the node
+        return any(getattr(p, "name", None) == "error" for p in getattr(node_cls, "output_ports", []))
 
     async def _fire_node(self, node: NodeInstance, session: Any) -> dict:
         """Execute a node's handler with its pending inputs and persistent state."""
@@ -1175,6 +1277,23 @@ class GraphExecutor:
             transport_ms = None
             transfer_bytes = None
             compute_ms = duration_ms_total
+
+        # Live per-node usage event — same node_id routing as viewer_data,
+        # so the canvas card can show last-call tokens/latency as a gauge.
+        if usage_bucket["calls"] > 0 and getattr(ctx, "session", None):
+            await broadcast(
+                ctx.session._ws(
+                    "llm_usage",
+                    {
+                        "node_id": node.id,
+                        "step": getattr(ctx, "step", 0),
+                        "usage": {
+                            **usage_bucket,
+                            "duration_ms": round(duration_ms_total, 1),
+                        },
+                    },
+                )
+            )
 
         # C.5 Dynamic Fire-List dispatch.
         # A DynamicFireListNode subclass returns a FireList sentinel from

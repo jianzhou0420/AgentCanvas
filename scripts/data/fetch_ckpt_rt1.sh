@@ -8,7 +8,7 @@
 # This script is checkpoint-download ONLY. The Python deps (tensorflow,
 # tf-agents, tensorflow-hub, transforms3d, ...) are installed by
 # scripts/install/install_ac_vla_policy.sh into the shared ac-vla-policy
-# conda env — RT-1-X is part of policy_vla, not a separate env.
+# conda env — RT-1-X is part of policy_adapter_vla, not a separate env.
 #
 # Usage:
 #   bash scripts/data/fetch_ckpt_rt1.sh
@@ -69,16 +69,16 @@ echo "  OK: $CKPT_DIR/$CKPT_NAME/"
 echo ""
 echo "=== Done ==="
 echo ""
-echo "RT-1-X is exposed through policy_vla as a (Rt1Model, Rt1Policy) pair."
-echo "  Adapter:   workspace/nodesets/server/policy_vla/adapters/models/rt1_model.py"
-echo "  Policy:    workspace/nodesets/server/policy_vla/policies/rt1_policy.py"
-echo "  Inference: workspace/nodesets/server/policy_vla/rt1_inference.py (vendored)"
+echo "RT-1-X is exposed through policy_adapter_vla as a (Rt1Model, Rt1Policy) pair."
+echo "  Adapter:   workspace/nodesets/policy/policy_adapter_vla/adapters/models/rt1_model.py"
+echo "  Policy:    workspace/nodesets/policy/policy_adapter_vla/policies/rt1_policy.py"
+echo "  Inference: TF SavedModel wrapper embedded in policies/rt1_policy.py"
 echo ""
 echo "Next:"
 echo "  1. Make sure scripts/install/install_ac_vla_policy.sh has been run"
 echo "     (it installs the TF stack into ac-vla-policy)."
 echo "  2. cd agentcanvas && bash run_dev.sh"
-echo "  3. POST /api/components/nodesets/policy_vla/load?mode=server"
+echo "  3. POST /api/components/nodesets/policy_adapter_vla/load?mode=server"
 echo "  4. Open workspace/graphs/vla_policy_simpler.json — already configured"
 echo "     for RT-1-X (model=rt1_model, policy=rt1_policy). Pick split/task/"
 echo "     episode in the SIMPLER controller, set policy_setup (widowx_bridge"

@@ -34,10 +34,45 @@ export function ConfigFieldRenderer({
       );
 
     case "slider": {
+      // Two-state fields (unset_label set): unset = value never sent, the
+      // provider's own default applies. A click arms the slider; ✕ unsets.
+      const isUnset =
+        currentValue === null || currentValue === undefined || currentValue === "";
+      if (field.unset_label && isUnset) {
+        return (
+          <div className="nopan nodrag flex items-center justify-between text-[9px] text-gray-400">
+            <span>{field.label}</span>
+            <button
+              type="button"
+              onClick={() =>
+                updateData(field.name, field.min ?? 0)
+              }
+              className="rounded border border-dashed border-gray-600 px-1.5 py-0.5 text-[9px] italic text-gray-500 hover:border-gray-400 hover:text-gray-300"
+              title="Unset — the provider default applies. Click to set a value."
+            >
+              {field.unset_label}
+            </button>
+          </div>
+        );
+      }
       const num = Number(currentValue ?? field.min ?? 0);
       return (
         <label className="nopan nodrag block text-[9px] text-gray-400">
-          {field.label}: {num.toFixed(1)}
+          <span className="flex items-center justify-between">
+            <span>
+              {field.label}: {num.toFixed(1)}
+            </span>
+            {field.unset_label && (
+              <button
+                type="button"
+                onClick={() => updateData(field.name, null)}
+                className="text-gray-600 hover:text-gray-300"
+                title={`Unset (back to ${field.unset_label})`}
+              >
+                ✕
+              </button>
+            )}
+          </span>
           <input
             type="range"
             min={field.min ?? 0}

@@ -64,7 +64,7 @@ class _ServerContext:
 
     Mirrors the attribute-bag pattern of ``_NodeStateProxy`` (see
     ``agent_loop/graph_executor.py``) so nodes like
-    policy_cma__forward can store state across calls (RNN hidden states,
+    policy_adapter_vlnce__predict can store state across calls (RNN hidden states,
     loaded checkpoints, etc.).
     """
 

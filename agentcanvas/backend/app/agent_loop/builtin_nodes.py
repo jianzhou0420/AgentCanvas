@@ -132,6 +132,8 @@ class LLMCallNode(BaseCanvasNode):
                 "ports",
                 "port_list",
                 label="Input Ports",
+                section="wiring",
+                on_card=False,
                 default=[
                     {"name": "scene", "wire_type": "TEXT"},
                     {"name": "history", "wire_type": "TEXT"},
@@ -150,12 +152,16 @@ class LLMCallNode(BaseCanvasNode):
                 "textarea",
                 "Prompt template",
                 placeholder="e.g. Given: {instruction}\\nScene: {scene}\\nDecide action.",
+                section="prompt",
+                on_card=False,
             ),
             ConfigField(
                 "system_prompt",
                 "textarea",
                 "System prompt",
                 placeholder="System prompt (overridden by port if wired)",
+                section="prompt",
+                on_card=False,
             ),
             ConfigField(
                 "profile",
@@ -163,12 +169,34 @@ class LLMCallNode(BaseCanvasNode):
                 "Model",
                 default="",
                 options=[{"value": "__DYNAMIC_PROFILES__", "label": ""}],
+                section="model",
+                on_card=False,
+            ),
+            # Two-state sampling params: default None = unset = not sent —
+            # the vendor's own default applies (see call.py two-state docs).
+            ConfigField(
+                "temperature",
+                "slider",
+                "Temperature",
+                default=None,
+                min=0.0,
+                max=2.0,
+                step=0.1,
+                section="model",
+                on_card=False,
+                unset_label="provider default",
             ),
             ConfigField(
-                "temperature", "slider", "Temperature", default=0.7, min=0.0, max=2.0, step=0.1
-            ),
-            ConfigField(
-                "max_tokens", "slider", "Max tokens", default=1024, min=64, max=4096, step=64
+                "max_tokens",
+                "slider",
+                "Max tokens",
+                default=None,
+                min=64,
+                max=8192,
+                step=64,
+                section="model",
+                on_card=False,
+                unset_label="provider default",
             ),
             ConfigField(
                 "n",
@@ -178,6 +206,8 @@ class LLMCallNode(BaseCanvasNode):
                 min=1,
                 max=10,
                 step=1,
+                section="model",
+                on_card=False,
             ),
             ConfigField(
                 "image_detail",
@@ -189,8 +219,29 @@ class LLMCallNode(BaseCanvasNode):
                     {"value": "high", "label": "high (fine grounding)"},
                     {"value": "auto", "label": "auto"},
                 ],
+                section="model",
+                on_card=False,
             ),
-            ConfigField("write_to_state", "text", "Write response to state", default=""),
+            ConfigField(
+                "write_to_state",
+                "text",
+                "Write response to state",
+                default="",
+                section="wiring",
+                on_card=False,
+            ),
+            ConfigField(
+                "image_mime",
+                "select",
+                "Image MIME (b64 passthrough)",
+                default="image/png",
+                options=[
+                    {"value": "image/png", "label": "image/png"},
+                    {"value": "image/jpeg", "label": "image/jpeg"},
+                ],
+                section="model",
+                on_card=False,
+            ),
             ConfigField(
                 "mode",
                 "select",
@@ -200,6 +251,8 @@ class LLMCallNode(BaseCanvasNode):
                     {"value": "single_turn", "label": "Single turn"},
                     {"value": "conversation", "label": "Conversation"},
                 ],
+                section="wiring",
+                on_card=False,
             ),
         ],
     )
@@ -221,7 +274,9 @@ class LLMCallNode(BaseCanvasNode):
 
     async def forward(self, inputs, ctx):
         from ..llm import (
+            finalize_params,
             get_llm_config,
+            get_llm_config_direct,
             llm_complete,
             llm_complete_n,
             vlm_complete,
@@ -262,7 +317,11 @@ class LLMCallNode(BaseCanvasNode):
             for key, value in variables.items():
                 rendered_prompt = rendered_prompt.replace(f"{{{key}}}", value)
 
-            # Fallback: read unresolved {variables} from graph_state
+            # Fallback: read unresolved {variables} from graph_state.
+            # A key that exists but currently holds None (e.g. a lastWrite
+            # entry before its first write) counts as readable — it degrades
+            # to "(no var)" below instead of raising.
+            state_keys_seen: set[str] = set()
             if hasattr(ctx, "graph_state") and ctx.graph_state:
                 for match in re.findall(r"\{(\w+)\}", rendered_prompt):
                     if match not in variables:
@@ -270,6 +329,7 @@ class LLMCallNode(BaseCanvasNode):
                             val = ctx.graph_state.read(match)
                         except KeyError:
                             continue
+                        state_keys_seen.add(match)
                         if val is not None:
                             if isinstance(val, list):
                                 variables[match] = "\n".join(str(v) for v in val)
@@ -279,7 +339,27 @@ class LLMCallNode(BaseCanvasNode):
                 for key, value in variables.items():
                     rendered_prompt = rendered_prompt.replace(f"{{{key}}}", value)
 
-            # Replace remaining unresolved variables with defaults
+            # Remaining {vars}: a var naming a declared input port is data
+            # that simply didn't arrive this firing — degrade gracefully to
+            # "(no var)". A var matching nothing (no port, no readable
+            # graph_state key) is a configuration error — fail loud instead
+            # of shipping a silently mangled prompt.
+            declared = {p.name for p in self._resolve_ports(self.config)[0]}
+            declared |= {"step", "pos", "heading", "position"}
+            declared |= state_keys_seen
+            unknown = sorted(
+                v
+                for v in set(re.findall(r"\{(\w+)\}", rendered_prompt))
+                if v not in declared
+            )
+            if unknown:
+                raise ValueError(
+                    f"LLMCallNode '{self.node_id}': template variable(s) "
+                    + ", ".join("{" + v + "}" for v in unknown)
+                    + " match no input port and no readable graph_state key — "
+                    "fix the template, add the port, or grant this node "
+                    "access to the container that holds the key."
+                )
             rendered_prompt = re.sub(
                 r"\{(\w+)\}",
                 lambda m: f"(no {m.group(1)})",
@@ -298,16 +378,53 @@ class LLMCallNode(BaseCanvasNode):
             self._self_log("system_prompt", system_prompt)
 
         # ── 3. Get LLM config ──
+        # Three reference modes: "" = Default (active profile), a profile
+        # name, or "__direct__" + inline (provider, model) pinned on the node.
         profile_name = self.config.get("profile", "")
-        llm_config = get_llm_config(profile_name)
+        if profile_name == "__direct__":
+            llm_config = get_llm_config_direct(
+                self.config.get("provider", ""), self.config.get("model", "")
+            )
+        else:
+            llm_config = get_llm_config(profile_name)
         self._self_log("model", getattr(llm_config, "model", "") if llm_config else "none")
         if not llm_config:
-            return {"response": "(no LLM profile active)"}
+            # Mock reply fills BOTH output ports so downstream consumers of
+            # ``responses`` still fire (symmetry with the real path).
+            return {
+                "response": "(no LLM profile active)",
+                "responses": ["(no LLM profile active)"],
+            }
 
-        temp = self.config.get("temperature", 0.7)
-        max_tokens = int(self.config.get("max_tokens", 1024))
+        # Two-state sampling params: unset ("" / None) is never sent — the
+        # vendor's default applies. Explicit values pass the rulebook in
+        # call.py before the wire.
+        _temp_raw = self.config.get("temperature")
+        temp = float(_temp_raw) if _temp_raw not in (None, "") else None
+        _mt_raw = self.config.get("max_tokens")
+        max_tokens = int(_mt_raw) if _mt_raw not in (None, "") else None
         n = max(1, int(self.config.get("n", 1) or 1))
+
+        # Rulebook preview — call.py applies the same finalize on the wire;
+        # replaying it here puts every deviation from this node's configured
+        # params into the run log (inner_log), not just the backend logger.
+        _preview_params: dict = {}
+        if temp is not None:
+            _preview_params["temperature"] = temp
+        if max_tokens is not None:
+            _preview_params["max_tokens"] = max_tokens
+        _, _adjustments = finalize_params(
+            llm_config.provider, llm_config.model, _preview_params
+        )
+        if _adjustments:
+            self._self_log("param_adjustments", _adjustments)
         image_detail = str(self.config.get("image_detail", "low") or "low")
+        # data-URL MIME for image payloads. b64 strings arriving on the rgb
+        # port are passed through verbatim, so a producer emitting JPEG
+        # (e.g. Three-Step's build_images, mirroring upstream's JPEG
+        # re-encodes) sets image_mime="image/jpeg" on this node's config.
+        # numpy arrays are still encoded PNG — leave the default for those.
+        image_mime = str(self.config.get("image_mime", "image/png") or "image/png")
         mode = self.config.get("mode", "single_turn")
         _has_gs = hasattr(ctx, "graph_state") and ctx.graph_state is not None
 
@@ -340,13 +457,48 @@ class LLMCallNode(BaseCanvasNode):
             elif isinstance(labels_raw, str):
                 image_labels = [labels_raw]
 
+        # ``stop`` (config-only, no UI field), mode validation, and the
+        # conversation user-turn append are shared by both paths.
+        stop_cfg = self.config.get("stop") or None
+        if isinstance(stop_cfg, str):
+            stop_cfg = [stop_cfg]
+        if mode not in ("single_turn", "conversation"):
+            raise ValueError(
+                f"LLMCallNode: unknown mode {mode!r} "
+                "(expected 'single_turn' or 'conversation')."
+            )
+        # Conversation mode requires a graph_state access grant with a
+        # ``messages`` container entry (ADR-014). Per-node state
+        # (``ctx.messages``) was removed — it had no lifetime management
+        # and was invisible to checkpoint/restore.
+        conv_history: list | None = None
+        if mode == "conversation":
+            if not _has_gs:
+                raise ValueError(
+                    "LLMCallNode: mode='conversation' requires a "
+                    "graph_state container with an access grant on this "
+                    "node. Declare a 'messages' state entry and wire an "
+                    "access grant, or use mode='single_turn'."
+                )
+            ctx.graph_state.write("messages", {"role": "user", "content": rendered_prompt})
+            conv_history = ctx.graph_state.read("messages")
+
         if images:
             self._self_log("image_count", len(images))
             self._self_log("label_count", len(image_labels) if image_labels else 0)
-            # VLM path — vision model. n>1 multi-sampling goes through
-            # vlm_complete_n (provider-native ``n`` with a concurrent
-            # single-sample fallback for providers that ignore it).
-            if n > 1:
+            # VLM path — vision model. In conversation mode the text
+            # history rides as prior messages; images attach to the
+            # current turn only (history stays text-only). n>1
+            # multi-sampling goes through vlm_complete_n (provider-native
+            # ``n`` with a concurrent single-sample fallback for providers
+            # that ignore it); conversation mode ignores ``n`` like the
+            # text path does.
+            vlm_prior = (
+                list(conv_history[:-1])
+                if isinstance(conv_history, list) and len(conv_history) > 1
+                else None
+            )
+            if n > 1 and mode == "single_turn":
                 responses_list = await vlm_complete_n(
                     llm_config,
                     rendered_prompt,
@@ -357,6 +509,8 @@ class LLMCallNode(BaseCanvasNode):
                     max_tokens=max_tokens,
                     temperature=temp,
                     detail=image_detail,
+                    stop=stop_cfg,
+                    mime=image_mime,
                 )
                 response = responses_list[0] if responses_list else None
             else:
@@ -369,35 +523,19 @@ class LLMCallNode(BaseCanvasNode):
                     max_tokens=max_tokens,
                     temperature=temp,
                     detail=image_detail,
+                    prior_messages=vlm_prior,
+                    stop=stop_cfg,
+                    mime=image_mime,
                 )
                 responses_list = [response] if response else []
         else:
             # LLM path — text-only model
             if mode == "single_turn":
                 messages = [{"role": "user", "content": rendered_prompt}]
-            elif mode == "conversation":
-                # Conversation mode requires a graph_state access grant with
-                # a ``messages`` container entry (ADR-014). Per-node state
-                # (``ctx.messages``) was removed — it had no lifetime
-                # management and was invisible to checkpoint/restore.
-                if not _has_gs:
-                    raise ValueError(
-                        "LLMCallNode: mode='conversation' requires a "
-                        "graph_state container with an access grant on this "
-                        "node. Declare a 'messages' state entry and wire an "
-                        "access grant, or use mode='single_turn'."
-                    )
-                ctx.graph_state.write("messages", {"role": "user", "content": rendered_prompt})
-                messages = ctx.graph_state.read("messages")
             else:
-                raise ValueError(
-                    f"LLMCallNode: unknown mode {mode!r} "
-                    "(expected 'single_turn' or 'conversation')."
-                )
+                # conversation — guard + user-turn append already done above
+                messages = conv_history
 
-            stop_cfg = self.config.get("stop") or None
-            if isinstance(stop_cfg, str):
-                stop_cfg = [stop_cfg]
             if n > 1 and mode == "single_turn":
                 responses_list = await llm_complete_n(
                     llm_config,
@@ -420,10 +558,11 @@ class LLMCallNode(BaseCanvasNode):
                 )
                 responses_list = [response] if response else []
 
-            if response and mode == "conversation":
-                # _has_gs already verified above — this branch only reached
-                # when conversation mode passed the guard.
-                ctx.graph_state.write("messages", {"role": "assistant", "content": response})
+        if response and mode == "conversation":
+            # _has_gs already verified above — this point is only reached
+            # when conversation mode passed the guard. Applies to both the
+            # text and VLM paths.
+            ctx.graph_state.write("messages", {"role": "assistant", "content": response})
 
         # Per-call token usage is auto-emitted by the executor's LLM-usage
         # hook — see ``_current_node_usage`` in ``app.llm.call``.
@@ -664,7 +803,7 @@ class NullSourceNode(BaseCanvasNode):
 
     Bridges the gap when a graph needs to feed a typed-but-empty value into
     a downstream port (e.g. SIMPLER has no wrist camera, but
-    ``policy_vla__adapt_env_to_canonical.wrist_image`` is a required IMAGE
+    ``env_adapter__vla_env_to_canonical.wrist_image`` is a required IMAGE
     input). Wire ``value`` into an iterIn init port as a run-invariant;
     downstream nodes receive ``None`` every iteration. The output's
     ``wire_type`` is author-configurable so the edge type-checker stays

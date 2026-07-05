@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-components-010 — AgentCanvas</title>
+<meta name="description" content="General Policy Adapter split — one env_adapter nodeset + per-domain policy adapters">
+<meta property="og:title" content="ADR-components-010 — AgentCanvas">
+<meta property="og:description" content="General Policy Adapter split — one env_adapter nodeset + per-domain policy adapters">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/components/adr-components-010-general-policy-adapter-split.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/components/adr-components-010-general-policy-adapter-split.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Components</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-components-010</span>
+  </div>
+  <div class="last-updated">2026-07-04 01:34</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-components);">ADR-components-010</h1>
+  <p class="tagline">General Policy Adapter split — one env_adapter nodeset + per-domain policy adapters</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-07-04 01:34</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>components</code></a></dd>
+</dl>
+
+
+
+
+<h2 id='context'>Context</h2>
+<p>The two neural-policy nodesets (<code>policy_vla</code>, <code>policy_vlnce</code>) each bundled the whole 5-stage adapter pipeline — env-side adapters (stages 1/5), model-side adapters + GPU policy (stages 2/3/4), and a singleton manager — into one per-domain package, documented across three overlapping doc pages. This shape had accumulated recorded warts: the VLA <code>robot</code> dropdown lived on policy-side nodes although the principle says the env-side adapter's identity belongs to the graph's env ("env-locking", policy-vla §3.4); the VLN <code>variant</code> bundle implicitly pinned the env family; the env-side adapter code (pure numpy, no torch/habitat/model imports in either domain) was needlessly hosted inside GPU server subprocesses; and a latent wire bug sat on the VLA path — <code>make_canonical_obs</code> stores a raw frozen <code>CanonicalInfo</code> dataclass, which the msgpack <code>ANY</code>-wire (<code>app/server/serialization.py</code>) cannot pack. A cross-domain "one policy adapter nodeset" was impossible: <code>server_python</code> is a nodeset-level ClassVar (<code>app/components/bases.py</code>), and Pi0/SmolVLA/RT-1-X (<code>ac-vla-policy</code>) cannot share an interpreter with CMA/Seq2Seq (<code>ac-vlnce</code>, Python 3.8).</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Cut the pipeline along its own data contract — the <code>CanonicalDict</code> lingua franca — into <strong>three nodesets</strong>. (1) <strong><code>env/env_adapter/</code></strong>: ONE general env-side nodeset holding stages 1/5 for <em>both</em> domains (VLA robot adapters under <code>robots/</code>, VLN env-family adapters under <code>envs/</code>); pure numpy, <code>server_python=None</code> (in-process hub), no singleton manager — the old <code>ensure_robot</code>/<code>ensure_env_adapter</code> slices became module-level lazy caches under a <code>threading.Lock</code>. (2) <strong><code>policy/policy_adapter_vla/</code></strong> and (3) <strong><code>policy/policy_adapter_vlnce/</code></strong>: per-domain model-side nodesets holding stages 2/3/4 with their trimmed managers (two <code>ensure_*</code> slices each) on their existing conda envs. Node types re-prefixed accordingly (a Tier-2 graph-breaking rename; all 3 graphs swept). Config placement: VLA <code>robot</code> select moved to the env_adapter nodes — duplicated on stage 5, because decode logic is robot-<em>class</em>-side; VLN <code>variant</code> moved to the pipeline's stage-2 chain entry, with a new <code>note_canonical</code> manager call preserving the pre-split load order (policy loads before the first <code>canonical_to_model</code>); the old implicit <code>r2rce</code> pin became an explicit <code>env_family</code> select on stage 1. The canonical <code>info</code> now always crosses a process boundary, so both domains flatten it to a plain dict at the env_adapter boundary (VLA stage 2 reconstructs the dataclass; VLN already stored <code>asdict</code>). Upstream's composed <code>Adaptor</code> and the <code>model_to_env</code> fused alias were deleted (dead in the canvas path; nothing left to compose cross-process). The legacy single-node <code>policy_cma.py</code> (zero graph/import references, superseded by the pipeline's <code>cma</code> variant) was deleted. The three method doc pages merged into one "General Policy Adapter" page (<code>nodesets/method/policy-adapters.html</code>).</p>
+
+<h2 id='alternatives'>Alternatives</h2>
+<p>(a) <strong>Rename-only</strong> (<code>policy_adapter_vla</code>/<code>policy_adapter_vlnce</code> as pure renames of the old bundles) — rejected by the maintainer: the desired architecture separates policy-side and env-side adapters into different nodesets, matching the mental model "run VLN-CE = env + env adapter + policy adapter". (b) <strong>One cross-domain policy-adapter nodeset</strong> — infeasible without framework surgery: one nodeset binds one <code>server_python</code>; per-node interpreter selection was explicitly scoped out. (c) <strong>Per-domain env-adapter nodesets</strong> (four nodesets total) — unnecessary: env-side adapters have no interpreter constraint (pure numpy), so one shared in-process nodeset is strictly simpler and matches the "general" framing. (d) <strong>Shared <code>_canonical</code> helper module across the role directories</strong> — rejected in favour of duplicating <code>canonical.py</code> per nodeset: the layout standard scopes shared <code>_</code>-modules to a single role directory, only plain dicts cross the wire, and self-contained nodesets survive independent deployment. (e) <strong>Keeping <code>policy_cma.py</code> as a fallback</strong> — rejected: zero references, and the pipeline version carries the eval-parity evidence the single-node port never had.</p>
+
+<h2 id='rationale'>Rationale</h2>
+<p>The nodeset boundary now coincides with the architectural boundary the code already enforced (env-side adapters never import models; model-side adapters never import envs), so deployment follows the contract instead of fighting it: env adapters run where they belong (the hub, for free) and each model family keeps its interpreter. The split structurally delivers half of the recorded env-locking wart — the robot/env-family selection now lives on nodes beside the env they serve (the dropdown filter interlock remains open). It also forced the latent VLA msgpack bug into the open and fixed it at the node boundary, keeping <code>canonical.py</code> and all vendored model adapters verbatim. Correctness gate: the VLN path is pure code motion and was held to a <strong>bit-identical</strong> bar — the 3-ep R2R-CE val_unseen reference slice reproduced success 0.333 / SPL 0.333 / nDTW 0.37831125435239743 / path 10.3326 / steps 56.7 exactly (run <code>20260704_004705</code>, <code>architect-cma</code> profile), the same numbers as the 2026-06-29 pre-split baseline. The VLA path is not pure motion (boundary flatten/reconstruct + <code>_cached_info</code>) and its graphs stay in <code>unverified/</code> (registration + static-resolution checks only; the Pi0 runtime path was already blocked by roadmap TODO #66). Composition cost is explicit and small: running a policy loads three nodesets instead of two, but the env_adapter is in-process and stateless, so no new subprocess, port, or VRAM is spent.</p>
+
+<h2 id='affected_docs'>Affected docs</h2>
+<p>nodesets/method/policy-adapters.html (rewritten as the merged "General Policy Adapter" page; policy-vla.html + policy-cma.html deleted into it), nodesets/method/index.html, nodesets/index.html, nodesets/env/index.html, nodesets/status/vln-support-status.html, nodesets/status/vla-support-status.html, nodesets/status/eqa-support-status.html, nodesets/status/index.html, nodesets/env/habitat.html, nodesets/common/foundation-models/vlm-prismatic.html, design-docs/graph/graph-system.html, design-docs/graph/wire-types.html, design-docs/operations/server-mode.html, design-docs/components/nodesets.html, capabilities/isolated-runtime-environments.html, capabilities/customizable-node-system.html, core/architecture.html, core/roadmap.html (TODO #58/#66/#74/M5 bodies), community/credits.html, getting-started/installation.html, core/decisions/components/index.html + core/decisions/index.html (this ADR), .claude/PROJECT_OVERVIEW.md (refreshed).</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

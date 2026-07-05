@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from .api.canvas import env_panel, graphs
 from .api.execution import eval as eval_api_v2
 from .api.execution import internal_containers, internal_events, logs, run, websocket
-from .api.platform import components, profiles
+from .api.platform import components, profiles, providers
 from .api.platform import config as config_api
 from .api.platform import errors as errors_api
 from .api.platform import system as system_api
@@ -23,11 +23,7 @@ from .api.replay import router as replay_router
 from .config import get_settings
 from .errors import ErrorEnvelope, get_bus, install_log_bridge
 from .models import WSMessage
-from .services.job_scheduler import (
-    JobScheduler,
-    detect_total_vram_mb,
-    reconcile_aborted_runs,
-)
+from .services.job_scheduler import JobScheduler, reconcile_aborted_runs
 from .state import (
     CANVAS_ORPHAN_GRACE_SEC,
     ExecutionGuard,
@@ -109,20 +105,21 @@ async def lifespan(app: FastAPI):
     await state.workspace_component_registry.initialize_all()
 
     # ── JobScheduler (subprocess-path admission + queue) ──
+    # Budget derivation (usable VRAM etc.) lives in JobScheduler.create so
+    # all admission inputs are centralized in job_scheduler.py.
     import os
     from pathlib import Path
 
-    eval_runs_dir = Path(__file__).resolve().parents[3] / "outputs" / "eval_runs"
-    total_vram = detect_total_vram_mb()
-    # Reserve headroom for shared singletons (Prismatic VLM ~14 GB etc.).
-    # Override with AGENTCANVAS_USABLE_VRAM_MB if you want a different split.
-    usable = int(os.environ.get("AGENTCANVAS_USABLE_VRAM_MB", max(total_vram - 16000, 0)))
-    backend_url = f"http://{settings.host}:{settings.port}"
-    state.job_scheduler = JobScheduler(
-        eval_runs_dir=eval_runs_dir,
-        usable_vram_mb=usable,
-        backend_url=backend_url,
+    # Slot backends (/host) point this at their own pool (e.g.
+    # outputs/eval_runs_c) so the startup reconcile sweep and the queue
+    # never touch the primary tree's runs — outputs/ is a shared symlink
+    # across worktree slots. Default: the primary shared pool.
+    eval_runs_dir = Path(
+        os.environ.get("AGENTCANVAS_EVAL_RUNS_DIR")
+        or Path(__file__).resolve().parents[3] / "outputs" / "eval_runs"
     )
+    backend_url = f"http://{settings.host}:{settings.port}"
+    state.job_scheduler = JobScheduler.create(eval_runs_dir, backend_url)
     state.job_scheduler.set_canvas_lock_callback(
         lambda: ExecutionGuard.current()["mode"] == ExecutionMode.canvas.value
     )
@@ -132,9 +129,8 @@ async def lifespan(app: FastAPI):
     state.job_scheduler.set_workspace_component_registry(state.workspace_component_registry)
     fixed = reconcile_aborted_runs(eval_runs_dir)
     log.info(
-        "JobScheduler ready: total_vram=%d MB, usable=%d MB, aborted_reconciled=%d",
-        total_vram,
-        usable,
+        "JobScheduler ready: usable_vram=%d MB, aborted_reconciled=%d",
+        state.job_scheduler.usable_vram_mb,
         fixed,
     )
 
@@ -246,6 +242,7 @@ app.include_router(websocket.router, tags=["websocket"])
 app.include_router(config_api.router, prefix="/api/config", tags=["config"])
 app.include_router(components.router, prefix="/api/components", tags=["components"])
 app.include_router(profiles.router, prefix="/api/profiles", tags=["profiles"])
+app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
 app.include_router(errors_api.router, prefix="/api/errors", tags=["errors"])
 app.include_router(registry_snapshot.router, prefix="/api/registry", tags=["registry"])
 app.include_router(system_api.router, prefix="/api/system", tags=["system"])
