@@ -425,27 +425,25 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 
 <p>Two older fields, <code>usable_vram_mb</code> / <code>reserved_vram_mb</code> (not shown above), still exist for the no-sampler fallback. The fields a decision actually uses are <code>measured_free_mb</code>, <code>pending_reservation_mb</code>, and each job's <code>admit_charges</code> + <code>admit_basis</code>. To cancel a run: <code>POST /runs/{run_id}/cancel</code> — a queued job is cancelled on the spot; a running one gets a <code>SIGTERM</code> to its whole process group.</p>
 
-<h2 id="6-deviations"><span class="num">6.</span> Where it deviates from the model</h2>
+<h2 id="6-deviations"><span class="num">6.</span> Boundaries — trade-offs, scope cuts, physics</h2>
 
-<div class="callout warn"><strong>Queued jobs do not survive a backend restart.</strong> §2 says "the on-disk record is the truth", but on startup <code>reconcile_aborted_runs</code> (<code>job_scheduler.py</code>) marks both <code>running</code> <em>and</em> <code>pending</code> runs as <code>aborted</code> — the spec is still on disk, but nothing re-enqueues it. Queue durability is an acknowledged gap.</div>
+<p>Nothing in this table is an accident discovered after the fact. Each row is a decision with its reasoning attached: a <strong>trade-off</strong> (the alternative was considered and rejected), a <strong>scope cut</strong> (deliberately not built yet, with the revisit trigger named), or <strong>physics</strong> (what a once-per-second sampler simply cannot see). They are written down so nobody has to rediscover them the hard way.</p>
 
-<div class="callout warn"><strong>Local in-process nodesets are calibrated at 0 by fiat, not by measurement.</strong> A <code>parallelism="shared"</code> nodeset loaded in-process (no auto_host server, e.g. <code>env_adapter</code>) has no PID of its own; per-PID attribution structurally cannot see it. It is recorded as 0&nbsp;MB on every resource so it never blocks estimate coverage (<code>resource_stats.py · _is_loaded_local</code>) — a local nodeset that secretly loads a model into the backend process would be under-estimated.</div>
-
-<div class="callout warn"><strong>The quota cap is best-effort, not a hard sandbox.</strong> <code>AGENTCANVAS_VRAM_CAP_MB</code> caps the torch allocator of the eval subprocess itself (<code>eval_subprocess_main.py · _apply_vram_cap</code>). Its child env servers, non-torch CUDA allocations, and EGL contexts are uncapped. The measured gate is the primary defense; the cap is a backstop.</div>
-
-<div class="callout warn"><strong>RAM is gate-only — there are no RAM quota teeth.</strong> There is no RAM sibling of <code>AGENTCANVAS_VRAM_CAP_MB</code>: <code>RLIMIT_AS</code> counts virtual address space and would kill mmap-heavy simulators, and cgroup memory limits need privileges the backend doesn't assume. The defenses are the gate itself and the permanent floor held out of the budget (<code>resource_stats.py · RAM_FLOOR_MB</code>, 4&nbsp;GB below MemAvailable).</div>
-
-<div class="callout warn"><strong>Job-tree RAM over-counts shared pages.</strong> Per-process RSS counts copy-on-write pages once per process, so a forked worker tree's summed RSS exceeds its true footprint. Errs conservative for admission; PSS would be exact but costs a <code>smaps_rollup</code> read per process per tick.</div>
-
-<div class="callout warn"><strong>A declared job's RAM rides ungated.</strong> The <code>declared</code> rung predates the RAM dimension — profiles only ever declared <code>marginal_vram_mb</code> — so when calibration is incomplete and a declaration exists, admission gates VRAM on the declaration and RAM not at all, until the first run calibrates both.</div>
-
-<div class="callout warn"><strong>Attribution lags reality by up to ~5 seconds.</strong> Per-PID data refreshes on the sampler's slow cadence (<code>resource_sampler.py</code>: gpu_procs cache ~5s; totals 1s). Reservation decay therefore lags, which errs conservative — and a sub-5-second job can be reaped with an empty window (nothing sediments; guarded by <code>samples_seen</code>).</div>
-
-<div class="callout warn"><strong>FIFO admission can starve a large job.</strong> A job that doesn't fit is skipped, not blocking (<code>_admit</code> walks on), so a continuous stream of small jobs can overtake a large one indefinitely. The <code>priority</code> field is accepted and persisted but ignored (M1 FIFO).</div>
-
-<div class="callout warn"><strong>The VRAM ledger is a scalar.</strong> Totals and free are summed across all visible GPUs (<code>detect_total_vram_mb</code>, sampler totals); there is no per-GPU accounting or placement. Correct on this single-GPU box, wrong in both directions on a multi-GPU one.</div>
-
-<div class="callout warn"><strong>Unseen worker counts are extrapolated, not measured.</strong> With one calibration point the tree cost scales proportionally (<code>estimate_tree_mb</code>, basis <code>scaled</code>); a fixed per-run overhead makes this over-estimate at high worker counts and the safety margin absorbs the reverse error. Real multi-worker runs upgrade the basis to <code>fitted</code> automatically.</div>
+<table>
+<thead><tr><th></th><th>boundary</th><th>why it is this way</th></tr></thead>
+<tbody>
+<tr><td>trade-off</td><td><strong>RAM is checked at admission, never enforced afterwards</strong> — there is no RAM sibling of the VRAM allocator cap.</td><td><code>RLIMIT_AS</code> counts virtual address space and would kill mmap-heavy simulators; cgroup limits need privileges the backend doesn't assume. The gate plus a permanent 4&nbsp;GB floor (<code>resource_stats.py · RAM_FLOOR_MB</code>) does the protecting instead.</td></tr>
+<tr><td>trade-off</td><td><strong>Job-tree RAM is summed as RSS</strong>, which double-counts copy-on-write pages across forked workers.</td><td>Over-counting errs toward admitting <em>less</em> — the safe direction. Exact numbers (PSS) would cost a <code>smaps_rollup</code> read per process per second.</td></tr>
+<tr><td>trade-off</td><td><strong>Local in-process nodesets are charged 0 by definition</strong>, not by measurement (<code>resource_stats.py · _is_loaded_local</code>).</td><td>They have no PID of their own, so per-PID attribution cannot see them; charging 0 keeps estimates complete. A local nodeset that loads a big model is the real problem — server mode is the sanctioned home for models.</td></tr>
+<tr><td>trade-off</td><td><strong>The VRAM cap is a backstop, not a sandbox</strong> — it binds the eval subprocess's own torch allocator (<code>eval_subprocess_main.py · _apply_vram_cap</code>); child servers and EGL contexts are uncapped.</td><td>A hard per-process GPU sandbox doesn't exist in userspace. The measured gate is the actual defense; the cap just makes a runaway job crash itself before it crashes its neighbours.</td></tr>
+<tr><td>scope cut</td><td><strong>Queued jobs do not survive a backend restart</strong> — at startup <code>reconcile_aborted_runs</code> marks <code>pending</code> runs <code>aborted</code>; the spec stays on disk but nothing re-enqueues it.</td><td>Queue durability is deferred until something actually needs it — resubmitting is one API call. Revisit when jobs are submitted by systems rather than people.</td></tr>
+<tr><td>scope cut</td><td><strong>A declared job's RAM is not gated</strong> — the <code>declared</code> rung carries a VRAM number only.</td><td>Profiles never declared RAM, and inventing a number would be false precision. The gap closes by itself: the job's first run calibrates both resources.</td></tr>
+<tr><td>scope cut</td><td><strong>FIFO can starve a large job</strong> — a job that doesn't fit is skipped, and <code>priority</code> is accepted but ignored.</td><td>With today's workloads (few, similar-sized jobs) priority logic would be dead code. The field is already in the schema for when that changes.</td></tr>
+<tr><td>scope cut</td><td><strong>All GPUs are treated as one pool</strong> — totals are summed (<code>detect_total_vram_mb</code>); there is no per-GPU placement.</td><td>Correct on a single-GPU machine; wrong in both directions on a multi-GPU one. Per-GPU accounting is a named input for the next scheduler iteration.</td></tr>
+<tr><td>physics</td><td><strong>Attribution lags reality by up to ~5&nbsp;s</strong> — per-PID GPU data refreshes on the sampler's slow cadence (<code>resource_sampler.py</code>).</td><td>The lag only delays reservation decay, which errs conservative. A sub-5-second job may see no samples at all; the <code>samples_seen</code> guard makes it sediment nothing rather than fake zeros.</td></tr>
+<tr><td>physics</td><td><strong>Unseen worker counts are extrapolated</strong> — a single calibration point scales proportionally (basis <code>scaled</code>).</td><td>The safety margin absorbs the error, and the basis upgrades itself to <code>fitted</code> the first time a different worker count actually runs.</td></tr>
+</tbody>
+</table>
 
   <footer>
     <span>AgentCanvas docs</span>
@@ -465,7 +463,7 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
       <a class="toc-h3" href="#42-sediment">4.2 Sedimentation — writing the calibration store</a>
       <a class="toc-h3" href="#43-estimator">4.3 Estimation — GET /api/eval/v2/estimate</a>
       <a class="toc-h2" href="#5-observability">5. Observability — one snapshot explains the decision</a>
-      <a class="toc-h2" href="#6-deviations">6. Where it deviates from the model</a>
+      <a class="toc-h2" href="#6-deviations">6. Boundaries — trade-offs, scope cuts, physics</a>
     </nav>
   </div>
 </aside>
