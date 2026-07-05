@@ -80,17 +80,17 @@
 </tr>
 <tr>
 <td><code>model_grounding_dino__ground_mask</code></td>
-<td>Grounded-SAM: GroundingDINO(<code>"ground"</code>) boxes → SAM ViT-H per-box masks (<code>multimask_output=False</code>) → union mask as base64 PNG.</td>
+<td><strong>Transitional</strong> Grounded-SAM composition: GroundingDINO(<code>"ground"</code>) boxes → SAM ViT-H per-box masks (<code>multimask_output=False</code>) → union mask as base64 PNG. A cross-model composition scheduled for graph-level replacement (<code>__detect</code> → <code>model_sam__segment_box</code> → union in <code>aoplanner_ce</code>); kept byte-identical until that migration lands, then deleted.</td>
 </tr>
 </tbody>
 </table>
 <hr>
-<h2 id="1-two-backends"><span class="num">1.</span> Two backends, one schema</h2>
-<p><code>$GROUNDING_DINO_BACKEND</code> picks the implementation at load time (SAM-style env-var selection, added in the TODO #56 sweep 2026-07-04):</p>
+<h2 id="1-two-backends"><span class="num">1.</span> Two variants, one schema</h2>
+<p>The <code>variant</code> is <strong>node config</strong> since the 2026-07-05 FM-template alignment (a select on the node UI, matching <code>model_sam</code>). The two variants genuinely require different interpreter envs and one server is one env, so the <em>server env</em> remains a deployment choice: <code>$GROUNDING_DINO_BACKEND</code> picks which env boots (and the variant select's default follows it). Asking a server for a variant its env cannot run raises a clear node error rather than silently ignoring the knob.</p>
 <table>
 <thead>
 <tr>
-<th>Backend</th>
+<th>Variant</th>
 <th>Implementation</th>
 <th>Env</th>
 </tr>
@@ -98,7 +98,7 @@
 <tbody>
 <tr>
 <td><code>native</code> (default)</td>
-<td><code>groundingdino-py</code> + <strong>Swin-T OGC</strong> checkpoint — AO-Planner's exact detector. Standard transform (RandomResize&nbsp;800 / ImageNet norm) → <code>groundingdino.util.inference.predict</code> → <code>box_convert</code> cxcywh→pixel xyxy (recipe shared with <a href="model-detany3d.html">DetAny3D</a>)</td>
+<td><code>groundingdino-py</code> + local <code>.pth</code> checkpoint — <strong>Swin-T OGC</strong> (AO-Planner's exact detector) by default; a <code>ckpt</code> whose filename contains <code>swinb</code> auto-selects the Swin-B config, and the keyed engine registry lets Swin-T and Swin-B co-host in one server. Standard transform (RandomResize&nbsp;800 / ImageNet norm) → <code>groundingdino.util.inference.predict</code> → <code>box_convert</code> cxcywh→pixel xyxy (recipe shared with <a href="model-detany3d.html">DetAny3D</a>)</td>
 <td><code>ac-detany3d</code></td>
 </tr>
 <tr>
@@ -131,7 +131,7 @@
 </tr>
 <tr>
 <td>Config</td>
-<td><code>text_prompt</code> (default <code>"ground"</code>), <code>box_threshold</code> (0.4), <code>text_threshold</code> (0.4)</td>
+<td><code>variant</code> (select native | hf_tiny — default follows <code>$GROUNDING_DINO_BACKEND</code>), <code>ckpt</code> (blank = variant default; native: <code>.pth</code> path, hf_tiny: HF repo id), <code>text_prompt</code> (default <code>"ground"</code>), <code>box_threshold</code> (0.4), <code>text_threshold</code> (0.4)</td>
 </tr>
 </tbody>
 </table>
@@ -211,7 +211,7 @@
 </table>
 <hr>
 <h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
-<p>Missing <code>image_b64</code> → empty result (<code>{boxes: [], count: 0, error: "no image_b64"}</code> / empty mask) without touching the model. A missing GroundingDINO package/config raises at load with an actionable message (install script or <code>$GROUNDING_DINO_PYTHON</code>). No detected boxes → empty <code>mask_b64</code> with <code>n_boxes = 0</code>.</p>
+<p>Missing <code>image_b64</code> → empty result (<code>{boxes: [], count: 0, error: "no image_b64"}</code> / empty mask) without touching the model. A variant its server env cannot run <strong>raises</strong> with an actionable message (boot env / <code>$GROUNDING_DINO_PYTHON</code>); other load failures <strong>latch</strong> and return empty outputs with a <code>degraded</code> self-log (FM template, 2026-07-05). No detected boxes → empty <code>mask_b64</code> with <code>n_boxes = 0</code>.</p>
 <hr>
 <h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
 <ul>
@@ -228,7 +228,7 @@
   <div class="sidebar-inner">
     <span class="toc-label">On this page</span>
     <nav class="toc-list">
-      <a class="toc-h2" href="#1-two-backends">1. Two backends, one schema</a>
+      <a class="toc-h2" href="#1-two-backends">1. Two variants, one schema</a>
       <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
       <a class="toc-h3" href="#model_grounding_dino__detect">model_grounding_dino__detect</a>
       <a class="toc-h3" href="#model_grounding_dino__ground_mask">model_grounding_dino__ground_mask</a>
