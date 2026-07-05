@@ -80,100 +80,60 @@
 
 <p class="lede">The <code>JobScheduler</code> answers one question: <em>is it safe to start this eval run right now?</em> When you submit a run, nothing executes yet — the job waits in a queue. Once a second, the scheduler looks at how much GPU and system memory is actually free, estimates how much this job will need (learned from watching its previous runs), and starts it only if it fits. Everything it used to make that call is visible in one API response (<code>GET /api/eval/v2/queue</code>), so when a job doesn't start, you can always see why. For what happens <em>inside</em> a run, see <a href="../graph/batch-eval.html">batch-eval</a>; for how model server processes work, see <a href="server-mode.html">server-mode</a>.</p>
 
-<p class="diagram-label"><strong>The whole system is one loop.</strong> Submitting writes the job to disk and puts it in the queue. Every second the scheduler does three things: it measures who is using memory right now (<em>observe</em>), it cleans up finished jobs and saves what they used (<em>reap</em>), and it decides whether the next queued job fits (<em>admit</em>). The job it starts becomes a new process — whose memory usage feeds straight back into the next measurement.</p>
-<svg class="rxsvg" viewBox="0 0 720 640" role="img" aria-label="JobScheduler architecture. A client POSTs to /api/eval/v2/start; eval.py start_eval_v2 loads shared singletons then calls submit(spec), which writes spec.json to the run dir on disk and enqueues. Inside the long-lived backend process, JobScheduler's 1 Hz tick runs observe, reap, admit, drain. Admission compares the job's per-resource estimates (VRAM and RAM) against measured free minus the sum of reservations, one inequality per measurable resource. ResourceStatsTracker attributes per-PID GPU memory (sampled by ResourceSampler via nvidia-smi pmon, compute plus graphics) and per-PID RSS (one /proc walk) to shared servers, job process trees, or external, and sediments per-resource peaks into outputs/system/resource_calibration.json when a job is reaped. Admit spawns the eval subprocess via Popen with setsid and the AGENTCANVAS_VRAM_CAP_MB env var; the subprocess arms PR_SET_PDEATHSIG, applies a torch memory-fraction cap, spawns its own tagged env servers, writes summary.json and _DONE to the run dir, and its usage is sampled back into the tracker so its reservations decay.">
+<p class="diagram-label"><strong>The whole system is one loop.</strong> A submitted job waits in the queue until the gate says it fits. While it runs, its memory is measured; when it ends, the measurements are saved (<em>sediment</em>). The saved measurements are where the gate's <em>estimate</em> comes from — and the live measurements are where <em>free</em> comes from.</p>
+<svg class="rxsvg" viewBox="0 0 720 340" role="img" aria-label="The scheduling loop. You submit a run; it waits in a queue. The gate checks once a second, per resource, whether the estimate fits into measured free minus reservations. A job that fits becomes a running process; one that does not stays queued and is retried next second. The running job's memory is measured every second. The measurements answer two questions: how much is free right now, which feeds the gate directly, and what did this graph use, which is sedimented into resource_calibration.json when the job ends and becomes the gate's estimate for the next run.">
   <defs>
     <marker id="jsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
     </marker>
   </defs>
 
-  <!-- client -->
-  <rect class="box" x="20" y="14" width="220" height="34" rx="6"/>
-  <text class="mono" x="130" y="35" text-anchor="middle">POST /api/eval/v2/start</text>
-  <path class="edge" d="M130 48 V84"/>
+  <rect class="box" x="20" y="36" width="150" height="52" rx="6"/>
+  <text class="mono" x="95" y="58" text-anchor="middle">POST /start</text>
+  <text class="dim" x="95" y="76" text-anchor="middle">you submit a run</text>
 
-  <!-- backend process -->
-  <rect class="ghost" x="20" y="64" width="500" height="392" rx="10"/>
-  <text class="dim" x="510" y="80" text-anchor="end">backend process (long-lived)</text>
+  <rect class="box" x="210" y="36" width="120" height="52" rx="6"/>
+  <text class="mono" x="270" y="58" text-anchor="middle">queue</text>
+  <text class="dim" x="270" y="76" text-anchor="middle">waits here</text>
+  <text class="dim" x="270" y="112" text-anchor="middle">doesn't fit → stays here,</text>
+  <text class="dim" x="270" y="126" text-anchor="middle">retried next second</text>
 
-  <!-- start_eval_v2 -->
-  <rect class="box" x="40" y="88" width="210" height="58" rx="6"/>
-  <text class="mono" x="145" y="106" text-anchor="middle">eval.py · start_eval_v2</text>
-  <text class="dim" x="145" y="122" text-anchor="middle">load shared singletons,</text>
-  <text class="dim" x="145" y="136" text-anchor="middle">submit(spec) → "queued"</text>
+  <rect class="accent" x="370" y="26" width="180" height="72" rx="8"/>
+  <text class="at" x="460" y="48" text-anchor="middle">the gate</text>
+  <text class="mono" x="460" y="66" text-anchor="middle">est ≤ free − reservations</text>
+  <text class="dim" x="460" y="84" text-anchor="middle">every second, per resource</text>
 
-  <!-- shared singleton -->
-  <rect class="ghost" x="340" y="94" width="170" height="52" rx="6"/>
-  <text class="dim" x="425" y="112" text-anchor="middle">auto_host singleton</text>
-  <text class="mono" x="425" y="128" text-anchor="middle">child proc · own pgid</text>
-  <path class="edge-dash" d="M250 112 H336"/>
+  <rect class="box" x="570" y="36" width="130" height="52" rx="6"/>
+  <text class="mono" x="635" y="58" text-anchor="middle">running job</text>
+  <text class="dim" x="635" y="76" text-anchor="middle">own process</text>
 
-  <!-- JobScheduler -->
-  <rect class="accent" x="40" y="172" width="280" height="148" rx="8"/>
-  <text class="at" x="180" y="192" text-anchor="middle">JobScheduler</text>
-  <text class="mono" x="180" y="208" text-anchor="middle">services/job_scheduler.py</text>
-  <text class="dim" x="180" y="228" text-anchor="middle">queue (FIFO, skip-if-blocked)</text>
-  <text class="dim" x="180" y="246" text-anchor="middle">tick() 1 Hz: observe → _reap →</text>
-  <text class="dim" x="180" y="262" text-anchor="middle">_admit → _drain_pending_unloads</text>
-  <text class="mono" x="180" y="284" text-anchor="middle">admit iff ∀r: est ≤ free − Σ resv</text>
-  <text class="mono" x="180" y="300" text-anchor="middle">est: calibrated | declared | cold-start</text>
-  <path class="edge" d="M145 146 V168"/>
+  <path class="edge" d="M170 62 H206"/>
+  <path class="edge" d="M330 62 H366"/>
+  <path class="edge" d="M550 62 H566"/>
+  <text class="dim" x="558" y="50" text-anchor="middle">fits</text>
 
-  <!-- ResourceStatsTracker -->
-  <rect class="box" x="40" y="352" width="280" height="84" rx="6"/>
-  <text class="mono" x="180" y="372" text-anchor="middle">resource_stats.py · ResourceStatsTracker</text>
-  <text class="dim" x="180" y="390" text-anchor="middle">PID → shared server | job tree | external</text>
-  <text class="dim" x="180" y="406" text-anchor="middle">per-window peaks (vram + ram) · estimator</text>
-  <text class="mono" x="180" y="424" text-anchor="middle">estimate(graph, wc)</text>
-  <path class="edge" d="M180 352 V324"/>
-  <text class="dim" x="188" y="342">measured_free · jobs_mb</text>
+  <path class="edge" d="M635 88 V246"/>
+  <text class="dim" x="643" y="160">measured</text>
+  <text class="dim" x="643" y="175">every second</text>
 
-  <!-- ResourceSampler -->
-  <rect class="box" x="350" y="352" width="160" height="84" rx="6"/>
-  <text class="mono" x="430" y="374" text-anchor="middle">resource_sampler.py</text>
-  <text class="dim" x="430" y="392" text-anchor="middle">1 Hz · nvidia-smi pmon</text>
-  <text class="dim" x="430" y="408" text-anchor="middle">GPU PIDs · psutil RAM totals</text>
-  <path class="edge" d="M350 394 H324"/>
+  <rect class="box" x="480" y="250" width="220" height="64" rx="6"/>
+  <text class="mono" x="590" y="272" text-anchor="middle">measurement</text>
+  <text class="dim" x="590" y="288" text-anchor="middle">whose memory is whose</text>
+  <text class="mono" x="590" y="304" text-anchor="middle">resource_stats.py</text>
 
-  <!-- disk: run dir -->
-  <rect class="ghost" x="560" y="88" width="140" height="150" rx="6"/>
-  <text class="dim" x="630" y="108" text-anchor="middle">outputs/eval_runs/</text>
-  <text class="mono" x="630" y="124" text-anchor="middle">{run_id}/</text>
-  <text class="mono" x="630" y="146" text-anchor="middle">spec.json</text>
-  <text class="mono" x="630" y="164" text-anchor="middle">shared_urls.json</text>
-  <text class="mono" x="630" y="182" text-anchor="middle">summary.json</text>
-  <text class="mono" x="630" y="200" text-anchor="middle">_DONE</text>
-  <path class="edge" d="M250 100 H556"/>
-  <path class="edge-dash" d="M560 210 C 460 250, 380 250, 324 262"/>
-  <text class="dim" x="392" y="240">_reap: rc + _DONE</text>
+  <rect class="ghost" x="150" y="250" width="240" height="64" rx="6"/>
+  <text class="mono" x="270" y="272" text-anchor="middle">resource_calibration.json</text>
+  <text class="dim" x="270" y="290" text-anchor="middle">what each graph used</text>
+  <text class="dim" x="270" y="305" text-anchor="middle">in past runs</text>
 
-  <!-- calibration store -->
-  <rect class="ghost" x="560" y="330" width="140" height="66" rx="6"/>
-  <text class="dim" x="630" y="352" text-anchor="middle">outputs/system/</text>
-  <text class="mono" x="630" y="370" text-anchor="middle">resource_calibration</text>
-  <text class="mono" x="630" y="384" text-anchor="middle">.json</text>
-  <path class="edge" d="M320 392 C 420 392, 480 372, 556 366"/>
-  <text class="dim" x="384" y="380">sediment on _reap</text>
+  <path class="edge" d="M476 296 H394"/>
+  <text class="dim" x="435" y="288" text-anchor="middle">sediment</text>
 
-  <!-- eval subprocess -->
-  <rect class="accent" x="40" y="490" width="480" height="130" rx="8"/>
-  <text class="at" x="280" y="512" text-anchor="middle">eval subprocess (one per run)</text>
-  <text class="mono" x="280" y="530" text-anchor="middle">app/eval_subprocess_main.py</text>
-  <text class="dim" x="280" y="548" text-anchor="middle">setsid → own pgid · PR_SET_PDEATHSIG</text>
-  <text class="mono" x="280" y="566" text-anchor="middle">_apply_vram_cap: torch fraction = cap / total</text>
-  <rect class="ghost" x="120" y="578" width="320" height="30" rx="6"/>
-  <text class="dim" x="280" y="597" text-anchor="middle">N tagged env auto_host children (owned)</text>
-  <path class="edge" d="M110 320 V486"/>
-  <text class="dim" x="118" y="410">_spawn: Popen(setsid)</text>
-  <text class="mono" x="118" y="426">AGENTCANVAS_VRAM_CAP_MB</text>
+  <path class="edge" d="M270 250 V160 H405 V102"/>
+  <text class="dim" x="330" y="152" text-anchor="middle">the estimate for next time</text>
 
-  <!-- subprocess artifacts + GPU loop -->
-  <path class="edge" d="M520 555 C 600 555, 630 400, 630 242"/>
-  <text class="dim" x="596" y="470">summary.json</text>
-  <text class="dim" x="596" y="486">_DONE</text>
-  <path class="edge-dash" d="M520 590 C 640 590, 560 460, 512 436"/>
-  <text class="dim" x="560" y="576">GPU usage → sampled</text>
+  <path class="edge" d="M560 250 V160 H485 V102"/>
+  <text class="dim" x="530" y="152" text-anchor="middle">free, right now</text>
 </svg>
 
 <h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
