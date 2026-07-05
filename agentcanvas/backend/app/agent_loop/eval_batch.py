@@ -613,12 +613,32 @@ class BatchEvalRunner:
             episode.metrics = metrics
             episode.step_count = runner._current_step
             episode.elapsed_sec = time.time() - ep_start
+            # Node-error conviction (2026-07-04): the executor swallows all
+            # exceptions — its error surface is ``session._status`` plus the
+            # error bus — so a run that recorded node failures RETURNS
+            # normally with ``_status == "error"``. Convict the episode
+            # explicitly; before this, such episodes masqueraded as
+            # completed (status="completed", step_count=0, metrics={} —
+            # run 20260516_101057, 11/100 episodes silently dropped).
+            node_errors = getattr(getattr(runner, "_executor", None), "node_errors", None) or []
+            if getattr(runner, "_status", "") == "error":
+                episode.status = "error"
+                if node_errors:
+                    head = "; ".join(
+                        f"{err['node_id']}@step{err['step']}: {err['error']}"
+                        for err in node_errors[:3]
+                    )
+                    episode.error = (
+                        f"{len(node_errors)} node error(s) during run: {head}"
+                        + ("; ..." if len(node_errors) > 3 else "")
+                    )
+                else:
+                    episode.error = "graph execution ended with status=error"
             # Verdict-required: an eval graph that "completed" without any
             # graphOut snapshot produced no verdict — the loop never really
-            # ran (e.g. a node returned {'error': ...} and the episode
-            # silently drained at step 0). Refuse to record that as a
-            # completed episode; it would alias to success=0 and poison SR.
-            if getattr(self._graph, "eval_graph", True) and not metrics:
+            # ran. Refuse to record that as a completed episode; it would
+            # alias to success=0 and poison SR.
+            elif getattr(self._graph, "eval_graph", True) and not metrics:
                 episode.status = "error"
                 episode.error = (
                     "no verdict: eval graph finished without a graphOut "

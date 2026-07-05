@@ -71,6 +71,22 @@
   </div>
   <div class="last-updated">2026-07-05</div>
 </div>
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Batch Eval System</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
   <header class="page-header designdoc">
   <h1>Batch Eval System</h1>
   <p class="tagline">Two processes · JobScheduler admission · eval-subprocess cold-start · replicated-spawn vs shared-borrow · per-worker routing</p>
@@ -256,13 +272,13 @@ POST<span class="w"> </span>/api/eval/v2/start
 <p>Inside <code>runner.run</code>, <code>LoopRunner</code> builds a <code>GraphExecutor</code> carrying the same overrides and calls <code>executor.run(...)</code> (<code>loop_runner.py · LoopRunner.run</code>). The executor resolves its loop bound (<code>step_budget_override → graph.step_budget → DEFAULT</code>) and fires nodes off a ready queue (<code>graph_executor.py · GraphExecutor.run</code>). Two seams matter for eval:</p>
 <ul>
 <li><strong>Per-worker routing.</strong> Each in-graph proxy call (e.g. <code>env_habitat__step_native</code>) asks the executor for a URL override; <code>get_server_url(nodeset)</code> returns this worker's tagged subprocess URL, and <code>server/proxy.py · _make_forward</code> routes the HTTP call there instead of the URL baked into the proxy class (empty override = baked URL = single-worker / canvas).</li>
-<li><strong>Metric harvest.</strong> The executor snapshots each <code>graphOut</code>'s pending inputs into <code>node.state["_last_inputs"]</code> after the terminal iteration (<code>graph_executor.py</code>); <code>_collect_metrics</code> reads only graph-scope <code>graphOut</code> sinks (<code>_scope_of(node) == GRAPH_SCOPE_ID</code>), treats a <code>portName == "metrics"</code> value as a dict to flatten, and any other scalar port as <code>metrics[portName]</code>. An eval graph that "completed" with <em>no</em> metrics is recorded as an error (<code>"no verdict"</code>) so a 0-step drain can't alias to <code>success=0</code> and poison SR.</li>
+<li><strong>Metric harvest.</strong> The executor snapshots each <code>graphOut</code>'s pending inputs into <code>node.state["_last_inputs"]</code> after the terminal iteration (<code>graph_executor.py</code>); <code>_collect_metrics</code> reads only graph-scope <code>graphOut</code> sinks (<code>_scope_of(node) == GRAPH_SCOPE_ID</code>), treats a <code>portName == "metrics"</code> value as a dict to flatten, and any other scalar port as <code>metrics[portName]</code>. Two guards keep a broken run from masquerading as a result: the executor records every <code>{"error": ...}</code>-shaped node result into its <code>node_errors</code> ledger and finishes such runs with <code>_status="error"</code> — <code>_run_one_episode</code> converts that into <code>episode.status="error"</code> naming the culprit nodes (checked first, since 2026-07-04); and an eval graph that "completed" with <em>no</em> metrics is recorded as an error (<code>"no verdict"</code>) so a 0-step drain can't alias to <code>success=0</code> and poison SR.</li>
 </ul>
 <h3 id="53-shared-inference"><span class="num">5.3</span> Shared inference — <code>BatchedInferenceServer</code></h3>
 <p><strong>The shared model server coalesces the K workers' concurrent calls into one forward pass.</strong> When K workers hit the same borrowed server, their requests converge server-side, so the rendezvous lives there, not in the clients (<code>server/batched_inference.py</code>). Each call is keyed by <code>(function_name, config_hash)</code> — two callers with identical config share one <code>_BatchQueue</code>; differing checkpoints stay separate. A queue flushes <code>flush_timeout_ms</code> (default 50 ms) after the <em>last</em> arrival (restart-on-submit timer), so a late caller joins the still-forming batch rather than forcing a partial one out. A server-level <code>_inference_lock</code> serialises handler calls across all keys (single-in-flight), bounding peak device memory to one batch. The contract is pure-functional: no per-caller state, so RNN hidden states must ride explicit <code>hidden_in</code> / <code>hidden_out</code> ports on the wire.</p>
 <h2 id="6-failure-observability"><span class="num">6.</span> Failure &amp; observability</h2>
 <h3 id="61-termination-paths"><span class="num">6.1</span> Termination paths</h3>
-<p>Five ways an episode ends, all returning a populated <code>EpisodeResult</code> (<code>eval_batch.py · BatchEvalRunner._run_one_episode</code>):</p>
+<p>Six ways an episode ends, all returning a populated <code>EpisodeResult</code> (<code>eval_batch.py · BatchEvalRunner._run_one_episode</code>):</p>
 <table>
 <thead>
 <tr><th>Path</th><th><code>status</code></th><th><code>error</code></th><th>Metrics</th><th><code>step_count</code></th></tr>
@@ -271,6 +287,7 @@ POST<span class="w"> </span>/api/eval/v2/start
 <tr><td>Normal completion</td><td><code>completed</code></td><td><code>None</code></td><td>full</td><td>full</td></tr>
 <tr><td>Per-episode timeout (<code>asyncio.wait_for</code>)</td><td><code>error</code></td><td><code>"timeout after Xs"</code></td><td>partial (last harvest)</td><td>up to fail</td></tr>
 <tr><td>Mid-graph exception</td><td><code>error</code></td><td><code>str(exc)</code></td><td>partial</td><td>up to fail</td></tr>
+<tr><td>Node error(s) recorded — executor convicts at run end</td><td><code>error</code></td><td><code>"N node error(s) during run: …"</code></td><td>full (verdict stage ran first)</td><td>full</td></tr>
 <tr><td>Init region failed (e.g. model load, budget&lt;1)</td><td><code>error</code></td><td><code>str(exc)</code></td><td>empty <code>{}</code></td><td>0</td></tr>
 <tr><td>Completed but no <code>graphOut</code> snapshot</td><td><code>error</code></td><td><code>"no verdict: …"</code></td><td>empty <code>{}</code></td><td>any</td></tr>
 </tbody>

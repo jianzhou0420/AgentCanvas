@@ -84,7 +84,7 @@ RULEBOOK: dict[str, dict[str, list[ParamRule]]] = {
     "anthropic": {
         "*": [
             ParamRule("max_tokens", "required", 4096, "Anthropic rejects requests without it"),
-            ParamRule("temperature", "range", (0.0, 1.0), "Anthropic temperature range is 0–1"),
+            ParamRule("temperature", "range", (0.0, 1.0), "Anthropic temperature range is 0-1"),
             ParamRule(
                 "n",
                 "unsupported",
@@ -105,7 +105,7 @@ RULEBOOK: dict[str, dict[str, list[ParamRule]]] = {
                 "temperature",
                 "range",
                 (0.0, 2.0),
-                "Gemini temperature range is 0–2",
+                "Gemini temperature range is 0-2",
             ),
             ParamRule(
                 "image_detail",
@@ -121,7 +121,7 @@ RULEBOOK: dict[str, dict[str, list[ParamRule]]] = {
                 "temperature",
                 "range",
                 (0.0, 2.0),
-                "DeepSeek chat temperature range is 0–2",
+                "DeepSeek chat temperature range is 0-2",
             ),
         ],
         "deepseek-reasoner*": [
@@ -205,12 +205,11 @@ def finalize_params(provider_id: str, model: str, params: dict) -> tuple[dict, l
                 if clamped != current:
                     finalized[rule.param] = clamped
                     adjustments.append(
-                        f"{rule.param} {current} → {clamped} (range {lo}–{hi})"
+                        f"{rule.param} {current} → {clamped} (range {lo}-{hi})"
                     )
-        elif rule.kind == "unsupported":
-            if rule.param in finalized:
-                dropped = finalized.pop(rule.param)
-                adjustments.append(
-                    f"{rule.param}={dropped} dropped (unsupported: {rule.note})"
-                )
+        elif rule.kind == "unsupported" and rule.param in finalized:
+            dropped = finalized.pop(rule.param)
+            adjustments.append(
+                f"{rule.param}={dropped} dropped (unsupported: {rule.note})"
+            )
     return finalized, adjustments
