@@ -34,11 +34,18 @@ and ``smartway_perception``. Per-node config picks the variant:
 One resident model per (variant, ckpt, image_size) — Open-Nav's ram@224 and
 SmartWay's ram_plus@384 can co-reside in this server (~2 models' VRAM).
 
+FM-template alignment (2026-07-05): fully **stateless** — the former
+content-hash tag cache is gone (reuse is a graph-level decision; prototype
+ruling). ``tag_panorama`` now carries the same variant/ckpt config surface as
+``tag_views`` (its previous zero-config form hardcoded ram@384). Load failure
+latches (empty outputs + ``degraded`` self-log, no retry storm); GPU
+inference is single-flight per engine.
+
 Runs in `ac-ram` env (Python 3.10, torch 2.4.1, transformers
 <4.40, recognize-anything from upstream git — ships both ``ram`` and
 ``ram_plus`` factories; import verified 2026-07-04).
 
-last updated: 2026-07-04
+last updated: 2026-07-05
 """
 
 import asyncio
@@ -51,15 +58,16 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef
+from app.components import (
+    BaseCanvasNode,
+    BaseNodeSet,
+    ConfigField,
+    NodeUIConfig,
+    PortDef,
+    conda_env_python,
+)
 
 log = logging.getLogger("agentcanvas.ram_perception")
-
-# Per-server content-hash cache: (variant|image_size|keep|sha1(rgb_base64)) →
-# tag string. Reuses tags for byte-identical views recurring across
-# steps/workers (upstream view_record). The key MUST carry the variant /
-# image_size / separator mode or one config's tags would cross-serve another's.
-_TAG_CACHE: dict[str, str] = {}
 
 
 def _find_repo_root() -> str:
@@ -91,20 +99,21 @@ _RAM_PLUS_CKPT_DEFAULT = os.environ.get(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Engine — lazy singleton per (variant, ckpt, image_size)
+# Engine — lazy registry per (variant, ckpt, image_size)
 # ══════════════════════════════════════════════════════════════════════
 
 
 class _RAMEngine:
-    """Lazy singleton registry: one resident model per (variant, ckpt, image_size).
+    """Lazy registry: one resident model per (variant, ckpt, image_size).
 
     ``variant`` picks the factory (``ram.models.ram`` vs ``ram.models.ram_plus``
     — same package, same transform/inference API). Both RAM@224 (Open-Nav) and
-    RAM++@384 (SmartWay) can co-reside in one server subprocess.
+    RAM++@384 (SmartWay) can co-reside in one server subprocess. Engines hold
+    loaded weights only — no cache, no sessions.
     """
 
     _instances: ClassVar[dict] = {}
-    _lock = threading.Lock()
+    _registry_lock = threading.Lock()
     _default_ckpt: ClassVar[dict] = {
         "ram": _RAM_CKPT_DEFAULT,
         "ram_plus": _RAM_PLUS_CKPT_DEFAULT,
@@ -118,57 +127,69 @@ class _RAMEngine:
         self.model = None
         self.transform = None
         self._loaded = False
+        self._load_failed = False
+        self._lock = threading.Lock()  # guards load AND single-flight inference
 
     @classmethod
     def get(
         cls,
         variant: str = "ram",
-        ckpt: str | None = None,
+        ckpt: "str | None" = None,
         image_size: int = 384,
-    ) -> _RAMEngine:
+    ) -> "_RAMEngine":
         if variant not in cls._default_ckpt:
             raise ValueError(f"unknown RAM variant {variant!r} (ram | ram_plus)")
         resolved = ckpt or cls._default_ckpt[variant]
         key = (variant, resolved, image_size)
-        with cls._lock:
+        with cls._registry_lock:
             if key not in cls._instances:
                 cls._instances[key] = cls(variant, resolved, image_size)
             return cls._instances[key]
 
-    def _ensure(self) -> None:
+    def ensure(self) -> bool:
         if self._loaded:
-            return
+            return True
+        if self._load_failed:
+            return False
         with self._lock:
             if self._loaded:
-                return
-            log.info(
-                "Loading %s Swin-L from %s (image_size=%d)",
-                self.variant, self.ckpt, self.image_size,
-            )
-            import torch
-            from ram import get_transform  # type: ignore
+                return True
+            if self._load_failed:
+                return False
+            try:
+                log.info(
+                    "Loading %s Swin-L from %s (image_size=%d)",
+                    self.variant, self.ckpt, self.image_size,
+                )
+                import torch
+                from ram import get_transform  # type: ignore
 
-            if self.variant == "ram_plus":
-                from ram.models import ram_plus as factory  # type: ignore
-            else:
-                from ram.models import ram as factory  # type: ignore
+                if self.variant == "ram_plus":
+                    from ram.models import ram_plus as factory  # type: ignore
+                else:
+                    from ram.models import ram as factory  # type: ignore
 
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = factory(pretrained=self.ckpt, image_size=self.image_size, vit="swin_l")
-            model.eval().to(self.device)
-            self.model = model
-            self.transform = get_transform(image_size=self.image_size)
-            self._loaded = True
-            log.info("%s ready (device=%s)", self.variant, self.device)
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                model = factory(pretrained=self.ckpt, image_size=self.image_size, vit="swin_l")
+                model.eval().to(self.device)
+                self.model = model
+                self.transform = get_transform(image_size=self.image_size)
+                self._loaded = True
+                log.info("%s ready (device=%s)", self.variant, self.device)
+                return True
+            except Exception as exc:
+                log.warning("RAM load failed (%s @ %s): %s", self.variant, self.ckpt, exc)
+                self._load_failed = True
+                return False
 
     def tag(self, rgb: np.ndarray, keep_separators: bool = False) -> str:
-        self._ensure()
         from PIL import Image
         from ram import inference_ram  # type: ignore
 
         pil = Image.fromarray(rgb.astype(np.uint8)).convert("RGB")
-        image = self.transform(pil).unsqueeze(0).to(self.device)
-        result = inference_ram(image, self.model)
+        with self._lock:
+            image = self.transform(pil).unsqueeze(0).to(self.device)
+            result = inference_ram(image, self.model)
         if isinstance(result, tuple):
             tags_en = result[0]
         else:
@@ -179,12 +200,6 @@ class _RAMEngine:
             return tags_en
         return tags_en.replace(" |", "").strip()
 
-    def cache_key(self, keep_separators: bool, b64: str) -> str:
-        import hashlib
-
-        digest = hashlib.sha1(b64.encode("ascii")).hexdigest()
-        return f"{self.variant}|{self.image_size}|{int(keep_separators)}|{digest}"
-
 
 def _decode_rgb(b64: str) -> np.ndarray:
     from PIL import Image
@@ -193,8 +208,42 @@ def _decode_rgb(b64: str) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"), dtype=np.uint8)
 
 
+_VARIANT_FIELDS = [
+    ConfigField(
+        "variant", "select", "Model variant",
+        options=[
+            {"value": "ram", "label": "RAM"},
+            {"value": "ram_plus", "label": "RAM++"},
+        ],
+        default="ram",
+    ),
+    ConfigField(
+        "image_size", "select", "Input resolution",
+        options=[
+            {"value": "384", "label": "384 (RAM default)"},
+            {"value": "224", "label": "224 (Open-Nav upstream)"},
+        ],
+        default="384",
+    ),
+    ConfigField(
+        "keep_separators", "toggle",
+        "Keep RAM's raw ' |' separators (Open-Nav upstream fidelity)",
+        default=False,
+    ),
+    ConfigField("ckpt", "text", "Checkpoint override (blank = per-variant default)", default=""),
+]
+
+
+def _engine_from_config(cfg: dict) -> "tuple[_RAMEngine, bool]":
+    variant = cfg.get("variant", "ram")
+    image_size = int(cfg.get("image_size", 384))
+    keep_separators = bool(cfg.get("keep_separators", False))
+    ckpt = str(cfg.get("ckpt", "") or "").strip() or None
+    return _RAMEngine.get(variant, ckpt, image_size), keep_separators
+
+
 # ══════════════════════════════════════════════════════════════════════
-# Tool
+# Tools
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -212,7 +261,9 @@ class TagPanoramaTool(BaseCanvasNode):
     )
     category: ClassVar[str] = "perception"
     icon: ClassVar[str] = "Tag"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="violet")
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet", config_fields=list(_VARIANT_FIELDS)
+    )
     input_ports = [
         PortDef("views", "ANY", "List of {dir_id, rgb_base64} dicts (e.g. 12 directions)"),
     ]
@@ -229,11 +280,14 @@ class TagPanoramaTool(BaseCanvasNode):
         if not views:
             return {"tags_per_dir": []}
 
+        cfg = getattr(self, "config", None) or {}
+        engine, keep_separators = _engine_from_config(cfg)
         loop = asyncio.get_running_loop()
-        engine = _RAMEngine.get()
 
-        def _tag_all() -> list[str]:
-            out: list[str] = []
+        def _tag_all() -> "list[str] | None":
+            if not engine.ensure():
+                return None
+            out: list = []
             for v in views:
                 if not isinstance(v, dict):
                     out.append("")
@@ -242,23 +296,17 @@ class TagPanoramaTool(BaseCanvasNode):
                 if not b64:
                     out.append("")
                     continue
-                # Content-hash cache: identical view bytes (same vp+heading,
-                # recurring across steps on backtrack) reuse the tag — mirrors
-                # upstream DiscussNav view_record caching, cheap and transparent.
-                key = engine.cache_key(False, b64)
-                if key in _TAG_CACHE:
-                    out.append(_TAG_CACHE[key])
-                    continue
                 try:
-                    tag = engine.tag(_decode_rgb(b64))
+                    out.append(engine.tag(_decode_rgb(b64), keep_separators=keep_separators))
                 except Exception as exc:
                     log.warning("RAM tag failed for %s: %s", v.get("dir_id"), exc)
-                    tag = ""
-                _TAG_CACHE[key] = tag
-                out.append(tag)
+                    out.append("")
             return out
 
         tags = await loop.run_in_executor(None, _tag_all)
+        if tags is None:
+            self._self_log("degraded", "RAM engine failed to load")
+            return {"tags_per_dir": []}
         self._self_log("num_directions", len(tags))
         for i, t in enumerate(tags):
             self._self_log(f"tags_{i}", t[:200])
@@ -280,24 +328,7 @@ class TagViewsTool(BaseCanvasNode):
     category: ClassVar[str] = "perception"
     icon: ClassVar[str] = "Tag"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet",
-        config_fields=[
-            ConfigField(
-                "variant", "select", "Model variant",
-                options=[
-                    {"value": "ram", "label": "RAM"},
-                    {"value": "ram_plus", "label": "RAM++"},
-                ],
-                default="ram",
-            ),
-            ConfigField("image_size", "text", "Input resolution (224 | 384)", default=384),
-            ConfigField(
-                "keep_separators", "toggle",
-                "Keep RAM's raw ' |' separators (Open-Nav upstream fidelity)",
-                default=False,
-            ),
-            ConfigField("ckpt", "text", "Checkpoint override (blank = per-variant default)", default=""),
-        ],
+        color="violet", config_fields=list(_VARIANT_FIELDS)
     )
     input_ports = [
         PortDef("views", "ANY", "{key: {rgb_base64}} keyed view dict"),
@@ -310,37 +341,31 @@ class TagViewsTool(BaseCanvasNode):
             return {"tags": {}}
 
         cfg = getattr(self, "config", None) or {}
-        variant = cfg.get("variant", "ram")
-        image_size = int(cfg.get("image_size", 384))
-        keep_separators = bool(cfg.get("keep_separators", False))
-        ckpt = str(cfg.get("ckpt", "") or "").strip() or None
-
+        engine, keep_separators = _engine_from_config(cfg)
         loop = asyncio.get_running_loop()
-        engine = _RAMEngine.get(variant, ckpt, image_size)
 
-        def _tag_all() -> dict[str, str]:
-            out: dict[str, str] = {}
+        def _tag_all() -> "dict | None":
+            if not engine.ensure():
+                return None
+            out: dict = {}
             for key, v in views.items():
                 key = str(key)
                 b64 = v.get("rgb_base64") if isinstance(v, dict) else None
                 if not b64:
                     out[key] = ""
                     continue
-                cache_key = engine.cache_key(keep_separators, b64)
-                if cache_key in _TAG_CACHE:
-                    out[key] = _TAG_CACHE[cache_key]
-                    continue
                 try:
-                    tag = engine.tag(_decode_rgb(b64), keep_separators=keep_separators)
+                    out[key] = engine.tag(_decode_rgb(b64), keep_separators=keep_separators)
                 except Exception as exc:
                     log.warning("RAM tag failed for %s: %s", key, exc)
-                    tag = ""
-                _TAG_CACHE[cache_key] = tag
-                out[key] = tag
+                    out[key] = ""
             return out
 
         tags = await loop.run_in_executor(None, _tag_all)
-        self._self_log("variant", variant)
+        if tags is None:
+            self._self_log("degraded", "RAM engine failed to load")
+            return {"tags": {}}
+        self._self_log("variant", cfg.get("variant", "ram"))
         self._self_log("num_views", len(tags))
         return {"tags": tags}
 
@@ -355,10 +380,9 @@ class RAMPerceptionNodeSet(BaseNodeSet):
 
     name = "model_ram"
     description = "Recognize Anything Model (RAM / RAM++, Swin-L 14M tags) — dedicated server-mode nodeset"
-    server_python = os.environ.get(
-        "RAM_PERCEPTION_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/ac-ram/bin/python"),
-    )
+    # Stateless tagger — one shared server across eval workers.
+    parallelism = "shared"
+    server_python = conda_env_python("ac-ram", "RAM_PERCEPTION_PYTHON")
 
     def get_tools(self) -> list:
         return [TagPanoramaTool(), TagViewsTool()]

@@ -109,7 +109,7 @@
 </tbody>
 </table>
 <p>Checkpoint paths resolve against a repo-root <em>walk-up</em> to the <code>data/</code> anchor — a fixed <code>../../..</code> breaks when the file is served from a workspace overlay copy at a different depth. <code>initialize(ram_ckpt=…, ram_plus_ckpt=…)</code> can override the per-variant defaults as nodeset kwargs.</p>
-<p><strong>Tag cache</strong> — per-server content-hash cache keyed <code>variant | image_size | keep_separators | sha1(rgb_base64)</code>. The config triple <em>must</em> be in the key, or one graph's config would cross-serve another's tags (the RAM@224 / RAM++@384 co-residency hazard). Byte-identical views recurring across steps (backtracking) reuse their tag, mirroring upstream DiscussNav's <code>view_record</code> caching.</p>
+<p><strong>Stateless</strong> — the former content-hash tag cache was removed in the 2026-07-05 FM-template alignment: engines hold loaded weights only, and reuse of byte-identical recurring views is a graph-level decision (prototype ruling). Load failure latches (empty outputs + <code>degraded</code> self-log) and GPU inference is single-flight per engine.</p>
 <hr>
 <h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
 <h3 id="model_ram__tag_panorama"><code>model_ram__tag_panorama</code></h3>
@@ -131,7 +131,7 @@
 </tr>
 <tr>
 <td>Config</td>
-<td>— (always the default <code>ram@384</code> engine, separators stripped)</td>
+<td><code>variant</code> (ram | ram_plus), <code>image_size</code> (384 | 224), <code>keep_separators</code> (toggle), <code>ckpt</code> — same surface as <code>tag_views</code> since 2026-07-05 (previously hardcoded <code>ram@384</code>); defaults preserve the DiscussNav behaviour</td>
 </tr>
 </tbody>
 </table>
@@ -162,7 +162,7 @@
 <p><strong><code>keep_separators</code> is an LLM-visible fidelity detail</strong>: Open-Nav passes the RAM output <em>raw</em> — <code>"tag | tag"</code> separators included — so its graphs set the toggle on; the default (off) strips to the DiscussNav convention.</p>
 <hr>
 <h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
-<p><code>server_python</code> defaults to the <strong><code>ac-ram</code></strong> env (Python 3.10, torch 2.4.1, transformers &lt;4.40, <code>recognize-anything</code> from upstream git — ships both the <code>ram</code> and <code>ram_plus</code> factories). The dedicated env exists because the RAM library's <code>apply_chunking_to_forward</code> import breaks under newer transformers releases. Override with <code>$RAM_PERCEPTION_PYTHON</code>. Load: <code>POST /api/components/nodesets/model_ram/load?mode=server</code>.</p>
+<p><code>server_python</code> defaults to the <strong><code>ac-ram</code></strong> env (Python 3.10, torch 2.4.1, transformers &lt;4.40, <code>recognize-anything</code> from upstream git — ships both the <code>ram</code> and <code>ram_plus</code> factories). The dedicated env exists because the RAM library's <code>apply_chunking_to_forward</code> import breaks under newer transformers releases. Override with <code>$RAM_PERCEPTION_PYTHON</code> (resolved via <code>conda_env_python</code> since 2026-07-05; <code>parallelism="shared"</code> is now explicit). Load: <code>POST /api/components/nodesets/model_ram/load?mode=server</code>.</p>
 <hr>
 <h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
 <table>
@@ -193,7 +193,7 @@
 </table>
 <hr>
 <h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
-<p>Per-view tag exceptions are caught and logged; that view's slot/key gets <code>""</code> and the rest proceed (alignment / key coverage preserved). An unknown <code>variant</code> raises at engine lookup. Empty <code>views</code> → empty output without touching the model.</p>
+<p>Per-view tag exceptions are caught and logged; that view's slot/key gets <code>""</code> and the rest proceed (alignment / key coverage preserved). A model-load failure latches and every call returns empty outputs with a <code>degraded</code> self-log entry. An unknown <code>variant</code> raises at engine lookup. Empty <code>views</code> → empty output without touching the model.</p>
 <hr>
 <h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
 <ul>
