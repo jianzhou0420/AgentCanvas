@@ -44,9 +44,15 @@ picks the implementation at load time (SAM-style env-var selection):
     native   (default)  groundingdino-py + Swin-T OGC ckpt, ``ac-detany3d`` env
     hf_tiny             HF transformers ``IDEA-Research/grounding-dino-tiny``
                         (the variant the retired navgpt open_vocab_detect node
-                        ran). Requires transformers>=4.40 — point
-                        ``$GROUNDING_DINO_PYTHON`` at the ``agentcanvas`` env
-                        (4.45.2) for this backend; ac-detany3d predates it.
+                        ran). Served from the shared ``ac-fm`` env
+                        (transformers 5.13) since 2026-07-05 — the
+                        ``threshold=`` kwarg in ``_detect_hf`` requires a
+                        post-4.5x post-process signature and never worked in
+                        the previously-suggested agentcanvas env (4.45.2 calls
+                        it ``box_threshold=``).
+
+``server_python`` follows the selected backend automatically (ac-detany3d
+for native, ac-fm for hf_tiny); ``$GROUNDING_DINO_PYTHON`` overrides both.
 
 Both backends emit the same ``result`` JSON schema, so graphs are
 backend-agnostic; NavGPT-style post-processing lives in the pure
@@ -452,9 +458,15 @@ class GroundingDinoNodeSet(BaseNodeSet):
     description = "GroundingDINO Swin-B open-vocabulary text→box detector — server-mode FM nodeset"
     # Stateless detector — one shared server, K eval workers coalesce onto it.
     parallelism = "shared"
-    # Reuse the detany3d env (has groundingdino-py 0.4.0 + the SwinB weights).
-    # Override with $GROUNDING_DINO_PYTHON for a dedicated env.
-    server_python = conda_env_python("ac-detany3d", "GROUNDING_DINO_PYTHON")
+    # Env follows the backend: native needs ac-detany3d (compiled
+    # groundingdino-py 0.4.0 + SwinB weights, frozen); hf_tiny lives in the
+    # shared ac-fm env (transformers 5.x — where its `threshold=` post-process
+    # call actually exists; parity gate 2026-07-05).
+    # $GROUNDING_DINO_PYTHON overrides both.
+    server_python = conda_env_python(
+        "ac-fm" if _BACKEND == "hf_tiny" else "ac-detany3d",
+        "GROUNDING_DINO_PYTHON",
+    )
 
     def get_tools(self) -> list:
         return [GroundingDinoDetectTool(), GroundingDinoGroundMaskTool()]

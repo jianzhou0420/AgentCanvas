@@ -25,20 +25,17 @@ boundary and the caption list aligns 1:1 with the RAM tag list (both fed by
 Runs **server mode** (own subprocess + CUDA context) so the parent eval holds
 no InstructBLIP VRAM and worker pools can coalesce onto one shared server.
 
-Hosted in the default ``agentcanvas`` env (torch 2.4.x + transformers 4.45.2 +
-tokenizers 0.20.3) — the SAME env where ``navgpt_mp3d_tools`` already ran this
-exact InstructBLIP forward (verified run 20260615_173543), so the manual
-image-token unpacking below (which relies on ``processor.image_token`` /
-``processor.num_query_tokens``, added in transformers ~4.44) is correct here.
-NOT ``ac-ram``: that env has tokenizers 0.15.2 (too old to parse the
-flan-t5 fast ``tokenizer.json`` → ``PyPreTokenizerTypeWrapper`` error) and no
-sentencepiece (so ``use_fast=False`` also fails) — InstructBlipProcessor cannot
-load there. That mis-choice 500-ed every caption call in run 20260616_150115
-(SR 0, 0 steps). A dedicated ``agentcanvas-instructblip`` env remains the ideal
-per memory feedback_dedicated_env_per_model; reusing the default env avoids a
-redundant multi-GB build and is version-correct for this code.
+Hosted in the shared ``ac-fm`` FM env (torch 2.8.0+cu126 + transformers 5.13.0
++ tokenizers 0.22) since 2026-07-05 — beam-5 captions verified byte-identical
+to the previous ``agentcanvas`` hosting, and the manual image-token unpacking
+below (``processor.image_token`` / ``processor.num_query_tokens``) works
+unchanged under 5.x. NOT ``ac-ram``: that env has tokenizers 0.15.2 (too old
+to parse the flan-t5 fast ``tokenizer.json`` → ``PyPreTokenizerTypeWrapper``
+error) and no sentencepiece — InstructBlipProcessor cannot load there; that
+mis-choice 500-ed every caption call in run 20260616_150115 (SR 0, 0 steps).
+Override with $INSTRUCTBLIP_PYTHON to pin a different env.
 
-last updated: 2026-06-16
+last updated: 2026-07-05
 """
 
 import asyncio
@@ -248,13 +245,13 @@ class InstructBlipNodeSet(BaseNodeSet):
     # Stateless captioner — one shared server, K eval workers coalesce onto it
     # (don't replicate the ~7 GB model per worker). Bit-identical at worker_count=1.
     parallelism = "shared"
-    # Default env: agentcanvas (transformers 4.45.2 + tokenizers 0.20.3) — the
-    # env where this exact forward already worked via navgpt_mp3d_tools. NOT
-    # ac-ram (tokenizers 0.15.2 + no sentencepiece → processor load
-    # fails). Override with $INSTRUCTBLIP_PYTHON if a dedicated env is built.
+    # Default env: ac-fm (shared FM env) — beam-5 captions byte-identical vs
+    # the previous agentcanvas hosting (parity gate 2026-07-05). NOT ac-ram
+    # (tokenizers 0.15.2 + no sentencepiece → processor load fails).
+    # Override with $INSTRUCTBLIP_PYTHON.
     server_python = os.environ.get(
         "INSTRUCTBLIP_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/agentcanvas/bin/python"),
+        os.path.expanduser("~/miniforge3/envs/ac-fm/bin/python"),
     )
 
     def get_tools(self) -> list:

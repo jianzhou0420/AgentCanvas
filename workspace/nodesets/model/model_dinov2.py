@@ -27,14 +27,19 @@ The envelope carries the raw C-contiguous float32 buffer base64-encoded —
 byte-exact across the HTTP boundary (a JSON float list would round-trip
 through decimal text) and ~4× smaller.
 
-Runs **server mode** in the ``ac-smartway`` env (Python 3.8, torch 2.1.1) —
-a documented reuse: numeric parity with the env the smartway waypoint TRM
-checkpoint was validated in. Override with $DINOV2_PYTHON. This file must
-stay Python-3.8-parseable.
+Runs **server mode** in the shared ``ac-fm`` FM env (Python 3.11, torch
+2.8.0+cu126, transformers 5.13.0) since 2026-07-05. Numeric parity with the
+old ``ac-smartway`` hosting is BYTE-EXACT under two pinned conditions, both
+verified in the 2026-07-05 parity probe: the ViT forward is bit-identical
+across torch 2.1.1→2.8.0, and the processor is forced to the PIL backend
+(``use_fast=False`` below — transformers 5.x flipped the default to a
+torchvision implementation whose resize numerics differ). Override with
+$DINOV2_PYTHON. This file must stay Python-3.8-parseable (override may point
+at a py3.8 env).
 
 Load: POST /api/components/nodesets/model_dinov2/load?mode=server
 
-last updated: 2026-07-04
+last updated: 2026-07-05
 """
 
 import asyncio
@@ -120,7 +125,12 @@ class _DinoV2Engine:
             try:
                 from transformers import AutoImageProcessor  # type: ignore
 
-                self.processor = AutoImageProcessor.from_pretrained(self.processor_id)
+                # use_fast=False pins the PIL preprocessing backend: byte-equal
+                # pixels/features vs the pre-2026-07-05 ac-smartway hosting.
+                # transformers 5.x defaults to a torchvision backend whose
+                # resize numerics differ; the kwarg is valid (no-op) on 4.x.
+                self.processor = AutoImageProcessor.from_pretrained(
+                    self.processor_id, use_fast=False)
             except Exception as exc:
                 log.warning("DINO processor load failed: %s", exc)
                 self._load_failed = True
@@ -239,10 +249,10 @@ class DinoV2NodeSet(BaseNodeSet):
     description = "DINOv2 (ViT-S/14-reg) pooled per-image features — server-mode FM nodeset"
     # Stateless feature extractor — one shared server across eval workers.
     parallelism = "shared"
-    # Default env: ac-smartway (torch 2.1.1, Py3.8) — documented reuse for
-    # numeric parity with the smartway waypoint TRM checkpoint's validation
-    # env. Override with $DINOV2_PYTHON.
-    server_python = conda_env_python("ac-smartway", "DINOV2_PYTHON")
+    # Default env: ac-fm (shared FM env) — byte-equal features vs the old
+    # ac-smartway hosting given the use_fast=False PIL pin above (parity gate
+    # 2026-07-05). Override with $DINOV2_PYTHON.
+    server_python = conda_env_python("ac-fm", "DINOV2_PYTHON")
 
     def get_tools(self) -> list:
         return [ExtractFeaturesTool()]

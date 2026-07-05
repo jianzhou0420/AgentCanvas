@@ -23,15 +23,14 @@ base64 view-tile dicts, JSON-safe across the server-mode HTTP boundary; output
 aligned 1:1 with ``views``.
 
 Runs **server mode** (own subprocess + CUDA context, ~4 GB fp16). Hosted in the
-default ``agentcanvas`` env (torch 2.4.x + transformers 4.45.2) — the SAME env
-where ``navgpt_mp3d_tools`` already ran this exact BLIP-2 forward in local
-mode, so outputs are unchanged. Override with $BLIP2_PYTHON if a dedicated env
-is built (memory: feedback_dedicated_env_per_model names the dedicated env as
-the ideal; reuse avoids a redundant multi-GB build and is version-correct).
+shared ``ac-fm`` FM env (torch 2.8.0+cu126 + transformers 5.13.0) since
+2026-07-05 — captions verified byte-identical to the previous ``agentcanvas``
+hosting (greedy decode, synthetic-image parity replay). Override with
+$BLIP2_PYTHON to pin a different env.
 
 Load: POST /api/components/nodesets/model_blip2/load?mode=server
 
-last updated: 2026-07-04
+last updated: 2026-07-05
 """
 
 import asyncio
@@ -211,9 +210,10 @@ class Blip2NodeSet(BaseNodeSet):
     description = "BLIP-2 FlanT5-XL per-view captioning — dedicated server-mode FM nodeset"
     # Stateless captioner — one shared server, K eval workers coalesce onto it.
     parallelism = "shared"
-    # Default env: agentcanvas — where navgpt_mp3d_tools already ran this exact
-    # forward in local mode. Override with $BLIP2_PYTHON for a dedicated env.
-    server_python = conda_env_python("agentcanvas", "BLIP2_PYTHON")
+    # Default env: ac-fm (shared FM env) — byte-identical captions vs the
+    # previous agentcanvas hosting (parity gate 2026-07-05). $BLIP2_PYTHON
+    # overrides.
+    server_python = conda_env_python("ac-fm", "BLIP2_PYTHON")
 
     def get_tools(self) -> list:
         return [Blip2CaptionTool()]

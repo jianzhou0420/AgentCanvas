@@ -13,9 +13,13 @@ standard server-mode HTTP route (NOT in-process), so heavy deps (torch,
 transformers, qwen_vl_utils) live behind lazy imports and only load inside
 the server subprocess.
 
-Server mode under the dedicated ``ac-qwenvl`` env (Python 3.10 +
-transformers 4.50.2 + qwen-vl-utils). Weights load once per subprocess on
-first ``initialize()`` and live until teardown.
+Server mode under the shared ``ac-fm`` FM env (Python 3.11 + torch
+2.8.0+cu126 + transformers 5.13.0 + qwen-vl-utils) since 2026-07-05 —
+greedy generations verified byte-identical to the previous ``ac-qwenvl``
+hosting under matched sdpa attention. On hosts whose glibc is too old for
+the flash-attn wheel (<2.32) the loader falls back to sdpa; inside a
+newer-glibc Docker base flash-attention re-activates. Weights load once
+per subprocess on first ``initialize()`` and live until teardown.
 
 Model: Qwen2.5-VL-3B-Instruct (single-3090 budget; co-hosts with DetAny3D +
 Habitat — see scripts/install/install_ac_qwenvl.sh for the 3B rationale).
@@ -90,7 +94,7 @@ def _ensure_loaded(model_dir: str | None = None) -> dict | None:
             import torch
             from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
         except Exception:
-            log.exception("Qwen2.5-VL import failed — is the ac-qwenvl env active?")
+            log.exception("Qwen2.5-VL import failed — is the ac-fm env active?")
             return None
 
         mdir = os.path.normpath(model_dir or _DEFAULT_MODEL_DIR)
@@ -305,7 +309,7 @@ class GenerateNode(BaseCanvasNode):
 class VLMQwen25VLNodeSet(BaseNodeSet):
     """Generic Qwen2.5-VL foundation-model nodeset.
 
-    Loads Qwen2.5-VL in a dedicated subprocess (``ac-qwenvl`` env)
+    Loads Qwen2.5-VL in its own subprocess (shared ``ac-fm`` FM env)
     and exposes ``generate`` as a canvas-wirable primitive. Stateless across
     calls — default ``parallelism="shared"`` is correct (K callers coalesce
     through one hosted copy; no per-call state).
@@ -315,9 +319,11 @@ class VLMQwen25VLNodeSet(BaseNodeSet):
     description: ClassVar[str] = (
         "Qwen2.5-VL — generic generate(messages|prompt, image_paths) primitive"
     )
+    # Default env: ac-fm (shared FM env) — greedy output byte-identical vs the
+    # retired ac-qwenvl hosting (parity gate 2026-07-05). $QWENVL_PYTHON overrides.
     server_python: ClassVar[str] = os.environ.get(
         "QWENVL_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/ac-qwenvl/bin/python"),
+        os.path.expanduser("~/miniforge3/envs/ac-fm/bin/python"),
     )
 
     def get_tools(self) -> list:
