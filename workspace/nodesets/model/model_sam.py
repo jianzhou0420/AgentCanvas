@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""SAM (Segment Anything) foundation-model nodeset — real SAM 1, server mode.
+"""SAM (Segment Anything) foundation-model nodeset — full series, server mode.
 
-Pure single-step segmentation primitives. Four capability nodes, all of them
+Pure single-step segmentation primitives. Five capability nodes, all of them
 stateless one-shot forwards; everything procedural lives in the graph:
 
     model_sam__segment_points   point-prompted segmentation (+ optional
@@ -10,20 +10,34 @@ stateless one-shot forwards; everything procedural lives in the graph:
     model_sam__segment_box      box-prompted segmentation (single box or batch)
     model_sam__segment_auto     full-scene segmentation (engineered grid over
                                 the point capability; original image only)
+    model_sam__segment_text     concept/text-prompted segmentation (SAM 3
+                                native — instance masks for a noun phrase)
     model_sam__embed_image      image-encoder features as an embedding envelope
 
+Variant matrix (real backends only; ``variant`` + ``ckpt`` are node config,
+engines live in a ``(variant, ckpt)`` registry so checkpoints coexist):
+
+    variant  backing                              nodes
+    sam1     segment_anything + local .pth ckpt   points / box / auto / embed
+    sam2     transformers Sam2Model (SAM 2.1,     points / box / auto
+             HF weights, ungated)
+    sam3     transformers Sam3Model (HF weights,  text
+             GATED — request access on the
+             facebook/sam3 model page first;
+             until granted the engine latches
+             degraded)
+
 Design rulings (2026-07-05, see the FM-nodeset design doc):
-    - Variants are config, not node identity: each node carries ``variant`` +
-      ``ckpt`` config; engines live in a ``(variant, ckpt)`` registry so two
-      checkpoints can coexist in one server. Only real backends — the former
-      sam2/sam3 mock backends and the text/track nodes are gone (text
-      segmentation is a graph-level composition: grounding-dino boxes wired
-      into ``__segment_box``; video tracking is deferred until SAM 2 lands).
+    - Variants are config, not node identity; swapping them never changes the
+      graph (uniform masks envelope). Video tracking stays deferred until a
+      real consumer exists (session state is not welcome on a shared server).
     - The server is fully stateless: no embedding cache, no sessions. Reuse is
       expressed as dataflow — prompted nodes accept EITHER a raw base64 image
       OR a previously computed embedding envelope on their ``image`` port, and
       emit the envelope they used, so a graph can stash it in a state
-      container and skip the heavy encoder on later prompts.
+      container and skip the heavy encoder on later prompts. Embedding in/out
+      is sam1-only for now (SAM 2/3 features are multi-level; envelope v2
+      would be needed) — sam2 emits ``""`` and rejects envelope injection.
     - Iterative refinement belongs to the outer loop: every prompted candidate
       carries ``low_res_logits_b64``; feed one back into ``mask_input``.
 
@@ -39,12 +53,15 @@ Masks envelope (TEXT JSON):
      "count", "image_w", "image_h"}
 
 Environment:
-    Served from the shared ``ac-fm`` env (segment-anything is
-    lower-bound-only; installed by scripts/install/install_ac_fm.sh).
+    Served from the shared ``ac-fm`` env. sam1 needs segment-anything
+    (installed by scripts/install/install_ac_fm.sh); sam2/sam3 ride the
+    resident transformers (>=5.13 ships Sam2/Sam3) — zero extra packages.
     SAM_PYTHON   — interpreter override for the server subprocess
     SAM_DEVICE   — cuda:0 | cpu (default: cuda:0)
-    Default checkpoint: data/habitat/checkpoints/sam/sam_vit_b.pth
-    (model type inferred from the ckpt filename: vit_b / vit_l / vit_h).
+    Default ckpts: sam1 data/habitat/checkpoints/sam/sam_vit_b.pth (model
+    type inferred from the filename: vit_b / vit_l / vit_h); sam2
+    facebook/sam2.1-hiera-base-plus; sam3 facebook/sam3 (both resolve as HF
+    repo ids through the standard HF cache; local dirs also accepted).
 
 This file must stay Python-3.8-parseable (override may point at an old env).
 
@@ -233,51 +250,26 @@ def _patch_torchvision_nms() -> None:
         logger.info("Pure-Python NMS fallback installed")
 
 
-# ━━ Engine registry ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━ Engines ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-class _SamEngine:
-    """Lazy singleton per (variant, ckpt) — multiple checkpoints coexist.
+class _SamEngineBase:
+    """Shared engine shell: lazy load with a failure latch + single-flight lock.
 
-    The engine holds only the loaded model. Every call builds a fresh
-    ``SamPredictor`` (a thin wrapper), so no per-image state survives a call;
-    the GPU section is single-flight per engine (one lock) to bound VRAM
-    under K concurrent eval workers.
+    One instance per ``(variant, ckpt)`` (see ``_get_engine``). Engines hold
+    only loaded weights — no cache, no sessions; the GPU section is
+    single-flight per engine to bound VRAM under K concurrent eval workers.
     """
-
-    _instances: ClassVar[dict] = {}
-    _registry_lock: ClassVar[threading.Lock] = threading.Lock()
-    _default_ckpt: ClassVar[dict] = {
-        "sam1": os.path.join(_REPO_ROOT, "data", "habitat", "checkpoints", "sam", "sam_vit_b.pth"),
-    }
-
-    @classmethod
-    def get(cls, variant: str = "sam1", ckpt: str = "") -> "_SamEngine":
-        if variant not in cls._default_ckpt:
-            raise ValueError(
-                "model_sam: unknown variant %r (known: %s)"
-                % (variant, sorted(cls._default_ckpt))
-            )
-        resolved = ckpt or cls._default_ckpt[variant]
-        if not os.path.isabs(resolved):
-            resolved = os.path.join(_REPO_ROOT, resolved)
-        key = (variant, resolved)
-        with cls._registry_lock:
-            if key not in cls._instances:
-                cls._instances[key] = cls(variant, resolved)
-            return cls._instances[key]
 
     def __init__(self, variant: str, ckpt: str) -> None:
         self.variant = variant
         self.ckpt = ckpt
-        self.ckpt_id = os.path.basename(ckpt)
+        self.ckpt_id = os.path.basename(ckpt.rstrip("/"))
         self._model: Any = None
         self._loaded = False
         self._load_failed = False
         self._lock = threading.Lock()
         self._device = os.environ.get("SAM_DEVICE", "cuda:0")
-
-    # -- loading ------------------------------------------------------------
 
     def ensure(self) -> bool:
         """Load the model once; latch on failure (no retry storm). Blocking."""
@@ -291,22 +283,8 @@ class _SamEngine:
             if self._load_failed:
                 return False
             try:
-                from segment_anything import sam_model_registry
-
-                _patch_torchvision_nms()
-                model_type = _infer_model_type(self.ckpt)
-                logger.info(
-                    "model_sam: loading %s from %s on %s", model_type, self.ckpt, self._device
-                )
-                sam = sam_model_registry[model_type](checkpoint=self.ckpt)
-                sam.to(device=self._device)
-                self._model = sam
+                self._load()
                 self._loaded = True
-                logger.info(
-                    "model_sam: %s loaded (%.0fM params)",
-                    model_type,
-                    sum(p.numel() for p in sam.parameters()) / 1e6,
-                )
                 return True
             except Exception:
                 logger.warning(
@@ -317,6 +295,44 @@ class _SamEngine:
                 )
                 self._load_failed = True
                 return False
+
+    def _load(self) -> None:
+        raise NotImplementedError
+
+    def _reject_envelope_payload(self, image_payload: str) -> None:
+        """Embedding injection is a sam1-only capability for now."""
+        env = _sniff_embedding_envelope(image_payload)
+        if env is not None:
+            raise ValueError(
+                "model_sam: embedding injection is supported for the sam1 variant "
+                "only (envelope variant=%r, this engine=%r)"
+                % (env.get("variant"), self.variant)
+            )
+
+
+class _Sam1Engine(_SamEngineBase):
+    """SAM 1 via the official ``segment_anything`` package (local .pth ckpt).
+
+    Every call builds a fresh ``SamPredictor`` (a thin wrapper), so no
+    per-image state survives a call.
+    """
+
+    def _load(self) -> None:
+        from segment_anything import sam_model_registry
+
+        _patch_torchvision_nms()
+        model_type = _infer_model_type(self.ckpt)
+        logger.info(
+            "model_sam: loading %s from %s on %s", model_type, self.ckpt, self._device
+        )
+        sam = sam_model_registry[model_type](checkpoint=self.ckpt)
+        sam.to(device=self._device)
+        self._model = sam
+        logger.info(
+            "model_sam: %s loaded (%.0fM params)",
+            model_type,
+            sum(p.numel() for p in sam.parameters()) / 1e6,
+        )
 
     # -- predictor state ------------------------------------------------------
 
@@ -441,6 +457,7 @@ class _SamEngine:
         pred_iou_thresh: float,
         stability_score_thresh: float,
         min_mask_area: int,
+        crop_n_layers: int,
     ) -> dict:
         from segment_anything import SamAutomaticMaskGenerator
 
@@ -454,6 +471,7 @@ class _SamEngine:
                 pred_iou_thresh=pred_iou_thresh,
                 stability_score_thresh=stability_score_thresh,
                 min_mask_region_area=min_mask_area,
+                crop_n_layers=crop_n_layers,
             )
             raw_masks = gen.generate(image)
         cands = []
@@ -479,6 +497,293 @@ class _SamEngine:
             predictor = self._new_predictor()
             self._set_state(predictor, image_b64)
             return self._embedding_envelope(predictor)
+
+
+class _Sam2Engine(_SamEngineBase):
+    """SAM 2.1 image path via transformers (``Sam2Model`` + ``Sam2Processor``).
+
+    The HF implementation, not the facebookresearch/sam2 package — the
+    resident transformers (>=5.13) ships it, so the variant costs zero new
+    dependencies. Point/box prompts + the mask-generation pipeline for auto;
+    no embedding in/out (SAM 2 features are multi-level — envelope v2 first).
+    """
+
+    def _load(self) -> None:
+        from transformers import Sam2Model, Sam2Processor
+
+        logger.info("model_sam: loading sam2 from %s on %s", self.ckpt, self._device)
+        self._processor = Sam2Processor.from_pretrained(self.ckpt)
+        self._model = Sam2Model.from_pretrained(self.ckpt).to(self._device).eval()
+        self._auto_pipe = None
+        logger.info(
+            "model_sam: sam2 loaded (%.0fM params)",
+            sum(p.numel() for p in self._model.parameters()) / 1e6,
+        )
+
+    def _post_process(self, outputs: Any, inputs: Any) -> Any:
+        args = [outputs.pred_masks.cpu(), inputs["original_sizes"].cpu()]
+        if "reshaped_input_sizes" in inputs:
+            try:
+                return self._processor.post_process_masks(
+                    *args, inputs["reshaped_input_sizes"].cpu()
+                )[0]
+            except TypeError:
+                pass
+        return self._processor.post_process_masks(*args)[0]
+
+    def _predict(
+        self,
+        image_payload: str,
+        points: "list | None" = None,
+        labels: "list | None" = None,
+        boxes: "list | None" = None,
+        mask_input_b64: str = "",
+        multimask: bool = True,
+    ) -> "tuple[list, tuple[int, int]]":
+        import torch
+
+        self._reject_envelope_payload(image_payload)
+        image = _decode_image(image_payload)
+        kwargs = {}
+        if points is not None:
+            kwargs["input_points"] = [[points]]
+            kwargs["input_labels"] = [[labels]]
+        if boxes is not None:
+            kwargs["input_boxes"] = [boxes]
+        inputs = self._processor(images=image, return_tensors="pt", **kwargs).to(self._device)
+        fwd = {"multimask_output": multimask}
+        if mask_input_b64:
+            logits = (
+                np.frombuffer(base64.b64decode(mask_input_b64), dtype=np.float32)
+                .reshape(1, 1, 256, 256)
+                .copy()
+            )
+            fwd["input_masks"] = torch.from_numpy(logits).to(self._device)
+        with torch.no_grad():
+            outputs = self._model(**inputs, **fwd)
+        masks_full = self._post_process(outputs, inputs)  # (n_obj, n_masks, H, W)
+        ious = outputs.iou_scores.cpu().numpy()[0]  # (n_obj, n_masks)
+        low_res = outputs.pred_masks.float().cpu().numpy()[0]  # (n_obj, n_masks, 256, 256)
+        cands = []
+        idx = 0
+        for o in range(masks_full.shape[0]):
+            for m in range(masks_full.shape[1]):
+                mask = np.asarray(masks_full[o, m]).astype(bool)
+                if not mask.any():
+                    continue
+                cands.append(
+                    {
+                        "mask_index": idx,
+                        "mask_b64": _encode_mask(mask),
+                        "bbox_xyxy": _mask_to_bbox_xyxy(mask),
+                        "iou_score": round(float(ious[o, m]), 4),
+                        "area": int(mask.sum()),
+                        "low_res_logits_b64": _f32_b64(low_res[o, m]),
+                    }
+                )
+                idx += 1
+        return cands, (int(image.shape[0]), int(image.shape[1]))
+
+    def predict_points(
+        self,
+        image_payload: str,
+        points: list,
+        labels: list,
+        mask_input_b64: str,
+        multimask: bool,
+    ) -> "tuple[dict, str]":
+        with self._lock:
+            cands, hw = self._predict(
+                image_payload,
+                points=points,
+                labels=labels,
+                mask_input_b64=mask_input_b64,
+                multimask=multimask,
+            )
+        cands.sort(key=lambda x: x["iou_score"], reverse=True)
+        return _masks_envelope(cands, hw), ""
+
+    def predict_boxes(self, image_payload: str, boxes: list) -> "tuple[dict, str]":
+        with self._lock:
+            cands, hw = self._predict(image_payload, boxes=boxes, multimask=False)
+        return _masks_envelope(cands, hw), ""
+
+    def auto_masks(
+        self,
+        image_b64: str,
+        points_per_side: int,
+        pred_iou_thresh: float,
+        stability_score_thresh: float,
+        min_mask_area: int,
+        crop_n_layers: int,
+    ) -> dict:
+        import inspect
+
+        from PIL import Image as PILImage
+        from transformers import pipeline
+
+        if int(crop_n_layers) > 0:
+            # transformers 5.13 upstream bug: the sam2 mask-generation
+            # pipeline torch.stack()s unequal-sized crops and crashes.
+            raise ValueError(
+                "sam2 auto does not support crop_n_layers>0 (transformers "
+                "pipeline bug: unequal crop sizes crash preprocessing) — "
+                "use variant=sam1 for cropped auto-segmentation"
+            )
+        image = _decode_image(image_b64)
+        with self._lock:
+            if self._auto_pipe is None:
+                self._auto_pipe = pipeline(
+                    "mask-generation",
+                    model=self._model,
+                    image_processor=self._processor.image_processor,
+                    device=self._device,
+                )
+            call_kwargs = {
+                "points_per_crop": int(points_per_side),
+                "pred_iou_thresh": float(pred_iou_thresh),
+                "stability_score_thresh": float(stability_score_thresh),
+            }
+            accepted: set = set()
+            for fn_name in ("_sanitize_parameters", "preprocess", "_forward", "postprocess"):
+                try:
+                    accepted |= set(
+                        inspect.signature(getattr(self._auto_pipe, fn_name)).parameters
+                    )
+                except (AttributeError, ValueError):
+                    pass
+            dropped = [k for k in call_kwargs if k not in accepted]
+            for k in dropped:
+                call_kwargs.pop(k)
+            if dropped:
+                logger.warning(
+                    "model_sam: sam2 auto pipeline does not accept %s — using its defaults",
+                    dropped,
+                )
+            out = self._auto_pipe(PILImage.fromarray(image), **call_kwargs)
+        masks = out.get("masks") or []
+        scores = out.get("scores")
+        if scores is None:
+            scores = [0.0] * len(masks)
+        cands = []
+        for i, (mask, score) in enumerate(zip(masks, scores)):
+            mask = np.asarray(mask).astype(bool)
+            area = int(mask.sum())
+            if area == 0 or area < int(min_mask_area):
+                continue
+            cands.append(
+                {
+                    "mask_index": i,
+                    "mask_b64": _encode_mask(mask),
+                    "bbox_xyxy": _mask_to_bbox_xyxy(mask),
+                    "iou_score": round(float(score), 4),
+                    "area": area,
+                    # no stability_score: the HF pipeline does not expose it
+                }
+            )
+        cands.sort(key=lambda x: x["area"], reverse=True)
+        return _masks_envelope(cands, (int(image.shape[0]), int(image.shape[1])))
+
+
+class _Sam3Engine(_SamEngineBase):
+    """SAM 3 concept/text segmentation via transformers (``Sam3Model``).
+
+    Weights are HF-gated (facebook/sam3, manual approval): until access is
+    granted on the model page, ``from_pretrained`` 403s and the engine
+    latches degraded (empty envelopes, logged).
+    """
+
+    def _load(self) -> None:
+        from transformers import Sam3Model, Sam3Processor
+
+        logger.info("model_sam: loading sam3 from %s on %s", self.ckpt, self._device)
+        self._processor = Sam3Processor.from_pretrained(self.ckpt)
+        self._model = Sam3Model.from_pretrained(self.ckpt).to(self._device).eval()
+        logger.info(
+            "model_sam: sam3 loaded (%.0fM params)",
+            sum(p.numel() for p in self._model.parameters()) / 1e6,
+        )
+
+    def segment_text(
+        self, image_b64: str, text: str, score_thresh: float, mask_threshold: float
+    ) -> dict:
+        import torch
+
+        image = _decode_image(image_b64)
+        with self._lock:
+            inputs = self._processor(images=image, text=text, return_tensors="pt").to(
+                self._device
+            )
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+            # target_sizes must be passed explicitly — the processor output
+            # carries no original_sizes, and without it masks come back at
+            # model resolution instead of the original image size.
+            res = self._processor.post_process_instance_segmentation(
+                outputs,
+                threshold=float(score_thresh),
+                mask_threshold=float(mask_threshold),
+                target_sizes=[(int(image.shape[0]), int(image.shape[1]))],
+            )[0]
+        masks = res.get("masks")
+        scores = res.get("scores")
+        boxes = res.get("boxes")
+
+        def _np(x: Any) -> np.ndarray:
+            return np.asarray(x.cpu() if hasattr(x, "cpu") else x)
+
+        cands = []
+        for i in range(0 if masks is None else len(masks)):
+            score = float(_np(scores[i])) if scores is not None else 0.0
+            if score < float(score_thresh):
+                continue
+            mask = _np(masks[i]).astype(bool)
+            if not mask.any():
+                continue
+            if boxes is not None:
+                bb = [int(round(float(v))) for v in _np(boxes[i]).tolist()]
+            else:
+                bb = _mask_to_bbox_xyxy(mask)
+            cands.append(
+                {
+                    "mask_index": i,
+                    "mask_b64": _encode_mask(mask),
+                    "bbox_xyxy": bb,
+                    "iou_score": round(score, 4),
+                    "area": int(mask.sum()),
+                }
+            )
+        cands.sort(key=lambda x: x["iou_score"], reverse=True)
+        return _masks_envelope(cands, (int(image.shape[0]), int(image.shape[1])))
+
+
+# ━━ Engine registry ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_ENGINE_CLASSES = {"sam1": _Sam1Engine, "sam2": _Sam2Engine, "sam3": _Sam3Engine}
+_DEFAULT_CKPT = {
+    "sam1": os.path.join(_REPO_ROOT, "data", "habitat", "checkpoints", "sam", "sam_vit_b.pth"),
+    "sam2": "facebook/sam2.1-hiera-base-plus",
+    "sam3": "facebook/sam3",
+}
+_ENGINES: dict = {}
+_ENGINES_LOCK = threading.Lock()
+
+
+def _get_engine(variant: str, ckpt: str = "") -> _SamEngineBase:
+    """Lazy singleton per (variant, resolved ckpt) — checkpoints coexist."""
+    if variant not in _ENGINE_CLASSES:
+        raise ValueError(
+            "model_sam: unknown variant %r (known: %s)" % (variant, sorted(_ENGINE_CLASSES))
+        )
+    resolved = ckpt or _DEFAULT_CKPT[variant]
+    if variant == "sam1" and not os.path.isabs(resolved):
+        # sam1 ckpts are local files; HF variants take repo ids — never anchor those.
+        resolved = os.path.join(_REPO_ROOT, resolved)
+    key = (variant, resolved)
+    with _ENGINES_LOCK:
+        if key not in _ENGINES:
+            _ENGINES[key] = _ENGINE_CLASSES[variant](variant, resolved)
+        return _ENGINES[key]
 
 
 def _sniff_embedding_envelope(payload: str) -> "dict | None":
@@ -508,22 +813,33 @@ def _masks_envelope(cands: list, hw: "tuple[int, int]") -> dict:
     }
 
 
-def _engine_from_config(node: BaseCanvasNode) -> _SamEngine:
-    variant = str(node.config.get("variant", "sam1") or "sam1")
+def _engine_from_config(node: BaseCanvasNode, default_variant: str = "sam1") -> _SamEngineBase:
+    variant = str(node.config.get("variant", default_variant) or default_variant)
     ckpt = str(node.config.get("ckpt", "") or "").strip()
-    return _SamEngine.get(variant, ckpt)
+    return _get_engine(variant, ckpt)
 
 
-_VARIANT_CONFIG_FIELDS = [
-    ConfigField(
-        "variant",
-        "select",
-        label="SAM variant",
-        options=[{"value": "sam1", "label": "SAM 1 (vit_b/l/h by ckpt)"}],
-        default="sam1",
-    ),
-    ConfigField("ckpt", "text", label="Checkpoint override (blank = vit_b default)", default=""),
-]
+_SAM1_OPT = {"value": "sam1", "label": "SAM 1 (vit_b/l/h by ckpt)"}
+_SAM2_OPT = {"value": "sam2", "label": "SAM 2.1 (HF hiera)"}
+_SAM3_OPT = {"value": "sam3", "label": "SAM 3 (HF, gated weights)"}
+
+
+def _variant_fields(options: list, default: str) -> list:
+    return [
+        ConfigField(
+            "variant",
+            "select",
+            label="SAM variant",
+            options=list(options),
+            default=default,
+        ),
+        ConfigField(
+            "ckpt",
+            "text",
+            label="Checkpoint override (sam1: .pth path; sam2/sam3: HF repo id or local dir)",
+            default="",
+        ),
+    ]
 
 
 # ━━ Canvas nodes ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -541,7 +857,7 @@ class SamSegmentPointsTool(BaseCanvasNode):
     display_name = "SAM: Segment (points)"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
-        config_fields=_VARIANT_CONFIG_FIELDS
+        config_fields=_variant_fields([_SAM1_OPT, _SAM2_OPT], "sam1")
         + [
             ConfigField(
                 "multimask",
@@ -555,7 +871,7 @@ class SamSegmentPointsTool(BaseCanvasNode):
         "Segment objects at specified point(s). Foreground points (label=1) on "
         "the target, background points (label=0) to exclude regions. The image "
         "port accepts a raw base64 PNG or a model_sam embedding envelope "
-        "(skips the encoder)."
+        "(embedding injection: sam1 variant only)."
     )
     category = "tool"
     icon = "Crosshair"
@@ -604,7 +920,7 @@ class SamSegmentBoxTool(BaseCanvasNode):
     node_type = "model_sam__segment_box"
     display_name = "SAM: Segment (box)"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet", config_fields=list(_VARIANT_CONFIG_FIELDS)
+        color="violet", config_fields=_variant_fields([_SAM1_OPT, _SAM2_OPT], "sam1")
     )
     description = (
         "Segment the primary object inside each bounding box. Accepts a single "
@@ -651,7 +967,7 @@ class SamSegmentAutoTool(BaseCanvasNode):
     display_name = "SAM: Segment (auto)"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
-        config_fields=_VARIANT_CONFIG_FIELDS
+        config_fields=_variant_fields([_SAM1_OPT, _SAM2_OPT], "sam1")
         + [
             ConfigField(
                 "points_per_side", "slider", label="Points/side", default=32, min=8, max=64, step=8
@@ -661,6 +977,15 @@ class SamSegmentAutoTool(BaseCanvasNode):
                 "stability_score_thresh", "text", label="Stability threshold", default=0.92
             ),
             ConfigField("min_mask_area", "text", label="Min mask area (px)", default=100),
+            ConfigField(
+                "crop_n_layers",
+                "slider",
+                label="Crop layers (sam1 only; 0 = whole image; >0 finds smaller objects, slower)",
+                default=0,
+                min=0,
+                max=3,
+                step=1,
+            ),
         ],
     )
     description = (
@@ -679,13 +1004,76 @@ class SamSegmentAutoTool(BaseCanvasNode):
         iou_th = float(self.config.get("pred_iou_thresh", 0.86))
         stab_th = float(self.config.get("stability_score_thresh", 0.92))
         min_area = int(float(self.config.get("min_mask_area", 100)))
+        crop_layers = int(float(self.config.get("crop_n_layers", 0)))
         image_b64 = inputs["image_b64"]
         loop = asyncio.get_running_loop()
 
         def _run() -> "dict | None":
             if not engine.ensure():
                 return None
-            return engine.auto_masks(image_b64, pps, iou_th, stab_th, min_area)
+            return engine.auto_masks(image_b64, pps, iou_th, stab_th, min_area, crop_layers)
+
+        envelope = await loop.run_in_executor(None, _run)
+        if envelope is None:
+            self._self_log("degraded", "SAM engine failed to load")
+            return {"masks": ""}
+        self._self_log("count", envelope["count"])
+        return {"masks": json.dumps(envelope, ensure_ascii=False)}
+
+
+class SamSegmentTextTool(BaseCanvasNode):
+    """Concept/text-prompted segmentation — SAM 3 native.
+
+    Returns every instance matching a short noun-phrase concept. The
+    graph-level GDINO→segment_box composition remains available as the
+    non-SAM3 route; this node is the native one.
+    """
+
+    node_type = "model_sam__segment_text"
+    display_name = "SAM: Segment (text)"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet",
+        config_fields=_variant_fields([_SAM3_OPT], "sam3")
+        + [
+            ConfigField(
+                "score_thresh", "text", label="Instance score threshold", default=0.5
+            ),
+            ConfigField(
+                "mask_threshold",
+                "text",
+                label="Mask binarization threshold (per-pixel)",
+                default=0.5,
+            ),
+        ],
+    )
+    description = (
+        "Segment every instance matching a short noun-phrase concept (e.g. "
+        "'red circle'). SAM 3 native text prompting; weights are HF-gated "
+        "(facebook/sam3) — until access is granted the engine runs degraded "
+        "(empty envelope)."
+    )
+    category = "tool"
+    icon = "Type"
+    input_ports = [
+        PortDef("image_b64", "TEXT", "Base64-encoded PNG image"),
+        PortDef("text", "TEXT", "Noun-phrase concept to segment"),
+    ]
+    output_ports = [
+        PortDef("masks", "TEXT", "Masks envelope JSON (score-sorted instances)")
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        engine = _engine_from_config(self, default_variant="sam3")
+        image_b64 = inputs["image_b64"]
+        text = str(inputs["text"] or "").strip()
+        thresh = float(self.config.get("score_thresh", 0.5))
+        mask_th = float(self.config.get("mask_threshold", 0.5))
+        loop = asyncio.get_running_loop()
+
+        def _run() -> "dict | None":
+            if not engine.ensure():
+                return None
+            return engine.segment_text(image_b64, text, thresh, mask_th)
 
         envelope = await loop.run_in_executor(None, _run)
         if envelope is None:
@@ -705,7 +1093,7 @@ class SamEmbedImageTool(BaseCanvasNode):
     node_type = "model_sam__embed_image"
     display_name = "SAM: Embed Image"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet", config_fields=list(_VARIANT_CONFIG_FIELDS)
+        color="violet", config_fields=_variant_fields([_SAM1_OPT], "sam1")
     )
     description = (
         "Run only the SAM image encoder and return the embedding envelope "
@@ -738,7 +1126,7 @@ class SamEmbedImageTool(BaseCanvasNode):
 
 
 class SamNodeSet(BaseNodeSet):
-    """SAM 1 segmentation primitives, served from the shared ac-fm env.
+    """SAM-family segmentation primitives, served from the shared ac-fm env.
 
     Stateless server: engines (keyed by variant+ckpt from node config) hold
     only loaded weights; no cache, no sessions. See module docstring for the
@@ -747,8 +1135,9 @@ class SamNodeSet(BaseNodeSet):
 
     name = "model_sam"
     description = (
-        "Segment Anything (SAM 1) — point/box/auto segmentation + image "
-        "embedding, pure single-step primitives on the shared ac-fm server"
+        "Segment Anything full series (SAM 1 / 2.1 / 3 as config variants) — "
+        "point/box/auto/text segmentation + image embedding, pure single-step "
+        "primitives on the shared ac-fm server"
     )
     parallelism = "shared"
     server_python = conda_env_python("ac-fm", "SAM_PYTHON")
@@ -758,6 +1147,7 @@ class SamNodeSet(BaseNodeSet):
             SamSegmentPointsTool(),
             SamSegmentBoxTool(),
             SamSegmentAutoTool(),
+            SamSegmentTextTool(),
             SamEmbedImageTool(),
         ]
 

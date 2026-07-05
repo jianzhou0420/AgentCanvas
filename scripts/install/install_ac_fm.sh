@@ -27,6 +27,9 @@
 #
 # No weights are downloaded here — model checkpoints stay under data/ (or
 # the HF cache) and are volume-mounted in the Docker distribution picture.
+# SAM 3 weights (facebook/sam3, used by model_sam variant=sam3) are HF-GATED:
+# request access on the model page with the deploying account first, or the
+# sam3 engine runs degraded (empty outputs). sam2.1 weights are ungated.
 #
 # Usage:
 #   bash scripts/install/install_ac_fm.sh
