@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DetAny3D NodeSet — AgentCanvas</title>
+<meta name="description" content="The DetAny3D NodeSet ( ModelDetAny3DNodeSet , workspace/nodesets/model/model_detany3d/ ) wraps DetAny3D (Zhai 2025) — open-vocabulary 2D + 3D detection plus SAM segmentation — as a server-mode…">
+<meta property="og:title" content="DetAny3D NodeSet — AgentCanvas">
+<meta property="og:description" content="The DetAny3D NodeSet ( ModelDetAny3DNodeSet , workspace/nodesets/model/model_detany3d/ ) wraps DetAny3D (Zhai 2025) — open-vocabulary 2D + 3D detection plus SAM segmentation — as a server-mode…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-detany3d.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-detany3d.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">DetAny3D NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header guide">
+  <h1>DetAny3D NodeSet</h1>
+</header>
+
+<p>The <strong>DetAny3D NodeSet</strong> (<code>ModelDetAny3DNodeSet</code>, <code>workspace/nodesets/model/model_detany3d/</code>) wraps <strong>DetAny3D</strong> (Zhai 2025) — open-vocabulary 2D + 3D detection plus SAM segmentation — as a server-mode foundation-model nodeset. It is the perception backbone of the ToolEQA port: the <code>tooleqa</code> method nodeset calls these tools via the standard server-mode HTTP route, replacing upstream's POSIX-shared-memory IPC with the platform's one IPC mechanism.</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_detany3d__locate_2d</code></td>
+<td>Text → 2D bboxes via GroundingDINO (<code>bboxes_2d</code> + <code>labels</code>, 1:1).</td>
+</tr>
+<tr>
+<td><code>model_detany3d__locate_3d</code></td>
+<td>Text → 3D detections via the DetAny3D head (<code>centers_3d</code> + <code>sizes_3d</code> + <code>rot_mat</code>).</td>
+</tr>
+<tr>
+<td><code>model_detany3d__segment</code></td>
+<td>Text → instance masks (GroundingDINO boxes prompting SAM; HxW uint8 masks).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-architecture"><span class="num">1.</span> Architecture</h2>
+<p>Mirrors the <code>hmeqa</code> env-manager pattern:</p>
+<ul>
+<li><strong><code>DetAny3DEnvManager</code></strong> (singleton) holds the loaded model triple — DetAny3D's <code>WrapModel</code> (3D head), GroundingDINO Swin-B (open-vocab 2D detector), and a SAM ViT-H predictor (~10&nbsp;GB of weights, lazy on first call) — pinned to a single-thread executor for GPU thread affinity.</li>
+<li><strong>Canvas tool nodes</strong> adapt the manager's <code>predict_2d / predict_3d / predict_seg</code>; every node carries an <code>error</code> output port (empty string on success) instead of raising.</li>
+<li><strong>Env panel</strong> — GPU selector + an explicit <em>Init Models</em> action for eager warm-up from the canvas.</li>
+</ul>
+<p><strong>Workspace-standalone</strong>: the DetAny3D source is vendored under <code>model_detany3d/_vendor/</code> — no <code>third_party/</code> imports. Model loading is identical to upstream's <code>app_mp.py:init_models</code>; only the IPC layer differs (HTTP server-mode instead of <code>posix_ipc</code>).</p>
+<p>Moved from <code>env/</code> to <code>model/</code> in the 2026-07-04 nodeset-layout sweep (role test: it is a generic perception model, not an environment); node types re-prefixed <code>model_detany3d__*</code>. The <a href="model-grounding-dino.html">Grounding DINO NodeSet</a> lifts its native inference recipe from this vendored copy.</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<table>
+<thead>
+<tr>
+<th>Node</th>
+<th>Inputs</th>
+<th>Outputs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_detany3d__locate_2d</code></td>
+<td><code>image</code> (ANY — RGB ndarray or path string), <code>text</code> (TEXT — dot-separated for multi-class)</td>
+<td><code>bboxes_2d</code> (list of <code>[x1,y1,x2,y2]</code>), <code>labels</code> (1:1), <code>error</code></td>
+</tr>
+<tr>
+<td><code>model_detany3d__locate_3d</code></td>
+<td><code>image</code>, <code>text</code></td>
+<td><code>centers_3d</code> (<code>[cx,cy,cz]</code> per object), <code>sizes_3d</code> (<code>[sx,sy,sz]</code>), <code>rot_mat</code> (3×3 per object), <code>error</code></td>
+</tr>
+<tr>
+<td><code>model_detany3d__segment</code></td>
+<td><code>image</code>, <code>text</code></td>
+<td><code>masks</code> (HxW uint8, 255 = object), <code>error</code></td>
+</tr>
+</tbody>
+</table>
+<p>3D outputs mirror upstream's layout: the first three columns of each predicted box are the center, the next three the size, rounded to 2 decimals.</p>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> — DetAny3D is stateless inference, so one server serves all eval workers and the ~10&nbsp;GB load stays singleton; "shared" also publishes the URL into <code>spec._shared_urls</code> so eval subprocesses can reach it (ADR-server-003). <code>default_per_step_budget_sec = 30</code> reflects the heavy per-call cost. <code>server_python = conda_env_python("ac-detany3d", "DETANY3D_PYTHON")</code> — Python 3.9 + torch + flash-attn + GroundingDINO + UniDepth + SAM (built by <code>scripts/install/install_ac_detany3d.sh</code>).</p>
+<hr>
+<h2 id="4-environment-variables-weights"><span class="num">4.</span> Environment Variables &amp; Weights</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DETANY3D_PYTHON</code></td>
+<td><code>ac-detany3d</code> env python</td>
+<td>Interpreter for the server subprocess</td>
+</tr>
+<tr>
+<td><code>DETANY3D_DATA_ROOT</code></td>
+<td><code>data/detany3d</code></td>
+<td>Weights root: <code>weights/groundingdino_swinb_cogcoor.pth</code>, <code>weights/sam_vit_h_4b8939.pth</code>, the DetAny3D checkpoint, and the vendored <code>demo.yaml</code> config</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
+<p>Every tool returns structured errors through its <code>error</code> port (bad image input, manager-level predict errors) with empty result lists — no exceptions across the wire. The env panel's <em>Init Models</em> action surfaces load problems eagerly instead of on the first episode step.</p>
+<hr>
+<h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
+<ul>
+<li>ToolEQA (<code>tooleqa</code> method nodeset) — 2D/3D localisation + segmentation tools inside the ReAct loop, alongside <a href="vlm-qwen2-5-vl.html">Qwen2.5-VL</a> as the reasoning engine</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-architecture">1. Architecture</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h2" href="#4-environment-variables-weights">4. Environment Variables &amp; Weights</a>
+      <a class="toc-h2" href="#5-failure-behaviour">5. Failure Behaviour</a>
+      <a class="toc-h2" href="#6-consumers">6. Consumers</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

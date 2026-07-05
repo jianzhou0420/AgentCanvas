@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAM NodeSet — AgentCanvas</title>
+<meta name="description" content="The RAM NodeSet ( RAMPerceptionNodeSet , workspace/nodesets/model/model_ram.py ) wraps Recognize Anything (23.06) Swin-L image tagging — both the original RAM and the RAM++ variant — as a generic…">
+<meta property="og:title" content="RAM NodeSet — AgentCanvas">
+<meta property="og:description" content="The RAM NodeSet ( RAMPerceptionNodeSet , workspace/nodesets/model/model_ram.py ) wraps Recognize Anything (23.06) Swin-L image tagging — both the original RAM and the RAM++ variant — as a generic…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-ram.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-ram.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">RAM NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header guide">
+  <h1>RAM NodeSet</h1>
+</header>
+
+<p>The <strong>RAM NodeSet</strong> (<code>RAMPerceptionNodeSet</code>, <code>workspace/nodesets/model/model_ram.py</code>) wraps <a href="https://arxiv.org/abs/2306.03514">Recognize Anything</a> (23.06) Swin-L image tagging — both the original <strong>RAM</strong> and the <strong>RAM++</strong> variant — as a generic foundation-model nodeset. Originally built for DiscussNav's per-direction tagging; extended in the TODO #56 boundary pass (2026-07-04) with a variant-keyed engine that replaced the RAM copies embedded in <code>opennav_perception</code> and <code>smartway_perception</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_ram__tag_panorama</code></td>
+<td>Ordered tagging: list of <code>{dir_id, rgb_base64}</code> → <code>tags_per_dir</code> (LIST[TEXT], aligned 1:1; separators stripped — DiscussNav convention).</td>
+</tr>
+<tr>
+<td><code>model_ram__tag_views</code></td>
+<td>Keyed-batch tagging: <code>{key: {rgb_base64}}</code> → <code>tags</code> (<code>{key: tag string}</code>); per-node config picks variant / resolution / separator mode.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-variant-keyed-engine"><span class="num">1.</span> Variant-keyed engine</h2>
+<p>Engines are lazy singletons in a registry keyed <strong><code>(variant, ckpt, image_size)</code></strong>. <code>variant</code> picks the factory (<code>ram.models.ram</code> vs <code>ram.models.ram_plus</code> — same package, same transform/inference API), so Open-Nav's <code>ram@224</code> and SmartWay's <code>ram_plus@384</code> co-reside in one server subprocess (~2 models' VRAM).</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Default checkpoint</th>
+<th>Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ram</code></td>
+<td><code>data/opennav/ram_swin_large_14m.pth</code> (<code>$RAM_CKPT</code>)</td>
+<td>DiscussNav (@384), Open-Nav / Three-Step Nav (@224)</td>
+</tr>
+<tr>
+<td><code>ram_plus</code></td>
+<td><code>data/smartway/ram_plus/ram_plus_swin_large_14m.pth</code> (<code>$RAM_PLUS_CKPT</code>)</td>
+<td>SmartWay (@384)</td>
+</tr>
+</tbody>
+</table>
+<p>Checkpoint paths resolve against a repo-root <em>walk-up</em> to the <code>data/</code> anchor — a fixed <code>../../..</code> breaks when the file is served from a workspace overlay copy at a different depth. <code>initialize(ram_ckpt=…, ram_plus_ckpt=…)</code> can override the per-variant defaults as nodeset kwargs.</p>
+<p><strong>Tag cache</strong> — per-server content-hash cache keyed <code>variant | image_size | keep_separators | sha1(rgb_base64)</code>. The config triple <em>must</em> be in the key, or one graph's config would cross-serve another's tags (the RAM@224 / RAM++@384 co-residency hazard). Byte-identical views recurring across steps (backtracking) reuse their tag, mirroring upstream DiscussNav's <code>view_record</code> caching.</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<h3 id="model_ram__tag_panorama"><code>model_ram__tag_panorama</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>views</code> (ANY — ordered list of <code>{dir_id, rgb_base64}</code>, e.g. 12 directions)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>tags_per_dir</code> (LIST[TEXT] — aligned 1:1 with <code>views</code>)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td>— (always the default <code>ram@384</code> engine, separators stripped)</td>
+</tr>
+</tbody>
+</table>
+<p>Source: DiscussNav's per-heading <code>ram_img_tagging</code> inside <code>observe_environment</code>. Each entry is the space-joined tag string after stripping RAM's <code>" |"</code> separators.</p>
+<h3 id="model_ram__tag_views"><code>model_ram__tag_views</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>views</code> (ANY — <code>{key: {rgb_base64}}</code> keyed dict; keys opaque, insertion order preserved)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>tags</code> (ANY — <code>{key: tag string}</code>)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (ram | ram_plus), <code>image_size</code> (224 | 384, default 384), <code>keep_separators</code> (toggle, default off), <code>ckpt</code> (optional override)</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>keep_separators</code> is an LLM-visible fidelity detail</strong>: Open-Nav passes the RAM output <em>raw</em> — <code>"tag | tag"</code> separators included — so its graphs set the toggle on; the default (off) strips to the DiscussNav convention.</p>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p><code>server_python</code> defaults to the <strong><code>ac-ram</code></strong> env (Python 3.10, torch 2.4.1, transformers &lt;4.40, <code>recognize-anything</code> from upstream git — ships both the <code>ram</code> and <code>ram_plus</code> factories). The dedicated env exists because the RAM library's <code>apply_chunking_to_forward</code> import breaks under newer transformers releases. Override with <code>$RAM_PERCEPTION_PYTHON</code>. Load: <code>POST /api/components/nodesets/model_ram/load?mode=server</code>.</p>
+<hr>
+<h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RAM_PERCEPTION_PYTHON</code></td>
+<td><code>ac-ram</code> env python</td>
+<td>Interpreter for the server subprocess</td>
+</tr>
+<tr>
+<td><code>RAM_CKPT</code></td>
+<td><code>data/opennav/ram_swin_large_14m.pth</code></td>
+<td><code>ram</code> variant checkpoint</td>
+</tr>
+<tr>
+<td><code>RAM_PLUS_CKPT</code></td>
+<td><code>data/smartway/ram_plus/ram_plus_swin_large_14m.pth</code></td>
+<td><code>ram_plus</code> variant checkpoint</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
+<p>Per-view tag exceptions are caught and logged; that view's slot/key gets <code>""</code> and the rest proceed (alignment / key coverage preserved). An unknown <code>variant</code> raises at engine lookup. Empty <code>views</code> → empty output without touching the model.</p>
+<hr>
+<h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
+<ul>
+<li><a href="../method/discussnav.html">DiscussNav</a> — <code>tag_panorama</code> per 12-direction sweep, paired 1:1 with <a href="model-instructblip.html">InstructBLIP</a> captions</li>
+<li>Open-Nav / <a href="../method/threestepnav.html">Three-Step Nav</a> — <code>tag_views</code> (<code>ram</code> @ 224, <code>keep_separators</code> on) over the candidate views; replaced <code>opennav_perception__tag</code></li>
+<li><a href="../method/smartway.html">SmartWay</a> — <code>tag_views</code> (<code>ram_plus</code> @ 384) over the predictor's candidates dict; replaced <code>smartway_perception__tag</code> — the one cross-env move of the extraction (ac-smartway → ac-ram), output parity verified 12/12</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-variant-keyed-engine">1. Variant-keyed engine</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_ram__tag_panorama">model_ram__tag_panorama</a>
+      <a class="toc-h3" href="#model_ram__tag_views">model_ram__tag_views</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
+      <a class="toc-h2" href="#5-failure-behaviour">5. Failure Behaviour</a>
+      <a class="toc-h2" href="#6-consumers">6. Consumers</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
