@@ -39,6 +39,11 @@ at a py3.8 env).
 
 Load: POST /api/components/nodesets/model_dinov2/load?mode=server
 
+FM-template alignment (2026-07-05): single-flight GPU inference lock added
+(one in-flight forward per engine). Model identity (`hub_model` /
+`processor_id`) was already node config; registry, load-failure latch and
+degraded self-log were already in place.
+
 last updated: 2026-07-05
 """
 
@@ -88,6 +93,9 @@ class _DinoV2Engine:
         self.processor = None
         self._loaded = False
         self._load_failed = False
+        # Single-flight GPU section: one in-flight forward per engine bounds
+        # peak VRAM under concurrent eval workers (house FM-engine template).
+        self._infer_lock = threading.Lock()
 
     @classmethod
     def get(cls, hub_repo: str, hub_model: str, processor_id: str) -> "_DinoV2Engine":
@@ -148,11 +156,12 @@ class _DinoV2Engine:
             return None
         import torch
 
-        pp = self.processor(images=images, return_tensors="pt")
-        pixel_values = pp["pixel_values"].to(self.device)
-        with torch.no_grad():
-            feats = self.model(pixel_values)
-        return feats.detach().cpu().numpy().astype(np.float32)
+        with self._infer_lock:
+            pp = self.processor(images=images, return_tensors="pt")
+            pixel_values = pp["pixel_values"].to(self.device)
+            with torch.no_grad():
+                feats = self.model(pixel_values)
+            return feats.detach().cpu().numpy().astype(np.float32)
 
 
 def _decode_rgb(b64: str) -> np.ndarray:
