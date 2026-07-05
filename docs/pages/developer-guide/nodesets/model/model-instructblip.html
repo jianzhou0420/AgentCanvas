@@ -105,14 +105,14 @@
 </tr>
 <tr>
 <td>Config</td>
-<td><code>model_name</code> (default <code>Salesforce/instructblip-flan-t5-xl</code>), <code>prompt</code>, <code>device</code> (auto | cuda | cpu), <code>max_length</code> (slider 32–384, default 256), <code>num_beams</code> (slider 1–8, default 5)</td>
+<td><code>model_name</code> (default <code>Salesforce/instructblip-flan-t5-xl</code>), <code>prompt</code>, <code>max_length</code> (slider 32–384, default 256), <code>num_beams</code> (slider 1–8, default 5). Device moved to the deployment level: <code>$INSTRUCTBLIP_DEVICE</code></td>
 </tr>
 </tbody>
 </table>
-<p><strong>Caption cache</strong> — per-server <code>sha1(rgb_base64) → caption</code>. Note the older-style key: unlike <a href="model-blip2.html"><code>model_blip2</code></a>, the prompt/decoding config is <em>not</em> part of the key, so a config change within one server lifetime can serve stale captions; restart the server (or the nodeset) after config edits. After each batch the node calls <code>torch.cuda.empty_cache()</code> to curb allocator growth across many calls.</p>
+<p><strong>Stateless</strong> — the former per-server caption cache was removed in the 2026-07-05 FM-template alignment. That removal also killed a real bug: the cache was keyed on image bytes only, so a prompt/beam/model config change within one server lifetime kept serving captions generated under the old config. The server now holds loaded weights only; reuse is a graph-level decision. After each batch the node still calls <code>torch.cuda.empty_cache()</code> to curb allocator growth.</p>
 <hr>
 <h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
-<p><code>parallelism = "shared"</code> (one ~7&nbsp;GB model shared by K eval workers; bit-identical at <code>worker_count=1</code>). <code>server_python</code> defaults to the shared <strong><code>ac-fm</code></strong> FM env (transformers 5.13.0 + tokenizers 0.22) since 2026-07-05 — beam-5 captions verified byte-identical to the previous <code>agentcanvas</code> hosting, manual image-token unpacking included. <strong>Not</strong> <code>ac-ram</code>: its tokenizers 0.15.2 cannot parse the flan-t5 fast tokenizer and it lacks sentencepiece, so <code>InstructBlipProcessor</code> fails to load there (a past mis-choice that 500-ed every caption call). Override with <code>$INSTRUCTBLIP_PYTHON</code>. Load: <code>POST /api/components/nodesets/model_instructblip/load?mode=server</code>.</p>
+<p><code>parallelism = "shared"</code> (one ~7&nbsp;GB model shared by K eval workers; bit-identical at <code>worker_count=1</code>). <code>server_python</code> defaults to the shared <strong><code>ac-fm</code></strong> FM env (transformers 5.13.0 + tokenizers 0.22) since 2026-07-05 — beam-5 captions verified byte-identical to the previous <code>agentcanvas</code> hosting, manual image-token unpacking included. <strong>Not</strong> <code>ac-ram</code>: its tokenizers 0.15.2 cannot parse the flan-t5 fast tokenizer and it lacks sentencepiece, so <code>InstructBlipProcessor</code> fails to load there (a past mis-choice that 500-ed every caption call). Override with <code>$INSTRUCTBLIP_PYTHON</code>. Engines live in a lazy registry keyed by <code>model_name</code> with a load-failure latch and a single-flight GPU inference lock (FM template, 2026-07-05). Load: <code>POST /api/components/nodesets/model_instructblip/load?mode=server</code>.</p>
 <hr>
 <h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
 <table>
@@ -129,11 +129,16 @@
 <td><code>ac-fm</code> env python</td>
 <td>Interpreter for the server subprocess (dedicated-env override)</td>
 </tr>
+<tr>
+<td><code>INSTRUCTBLIP_DEVICE</code></td>
+<td><code>auto</code> (cuda when available)</td>
+<td>Inference device (moved off the node UI 2026-07-05 — deployment knob)</td>
+</tr>
 </tbody>
 </table>
 <hr>
 <h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
-<p>Per-view caption exceptions are caught and logged; that slot stays <code>""</code> and the remaining views proceed (1:1 alignment preserved). A model-load failure raises as a node error. Empty <code>views</code> → empty outputs without touching the model.</p>
+<p>Per-view caption exceptions are caught and logged; that slot stays <code>""</code> and the remaining views proceed (1:1 alignment preserved). A model-load failure latches and every call returns empty outputs with a <code>degraded</code> self-log entry (house FM convention since 2026-07-05). Empty <code>views</code> → empty outputs without touching the model.</p>
 <hr>
 <h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
 <ul>
