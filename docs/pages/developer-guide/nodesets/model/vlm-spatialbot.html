@@ -130,7 +130,7 @@
 </tr>
 <tr>
 <td>Config</td>
-<td><code>prompt</code> (default: the spatial what-objects-how-far prompt), <code>max_new_tokens</code> (default 200)</td>
+<td><code>model_path</code> (blank = <code>$SPATIALBOT_PATH</code> or repo default), <code>prompt</code> (default: the spatial what-objects-how-far prompt), <code>max_new_tokens</code> (default 200)</td>
 </tr>
 <tr>
 <td>Backend call</td>
@@ -157,7 +157,7 @@
 </tr>
 <tr>
 <td>Config</td>
-<td><code>max_new_tokens</code> (default 200)</td>
+<td><code>model_path</code> (blank = <code>$SPATIALBOT_PATH</code> or repo default), <code>max_new_tokens</code> (default 200)</td>
 </tr>
 </tbody>
 </table>
@@ -166,7 +166,7 @@
 <h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
 <p><code>parallelism = "shared"</code> (stateless VLM — one server, K eval workers coalesce); <code>server_python = conda_env_python("ac-ram", "SPATIALBOT_PYTHON")</code>.</p>
 <p>The <strong><code>ac-ram</code> env</strong> (transformers 4.39.3 + torch 2.4.1) is in Bunny-Phi's compatible range and is the env that already hosted this exact forward inside <code>opennav_perception</code> — so the extraction cannot shift outputs (verified 10/10 byte-equal via captured-input unit replay). A dedicated env remains the ideal; point <code>$SPATIALBOT_PYTHON</code> at it when built.</p>
-<p>Weights load as a lazy singleton on first call (fp16, <code>trust_remote_code</code>). Checkpoint path resolution walks upward from the nodeset file to the repo's <code>data/</code> anchor — a fixed <code>../../..</code> breaks when the file is served from a workspace <em>overlay</em> copy at a different depth. Load: <code>POST /api/components/nodesets/vlm_spatialbot/load?mode=server</code>.</p>
+<p>Engines live in a lazy registry keyed by <code>model_path</code> (fp16, <code>trust_remote_code</code>), with a load-failure latch and a single-flight GPU inference lock (FM template, 2026-07-05). Checkpoint path resolution walks upward from the nodeset file to the repo's <code>data/</code> anchor — a fixed <code>../../..</code> breaks when the file is served from a workspace <em>overlay</em> copy at a different depth. Load: <code>POST /api/components/nodesets/vlm_spatialbot/load?mode=server</code>.</p>
 <hr>
 <h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
 <table>
@@ -199,7 +199,7 @@
 <hr>
 <h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
 <ul>
-<li><strong>No degraded stub</strong> — a model-load failure raises and surfaces as a node error.</li>
+<li><strong>Degraded latch</strong> — a model-load failure latches; every call then returns empty outputs with a <code>degraded</code> self-log entry (house FM convention since 2026-07-05).</li>
 <li>A view missing <code>rgb_base64</code> yields <code>""</code> for that key; the keyed output always covers every input key.</li>
 <li>Empty <code>views</code> / missing <code>rgb_b64</code> → empty output without touching the model.</li>
 </ul>

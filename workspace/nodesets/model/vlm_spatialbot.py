@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """SpatialBot-3B — generic depth-aware VLM, server-mode foundation-model nodeset.
 
 Extracted from ``opennav_perception`` (where SpatialBot lived co-hosted with RAM
@@ -28,6 +26,12 @@ Two tools::
                                     depth_raw_base64?}}) → captions: {key: str}
     vlm_spatialbot__generate       (rgb_b64, depth_b64?, prompt) → text
 
+FM-template alignment (2026-07-05): model identity is node config —
+``model_path`` (blank = ``$SPATIALBOT_PATH`` / legacy
+``$OPENNAV_SPATIALBOT_PATH`` / the repo-anchored default), engines in a lazy
+registry keyed by the resolved path, load-failure latch (empty outputs +
+``degraded`` self-log), single-flight GPU inference lock.
+
 Runs **server mode** in the ``ac-ram`` env (transformers 4.39.3 + torch 2.4.1
 — in Bunny-Phi's compatible range; the same env that hosted this exact forward
 inside ``opennav_perception``, so outputs are unchanged). Override with
@@ -36,8 +40,10 @@ ideal per memory feedback_dedicated_env_per_model).
 
 Load: POST /api/components/nodesets/vlm_spatialbot/load?mode=server
 
-last updated: 2026-07-04
+last updated: 2026-07-05
 """
+
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -59,6 +65,7 @@ from app.components import (
 )
 
 log = logging.getLogger("agentcanvas.vlm_spatialbot")
+
 
 def _find_repo_root() -> str:
     """Walk upward from this file until a dir containing ``data/`` is found.
@@ -91,68 +98,83 @@ _SPATIAL_MAX_NEW_TOKENS = 200  # api.py:133
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Engine — lazy singleton
+# Engine — lazy registry per model_path
 # ══════════════════════════════════════════════════════════════════════
 
 
 class _SpatialBotEngine:
-    """Lazy singleton: load SpatialBot-3B on first caption() call, stay resident."""
+    """Lazy registry: one resident SpatialBot per ``model_path``; weights only."""
 
-    _instance: _SpatialBotEngine | None = None
-    _lock = threading.Lock()
+    _instances: ClassVar[dict] = {}
+    _registry_lock = threading.Lock()
+    _default_path: ClassVar[str] = _SPATIALBOT_PATH_DEFAULT
 
-    def __init__(self) -> None:
-        self.model_path = _SPATIALBOT_PATH_DEFAULT
+    def __init__(self, model_path: str) -> None:
+        self.model_path = model_path
         self.device = None
         self.model = None
         self.tokenizer = None
         self._loaded = False
+        self._load_failed = False
+        self._lock = threading.Lock()  # guards load AND single-flight inference
 
     @classmethod
-    def get(cls) -> _SpatialBotEngine:
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls()
-            return cls._instance
+    def get(cls, model_path: str = "") -> _SpatialBotEngine:
+        resolved = model_path or cls._default_path
+        key = (resolved,)
+        with cls._registry_lock:
+            if key not in cls._instances:
+                cls._instances[key] = cls(resolved)
+            return cls._instances[key]
 
-    def _ensure(self) -> None:
+    def ensure(self) -> bool:
         if self._loaded:
-            return
+            return True
+        if self._load_failed:
+            return False
         with self._lock:
             if self._loaded:
-                return
-            log.info("Loading SpatialBot-3B from %s", self.model_path)
-            import torch  # noqa: WPS433
-            from transformers import (  # noqa: WPS433
-                AutoModelForCausalLM,
-                AutoTokenizer,
-            )
-
-            self.device = torch.device(
-                "cuda" if torch.cuda.is_available() else "cpu"
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_path, trust_remote_code=True
-            )
-            self.model = (
-                AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    torch_dtype=torch.float16,
-                    trust_remote_code=True,
+                return True
+            if self._load_failed:
+                return False
+            try:
+                log.info("Loading SpatialBot-3B from %s", self.model_path)
+                import torch  # noqa: WPS433
+                from transformers import (  # noqa: WPS433
+                    AutoModelForCausalLM,
+                    AutoTokenizer,
                 )
-                .eval()
-                .to(self.device)
-            )
-            # The SigLIP vision tower is lazily constructed (is_loaded=False, no
-            # params), so the model-level .to(device) misses it — it would then
-            # load onto CPU during generate and raise a device-mismatch 500.
-            # Force-load and move it (cf. api.py:270 get_vision_tower().to(cuda)).
-            vt = self.model.get_vision_tower()
-            if hasattr(vt, "load_model") and not getattr(vt, "is_loaded", False):
-                vt.load_model()
-            vt.to(device=self.device, dtype=self.model.dtype)
-            self._loaded = True
-            log.info("SpatialBot ready")
+
+                self.device = torch.device(
+                    "cuda" if torch.cuda.is_available() else "cpu"
+                )
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_path, trust_remote_code=True
+                )
+                self.model = (
+                    AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        torch_dtype=torch.float16,
+                        trust_remote_code=True,
+                    )
+                    .eval()
+                    .to(self.device)
+                )
+                # The SigLIP vision tower is lazily constructed (is_loaded=False, no
+                # params), so the model-level .to(device) misses it — it would then
+                # load onto CPU during generate and raise a device-mismatch 500.
+                # Force-load and move it (cf. api.py:270 get_vision_tower().to(cuda)).
+                vt = self.model.get_vision_tower()
+                if hasattr(vt, "load_model") and not getattr(vt, "is_loaded", False):
+                    vt.load_model()
+                vt.to(device=self.device, dtype=self.model.dtype)
+                self._loaded = True
+                log.info("SpatialBot ready")
+                return True
+            except Exception as exc:
+                log.warning("SpatialBot load failed (%s): %s", self.model_path, exc)
+                self._load_failed = True
+                return False
 
     @staticmethod
     def _pack_depth(depth_u8: np.ndarray) -> np.ndarray:
@@ -184,7 +206,6 @@ class _SpatialBotEngine:
         prompt: str,
         max_new_tokens: int = _SPATIAL_MAX_NEW_TOKENS,
     ) -> str:
-        self._ensure()
         import torch  # noqa: WPS433
         from PIL import Image  # noqa: WPS433
 
@@ -208,37 +229,38 @@ class _SpatialBotEngine:
         # ids as special token ids -201 / -202 (api.py:255-257), NOT the literal
         # "<image 1>" text — otherwise the model never attends to the images
         # ("I cannot see any images provided").
-        chunks = [
-            self.tokenizer(c).input_ids
-            for c in chat.split("<image 1>\n<image 2>\n")
-        ]
-        text_ids = (
-            torch.tensor(chunks[0] + [-201, -202] + chunks[1], dtype=torch.long)
-            .unsqueeze(0)
-            .to(self.device)
-        )
-        try:
-            image_tensors = self.model.process_images(
-                images, self.model.config
-            ).to(dtype=self.model.dtype, device=self.device)
-        except Exception:
-            image_tensors = None
-
-        # Generate args mirror api.py:271-277 EXACTLY (max_new_tokens=200,
-        # use_cache=True, repetition_penalty=1.0 — nothing else; upstream
-        # relies on the checkpoint's own generation defaults, so injecting
-        # do_sample/temperature would diverge). Fixed 2026-07-03.
-        with torch.no_grad():
-            output_ids = self.model.generate(
-                text_ids,
-                images=image_tensors,
-                max_new_tokens=max_new_tokens,
-                use_cache=True,
-                repetition_penalty=1.0,
+        with self._lock:
+            chunks = [
+                self.tokenizer(c).input_ids
+                for c in chat.split("<image 1>\n<image 2>\n")
+            ]
+            text_ids = (
+                torch.tensor(chunks[0] + [-201, -202] + chunks[1], dtype=torch.long)
+                .unsqueeze(0)
+                .to(self.device)
             )
-        out = self.tokenizer.decode(
-            output_ids[0][text_ids.shape[1]:], skip_special_tokens=True
-        )
+            try:
+                image_tensors = self.model.process_images(
+                    images, self.model.config
+                ).to(dtype=self.model.dtype, device=self.device)
+            except Exception:
+                image_tensors = None
+
+            # Generate args mirror api.py:271-277 EXACTLY (max_new_tokens=200,
+            # use_cache=True, repetition_penalty=1.0 — nothing else; upstream
+            # relies on the checkpoint's own generation defaults, so injecting
+            # do_sample/temperature would diverge). Fixed 2026-07-03.
+            with torch.no_grad():
+                output_ids = self.model.generate(
+                    text_ids,
+                    images=image_tensors,
+                    max_new_tokens=max_new_tokens,
+                    use_cache=True,
+                    repetition_penalty=1.0,
+                )
+            out = self.tokenizer.decode(
+                output_ids[0][text_ids.shape[1]:], skip_special_tokens=True
+            )
         return out.strip()
 
 
@@ -290,6 +312,13 @@ def _view_depth(v: dict) -> np.ndarray | None:
     return None
 
 
+_MODEL_PATH_FIELD = ConfigField(
+    "model_path", "text",
+    label="Model path (blank = $SPATIALBOT_PATH or repo default)",
+    default="",
+)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Tools
 # ══════════════════════════════════════════════════════════════════════
@@ -311,6 +340,7 @@ class CaptionViewsTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
+            _MODEL_PATH_FIELD,
             ConfigField("prompt", "text", label="Prompt", default=_SPATIAL_PROMPT),
             ConfigField("max_new_tokens", "text", label="max_new_tokens", default=200),
         ],
@@ -333,9 +363,11 @@ class CaptionViewsTool(BaseCanvasNode):
         max_new_tokens = int(cfg.get("max_new_tokens", _SPATIAL_MAX_NEW_TOKENS))
 
         loop = asyncio.get_running_loop()
-        engine = _SpatialBotEngine.get()
+        engine = _SpatialBotEngine.get(str(cfg.get("model_path", "") or "").strip())
 
-        def _caption_all() -> dict[str, str]:
+        def _caption_all() -> "dict[str, str] | None":
+            if not engine.ensure():
+                return None
             out: dict[str, str] = {}
             for key, v in views.items():
                 key = str(key)
@@ -343,10 +375,17 @@ class CaptionViewsTool(BaseCanvasNode):
                     out[key] = ""
                     continue
                 rgb = _decode_rgb(v["rgb_base64"])
-                out[key] = engine.generate(rgb, _view_depth(v), prompt, max_new_tokens)
+                try:
+                    out[key] = engine.generate(rgb, _view_depth(v), prompt, max_new_tokens)
+                except Exception as exc:
+                    log.warning("SpatialBot caption failed for %s: %s", key, exc)
+                    out[key] = ""
             return out
 
         captions = await loop.run_in_executor(None, _caption_all)
+        if captions is None:
+            self._self_log("degraded", "SpatialBot engine failed to load")
+            return {"captions": {}}
         self._self_log("num_views", len(captions))
         return {"captions": captions}
 
@@ -362,6 +401,7 @@ class GenerateTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
+            _MODEL_PATH_FIELD,
             ConfigField("max_new_tokens", "text", label="max_new_tokens", default=200),
         ],
     )
@@ -384,10 +424,17 @@ class GenerateTool(BaseCanvasNode):
         depth = _decode_depth_norm_u8(depth_b64) if depth_b64 else None
 
         loop = asyncio.get_running_loop()
-        engine = _SpatialBotEngine.get()
-        text = await loop.run_in_executor(
-            None, engine.generate, _decode_rgb(rgb_b64), depth, prompt, max_new_tokens
-        )
+        engine = _SpatialBotEngine.get(str(cfg.get("model_path", "") or "").strip())
+
+        def _run() -> "str | None":
+            if not engine.ensure():
+                return None
+            return engine.generate(_decode_rgb(rgb_b64), depth, prompt, max_new_tokens)
+
+        text = await loop.run_in_executor(None, _run)
+        if text is None:
+            self._self_log("degraded", "SpatialBot engine failed to load")
+            return {"text": ""}
         self._self_log("text", text[:200])
         return {"text": text}
 
@@ -413,10 +460,9 @@ class SpatialBotNodeSet(BaseNodeSet):
         return [CaptionViewsTool(), GenerateTool()]
 
     async def initialize(self, **kwargs: Any) -> None:
-        engine = _SpatialBotEngine.get()
         if "spatialbot_path" in kwargs:
-            engine.model_path = str(kwargs["spatialbot_path"])
-        log.info("SpatialBotNodeSet ready (path=%s)", engine.model_path)
+            _SpatialBotEngine._default_path = str(kwargs["spatialbot_path"])
+        log.info("SpatialBotNodeSet ready (default path=%s)", _SpatialBotEngine._default_path)
 
     async def shutdown(self) -> None:
         pass
