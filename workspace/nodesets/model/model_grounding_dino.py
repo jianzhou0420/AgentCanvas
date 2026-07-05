@@ -42,10 +42,12 @@ AO-Planner's 0.4 / 0.4, caption ``"ground"`` (C-2 fidelity alignment
 variant-agnostic; NavGPT-style post-processing lives in the pure
 ``navgpt_mp3d_tools__format_detections`` node.
 
-TRANSITIONAL second tool ``model_grounding_dino__ground_mask`` (GroundingDINO
-boxes → embedded SAM ViT-H → union mask): a cross-model composition scheduled
-for graph-level replacement (detect → ``model_sam__segment_box`` → union);
-kept byte-identical until ``aoplanner_ce`` migrates, then deleted.
+The former ``ground_mask`` tool (GroundingDINO boxes → embedded SAM ViT-H →
+union mask) was evicted 2026-07-06: cross-model composition belongs to the
+graph. ``aoplanner_ce`` now wires detect → ``aoplanner__ground_boxes`` →
+``model_sam__segment_box`` → ``sample_waypoints.sam_result`` (equivalence-
+gated on captured frames: candidate_pixels 12/12 exact; mask bitmaps carry
+the accepted 1–3 px cross-env conv drift, torch 2.1→2.8).
 
 Runs **server mode** (own subprocess + CUDA context) so the parent eval holds
 no GroundingDINO VRAM and worker pools coalesce onto one shared server.
@@ -99,12 +101,6 @@ _DEFAULT_WEIGHTS = os.environ.get(
     os.path.join(_REPO_ROOT, "data", "detany3d", "weights", "groundingdino_swint_ogc.pth"),
 )
 _DEFAULT_HF_MODEL = os.environ.get("GROUNDING_DINO_HF_MODEL", "IDEA-Research/grounding-dino-tiny")
-# SAM ViT-H (AO-Planner's exact SAM variant) — used only by the transitional
-# ground_mask tool; dies with it.
-_SAM_VIT_H_WEIGHTS = os.environ.get(
-    "GROUNDING_DINO_SAM_WEIGHTS",
-    os.path.join(_REPO_ROOT, "data", "detany3d", "weights", "sam_vit_h_4b8939.pth"),
-)
 
 # AO-Planner defaults (llm/run_grounded_sam.sh: box/text_threshold 0.4).
 _DEFAULT_TEXT_PROMPT = "ground"
@@ -117,10 +113,6 @@ _BACKEND = os.environ.get("GROUNDING_DINO_BACKEND", "native")
 # Single-thread executor: GPU affinity + single-flight inference across all
 # engines in this server (mirrors DetAny3DEnvManager's executor pattern).
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="gdino")
-
-# Transitional ground_mask SAM (module-global; removed with the tool).
-_sam_predictor = None
-_sam_lock = threading.Lock()
 
 
 def _decode_rgb(b64: str) -> np.ndarray:
@@ -395,73 +387,6 @@ def _engine_from_config(cfg: dict):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Transitional ground_mask internals (deleted with the tool)
-# ══════════════════════════════════════════════════════════════════════
-
-
-def _ensure_sam():
-    """Lazy-load SAM ViT-H (the AO-Planner SAM variant) once per server."""
-    global _sam_predictor
-    if _sam_predictor is not None:
-        return _sam_predictor
-    with _sam_lock:
-        if _sam_predictor is not None:
-            return _sam_predictor
-        import torch
-        from segment_anything import SamPredictor, sam_model_registry
-
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        log.info("Loading SAM ViT-H on %s (ckpt=%s) …", device, _SAM_VIT_H_WEIGHTS)
-        sam = sam_model_registry["vit_h"](checkpoint=_SAM_VIT_H_WEIGHTS)
-        sam.to(device)
-        sam.eval()
-        _sam_predictor = SamPredictor(sam)
-        log.info("SAM ViT-H loaded (%s)", device)
-        return _sam_predictor
-
-
-def _ground_mask(b64: str, text: str, box_threshold: float, text_threshold: float) -> dict:
-    """GroundingDINO('ground') boxes -> SAM masks (per box) -> union ground mask.
-
-    Faithful AO-Planner Grounded-SAM: detect ground boxes, segment each with SAM
-    ViT-H (multimask_output=False), union the masks. Returns a base64 PNG mask.
-    Always the native detector (its historical serving env).
-    """
-    import numpy as np
-    from PIL import Image
-
-    engine = _GDinoNativeEngine.get("")
-    if not engine.ensure():
-        return {"mask_b64": "", "n_boxes": 0, "image_w": 0, "image_h": 0}
-    det = engine.detect(b64, text, box_threshold, text_threshold)
-    boxes = det.get("boxes") or []
-    img = _decode_rgb(b64)
-    h, w = img.shape[:2]
-    if not boxes:
-        return {"mask_b64": "", "n_boxes": 0, "image_w": int(w), "image_h": int(h)}
-    predictor = _ensure_sam()
-    predictor.set_image(img)
-    union = None
-    for b in boxes:
-        xy = b.get("xyxy")
-        if not xy or len(xy) != 4:
-            continue
-        masks, _scores, _ = predictor.predict(box=np.asarray(xy, dtype=float), multimask_output=False)
-        m = np.asarray(masks[0]).astype(bool)
-        union = m if union is None else (union | m)
-    if union is None:
-        return {"mask_b64": "", "n_boxes": 0, "image_w": int(w), "image_h": int(h)}
-    buf = io.BytesIO()
-    Image.fromarray((union.astype(np.uint8) * 255), mode="L").save(buf, format="PNG")
-    return {
-        "mask_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
-        "n_boxes": len(boxes),
-        "image_w": int(w),
-        "image_h": int(h),
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════
 # Canvas nodes
 # ══════════════════════════════════════════════════════════════════════
 
@@ -551,50 +476,6 @@ class GroundingDinoDetectTool(BaseCanvasNode):
         return {"result": json.dumps(result)}
 
 
-class GroundingDinoGroundMaskTool(BaseCanvasNode):
-    """GroundingDINO('ground') + SAM ViT-H → union navigable-ground mask.
-
-    TRANSITIONAL (cross-model composition): scheduled for graph-level
-    replacement by ``__detect`` → ``model_sam__segment_box`` → union in
-    ``aoplanner_ce``; kept byte-identical until that migration lands.
-    Output ``mask_b64`` feeds ``aoplanner__sample_waypoints``.
-    """
-
-    node_type: ClassVar[str] = "model_grounding_dino__ground_mask"
-    display_name: ClassVar[str] = "Grounded-SAM: Ground Mask"
-    description: ClassVar[str] = "GroundingDINO('ground') + SAM ViT-H → union navigable-ground mask (base64 PNG)"
-    category: ClassVar[str] = "perception"
-    icon: ClassVar[str] = "Layers"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="violet",
-        config_fields=[
-            ConfigField("text_prompt", "text", "Ground prompt (AO-Planner 'ground')", default="ground"),
-            ConfigField("box_threshold", "text", "Box confidence threshold (AO-Planner 0.4)", default="0.4"),
-            ConfigField("text_threshold", "text", "Text-match threshold (AO-Planner 0.4)", default="0.4"),
-        ],
-    )
-    input_ports = [
-        PortDef("image_b64", "TEXT", "Base64 PNG/JPEG RGB image"),
-    ]
-    output_ports = [
-        PortDef("mask_b64", "TEXT", "Base64 PNG of the union ground mask (empty if no ground)"),
-        PortDef("n_boxes", "ANY", "Number of ground boxes segmented"),
-    ]
-
-    async def forward(self, inputs: dict, ctx: Any = None) -> dict:
-        b64 = inputs.get("image_b64") or ""
-        if not b64:
-            return {"mask_b64": "", "n_boxes": 0}
-        config = getattr(self, "config", None) or {}
-        text = (config.get("text_prompt") or _DEFAULT_TEXT_PROMPT).strip()
-        box_threshold = float(config.get("box_threshold", _DEFAULT_BOX_THRESHOLD) or _DEFAULT_BOX_THRESHOLD)
-        text_threshold = float(config.get("text_threshold", _DEFAULT_TEXT_THRESHOLD) or _DEFAULT_TEXT_THRESHOLD)
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(_executor, _ground_mask, b64, text, box_threshold, text_threshold)
-        self._self_log("n_boxes", result.get("n_boxes", 0))
-        return {"mask_b64": result["mask_b64"], "n_boxes": result.get("n_boxes", 0)}
-
-
 class GroundingDinoNodeSet(BaseNodeSet):
     """GroundingDINO open-vocab detector — server-mode FM nodeset."""
 
@@ -612,13 +493,11 @@ class GroundingDinoNodeSet(BaseNodeSet):
     )
 
     def get_tools(self) -> list:
-        return [GroundingDinoDetectTool(), GroundingDinoGroundMaskTool()]
+        return [GroundingDinoDetectTool()]
 
     async def initialize(self, **kwargs: Any) -> None:
         log.info("GroundingDinoNodeSet ready (server_python=%s)", self.server_python)
 
     async def shutdown(self) -> None:
-        global _sam_predictor
         _GDinoNativeEngine._instances.clear()
         _GDinoHfEngine._instances.clear()
-        _sam_predictor = None

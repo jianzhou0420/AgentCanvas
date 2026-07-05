@@ -59,7 +59,7 @@
     <span class="sep">/</span>
     <span class="here">Grounding DINO NodeSet</span>
   </div>
-  <div class="last-updated">2026-07-05</div>
+  <div class="last-updated">2026-07-06</div>
 </div>
   <header class="page-header guide">
   <h1>Grounding DINO NodeSet</h1>
@@ -77,10 +77,6 @@
 <tr>
 <td><code>model_grounding_dino__detect</code></td>
 <td>Text→box detection: <code>(image_b64, text_prompt?)</code> → <code>result</code> JSON <code>{boxes:[{xyxy, score, phrase}], count, image_w, image_h, text_prompt}</code>.</td>
-</tr>
-<tr>
-<td><code>model_grounding_dino__ground_mask</code></td>
-<td><strong>Transitional</strong> Grounded-SAM composition: GroundingDINO(<code>"ground"</code>) boxes → SAM ViT-H per-box masks (<code>multimask_output=False</code>) → union mask as base64 PNG. A cross-model composition scheduled for graph-level replacement (<code>__detect</code> → <code>model_sam__segment_box</code> → union in <code>aoplanner_ce</code>); kept byte-identical until that migration lands, then deleted.</td>
 </tr>
 </tbody>
 </table>
@@ -135,34 +131,7 @@
 </tr>
 </tbody>
 </table>
-<h3 id="model_grounding_dino__ground_mask"><code>model_grounding_dino__ground_mask</code></h3>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Detail</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Inputs</td>
-<td><code>image_b64</code> (TEXT)</td>
-</tr>
-<tr>
-<td>Outputs</td>
-<td><code>mask_b64</code> (TEXT — base64 PNG of the union ground mask; empty if no ground detected), <code>n_boxes</code> (ANY)</td>
-</tr>
-<tr>
-<td>Config</td>
-<td><code>text_prompt</code> / <code>box_threshold</code> / <code>text_threshold</code> (same AO-Planner defaults)</td>
-</tr>
-<tr>
-<td>Backend call</td>
-<td><code>_detect</code> → SAM ViT-H (<code>predictor.predict(box=…, multimask_output=False)</code>) per box → boolean union → grayscale PNG</td>
-</tr>
-</tbody>
-</table>
-<p>The SAM ViT-H predictor is a second lazy singleton in the same server (weights <code>data/detany3d/weights/sam_vit_h_4b8939.pth</code> — AO-Planner's exact SAM variant). Inference runs on a single-thread executor for GPU thread affinity.</p>
+<p><strong>The former <code>ground_mask</code> tool is gone</strong> (evicted 2026-07-06 — cross-model composition belongs to the graph). <code>aoplanner_ce</code> now wires <code>__detect</code> → <code>aoplanner__ground_boxes</code> → <code>model_sam__segment_box</code> (sam1, ViT-H ckpt) → <code>sample_waypoints.sam_result</code>. Equivalence-gated on captured frames from the verified run: detect box counts 12/12, downstream <code>candidate_pixels</code> 12/12 exact; the mask bitmaps carry an accepted 1–3&nbsp;px cross-env conv drift (SAM ViT-H moved from torch 2.1.2 to ac-fm's 2.8.0 — same class as the model_sam rewrite's documented drift, invisible to every consumer).</p>
 <hr>
 <h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
 <p><code>parallelism = "shared"</code>; <code>server_python</code> follows the selected backend (2026-07-05): <code>native</code> → <code>ac-detany3d</code>, <code>hf_tiny</code> → <code>ac-fm</code>. The <code>ac-detany3d</code> side is a conscious reuse: that env already <em>is</em> the GroundingDINO host (<code>groundingdino-py</code> 0.4.0, torch 2.1.2+cu118, bundled Swin-T OGC config + weights) — a compiled, frozen stack that cannot move. Load: <code>POST /api/components/nodesets/model_grounding_dino/load</code>.</p>
@@ -202,11 +171,6 @@
 <td><code>IDEA-Research/grounding-dino-tiny</code></td>
 <td>HF model id for the <code>hf_tiny</code> backend</td>
 </tr>
-<tr>
-<td><code>GROUNDING_DINO_SAM_WEIGHTS</code></td>
-<td><code>data/detany3d/weights/sam_vit_h_4b8939.pth</code></td>
-<td>SAM ViT-H checkpoint for <code>ground_mask</code></td>
-</tr>
 </tbody>
 </table>
 <hr>
@@ -215,8 +179,9 @@
 <hr>
 <h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
 <ul>
-<li><a href="../method/aoplanner.html">AO-Planner</a> — <code>ground_mask</code> feeds <code>aoplanner__sample_waypoints</code> (the Grounded-SAM low-level segmenter)</li>
-<li><a href="../method/navgpt.html">NavGPT</a> — online-detection alternate (<code>hf_tiny</code> backend + <code>format_detections</code> glue); alternates only, not the paper-faithful cached path</li>
+<li><a href="../method/aoplanner.html">AO-Planner</a> — <code>__detect</code> ("ground" @ 0.4/0.4) opens the Grounded-SAM composition into <code>model_sam__segment_box</code> per panorama lane</li>
+<li>ToolEQA (<code>tooleqa</code> toolbox) — <code>__detect</code> (native, Swin-B ckpt @ 0.37/0.25) serves ObjectLocation2D and the box-prompt stage of ObjectLocation3D (since the DetAny3D promptable reshape)</li>
+<li><a href="../method/navgpt.html">NavGPT</a> — online-detection alternate (<code>hf_tiny</code> variant + <code>format_detections</code> glue); alternates only, not the paper-faithful cached path</li>
 </ul>
 
   <footer>
@@ -231,7 +196,6 @@
       <a class="toc-h2" href="#1-two-backends">1. Two variants, one schema</a>
       <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
       <a class="toc-h3" href="#model_grounding_dino__detect">model_grounding_dino__detect</a>
-      <a class="toc-h3" href="#model_grounding_dino__ground_mask">model_grounding_dino__ground_mask</a>
       <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
       <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
       <a class="toc-h2" href="#5-failure-behaviour">5. Failure Behaviour</a>

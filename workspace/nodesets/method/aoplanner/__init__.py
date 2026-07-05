@@ -420,12 +420,15 @@ class SampleWaypointsNode(BaseCanvasNode):
     )
     input_ports = [
         PortDef(
-            "ground_mask_b64", "TEXT", "Base64 PNG of the navigable-ground mask (from ground_mask)"
-        ),
-        PortDef(
             "sam_result",
             "TEXT",
-            "Optional: model_sam result JSON; all masks unioned into the ground mask",
+            "model_sam result JSON; all masks unioned into the ground mask "
+            "(the composition path since the ground_mask eviction 2026-07-05)",
+        ),
+        PortDef(
+            "ground_mask_b64",
+            "TEXT",
+            "Optional: base64 PNG of a pre-unioned ground mask (takes precedence)",
             optional=True,
         ),
     ]
@@ -979,6 +982,43 @@ class PickGroundBoxNode(BaseCanvasNode):
             best = max(boxes, key=lambda b: float(b.get("score", 0.0)))
         self._self_log("picked_box", best.get("xyxy"))
         return {"box": json.dumps(best.get("xyxy", [])), "found": True}
+
+
+class GroundBoxesNode(BaseCanvasNode):
+    """ALL GroundingDINO 'ground' boxes → model_sam__segment_box batch input.
+
+    The faithful AO-Planner path: SAM masks are unioned over EVERY ground
+    box (the former ``model_grounding_dino__ground_mask`` did this inside
+    one node; since the 2026-07-05 composition eviction the graph wires
+    detect → this extractor → ``model_sam__segment_box`` →
+    ``sample_waypoints.sam_result`` instead). ``PickGroundBoxNode`` remains
+    the single-box simplification variant.
+    """
+
+    node_type: ClassVar[str] = "aoplanner__ground_boxes"
+    display_name: ClassVar[str] = "AO-Planner: Ground Boxes"
+    description: ClassVar[str] = (
+        "Extract ALL detect-result boxes as [[x1,y1,x2,y2],…] for model_sam__segment_box"
+    )
+    category: ClassVar[str] = "perception"
+    icon: ClassVar[str] = "BoxSelect"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="emerald")
+    input_ports = [
+        PortDef("detections", "TEXT", "model_grounding_dino__detect result JSON"),
+    ]
+    output_ports = [
+        PortDef("boxes", "TEXT", "JSON [[x1,y1,x2,y2],…] ('[]' if none)"),
+        PortDef("count", "ANY", "Number of boxes"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any = None) -> dict:
+        try:
+            data = json.loads(inputs.get("detections") or "{}")
+        except Exception:
+            data = {}
+        boxes = [b.get("xyxy") for b in (data.get("boxes") or []) if b.get("xyxy")]
+        self._self_log("n_boxes", len(boxes))
+        return {"boxes": json.dumps(boxes), "count": len(boxes)}
 
 
 class ProposePrepNode(BaseCanvasNode):
@@ -1738,6 +1778,7 @@ class AoPlannerNodeSet(BaseNodeSet):
             MakeBundleNode(),
             # M3 — proposer glue (VLM#1 side)
             PickGroundBoxNode(),
+            GroundBoxesNode(),
             ProposePrepNode(),
             ParseProposalNode(),
             # M3 — decider (VLM#2 PathAgent)
