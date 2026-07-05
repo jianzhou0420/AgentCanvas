@@ -105,7 +105,7 @@
 </tr>
 <tr>
 <td>Config</td>
-<td><code>model_name</code> (default <code>Salesforce/blip2-flan-t5-xl</code>), <code>prompt</code> (default <code>"This is a scene of"</code>), <code>device</code> (auto | cuda | cpu), <code>max_new_tokens</code> (slider 16–256, default 64)</td>
+<td><code>model_name</code> (default <code>Salesforce/blip2-flan-t5-xl</code>), <code>prompt</code> (default <code>"This is a scene of"</code>), <code>max_new_tokens</code> (slider 16–256, default 64). Device moved to the deployment level: <code>$BLIP2_DEVICE</code></td>
 </tr>
 <tr>
 <td>Backend call</td>
@@ -113,7 +113,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Caption cache</strong> — per-server content-hash cache <code>sha1(model_name | prompt | max_new_tokens | rgb_base64) → caption</code>. The generation-relevant config is part of the key (unlike the older <code>model_instructblip</code> cache), so a prompt change in graph config can never serve stale captions.</p>
+<p><strong>Stateless</strong> — the former per-server caption cache was removed in the 2026-07-05 FM-template alignment: the server holds loaded weights only, and reuse (e.g. repeated identical frames) is a graph-level decision, per the prototype ruling. Identical inputs still produce identical captions (greedy decode); they are just recomputed.</p>
 <hr>
 <h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
 <pre class="hl">
@@ -124,7 +124,7 @@
 
 </pre>
 <p>Runs as its own server subprocess with its own CUDA context (~4&nbsp;GB fp16). The default env is the shared <strong><code>ac-fm</code></strong> FM env (torch 2.8.0+cu126 + transformers 5.13.0) since 2026-07-05 — captions verified byte-identical to the previous <code>agentcanvas</code> hosting in a greedy-decode parity replay. Point <code>$BLIP2_PYTHON</code> elsewhere to override.</p>
-<p>The model is a lazy per-subprocess singleton (double-checked <code>threading.Lock</code>); the forward runs in a thread-pool executor so the server's event loop stays responsive. Load: <code>POST /api/components/nodesets/model_blip2/load?mode=server</code>.</p>
+<p>Engines live in a lazy registry keyed by <code>model_name</code> (double-checked <code>threading.Lock</code>; the pre-2026-07-05 module singleton silently ignored a changed model id), with a load-failure latch and a single-flight GPU inference lock; the forward runs in a thread-pool executor so the server's event loop stays responsive. Load: <code>POST /api/components/nodesets/model_blip2/load?mode=server</code>.</p>
 <hr>
 <h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
 <table>
@@ -141,12 +141,17 @@
 <td><code>ac-fm</code> env python</td>
 <td>Interpreter for the server subprocess (dedicated-env override)</td>
 </tr>
+<tr>
+<td><code>BLIP2_DEVICE</code></td>
+<td><code>auto</code> (cuda when available)</td>
+<td>Inference device (moved off the node UI 2026-07-05 — deployment knob)</td>
+</tr>
 </tbody>
 </table>
 <hr>
 <h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
 <ul>
-<li><strong>No degraded stub</strong> — a model-load failure raises and surfaces as a node error (unlike <a href="vlm-prismatic.html">vlm_prismatic</a>'s uniform-distribution fallback).</li>
+<li><strong>Degraded latch</strong> — a model-load failure latches (no retry storm); every call then returns empty outputs (<code>captions_per_dir = []</code>, <code>captions_json = ""</code>) with a <code>degraded</code> self-log entry (house FM convention since 2026-07-05).</li>
 <li><strong>Per-view isolation</strong> — a caption exception on one view is caught and logged; that slot stays <code>""</code> and the remaining views proceed, keeping the 1:1 alignment.</li>
 <li>Empty <code>views</code> → <code>[]</code> / <code>"[]"</code> without touching the model.</li>
 </ul>
