@@ -112,7 +112,14 @@ async def lifespan(app: FastAPI):
     import os
     from pathlib import Path
 
-    eval_runs_dir = Path(__file__).resolve().parents[3] / "outputs" / "eval_runs"
+    # Per-backend run pool. Sibling backends (worktree slots) must point this
+    # somewhere disjoint: reconcile_aborted_runs() below marks every non-_DONE
+    # run in the pool as aborted at startup, so two backends sharing one pool
+    # stomp each other's live runs.
+    eval_runs_dir = Path(
+        os.environ.get("AGENTCANVAS_EVAL_RUNS_DIR")
+        or Path(__file__).resolve().parents[3] / "outputs" / "eval_runs"
+    )
     total_vram = detect_total_vram_mb()
     # Reserve headroom for shared singletons (Prismatic VLM ~14 GB etc.).
     # Override with AGENTCANVAS_USABLE_VRAM_MB if you want a different split.
