@@ -71,12 +71,19 @@ pip install \
     "qwen-vl-utils==0.0.14" \
     scipy \
     pillow numpy
+# SAM 1 (model_sam nodeset) — pure-Python, lower-bound-only deps;
+# opencv-headless is required by SamAutomaticMaskGenerator's postprocessing.
+pip install \
+    "segment-anything==1.0" \
+    opencv-python-headless
 # Server stack — auto_host serves these nodesets via FastAPI/uvicorn in
-# server mode (ADR-server-001); httpx for the loopback proxy.
+# server mode (ADR-server-001); httpx for the loopback proxy; msgpack is
+# the default /call transport (app/server/serialization.py).
 pip install \
     "uvicorn==0.39.0" \
     "fastapi==0.128.8" \
-    "httpx==0.28.1"
+    "httpx==0.28.1" \
+    msgpack
 
 echo "[4/5] flash-attn (best-effort; sdpa fallback if import fails)"
 pip install flash-attn==2.8.3 --no-build-isolation || \

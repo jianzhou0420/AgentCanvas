@@ -6,14 +6,14 @@ build ``ServerFunction`` entries.  No manual port re-declaration needed.
 Usage::
 
     from app.server.auto_server_app import AutoServerApp
-    from workspace.nodesets.sam import SamNodeSet
+    from workspace.nodesets.model.model_sam import SamNodeSet
 
     app = AutoServerApp(SamNodeSet)
     app.serve()
 
 Or via the CLI entry point::
 
-    python -m app.server.auto_host --file workspace/nodesets/sam.py \\
+    python -m app.server.auto_host --file workspace/nodesets/model/model_sam.py \\
         --class SamNodeSet --port 9200
 """
 
