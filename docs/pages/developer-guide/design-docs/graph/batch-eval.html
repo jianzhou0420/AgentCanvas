@@ -69,7 +69,23 @@
     <span class="sep">/</span>
     <span class="here">Batch Eval System</span>
   </div>
-  <div class="last-updated">2026-07-04</div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Graph</a>
+    <span class="sep">/</span>
+    <span class="here">Batch Eval System</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
 </div>
   <header class="page-header designdoc">
   <h1>Batch Eval System</h1>
@@ -84,7 +100,7 @@
 
 <p class="lede">The batch-eval system runs one saved graph across many episodes — optionally fanned out over N parallel workers — and aggregates metrics, persists each run, and streams progress. Today it runs in <strong>two processes</strong>: a <code>POST /api/eval/v2/start</code> only loads the shared model singletons in the long-lived backend and <em>queues</em> the run; the actual <code>BatchEvalRunner</code> executes in a <strong>separate subprocess</strong> that <code>JobScheduler</code> spawns once GPU admission clears. Its hard promise is that <code>worker_count</code> is a <em>speed</em> dial, never a <em>result</em> dial — 1 worker and 8 workers score bit-identically. For the rationale see <a href="../../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> + <a href="../../core/decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>; for the surrounding runtime objects see <a href="backend-overview.html">backend-overview</a> + <a href="component-registry.html">component-registry</a>.</p>
 <p class="diagram-label"><strong>One batch run, two processes.</strong> The backend (top) loads the heavy model singletons once and queues the run; <code>JobScheduler</code> spawns an eval subprocess (bottom) that <em>borrows</em> those model servers by URL but <em>spawns and owns</em> its own N tagged env servers. The whole class stack — <code>BatchEvalRunner ⊃ EnvWorkerPool ⊃ LoopRunner ⊃ GraphExecutor</code> — lives inside the subprocess.</p>
-<svg class="rxsvg" viewBox="0 0 720 600" role="img" aria-label="Two-process batch-eval topology. Top box: the long-lived backend process. It contains JobScheduler (queue, FIFO plus VRAM admission, submit writes spec.json, tick reaps then admits then spawns), WorkspaceComponentRegistry (holds shared model singleton handles), and a shared VLM auto_host child process (Prismatic or policy, loaded once, hosting a BatchedInferenceServer that coalesces K callers into one forward pass). On POST /start the backend runs ensure_shared_nodesets_for_graph for shared singletons only, then submit(spec), returning queued. JobScheduler then _spawns an eval subprocess via Popen of python -m app.eval_subprocess_main with start_new_session. Bottom box: the eval subprocess, one per run. It cold-starts by calling scan_all to re-discover nodesets from disk, register_remote_nodeset to borrow the backend's shared model server by URL with no second load, and ensure_nodesets_for_graph(N) to spawn its own env auto_host copies tagged hash-0 through hash-N-1, owned by the subprocess via PR_SET_PDEATHSIG. Inside the subprocess the class stack nests BatchEvalRunner, then EnvWorkerPool with N WorkerHandles, then a fresh per-episode LoopRunner, then GraphExecutor which fires nodes and harvests metrics from graphOut last_inputs. GraphExecutor routes env step and observe calls to its own tagged env server, and routes shared model calls back to the borrowed backend server where they are coalesced. worker_count is a speed dial, not a result dial: one and N workers score bit-identically.">
+<svg class="rxsvg" viewBox="0 0 720 600" role="img" aria-label="Two-process batch-eval topology. Top box: the long-lived backend process. It contains JobScheduler (queue, FIFO plus measured resource admission, submit writes spec.json, tick reaps then admits then spawns), WorkspaceComponentRegistry (holds shared model singleton handles), and a shared VLM auto_host child process (Prismatic or policy, loaded once, hosting a BatchedInferenceServer that coalesces K callers into one forward pass). On POST /start the backend runs ensure_shared_nodesets_for_graph for shared singletons only, then submit(spec), returning queued. JobScheduler then _spawns an eval subprocess via Popen of python -m app.eval_subprocess_main with start_new_session. Bottom box: the eval subprocess, one per run. It cold-starts by calling scan_all to re-discover nodesets from disk, register_remote_nodeset to borrow the backend's shared model server by URL with no second load, and ensure_nodesets_for_graph(N) to spawn its own env auto_host copies tagged hash-0 through hash-N-1, owned by the subprocess via PR_SET_PDEATHSIG. Inside the subprocess the class stack nests BatchEvalRunner, then EnvWorkerPool with N WorkerHandles, then a fresh per-episode LoopRunner, then GraphExecutor which fires nodes and harvests metrics from graphOut last_inputs. GraphExecutor routes env step and observe calls to its own tagged env server, and routes shared model calls back to the borrowed backend server where they are coalesced. worker_count is a speed dial, not a result dial: one and N workers score bit-identically.">
   <!-- ── Backend process ── -->
   <rect class="box" x="24" y="14" width="672" height="178" rx="8"/>
   <text x="40" y="36" font-size="13" font-weight="600">Backend process — one, long-lived (the user's :8000)</text>
@@ -191,7 +207,7 @@ POST<span class="w"> </span>/api/eval/v2/start
 <td><strong>Subprocess</strong> (default, <code>via_subprocess=True</code>)</td>
 <td><code>ensure_shared_nodesets_for_graph(graph)</code> — loads <em>only</em> shared singletons in the backend; env / replicated nodesets are explicitly skipped (the subprocess owns those).</td>
 <td>In a <code>JobScheduler</code>-spawned subprocess.</td>
-<td><code>JobScheduler</code> queue + VRAM admission.</td>
+<td><code>JobScheduler</code> queue + measured resource admission (VRAM + RAM).</td>
 </tr>
 <tr>
 <td><strong>Legacy in-process</strong> (<code>via_subprocess=False</code> or <code>AGENTCANVAS_EVAL_SUBPROCESS=0</code>)</td>
@@ -211,7 +227,7 @@ POST<span class="w"> </span>/api/eval/v2/start
 <p>Spawning happens on the scheduler's <code>tick</code> (driven ~1 s by <code>main.py · _scheduler_loop</code>), which runs <code>_reap → _admit → _drain_pending_unloads</code> in that order so VRAM freed by a finished job is available to admission in the same tick. <code>_admit</code> (<code>job_scheduler.py · _admit</code>) walks the queue <strong>FIFO</strong> and starts the first job that fits:</p>
 <ul>
 <li><strong>Canvas lock.</strong> If canvas Play holds <code>ExecutionGuard</code> in the backend, admission is refused outright (the wired-in <code>_canvas_lock_held</code> callback) — the interactive canvas always wins the GPU.</li>
-<li><strong>VRAM fit.</strong> <code>free = usable_vram_mb − Σ marginal_vram_mb(running)</code>; a job is skipped if its <code>marginal_vram_mb</code> exceeds <code>free</code>. <code>usable</code> is total VRAM minus a ~16 GB headroom, set at startup from <code>nvidia-smi</code> (<code>main.py</code> lifespan).</li>
+<li><strong>Resource fit.</strong> Per measurable resource (VRAM + RAM): calibrated <code>estimate ≤ measured_free − Σ reservations</code>; a job that doesn't fit is skipped, not blocking. Declared <code>marginal_vram_mb</code> is the fallback when calibration is incomplete; the old static ledger survives only for hosts with no sampler. Details: <a href="../operations/jobscheduler.html">JobScheduler design doc</a>.</li>
 <li><strong>Exclusive GPU.</strong> An <code>exclusive_gpu</code> job can't start while anything else runs, and nothing starts while an exclusive job runs.</li>
 <li><strong>Priority is stored but ignored.</strong> The <code>priority</code> field rides on <code>_QueuedJob</code> and surfaces in <code>list_active()</code>, but admission is pure FIFO over queue order (the M1 comment in <code>_admit</code>).</li>
 </ul>

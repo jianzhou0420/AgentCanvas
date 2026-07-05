@@ -3,9 +3,14 @@
 Owned as a singleton by ProcessServices. One ``tick()`` per second from the
 FastAPI lifespan loop:
 
-  - admit queued jobs whose ``marginal_vram_mb`` fits + canvas lock free
+  - observe: attribute per-PID resource usage (VRAM + RAM) to jobs /
+    shared singletons (ResourceStatsTracker)
   - reap finished Popen children, set terminal status (``succeeded`` if
-    ``_DONE`` exists, else ``aborted``), drop their VRAM reservation
+    ``_DONE`` exists, else ``aborted``), sediment resource calibration
+  - admit queued jobs through the measured resource gate, one inequality
+    per measurable resource: calibrated estimate (declared / cold-start
+    fallback) vs sampler-measured free minus standing reservations — see
+    ``_admit``; canvas lock + exclusive boolean gates unchanged
 
 Spawn is ``setsid`` so each job becomes its own process group; cancel
 sends SIGTERM to the pgid (kills the run subprocess + any env worker
@@ -13,8 +18,9 @@ descendants in one shot).
 
 Persistence: spec.json + shared_urls.json + summary.json + _DONE under
 ``outputs/eval_runs/{run_id}/``. The scheduler holds no in-memory truth
-that disk doesn't already have, so a parent backend restart only loses
-running jobs (per Q1) — queued + completed survive.
+that disk doesn't already have. On a parent backend restart, completed
+runs survive; running AND queued jobs are marked ``aborted`` by
+``reconcile_aborted_runs`` (M1 — no queue durability yet).
 """
 
 from __future__ import annotations
@@ -27,10 +33,11 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .resource_stats import RESOURCES, ResourceStatsTracker, _source_hash
 from .run_state_io import (
     atomic_write_json,
     initial_running_summary,
@@ -43,6 +50,11 @@ from .run_state_io import (
 )
 
 log = logging.getLogger("agentcanvas.scheduler")
+
+# Budget headroom reserved for shared singletons (Prismatic VLM ~14 GB etc.)
+# when deriving usable VRAM from the physical total in ``create``. Override
+# the whole derivation with AGENTCANVAS_USABLE_VRAM_MB.
+SHARED_HEADROOM_MB = 16000
 
 
 _TERMINAL_STATUSES = {"succeeded", "completed", "failed", "error", "cancelled", "aborted"}
@@ -70,6 +82,13 @@ class _RunningJob:
     marginal_vram_mb: int
     exclusive_gpu: bool
     started_at: float
+    # What admission charged this job at admit time, per resource
+    # (calibrated estimate, declared fallback, or empty for cold-start /
+    # legacy) and which basis produced it. The job's live reservation per
+    # resource = max(0, admit charge - its measured tree usage) — decays
+    # to zero as the real allocation materializes in the sampler.
+    admit_charges: dict[str, int] = field(default_factory=dict)
+    admit_basis: str = "legacy"
     cancel_requested: bool = False
     # Open file objects for the subprocess's stdout/stderr. Held here so
     # _reap can close them on exit; otherwise we'd leak two FDs per run.
@@ -94,10 +113,14 @@ class JobScheduler:
         eval_runs_dir: Path,
         usable_vram_mb: int,
         backend_url: str = "http://127.0.0.1:8765",
+        total_vram_mb: int = 0,
     ) -> None:
         self._runs_dir = Path(eval_runs_dir)
         self._runs_dir.mkdir(parents=True, exist_ok=True)
         self._usable_vram_mb = int(usable_vram_mb)
+        # Physical ceiling for submit-time feasibility rejection; 0 = unknown
+        # (falls back to usable_vram_mb as the bound).
+        self._total_vram_mb = int(total_vram_mb)
         self._backend_url = backend_url
 
         self._queue: list[_QueuedJob] = []
@@ -135,6 +158,43 @@ class JobScheduler:
         here = Path(__file__).resolve()
         self._backend_dir = str(here.parents[2])
         self._workspace_root = str(here.parents[4])
+
+        # Resource attribution + calibration — also the input to the
+        # measured admission gate in _admit (estimate vs measured free,
+        # per resource).
+        self._resource_stats = ResourceStatsTracker(
+            self._runs_dir.parent / "system" / "resource_calibration.json"
+        )
+
+    @classmethod
+    def create(cls, eval_runs_dir: Path, backend_url: str) -> JobScheduler:
+        """Build a scheduler with the usable-VRAM budget derived here (not in
+        main.py) so all admission inputs live in this module: physical total
+        via nvidia-smi minus ``SHARED_HEADROOM_MB``, or the
+        ``AGENTCANVAS_USABLE_VRAM_MB`` env override verbatim.
+        """
+        total_vram = detect_total_vram_mb()
+        usable = int(
+            os.environ.get(
+                "AGENTCANVAS_USABLE_VRAM_MB", max(total_vram - SHARED_HEADROOM_MB, 0)
+            )
+        )
+        return cls(
+            eval_runs_dir=eval_runs_dir,
+            usable_vram_mb=usable,
+            backend_url=backend_url,
+            total_vram_mb=total_vram,
+        )
+
+    @property
+    def usable_vram_mb(self) -> int:
+        """The admission budget derived in ``create`` (read-only)."""
+        return self._usable_vram_mb
+
+    @property
+    def runs_dir(self) -> Path:
+        """This scheduler's eval-run pool (slot-dependent; see main.py)."""
+        return self._runs_dir
 
     # ── Configuration ──
 
@@ -182,6 +242,18 @@ class JobScheduler:
               "graph": {...}
             }
         """
+        # P3 feasibility check: a declaration that exceeds the physical
+        # ceiling can NEVER admit — reject loudly instead of the silent
+        # forever-pending it used to produce.
+        sched_req = spec.get("scheduling") or {}
+        declared = int(sched_req.get("marginal_vram_mb", 0) or 0)
+        ceiling = max(self._usable_vram_mb, self._total_vram_mb)
+        if declared > ceiling:
+            raise ValueError(
+                f"marginal_vram_mb={declared} exceeds this machine's ceiling "
+                f"({ceiling} MB) — the job could never be admitted"
+            )
+
         run_id = spec.get("run_id") or self._fresh_run_id()
         spec["run_id"] = run_id
         spec.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
@@ -305,6 +377,8 @@ class JobScheduler:
                     "run_id": r.run_id,
                     "pid": r.proc.pid,
                     "marginal_vram_mb": r.marginal_vram_mb,
+                    "admit_charges": dict(r.admit_charges),
+                    "admit_basis": r.admit_basis,
                     "exclusive_gpu": r.exclusive_gpu,
                     "started_at": r.started_at,
                     "cancel_requested": r.cancel_requested,
@@ -313,11 +387,63 @@ class JobScheduler:
             ],
             "usable_vram_mb": self._usable_vram_mb,
             "reserved_vram_mb": self._reserved_mb(),
+            # Measured-gate view: what admission actually decides on,
+            # per resource (None = unmeasurable on this machine).
+            "measured_free_mb": {
+                res: self._resource_stats.measured_free_mb(res) for res in RESOURCES
+            },
+            "pending_reservation_mb": self._pending_reservations(),
+            # Latest measured attribution (observability; additive field).
+            "attribution": self._resource_stats.snapshot(),
         }
+
+    def estimate_run(
+        self, graph_name: str, node_types: list[str], worker_count: int
+    ) -> dict:
+        """Advisory per-resource estimate for running ``graph_name`` at
+        ``worker_count``.
+
+        Resolves the graph's shared singletons (parallelism + loaded state
+        + source hash) from the registry, then defers to the calibration-
+        backed estimator. Read-only: loads nothing, reserves nothing.
+        """
+        needed = sorted({t.split("__")[0] for t in node_types if "__" in t})
+        shared_infos: list[dict] = []
+        for ns in needed:
+            if self._registry is None:
+                break
+            try:
+                if self._registry._get_parallelism(ns) != "shared":
+                    continue
+                ns_obj = getattr(self._registry, "_discovered_nodesets", {}).get(ns)
+                shared_infos.append(
+                    {
+                        "name": ns,
+                        "loaded": self._registry.is_nodeset_loaded(ns),
+                        "source_hash": _source_hash(self._registry, ns),
+                        # Author presets (BaseNodeSet.expected_vram_mb /
+                        # expected_ram_mb) — estimator fallback when
+                        # measurement is absent.
+                        "hints": {
+                            "vram": getattr(ns_obj, "expected_vram_mb", None),
+                            "ram": getattr(ns_obj, "expected_ram_mb", None),
+                        },
+                    }
+                )
+            except Exception:
+                # Unknown/broken nodeset → surface as uncalibrated, not a 500.
+                shared_infos.append({"name": ns, "loaded": False, "source_hash": None})
+        return self._resource_stats.estimate(graph_name, worker_count, shared_infos)
 
     # ── Tick loop (called every ~1s from lifespan) ──
 
     async def tick(self) -> None:
+        # Observe before reaping so a finishing job's last sample still lands
+        # in its window. Reads the sampler's in-memory ring — non-blocking.
+        self._resource_stats.observe(
+            jobs={rid: r.proc.pid for rid, r in self._running.items()},
+            registry=self._registry,
+        )
         await self._reap()
         await self._admit()
         await self._drain_pending_unloads()
@@ -342,19 +468,100 @@ class JobScheduler:
     def _exclusive_gpu_held(self) -> bool:
         return any(r.exclusive_gpu for r in self._running.values())
 
+    def _pending_reservations(self) -> dict[str, int]:
+        """Per resource: sum over running jobs of ``max(0, admit charge -
+        measured tree)``.
+
+        A just-admitted job hasn't allocated yet, so the measured-free gate
+        alone would over-admit during its load window; its reservation
+        covers the gap and decays to zero as the sampler sees the real
+        allocation (jobs_mb is ≤5s stale — the decay lags, which only errs
+        conservative)."""
+        per_res = self._resource_stats.snapshot().get("resources") or {}
+        out: dict[str, int] = {}
+        for res in RESOURCES:
+            jobs_mb = (per_res.get(res) or {}).get("jobs_mb") or {}
+            out[res] = sum(
+                max(0, r.admit_charges.get(res, 0) - int(jobs_mb.get(rid, 0)))
+                for rid, r in self._running.items()
+            )
+        return out
+
+    def _resolve_estimate(self, q: _QueuedJob) -> tuple[dict[str, int] | None, str]:
+        """Admission charges for a queued job, per resource, in preference
+        order: calibrated estimate (full coverage on EVERY resource, margin
+        included, current loaded state) → declared marginal_vram_mb (VRAM
+        only; RAM was never declared, so it stays ungated on this rung) →
+        None (nothing to go on)."""
+        eval_cfg = q.spec.get("eval") or {}
+        node_types = [
+            n.get("type", "") for n in (q.spec.get("graph") or {}).get("nodes") or []
+        ]
+        try:
+            result = self.estimate_run(
+                eval_cfg.get("graph_name") or "",
+                node_types,
+                eval_cfg.get("worker_count") or 1,
+            )
+            resources = result.get("resources") or {}
+            if resources and all(
+                r["estimate_mb"] is not None for r in resources.values()
+            ):
+                # "hint" when any component priced by an author preset
+                # (expected_vram_mb / expected_ram_mb), not a measurement.
+                basis = (
+                    "hint"
+                    if any(r.get("used_hint") for r in resources.values())
+                    else "calibrated"
+                )
+                return {res: int(r["estimate_mb"]) for res, r in resources.items()}, basis
+        except Exception:
+            log.exception("estimate failed for %s — falling back to declaration", q.run_id)
+        if q.marginal_vram_mb > 0:
+            return {"vram": q.marginal_vram_mb}, "declared"
+        return None, "unknown"
+
     async def _admit(self) -> None:
         if self._canvas_lock_held():
             return  # canvas Play has the GPU
+
+        # Measured gate: per resource, physically free (sampler) minus
+        # standing reservations. The calibrated estimate already carries
+        # its own safety margin (SAFETY_MARGIN_MB), so no extra hysteresis
+        # here. A resource whose free is None is unmeasurable on this
+        # machine (no GPU → vram) and its dimension is skipped. EVERY
+        # resource unmeasurable (no sampler — e.g. unit tests) → the
+        # legacy declared ledger.
+        free = {res: self._resource_stats.measured_free_mb(res) for res in RESOURCES}
+        measured_mode = any(v is not None for v in free.values())
+        pending = self._pending_reservations() if measured_mode else {}
+
         # FIFO; M1 ignores priority. Walk a snapshot so we can pop admitted.
         admitted: list[str] = []
         for q in list(self._queue):
-            free = self._usable_vram_mb - self._reserved_mb()
-            if q.marginal_vram_mb > free:
-                continue
             if q.exclusive_gpu and self._running:
                 continue
             if self._running and any(r.exclusive_gpu for r in self._running.values()):
                 continue
+            if measured_mode:
+                charges, basis = self._resolve_estimate(q)
+                if charges is None:
+                    # No calibration and no declaration: cold-start
+                    # discipline — admit only on an otherwise-idle
+                    # scheduler; the first run doubles as calibration.
+                    if self._running:
+                        continue
+                    charges, basis = {}, "cold-start"
+                elif any(
+                    free[res] is not None and mb > free[res] - pending.get(res, 0)
+                    for res, mb in charges.items()
+                ):
+                    continue
+            else:
+                legacy_free = self._usable_vram_mb - self._reserved_mb()
+                if q.marginal_vram_mb > legacy_free:
+                    continue
+                charges, basis = {"vram": q.marginal_vram_mb}, "legacy"
             ephem_tag: str | None = None
             try:
                 # TODO #60: when an active_workspace overlay redefines a
@@ -363,7 +570,11 @@ class JobScheduler:
                 # the new child's URL ends up in shared_urls.json. The
                 # frozen singleton stays alive for other sessions.
                 ephem_tag = await self._prepare_ephemerals(q)
-                self._spawn(q, ephem_tag=ephem_tag)
+                self._spawn(q, ephem_tag=ephem_tag, admit_charges=charges, admit_basis=basis)
+                # Newly admitted jobs hold their full reservation until the
+                # sampler sees their allocation.
+                for res, mb in charges.items():
+                    pending[res] = pending.get(res, 0) + mb
                 admitted.append(q.run_id)
             except Exception:
                 log.exception("admit: spawn failed for %s", q.run_id)
@@ -474,13 +685,29 @@ class JobScheduler:
             return tag
         return None
 
-    def _spawn(self, q: _QueuedJob, ephem_tag: str | None = None) -> None:
+    def _spawn(
+        self,
+        q: _QueuedJob,
+        ephem_tag: str | None = None,
+        admit_charges: dict[str, int] | None = None,
+        admit_basis: str = "legacy",
+    ) -> None:
         run_dir = self._runs_dir / q.run_id
         env = os.environ.copy()
         env["PYTHONPATH"] = (
             f"{self._backend_dir}:{self._workspace_root}:{env.get('PYTHONPATH', '')}"
         )
         env["AGENTCANVAS_BACKEND_URL"] = self._backend_url
+        # Quota teeth: the subprocess (and any child that honors the var)
+        # caps its own torch allocator at the VRAM admission charge, so a
+        # job that blows past its estimate OOMs itself instead of its
+        # neighbors. Best-effort — EGL contexts and non-torch allocations
+        # are uncapped. RAM has no equivalent (RLIMIT_AS counts virtual
+        # address space and would kill mmap-heavy simulators; cgroups need
+        # privileges) — the RAM dimension is gate-only.
+        vram_charge = (admit_charges or {}).get("vram", 0)
+        if vram_charge > 0:
+            env["AGENTCANVAS_VRAM_CAP_MB"] = str(vram_charge)
 
         # Per-run active-workspace overlay: propagate to subprocess env so
         # its fresh Settings() picks up active_workspace_dir at construction,
@@ -522,17 +749,51 @@ class JobScheduler:
             marginal_vram_mb=q.marginal_vram_mb,
             exclusive_gpu=q.exclusive_gpu,
             started_at=time.time(),
+            admit_charges=dict(admit_charges or {}),
+            admit_basis=admit_basis,
             log_files=(cmd_log, err_log),
             ephem_tag=ephem_tag,
             shared_nodesets=q.shared_nodesets,
         )
+        eval_cfg = q.spec.get("eval") or {}
+        self._resource_stats.note_job_started(
+            q.run_id,
+            graph_name=eval_cfg.get("graph_name") or "",
+            worker_count=eval_cfg.get("worker_count") or 1,
+            # Union of the server-backed singletons (shared_urls keys) and
+            # the graph-derived shared set — the latter also catches LOCAL
+            # in-process shared nodesets (e.g. env_adapter), which have no
+            # server URL and would otherwise never enter the observation
+            # window (and so never calibrate).
+            shared_nodesets=tuple(
+                sorted(set(q.shared_nodesets) | self._graph_shared_nodesets(q.spec))
+            ),
+        )
         log.info(
-            "admit→spawn: run_id=%s pid=%d pgid=%d marginal=%d MB",
+            "admit→spawn: run_id=%s pid=%d pgid=%d charges=%s MB (%s, declared=%d)",
             q.run_id,
             proc.pid,
             pgid,
+            dict(admit_charges or {}),
+            admit_basis,
             q.marginal_vram_mb,
         )
+
+    def _graph_shared_nodesets(self, spec: dict) -> set[str]:
+        """Shared nodesets needed by the spec's graph — same derivation as
+        ``estimate_run`` (``__``-prefix scan + parallelism filter)."""
+        nodes = (spec.get("graph") or {}).get("nodes") or []
+        needed = {n.get("type", "").split("__")[0] for n in nodes if "__" in n.get("type", "")}
+        out: set[str] = set()
+        for ns in sorted(needed):
+            if self._registry is None:
+                break
+            try:
+                if self._registry._get_parallelism(ns) == "shared":
+                    out.add(ns)
+            except Exception:
+                continue
+        return out
 
     async def _reap(self) -> None:
         finished: list[str] = []
@@ -579,6 +840,8 @@ class JobScheduler:
             # land in _pending_unloads and get torn down by
             # _drain_pending_unloads on this same tick.
             self._release_shared_refs(r.shared_nodesets)
+            # Sediment this job's resource observation window into calibration.
+            self._resource_stats.note_job_finished(run_id, self._registry)
             finished.append(run_id)
         for run_id in finished:
             del self._running[run_id]

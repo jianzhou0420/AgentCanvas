@@ -464,6 +464,19 @@ class BaseNodeSet(ABC):
     # Default "shared" keeps non-env nodesets singleton; env nodesets must
     # opt in to "replicated".
     parallelism: ClassVar[Literal["shared", "replicated"]] = "shared"
+    # Author-declared steady-state VRAM footprint of this nodeset's loaded
+    # process, in MB (e.g. SAM vit_b ≈ 600). Used by the admission
+    # estimator as a fallback when no measured calibration exists on this
+    # machine (fresh install, or source-hash invalidation after an edit) —
+    # measurement always wins once available. A long-term assertion about
+    # the component, NOT hash-gated: weights dominate the footprint, so
+    # code edits don't retire it. None = no preset; uncalibrated nodesets
+    # then fall through to the declared profile / cold-start discipline.
+    expected_vram_mb: ClassVar[int | None] = None
+    # RAM sibling of expected_vram_mb — same semantics (author preset,
+    # not hash-gated, measurement wins), for the admission gate's RAM
+    # dimension. Steady-state RSS of the loaded nodeset process, in MB.
+    expected_ram_mb: ClassVar[int | None] = None
     # Optional control-plane panel (BaseEnvPanel subclass). When set, the
     # WorkspaceComponentRegistry instantiates and registers it on load. Imported lazily
     # to avoid a circular import with app.components.env_panel.
