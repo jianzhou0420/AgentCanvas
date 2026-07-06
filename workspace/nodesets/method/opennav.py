@@ -1211,7 +1211,7 @@ class SelectCandidateViewsNode(BaseCanvasNode):
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
         views = inputs.get("views") or []
         candidates = inputs.get("candidates") or {}
-        keys = {str(k) for k in candidates.keys()} if candidates else None
+        keys = {str(k) for k in candidates} if candidates else None
         out: dict[str, dict] = {}
         for v in views:
             if not isinstance(v, dict):
