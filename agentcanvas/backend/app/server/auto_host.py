@@ -3,7 +3,7 @@
 Usage (single-file nodeset)::
 
     python -m app.server.auto_host \\
-        --file /path/to/workspace/nodesets/sam.py \\
+        --file /path/to/workspace/nodesets/model/model_sam.py \\
         --class SamNodeSet \\
         --port 9200
 

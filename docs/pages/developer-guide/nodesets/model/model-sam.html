@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAM NodeSet — AgentCanvas</title>
+<meta name="description" content="The SAM NodeSet ( SamNodeSet , workspace/nodesets/model/model_sam.py ) wraps the Segment Anything family — SAM 1, SAM 2.1, and SAM 3 as real backends — into pure single-step segmentation primitives :…">
+<meta property="og:title" content="SAM NodeSet — AgentCanvas">
+<meta property="og:description" content="The SAM NodeSet ( SamNodeSet , workspace/nodesets/model/model_sam.py ) wraps the Segment Anything family — SAM 1, SAM 2.1, and SAM 3 as real backends — into pure single-step segmentation primitives :…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-sam.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">SAM NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header guide">
+  <h1>SAM NodeSet</h1>
+</header>
+
+<p>The <strong>SAM NodeSet</strong> (<code>SamNodeSet</code>, <code>workspace/nodesets/model/model_sam.py</code>) wraps the <a href="https://arxiv.org/abs/2304.02643">Segment Anything</a> family — <strong>SAM&nbsp;1, SAM&nbsp;2.1, and SAM&nbsp;3 as real backends</strong> — into <strong>pure single-step segmentation primitives</strong>: point/box/auto/text segmentation plus an image-embedding node. Rewritten 2026-07-05 to the FM-nodeset template: variant and checkpoint are node config (swapping them never changes the graph — every variant returns the same masks envelope), and the server is fully <strong>stateless</strong>: no embedding cache, no sessions. Everything procedural — iterative refinement, embedding reuse, cross-model composition — lives in the graph, not in the nodeset. SAM&nbsp;2.1/3 are served through the resident <code>transformers</code> (≥ 5.13 ships <code>Sam2Model</code>/<code>Sam3Model</code>), so the whole family costs zero extra dependencies.</p>
+<p>env: <code>ac-fm</code></p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+<th>Variants</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_sam__segment_points</code></td>
+<td>Point-prompted segmentation; optional <code>mask_input</code> closes an outer-loop refinement cycle.</td>
+<td><code>sam1</code> | <code>sam2</code></td>
+</tr>
+<tr>
+<td><code>model_sam__segment_box</code></td>
+<td>Box-prompted segmentation — a single <code>[x1,y1,x2,y2]</code> box or a batch (one candidate per box).</td>
+<td><code>sam1</code> | <code>sam2</code></td>
+</tr>
+<tr>
+<td><code>model_sam__segment_auto</code></td>
+<td>Full-scene segmentation with a point grid; knobs fully in config.</td>
+<td><code>sam1</code> | <code>sam2</code></td>
+</tr>
+<tr>
+<td><code>model_sam__segment_text</code></td>
+<td>Concept/text-prompted instance segmentation — SAM&nbsp;3's native capability.</td>
+<td><code>sam3</code></td>
+</tr>
+<tr>
+<td><code>model_sam__embed_image</code></td>
+<td>Image-encoder features as an embedding envelope — the encode-once entry for graph-level reuse.</td>
+<td><code>sam1</code></td>
+</tr>
+</tbody>
+</table>
+<p>Embedding in/out (the envelope ports) is <strong>sam1-only</strong> for now: SAM&nbsp;2/3 image features are multi-level, which the single-tensor envelope cannot carry (an envelope v2 is a separate decision). Prompted nodes configured to <code>sam2</code> emit an empty <code>image_embedding</code> and raise on envelope injection.</p>
+<hr>
+<h2 id="1-canvas-nodes"><span class="num">1.</span> Canvas Nodes</h2>
+<h3 id="model_sam__segment_points"><code>model_sam__segment_points</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image</code> (TEXT — raw base64 PNG <em>or</em> an embedding envelope, sniffed automatically; one required port instead of two optional ones because optional ports do not gate firing), <code>points</code> (TEXT — JSON <code>[[x,y],…]</code>), <code>labels</code> (TEXT — JSON <code>[1|0,…]</code>), <code>mask_input</code> (TEXT, optional — a candidate's <code>low_res_logits_b64</code> from a previous round)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>masks</code> (TEXT — §2 masks envelope, candidates score-sorted), <code>image_embedding</code> (TEXT — §2 embedding envelope used for this call)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (select <code>sam1</code>|<code>sam2</code>), <code>ckpt</code> (text — blank = per-variant default, §4), <code>multimask</code> (toggle — 3 ranked candidates vs single best)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td><code>sam1</code>: fresh <code>SamPredictor</code> per call → <code>predict(point_coords, point_labels, mask_input?, multimask_output)</code>. <code>sam2</code>: <code>Sam2Processor</code> → <code>Sam2Model.forward</code> (a fed-back <code>mask_input</code> becomes <code>input_masks</code>) → <code>post_process_masks</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Iterative refinement belongs to the outer loop</strong> — the node is a pure single-step forward. Each candidate carries <code>low_res_logits_b64</code> (256×256 float32 ≈ 256&nbsp;KB); wiring one back into <code>mask_input</code> closes the refinement cycle at graph level, keeping pure dataflow and episode replayability.</p>
+<h3 id="model_sam__segment_box"><code>model_sam__segment_box</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image</code> (TEXT — raw base64 PNG or embedding envelope), <code>boxes</code> (TEXT — JSON <code>[x1,y1,x2,y2]</code> or a list of such boxes)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>masks</code> (one candidate per box), <code>image_embedding</code></td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (select <code>sam1</code>|<code>sam2</code>), <code>ckpt</code></td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td><code>sam1</code>: per-box <code>predict(box=…, multimask_output=False)</code> on one shared image state. <code>sam2</code>: batched <code>input_boxes</code> through one <code>Sam2Model.forward</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="model_sam__segment_auto"><code>model_sam__segment_auto</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image_b64</code> (TEXT — <strong>original image only</strong>; the generators re-encode per crop internally, so they cannot consume a precomputed embedding)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>masks</code> (area-sorted; no logits / embedding outputs)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (select <code>sam1</code>|<code>sam2</code>), <code>ckpt</code>, <code>points_per_side</code> (slider 8–64), <code>pred_iou_thresh</code> (0.86), <code>stability_score_thresh</code> (0.92), <code>min_mask_area</code> (100), <code>crop_n_layers</code> (slider 0–3, <strong>sam1 only</strong> — see deviations below)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td><code>sam1</code>: a fresh <code>SamAutomaticMaskGenerator</code> per call, knobs fully from config — the pre-rewrite code mutated a shared generator's <code>points_per_side</code> after construction, which the generator never reads (the point grid is built in <code>__init__</code>), so that knob was silently a no-op. <code>sam2</code>: the HF <code>mask-generation</code> pipeline (kwargs filtered against its signatures)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Deviations on the <code>sam2</code> path</strong>: the HF pipeline does not expose per-candidate <code>stability_score</code> (the key is simply absent from sam2 auto candidates), <code>min_mask_area</code> is applied as a local post-filter, and <code>crop_n_layers &gt; 0</code> <strong>raises</strong> — the transformers 5.13 pipeline crashes stacking unequal-sized crops (upstream bug), and a clear node error beats silently ignoring the knob. Use <code>sam1</code> for cropped auto-segmentation.</p>
+<h3 id="model_sam__segment_text"><code>model_sam__segment_text</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image_b64</code> (TEXT), <code>text</code> (TEXT — a short noun-phrase concept, e.g. <code>"red circle"</code>)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>masks</code> (score-sorted, one candidate per matching instance; <code>iou_score</code> carries the instance score)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (select, <code>sam3</code>), <code>ckpt</code>, <code>score_thresh</code> (0.5 — instance filter), <code>mask_threshold</code> (0.5 — per-pixel binarization)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td><code>Sam3Processor(images, text)</code> → <code>Sam3Model.forward</code> → <code>post_process_instance_segmentation</code> (with explicit <code>target_sizes</code> — the processor output carries no original sizes, and without it masks come back at model resolution)</td>
+</tr>
+</tbody>
+</table>
+<p>This is SAM&nbsp;3's <strong>native</strong> concept prompting — no detector in front. The weights are <strong>HF-gated</strong> (<code>facebook/sam3</code>, manual approval on the model page); until access is granted the engine latches degraded (§5). The graph-level <a href="model-grounding-dino.html">GDINO</a>&nbsp;→&nbsp;<code>__segment_box</code> composition remains the text route for the sam1/sam2 variants.</p>
+<h3 id="model_sam__embed_image"><code>model_sam__embed_image</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image_b64</code> (TEXT)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>image_embedding</code> (TEXT — full envelope on the wire)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (select, <code>sam1</code> only — SAM&nbsp;2/3 features are multi-level; see the envelope note in the intro), <code>ckpt</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reuse is a graph-level decision.</strong> SAM's structure is a heavy image encoder + light prompt decoder; the wrapper exposes that split as ports instead of a server-side cache. A graph that prompts the same frame repeatedly runs <code>__embed_image</code> once (or catches any prompted node's <code>image_embedding</code> output), stashes the envelope in a state container, and feeds it back into the <code>image</code> port — the encoder is skipped, and the server stays a pure function. SAM&nbsp;1's envelope is ≈ 5.6&nbsp;MB of TEXT (1×256×64×64 float32, base64), which the msgpack transport handles comfortably.</p>
+<hr>
+<h2 id="2-envelopes"><span class="num">2.</span> Envelopes</h2>
+<p>All segmentation nodes return the same <strong>masks envelope</strong> regardless of variant — swapping checkpoints never changes the graph:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;masks&quot;</span><span class="p">:</span> <span class="p">[</span><span class="p">{</span><span class="nt">&quot;mask_index&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+            <span class="nt">&quot;mask_b64&quot;</span><span class="p">:</span> <span class="s2">&quot;&lt;base64 PNG, 0/255 grayscale&gt;&quot;</span><span class="p">,</span>
+            <span class="nt">&quot;bbox_xyxy&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">201</span><span class="p">,</span> <span class="mi">121</span><span class="p">,</span> <span class="mi">439</span><span class="p">,</span> <span class="mi">359</span><span class="p">]</span><span class="p">,</span>
+            <span class="nt">&quot;iou_score&quot;</span><span class="p">:</span> <span class="mf">0.9772</span><span class="p">,</span>
+            <span class="nt">&quot;area&quot;</span><span class="p">:</span> <span class="mi">44945</span><span class="p">,</span>
+            <span class="nt">&quot;low_res_logits_b64&quot;</span><span class="p">:</span> <span class="s2">&quot;&lt;base64 of 256x256 float32 buffer&gt;&quot;</span><span class="p">}</span><span class="p">]</span><span class="p">,</span>
+ <span class="nt">&quot;count&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="nt">&quot;image_w&quot;</span><span class="p">:</span> <span class="mi">640</span><span class="p">,</span> <span class="nt">&quot;image_h&quot;</span><span class="p">:</span> <span class="mi">480</span><span class="p">}</span>
+</pre>
+<p><code>low_res_logits_b64</code> appears on prompted candidates only (<code>__segment_auto</code> discards logits); <code>sam1</code> auto candidates carry <code>stability_score</code> instead (the sam2 pipeline does not expose it); <code>__segment_text</code> candidates reuse <code>iou_score</code> for the SAM&nbsp;3 instance score. The <code>mask_b64</code> key name is load-bearing: <code>aoplanner</code>'s <code>_union_sam_masks</code> parses it.</p>
+<p>The <strong>embedding envelope</strong> is self-describing — a byte-exact float32 buffer plus the predictor sizes and the provenance needed to reject a mismatched injection:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;b64&quot;</span><span class="p">:</span> <span class="s2">&quot;&lt;base64 of the C-contiguous float32 buffer&gt;&quot;</span><span class="p">,</span>
+ <span class="nt">&quot;shape&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">256</span><span class="p">,</span> <span class="mi">64</span><span class="p">,</span> <span class="mi">64</span><span class="p">]</span><span class="p">,</span> <span class="nt">&quot;dtype&quot;</span><span class="p">:</span> <span class="s2">&quot;float32&quot;</span><span class="p">,</span>
+ <span class="nt">&quot;original_hw&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">480</span><span class="p">,</span> <span class="mi">640</span><span class="p">]</span><span class="p">,</span> <span class="nt">&quot;input_hw&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">768</span><span class="p">,</span> <span class="mi">1024</span><span class="p">]</span><span class="p">,</span>
+ <span class="nt">&quot;variant&quot;</span><span class="p">:</span> <span class="s2">&quot;sam1&quot;</span><span class="p">,</span> <span class="nt">&quot;ckpt_id&quot;</span><span class="p">:</span> <span class="s2">&quot;sam_vit_b.pth&quot;</span><span class="p">}</span>
+</pre>
+<p>Injecting an envelope whose <code>variant</code>/<code>ckpt_id</code> mismatches the target node's config <strong>raises</strong> — a node error beats a silently wrong mask. Injection round-trips byte-identically: masks produced from an injected envelope equal the direct-image path exactly (verified through the server transport as well).</p>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code>; <code>server_python = conda_env_python("ac-fm", "SAM_PYTHON")</code> since 2026-07-05 (<code>segment-anything</code> is lower-bound-only → shared-env admission; installed with <code>opencv-python-headless</code> by <code>scripts/install/install_ac_fm.sh</code>). One engine class per variant (<code>_Sam1Engine</code>/<code>_Sam2Engine</code>/<code>_Sam3Engine</code>) behind a lazy registry keyed <code>(variant, ckpt)</code> — several checkpoints coexist in one server — and engines hold nothing but loaded weights: no cache, no sessions, every call builds a fresh predictor. The GPU section is single-flight per engine to bound VRAM under concurrent eval workers. SAM&nbsp;2.1/3 use the transformers implementations, <strong>not</strong> the facebookresearch packages (nothing new to install; the PyPI <code>sam2</code>/<code>sam3</code> names have uncertain provenance). Loading the sam2.1 checkpoint logs a benign <code>sam2_video</code>-vs-<code>sam2</code> config-type warning — the image path shares a weight subset, expected per HF.</p>
+<p><strong>Verification</strong>: the sam1 rewrite is byte-faithful — on the old hosting env, point/box/auto outputs are byte-identical to the pre-rewrite code (auto compared at its <em>effective</em> old grid, see the no-op knob note in §1). Serving from ac-fm shifts torch 2.5.1 → 2.8.0, whose conv kernels drift mask boundaries by ±1&nbsp;px and IoU scores at the third decimal — accepted, since no graph or test consumed the old outputs. The sam2/sam3 variants have no byte baseline (different implementation lineage), so they gate on synthetic-image analytic-GT IoU ≥ 0.9 (point/box/auto/text all ≥ 0.97 at verification, matching a 0.99 sam1 calibration), determinism, and a logits→<code>mask_input</code> round-trip. Load: <code>POST /api/components/nodesets/model_sam/load?mode=server</code>.</p>
+<hr>
+<h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SAM_PYTHON</code></td>
+<td><code>ac-fm</code> env python</td>
+<td>Interpreter for the server subprocess</td>
+</tr>
+<tr>
+<td><code>SAM_DEVICE</code></td>
+<td><code>cuda:0</code></td>
+<td>Inference device</td>
+</tr>
+</tbody>
+</table>
+<p>The former <code>SAM_VERSION</code> / <code>SAM_MODEL_CFG</code> env vars are gone — variant and checkpoint are node config (env panels carry env-side runtime knobs only; model identity belongs on the node). Per-variant checkpoint defaults when <code>ckpt</code> is blank:</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Default checkpoint</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sam1</code></td>
+<td><code>data/habitat/checkpoints/sam/sam_vit_b.pth</code></td>
+<td>Anchored to the repo root by an upward walk (the auto_host subprocess cwd is not the repo root); relative overrides are anchored the same way; model type (<code>vit_b</code>/<code>vit_l</code>/<code>vit_h</code>) inferred from the filename</td>
+</tr>
+<tr>
+<td><code>sam2</code></td>
+<td><code>facebook/sam2.1-hiera-base-plus</code></td>
+<td>HF repo id (ungated, ~0.3&nbsp;GB) — repo ids are never path-anchored; a local directory also works</td>
+</tr>
+<tr>
+<td><code>sam3</code></td>
+<td><code>facebook/sam3</code></td>
+<td>HF repo id, <strong>gated</strong> (manual approval, ~3.4&nbsp;GB); without access the engine latches degraded</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-degraded-mode"><span class="num">5.</span> Degraded Mode</h2>
+<p>An engine load failure latches (no retry storm) and every call on that engine returns empty outputs (<code>masks = ""</code>, <code>image_embedding = ""</code>) with a <code>degraded</code> self-log entry. Input-contract violations — malformed JSON, an embedding envelope for the wrong variant/ckpt — <strong>raise</strong> instead: the executor records a node error and the eval layer convicts the episode.</p>
+<hr>
+<h2 id="6-composition"><span class="num">6.</span> Composition &amp; Consumers</h2>
+<ul>
+<li><strong>Text-prompted segmentation has two routes</strong>: the native <code>__segment_text</code> (SAM&nbsp;3 concept prompting) and the graph composition wiring <a href="model-grounding-dino.html"><code>model_grounding_dino__detect</code></a> boxes into <code>__segment_box</code> — the latter is the path when sam3's gated weights are unavailable or a sam1/sam2 mask is wanted.</li>
+<li><strong>Video tracking stays deferred</strong> even with SAM&nbsp;2 landed — session-style capabilities need explicit handles, which no current graph justifies.</li>
+<li><strong>First graph consumer (2026-07-06)</strong>: <code>aoplanner_ce</code> wires <code>__segment_box</code> (sam1, ViT-H ckpt) per panorama lane — <code>model_grounding_dino__detect</code> boxes → <code>aoplanner__ground_boxes</code> → <code>__segment_box</code> → <code>sample_waypoints.sam_result</code> (union via <code>_union_sam_masks</code>, which reads <code>masks[].mask_b64</code> — the key name is load-bearing). This replaced the Grounded-SAM that was embedded in the deleted <code>model_grounding_dino__ground_mask</code>.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-canvas-nodes">1. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_sam__segment_points">model_sam__segment_points</a>
+      <a class="toc-h3" href="#model_sam__segment_box">model_sam__segment_box</a>
+      <a class="toc-h3" href="#model_sam__segment_auto">model_sam__segment_auto</a>
+      <a class="toc-h3" href="#model_sam__segment_text">model_sam__segment_text</a>
+      <a class="toc-h3" href="#model_sam__embed_image">model_sam__embed_image</a>
+      <a class="toc-h2" href="#2-envelopes">2. Envelopes</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
+      <a class="toc-h2" href="#5-degraded-mode">5. Degraded Mode</a>
+      <a class="toc-h2" href="#6-composition">6. Composition &amp; Consumers</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

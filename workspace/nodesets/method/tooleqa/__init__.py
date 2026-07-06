@@ -27,10 +27,16 @@ HTTP to a sibling server nodeset:
 Cross-nodeset wiring (resolved by THIS backend node, which has the
 component registry, and passed into the closures / go_next inputs):
 
-    vlm_qwen2_5_vl   — ReAct LLM + VisualQATool   (/call/vlm_qwen2_5_vl__generate)
-    model_detany3d     — ObjectLocation2D / 3D       (/call/model_detany3d__locate_2d|3d)
-    tooleqa_explore  — GoNextPointTool             (/call/tooleqa_explore__go_next)
-    env_hmeqa        — stepped *inside* go_next     (URL forwarded to tooleqa_explore)
+    vlm_qwen2_5_vl        — ReAct LLM + VisualQATool  (/call/vlm_qwen2_5_vl__generate)
+    model_grounding_dino  — ObjectLocation2D + the box-prompt stage of
+                            ObjectLocation3D (/call/model_grounding_dino__detect,
+                            variant native, Swin-B ckpt @ 0.37/0.25 —
+                            DetAny3D's exact upstream first stage; migrated
+                            here 2026-07-05 when detany3d went promptable)
+    model_detany3d        — ObjectLocation3D 3D head  (/call/model_detany3d__locate_3d,
+                            image + boxes_2d prompts)
+    tooleqa_explore       — GoNextPointTool           (/call/tooleqa_explore__go_next)
+    env_hmeqa             — stepped *inside* go_next  (URL forwarded to tooleqa_explore)
 
 Unlike the first (deleted) port, go_next is NOT discrete dead-reckoning to
 a downstream `env_hmeqa__step` canvas node — it is the faithful Explore-EQA
@@ -252,6 +258,7 @@ class ToolEQAStepNode(BaseCanvasNode):
         # ── 2. Resolve sibling server URLs ──
         qwen_url = _resolve_server_url(ctx, "vlm_qwen2_5_vl")
         detany3d_url = _resolve_server_url(ctx, "model_detany3d")
+        gdino_url = _resolve_server_url(ctx, "model_grounding_dino")
         go_next_url = _resolve_server_url(ctx, "tooleqa_explore")
         env_hmeqa_url = _resolve_server_url(ctx, "env_hmeqa")
         if not qwen_url:
@@ -287,28 +294,76 @@ class ToolEQAStepNode(BaseCanvasNode):
             )
             return fut.result(timeout=180.0)
 
-        async def _detany3d_async(endpoint: str, image: np.ndarray, text: str) -> dict:
+        # ObjectLocation's 2D stage: DetAny3D's exact upstream detector
+        # (GroundingDINO Swin-B @ 0.37/0.25, int-rounded xyxy) now served by
+        # the standardized model_grounding_dino nodeset (native variant).
+        _gdino_cfg = {
+            "variant": "native",
+            "ckpt": "data/detany3d/weights/groundingdino_swinb_cogcoor.pth",
+            "box_threshold": "0.37",
+            "text_threshold": "0.25",
+        }
+
+        async def _gdino_detect_async(image: np.ndarray, text: str) -> dict:
+            """→ {bboxes_2d, labels, error} — the old locate_2d contract."""
+            if not gdino_url:
+                return {"error": "model_grounding_dino not loaded"}
+            import base64
+            import io
+
+            from PIL import Image
+
+            buf = io.BytesIO()
+            Image.fromarray(np.asarray(image).astype(np.uint8)).convert("RGB").save(
+                buf, format="PNG"
+            )
+            payload = {
+                "image_b64": serialize_value(base64.b64encode(buf.getvalue()).decode("ascii"), "TEXT"),
+                "text_prompt": serialize_value(text, "TEXT"),
+            }
+            try:
+                out = await _call_server(
+                    gdino_url, "model_grounding_dino__detect", payload, dict(_gdino_cfg)
+                )
+            except Exception as e:
+                return {"error": f"grounding_dino HTTP error: {e}"}
+            result_json = deserialize_value(out.get("result", ""), "TEXT")
+            if not result_json:
+                return {"error": "grounding_dino returned no result (degraded?)"}
+            result = json.loads(result_json)
+            boxes = [b["xyxy"] for b in result.get("boxes", [])]
+            labels = [b["phrase"] for b in result.get("boxes", [])]
+            return {"bboxes_2d": boxes, "labels": labels, "error": ""}
+
+        async def _locate_3d_async(image: np.ndarray, text: str) -> dict:
+            det = await _gdino_detect_async(image, text)
+            if det.get("error"):
+                return {"error": det["error"]}
+            boxes = det.get("bboxes_2d") or []
+            if not boxes:
+                # Upstream error contract (former predict_3d text branch).
+                return {"error": f"No objects matching '{text}' found in the image."}
             if not detany3d_url:
                 return {"error": "model_detany3d not loaded"}
             payload = {
                 "image": serialize_value(image, "ANY"),
-                "text": serialize_value(text, "TEXT"),
+                "boxes_2d": serialize_value(boxes, "ANY"),
             }
             try:
-                out = await _call_server(detany3d_url, endpoint, payload, {})
+                out = await _call_server(
+                    detany3d_url, "model_detany3d__locate_3d", payload, {}
+                )
             except Exception as e:
                 return {"error": f"detany3d HTTP error: {e}"}
             return {k: deserialize_value(v, "ANY") for k, v in out.items()}
 
-        def _detany3d_sync(endpoint: str, image: np.ndarray, text: str) -> dict:
-            fut = asyncio.run_coroutine_threadsafe(_detany3d_async(endpoint, image, text), loop)
+        def _locate_2d(image: np.ndarray, text: str) -> dict:
+            fut = asyncio.run_coroutine_threadsafe(_gdino_detect_async(image, text), loop)
             return fut.result(timeout=180.0)
 
-        def _locate_2d(image: np.ndarray, text: str) -> dict:
-            return _detany3d_sync("model_detany3d__locate_2d", image, text)
-
         def _locate_3d(image: np.ndarray, text: str) -> dict:
-            return _detany3d_sync("model_detany3d__locate_3d", image, text)
+            fut = asyncio.run_coroutine_threadsafe(_locate_3d_async(image, text), loop)
+            return fut.result(timeout=180.0)
 
         # go_next: the toolbox passes the *latest* working frame each call. We
         # capture the live frame via a mutable holder so a second go_next in

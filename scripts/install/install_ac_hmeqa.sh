@@ -2,9 +2,10 @@
 # =============================================================================
 # HM-EQA Environment Installation Script
 # =============================================================================
-# Creates the `hmeqa` conda env (Python 3.9) for explore-eqa / HM-EQA.
-# Used in server mode by `env_hmeqa` nodeset at
-# `workspace/nodesets/server/hmeqa.py` (server_python points here).
+# Creates the `ac-hmeqa` conda env (Python 3.9) for explore-eqa / HM-EQA.
+# Used in server mode by the `env_hmeqa` nodeset
+# (`workspace/nodesets/env/env_hmeqa/`) and the `vlm_prismatic` FM nodeset
+# (`workspace/nodesets/model/vlm_prismatic.py`) — server_python points here.
 #
 # Why separate from `vlnce`:
 #   vlnce pins habitat-sim 0.1.7 + Python 3.8 + torch 1.9 (VLN-CE stack).
@@ -171,7 +172,7 @@ echo -n "  agentcanvas app: "
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The hmeqa env is used by workspace/nodesets/server/hmeqa.py in server mode."
+echo "The ac-hmeqa env is used by env_hmeqa + vlm_prismatic in server mode."
 echo "To set it explicitly:  export HMEQA_PYTHON=$HMEQA_PYTHON"
 echo "To activate manually:  conda activate ac-hmeqa"
 echo ""

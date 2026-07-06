@@ -5,7 +5,7 @@
 # Creates the `ac-octo` conda env (Python 3.10), clones + installs
 # Octo at the SimplerEnv-pinned commit (octo-1.0), and (optionally) snapshots
 # the Octo HF checkpoint to data/vla_policy/checkpoints/. Used in server mode
-# by `policy_octo` nodeset at workspace/nodesets/server/policy_octo.py.
+# by `policy_octo` nodeset at workspace/nodesets/policy/policy_octo.py.
 #
 # Why a separate env:
 #   Octo runs on JAX/Flax. Coexisting with TF (RT-1) or Torch+CUDA (Pi0) in
@@ -203,7 +203,7 @@ echo ""
 echo "=== Installation Complete ==="
 echo ""
 if [ "$DO_ENV" = "1" ]; then
-    echo "The $ENV_NAME env is used by workspace/nodesets/server/policy_octo.py in server mode."
+    echo "The $ENV_NAME env is used by workspace/nodesets/policy/policy_octo.py in server mode."
     echo "To set it explicitly:  export OCTO_PYTHON=/home/$(whoami)/miniforge3/envs/$ENV_NAME/bin/python"
 fi
 if [ "$DO_CKPT" = "1" ]; then

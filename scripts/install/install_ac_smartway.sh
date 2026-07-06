@@ -2,13 +2,13 @@
 # =============================================================================
 # SmartWay (IROS 2025) Environment Installation Script
 # =============================================================================
-# Creates the `smartway` conda env for the SmartWay nodeset stack:
-#   - workspace/nodesets/server/smartway_waypoint  (DINOv2 + DDPPO + TRM)
-#   - workspace/nodesets/server/smartway_perception  (RAM+ tagging)
+# Creates the `ac-smartway` conda env for the SmartWay nodeset stack:
+#   - workspace/nodesets/method/smartway_waypoint  (DINOv2 + DDPPO + TRM)
+#   - workspace/nodesets/method/smartway_perception  (RAM+ tagging)
 #
 # This is a SIDE EXPERIMENT port — not PortBench v1 (author-relationship
 # constraint, see docs/research/embodied-ai-lit-review/vln-methods.html
-# § 3.2). The method-side nodeset (workspace/nodesets/smartway/) runs in the
+# § 3.2). The method-side nodeset (workspace/nodesets/method/smartway/) runs in the
 # main `agentcanvas` env; only the two server-mode model nodesets need this env.
 #
 # Usage:
@@ -51,7 +51,7 @@ ensure_thirdparty habitat-lab
 
 # SmartWay-Code vendored sub-tree (loaded via sys.path-insert at engine time; the
 # server nodeset DOES NOT pip install it — it just needs to be present).
-SMARTWAY_VENDORED="$PROJECT_ROOT/workspace/nodesets/server/smartway_waypoint/_vendored/waypoint_predictor"
+SMARTWAY_VENDORED="$PROJECT_ROOT/workspace/nodesets/method/smartway_waypoint/_vendored/waypoint_predictor"
 if [ ! -d "$SMARTWAY_VENDORED" ]; then
     echo "[WARN] $SMARTWAY_VENDORED missing."
     echo "       The waypoint server nodeset reads TRM_net.py / ID_CrossAttention from this path."
@@ -61,8 +61,8 @@ fi
 # ── Step 1: Create conda env ──
 echo ""
 echo "=== Step 1: Creating conda env from $ENV_YAML ==="
-if $CONDA_CMD env list | grep -qE '^\s*smartway\s'; then
-    echo "  [skip] smartway env already exists — use 'conda env remove -n ac-smartway -y' to recreate"
+if $CONDA_CMD env list | grep -qE '^\s*ac-smartway\s'; then
+    echo "  [skip] ac-smartway env already exists — use 'conda env remove -n ac-smartway -y' to recreate"
 else
     cd "$PROJECT_ROOT"
     $CONDA_CMD env create -f "$ENV_YAML"

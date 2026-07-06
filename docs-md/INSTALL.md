@@ -81,9 +81,9 @@ Every env has one idempotent script under `scripts/install/` — run each as `ba
 | `install_ac_simpler.sh` | `ac-simpler` | SIMPLER eval (SimplerEnv + ManiSkill2) |
 | `install_ac_octo.sh` | `ac-octo` | Octo JAX/Flax policy (fragile install; JAX is CPU-only here) |
 | `install_ac_detany3d.sh` | `ac-detany3d` | 3D-detection model server (CUDA 11.8) |
-| `install_ac_qwenvl.sh` | `ac-qwenvl` | Qwen2.5-VL model server |
+| `install_ac_ram.sh` | `ac-ram` | RAM / RAM++ tagging + SpatialBot model server |
 
-> `ac-ram` (RAM tagging for DiscussNav / SmartWay perception) has **no installer yet** — built by hand. Simulator scenes/episodes/checkpoints live separately under `scripts/data/` (e.g. `fetch_data_vlnce.sh`, `fetch_scans_mp3d.py`, `fetch_episodes_vln.sh`).
+> Simulator scenes/episodes/checkpoints live separately under `scripts/data/` (e.g. `fetch_data_vlnce.sh`, `fetch_scans_mp3d.py`, `fetch_episodes_vln.sh`).
 
 ## Troubleshooting
 

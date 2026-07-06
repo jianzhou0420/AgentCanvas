@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InstructBLIP NodeSet — AgentCanvas</title>
+<meta name="description" content="The InstructBLIP NodeSet ( InstructBlipNodeSet , workspace/nodesets/model/model_instructblip.py ) wraps InstructBLIP (23.05) FlanT5-XL scene captioning as a generic foundation-model nodeset.…">
+<meta property="og:title" content="InstructBLIP NodeSet — AgentCanvas">
+<meta property="og:description" content="The InstructBLIP NodeSet ( InstructBlipNodeSet , workspace/nodesets/model/model_instructblip.py ) wraps InstructBLIP (23.05) FlanT5-XL scene captioning as a generic foundation-model nodeset.…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-instructblip.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-instructblip.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">InstructBLIP NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header guide">
+  <h1>InstructBLIP NodeSet</h1>
+</header>
+
+<p>The <strong>InstructBLIP NodeSet</strong> (<code>InstructBlipNodeSet</code>, <code>workspace/nodesets/model/model_instructblip.py</code>) wraps <a href="https://arxiv.org/abs/2305.06500">InstructBLIP</a> (23.05) FlanT5-XL scene captioning as a generic foundation-model nodeset. Extracted from <code>navgpt_mp3d_tools</code> per the method/FM boundary (TODO #56): per-view scene description is a generic vision primitive, consumed by DiscussNav and NavGPT-MP3D alike — exactly like <a href="model-ram.html"><code>model_ram</code></a> for tagging.</p>
+<p>env: <code>ac-fm</code></p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_instructblip__caption</code></td>
+<td>Per-direction scene description: ordered list of <code>{dir_id, rgb_base64}</code> → <code>captions_per_dir</code> (LIST[TEXT], aligned 1:1) + <code>captions_json</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-fidelity"><span class="num">1.</span> Fidelity</h2>
+<p>The DiscussNav recipe: LAVIS <code>blip2_t5_instruct/flant5xl</code> with the prompt <em>"Describe this indoor scene in details"</em>, one caption per direction, later merged as <code>Scene Description: {instructblip} Scene Objects: {ram};</code>. This nodeset uses the HF <code>transformers</code> equivalent (LAVIS isn't installed) with decoding aligned to LAVIS <code>Blip2T5Instruct.generate</code> defaults — <strong>beam-5, <code>max_length</code> 256, <code>repetition_penalty</code> 1.5, <code>length_penalty</code> 1.0, <code>do_sample=False</code></strong>. LAVIS calls the same HF T5 <code>.generate</code> under the hood, so matching kwargs makes output equivalent up to float noise.</p>
+<p><strong>Manual image-token unpacking</strong> — <code>InstructBlipProcessor.__call__</code> concatenates the image-token list with the text tensor and trips a "list + Tensor" TypeError; the node bypasses it by calling the sub-tokenizers directly and prepending <code>processor.image_token.content × num_query_tokens</code> itself. This relies on processor attributes added around transformers 4.44 — one reason the hosting env matters (§3).</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<h3 id="model_instructblip__caption"><code>model_instructblip__caption</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>views</code> (ANY — ordered list of <code>{dir_id, rgb_base64}</code>, e.g. 12 directions; same tiles that feed <code>model_ram</code>)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>captions_per_dir</code> (LIST[TEXT] — aligned 1:1), <code>captions_json</code> (TEXT)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>model_name</code> (default <code>Salesforce/instructblip-flan-t5-xl</code>), <code>prompt</code>, <code>max_length</code> (slider 32–384, default 256), <code>num_beams</code> (slider 1–8, default 5). Device moved to the deployment level: <code>$INSTRUCTBLIP_DEVICE</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Stateless</strong> — the former per-server caption cache was removed in the 2026-07-05 FM-template alignment. That removal also killed a real bug: the cache was keyed on image bytes only, so a prompt/beam/model config change within one server lifetime kept serving captions generated under the old config. The server now holds loaded weights only; reuse is a graph-level decision. After each batch the node still calls <code>torch.cuda.empty_cache()</code> to curb allocator growth.</p>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (one ~7&nbsp;GB model shared by K eval workers; bit-identical at <code>worker_count=1</code>). <code>server_python</code> defaults to the shared <strong><code>ac-fm</code></strong> FM env (transformers 5.13.0 + tokenizers 0.22) since 2026-07-05 — beam-5 captions verified byte-identical to the previous <code>agentcanvas</code> hosting, manual image-token unpacking included. <strong>Not</strong> <code>ac-ram</code>: its tokenizers 0.15.2 cannot parse the flan-t5 fast tokenizer and it lacks sentencepiece, so <code>InstructBlipProcessor</code> fails to load there (a past mis-choice that 500-ed every caption call). Override with <code>$INSTRUCTBLIP_PYTHON</code>. Engines live in a lazy registry keyed by <code>model_name</code> with a load-failure latch and a single-flight GPU inference lock (FM template, 2026-07-05). Load: <code>POST /api/components/nodesets/model_instructblip/load?mode=server</code>.</p>
+<hr>
+<h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>INSTRUCTBLIP_PYTHON</code></td>
+<td><code>ac-fm</code> env python</td>
+<td>Interpreter for the server subprocess (dedicated-env override)</td>
+</tr>
+<tr>
+<td><code>INSTRUCTBLIP_DEVICE</code></td>
+<td><code>auto</code> (cuda when available)</td>
+<td>Inference device (moved off the node UI 2026-07-05 — deployment knob)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
+<p>Per-view caption exceptions are caught and logged; that slot stays <code>""</code> and the remaining views proceed (1:1 alignment preserved). A model-load failure latches and every call returns empty outputs with a <code>degraded</code> self-log entry (house FM convention since 2026-07-05). Empty <code>views</code> → empty outputs without touching the model.</p>
+<hr>
+<h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
+<ul>
+<li><a href="../method/discussnav.html">DiscussNav</a> — per-direction scene descriptions, paired 1:1 with <a href="model-ram.html">RAM</a> tags (both fed by <code>discussnav__panorama_to_views</code>)</li>
+<li><a href="../method/navgpt.html">NavGPT</a> — online-captioning alternate</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-fidelity">1. Fidelity</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_instructblip__caption">model_instructblip__caption</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
+      <a class="toc-h2" href="#5-failure-behaviour">5. Failure Behaviour</a>
+      <a class="toc-h2" href="#6-consumers">6. Consumers</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

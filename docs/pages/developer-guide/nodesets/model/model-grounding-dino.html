@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grounding DINO NodeSet — AgentCanvas</title>
+<meta name="description" content="The Grounding DINO NodeSet ( GroundingDinoNodeSet , workspace/nodesets/model/model_grounding_dino.py ) wraps Grounding DINO (23.03) open-vocabulary text→box detection as a generic foundation-model…">
+<meta property="og:title" content="Grounding DINO NodeSet — AgentCanvas">
+<meta property="og:description" content="The Grounding DINO NodeSet ( GroundingDinoNodeSet , workspace/nodesets/model/model_grounding_dino.py ) wraps Grounding DINO (23.03) open-vocabulary text→box detection as a generic foundation-model…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-grounding-dino.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-grounding-dino.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Grounding DINO NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-06</div>
+</div>
+  <header class="page-header guide">
+  <h1>Grounding DINO NodeSet</h1>
+</header>
+
+<p>The <strong>Grounding DINO NodeSet</strong> (<code>GroundingDinoNodeSet</code>, <code>workspace/nodesets/model/model_grounding_dino.py</code>) wraps <a href="https://arxiv.org/abs/2303.05499">Grounding DINO</a> (23.03) open-vocabulary text→box detection as a generic foundation-model nodeset. Built for the AO-Planner port's Visual Affordances Prompting layer (detect the navigable floor, then hand the boxes to SAM for a ground mask); generic enough that any open-vocab-detection method reuses it unchanged.</p>
+<p>env: <code>ac-detany3d</code> (native) / <code>ac-fm</code> (hf_tiny)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_grounding_dino__detect</code></td>
+<td>Text→box detection: <code>(image_b64, text_prompt?)</code> → <code>result</code> JSON <code>{boxes:[{xyxy, score, phrase}], count, image_w, image_h, text_prompt}</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-two-backends"><span class="num">1.</span> Two variants, one schema</h2>
+<p>The <code>variant</code> is <strong>node config</strong> since the 2026-07-05 FM-template alignment (a select on the node UI, matching <code>model_sam</code>). The two variants genuinely require different interpreter envs and one server is one env, so the <em>server env</em> remains a deployment choice: <code>$GROUNDING_DINO_BACKEND</code> picks which env boots (and the variant select's default follows it). Asking a server for a variant its env cannot run raises a clear node error rather than silently ignoring the knob.</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Implementation</th>
+<th>Env</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>native</code> (default)</td>
+<td><code>groundingdino-py</code> + local <code>.pth</code> checkpoint — <strong>Swin-T OGC</strong> (AO-Planner's exact detector) by default; a <code>ckpt</code> whose filename contains <code>swinb</code> auto-selects the Swin-B config, and the keyed engine registry lets Swin-T and Swin-B co-host in one server. Standard transform (RandomResize&nbsp;800 / ImageNet norm) → <code>groundingdino.util.inference.predict</code> → <code>box_convert</code> cxcywh→pixel xyxy (recipe shared with <a href="model-detany3d.html">DetAny3D</a>)</td>
+<td><code>ac-detany3d</code></td>
+</tr>
+<tr>
+<td><code>hf_tiny</code></td>
+<td>HF transformers <code>IDEA-Research/grounding-dino-tiny</code> — the variant the retired NavGPT <code>open_vocab_detect</code> node ran, inference recipe moved verbatim. Its <code>threshold=</code> post-process kwarg requires a post-4.5x transformers signature (4.45 calls it <code>box_threshold=</code>, so the backend never actually worked in the previously-suggested <code>agentcanvas</code> env) — served from the shared <code>ac-fm</code> env (transformers 5.13) since 2026-07-05</td>
+<td><code>ac-fm</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both backends emit the same <code>result</code> JSON schema, so graphs are backend-agnostic. NavGPT-style post-processing (depth-annotated object lists) lives in the pure <code>navgpt_mp3d_tools__format_detections</code> node, not here.</p>
+<p>Detection defaults are AO-Planner's exact settings: caption <code>"ground"</code>, <code>box_threshold</code> / <code>text_threshold</code> 0.4 / 0.4 (fidelity alignment 2026-06-17 — previously Swin-B @ 0.25 with <code>"floor . ground ."</code>).</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<h3 id="model_grounding_dino__detect"><code>model_grounding_dino__detect</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>image_b64</code> (TEXT), <code>text_prompt</code> (TEXT, optional — overrides the configured prompt)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>result</code> (TEXT — the JSON schema above)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>variant</code> (select native | hf_tiny — default follows <code>$GROUNDING_DINO_BACKEND</code>), <code>ckpt</code> (blank = variant default; native: <code>.pth</code> path, hf_tiny: HF repo id), <code>text_prompt</code> (default <code>"ground"</code>), <code>box_threshold</code> (0.4), <code>text_threshold</code> (0.4)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The former <code>ground_mask</code> tool is gone</strong> (evicted 2026-07-06 — cross-model composition belongs to the graph). <code>aoplanner_ce</code> now wires <code>__detect</code> → <code>aoplanner__ground_boxes</code> → <code>model_sam__segment_box</code> (sam1, ViT-H ckpt) → <code>sample_waypoints.sam_result</code>. Equivalence-gated on captured frames from the verified run: detect box counts 12/12, downstream <code>candidate_pixels</code> 12/12 exact; the mask bitmaps carry an accepted 1–3&nbsp;px cross-env conv drift (SAM ViT-H moved from torch 2.1.2 to ac-fm's 2.8.0 — same class as the model_sam rewrite's documented drift, invisible to every consumer).</p>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code>; <code>server_python</code> follows the selected backend (2026-07-05): <code>native</code> → <code>ac-detany3d</code>, <code>hf_tiny</code> → <code>ac-fm</code>. The <code>ac-detany3d</code> side is a conscious reuse: that env already <em>is</em> the GroundingDINO host (<code>groundingdino-py</code> 0.4.0, torch 2.1.2+cu118, bundled Swin-T OGC config + weights) — a compiled, frozen stack that cannot move. Load: <code>POST /api/components/nodesets/model_grounding_dino/load</code>.</p>
+<hr>
+<h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GROUNDING_DINO_BACKEND</code></td>
+<td><code>native</code></td>
+<td><code>native</code> | <code>hf_tiny</code> backend selection</td>
+</tr>
+<tr>
+<td><code>GROUNDING_DINO_PYTHON</code></td>
+<td>backend-dependent: <code>ac-detany3d</code> (native) / <code>ac-fm</code> (hf_tiny)</td>
+<td>Interpreter override (applies to both backends)</td>
+</tr>
+<tr>
+<td><code>GROUNDING_DINO_WEIGHTS</code></td>
+<td><code>data/detany3d/weights/groundingdino_swint_ogc.pth</code></td>
+<td>Native checkpoint (set a Swin-B ckpt for the stronger backbone)</td>
+</tr>
+<tr>
+<td><code>GROUNDING_DINO_CONFIG</code></td>
+<td><code>GroundingDINO_SwinT_OGC.py</code></td>
+<td>Config basename inside the installed package</td>
+</tr>
+<tr>
+<td><code>GROUNDING_DINO_HF_MODEL</code></td>
+<td><code>IDEA-Research/grounding-dino-tiny</code></td>
+<td>HF model id for the <code>hf_tiny</code> backend</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
+<p>Missing <code>image_b64</code> → empty result (<code>{boxes: [], count: 0, error: "no image_b64"}</code> / empty mask) without touching the model. A variant its server env cannot run <strong>raises</strong> with an actionable message (boot env / <code>$GROUNDING_DINO_PYTHON</code>); other load failures <strong>latch</strong> and return empty outputs with a <code>degraded</code> self-log (FM template, 2026-07-05). No detected boxes → empty <code>mask_b64</code> with <code>n_boxes = 0</code>.</p>
+<hr>
+<h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
+<ul>
+<li><a href="../method/aoplanner.html">AO-Planner</a> — <code>__detect</code> ("ground" @ 0.4/0.4) opens the Grounded-SAM composition into <code>model_sam__segment_box</code> per panorama lane</li>
+<li>ToolEQA (<code>tooleqa</code> toolbox) — <code>__detect</code> (native, Swin-B ckpt @ 0.37/0.25) serves ObjectLocation2D and the box-prompt stage of ObjectLocation3D (since the DetAny3D promptable reshape)</li>
+<li><a href="../method/navgpt.html">NavGPT</a> — online-detection alternate (<code>hf_tiny</code> variant + <code>format_detections</code> glue); alternates only, not the paper-faithful cached path</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-two-backends">1. Two variants, one schema</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_grounding_dino__detect">model_grounding_dino__detect</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
+      <a class="toc-h2" href="#5-failure-behaviour">5. Failure Behaviour</a>
+      <a class="toc-h2" href="#6-consumers">6. Consumers</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

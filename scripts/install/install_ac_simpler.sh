@@ -5,7 +5,7 @@
 # Creates the `ac-simpler` conda env (Python 3.10) for the SIMPLER
 # VLA evaluation benchmark (https://github.com/simpler-env/SimplerEnv).
 # Used in server mode by `env_simpler` nodeset at
-# `workspace/nodesets/server/simpler.py` (server_python points here).
+# `workspace/nodesets/env/env_simpler/` (server_python points here).
 #
 # Why a separate env:
 #   SIMPLER depends on SAPIEN 2.x (Vulkan-rendered) + ManiSkill2_real2sim +
@@ -193,7 +193,7 @@ PY
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The $ENV_NAME env is used by workspace/nodesets/server/simpler.py in server mode."
+echo "The $ENV_NAME env is used by workspace/nodesets/env/env_simpler/ in server mode."
 echo "To set it explicitly:  export SIMPLER_PYTHON=$SIMPLER_PYTHON"
 echo "To activate manually:  conda activate $ENV_NAME"
 echo ""

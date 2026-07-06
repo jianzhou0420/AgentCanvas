@@ -1,40 +1,117 @@
 from __future__ import annotations
 
-"""SAM (Segment Anything Model) nodeset — SAM, SAM2, and SAM3 backends.
+"""SAM (Segment Anything) foundation-model nodeset — full series, server mode.
 
-Provides visual segmentation and object tracking tools for VLN agents.
-The agent can segment objects referenced in navigation instructions,
-track landmarks across frames, and perform full-scene segmentation.
+Pure single-step segmentation primitives. Five capability nodes, all of them
+stateless one-shot forwards; everything procedural lives in the graph:
 
-Backend selection (via environment variables):
-    SAM_VERSION   = sam | sam2 | sam3   (default: sam2)
-    SAM_MODEL_CFG = checkpoint path or model config name
-    SAM_DEVICE    = cuda:0 | cpu       (default: cuda:0)
+    model_sam__segment_points   point-prompted segmentation (+ optional
+                                mask_input for outer-loop iterative refinement)
+    model_sam__segment_box      box-prompted segmentation (single box or batch)
+    model_sam__segment_auto     full-scene segmentation (engineered grid over
+                                the point capability; original image only)
+    model_sam__segment_text     concept/text-prompted segmentation (SAM 3
+                                native — instance masks for a noun phrase)
+    model_sam__embed_image      image-encoder features as an embedding envelope
 
-Capabilities by version:
-    SAM   — point / box / auto-mask segmentation
-    SAM2  — + video object tracking with memory bank
-    SAM3  — + native text-prompted segmentation, 3D-aware masks
+Variant matrix (real backends only; ``variant`` + ``ckpt`` are node config,
+engines live in a ``(variant, ckpt)`` registry so checkpoints coexist):
+
+    variant  backing                              nodes
+    sam1     segment_anything + local .pth ckpt   points / box / auto / embed
+    sam2     transformers Sam2Model (SAM 2.1,     points / box / auto
+             HF weights, ungated)
+    sam3     transformers Sam3Model (HF weights,  text
+             GATED — request access on the
+             facebook/sam3 model page first;
+             until granted the engine latches
+             degraded)
+
+Design rulings (2026-07-05, see the FM-nodeset design doc):
+    - Variants are config, not node identity; swapping them never changes the
+      graph (uniform masks envelope). Video tracking stays deferred until a
+      real consumer exists (session state is not welcome on a shared server).
+    - The server is fully stateless: no embedding cache, no sessions. Reuse is
+      expressed as dataflow — prompted nodes accept EITHER a raw base64 image
+      OR a previously computed embedding envelope on their ``image`` port, and
+      emit the envelope they used, so a graph can stash it in a state
+      container and skip the heavy encoder on later prompts. Embedding in/out
+      is sam1-only for now (SAM 2/3 features are multi-level; envelope v2
+      would be needed) — sam2 emits ``""`` and rejects envelope injection.
+    - Iterative refinement belongs to the outer loop: every prompted candidate
+      carries ``low_res_logits_b64``; feed one back into ``mask_input``.
+
+Embedding envelope (TEXT JSON, byte-exact float32 buffer):
+    {"b64", "shape", "dtype", "original_hw", "input_hw", "variant", "ckpt_id"}
+    Injecting an envelope whose variant/ckpt_id mismatches the target engine
+    raises — better a node error than a silently wrong mask.
+
+Masks envelope (TEXT JSON):
+    {"masks": [{"mask_index", "mask_b64" (PNG), "bbox_xyxy", "iou_score",
+                "area", "low_res_logits_b64" (prompted only),
+                "stability_score" (auto only)}],
+     "count", "image_w", "image_h"}
+
+Environment:
+    Served from the shared ``ac-fm`` env. sam1 needs segment-anything
+    (installed by scripts/install/install_ac_fm.sh); sam2/sam3 ride the
+    resident transformers (>=5.13 ships Sam2/Sam3) — zero extra packages.
+    SAM_PYTHON   — interpreter override for the server subprocess
+    SAM_DEVICE   — cuda:0 | cpu (default: cuda:0)
+    Default ckpts: sam1 data/habitat/checkpoints/sam/sam_vit_b.pth (model
+    type inferred from the filename: vit_b / vit_l / vit_h); sam2
+    facebook/sam2.1-hiera-base-plus; sam3 facebook/sam3 (both resolve as HF
+    repo ids through the standard HF cache; local dirs also accepted).
+
+This file must stay Python-3.8-parseable (override may point at an old env).
+
+Load: POST /api/components/nodesets/model_sam/load?mode=server
+
+last updated: 2026-07-05
 """
 
 
+import asyncio
 import base64
 import io
 import json
 import logging
-import random
-import uuid
-from abc import ABC, abstractmethod
+import os
+import threading
 from typing import Any, ClassVar
 
 import numpy as np
 from PIL import Image
 
-from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef
+from app.components import (
+    BaseCanvasNode,
+    BaseNodeSet,
+    ConfigField,
+    NodeUIConfig,
+    PortDef,
+    conda_env_python,
+)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SAM_CHECKPOINT = "data/habitat/checkpoints/sam/sam_vit_b.pth"
+
+def _find_repo_root() -> str:
+    """Walk upward from this file until a dir containing ``data/`` is found.
+
+    A fixed ``../../..`` breaks when this file is served from a workspace
+    OVERLAY copy (different depth than frozen ``workspace/nodesets/model/…``);
+    the auto_host subprocess also does not run with the repo root as CWD, so
+    relative checkpoint paths must be anchored here (same helper as model_ram).
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for up in range(2, 7):
+        cand = os.path.normpath(os.path.join(here, *[".."] * up))
+        if os.path.isdir(os.path.join(cand, "data")):
+            return cand
+    return os.path.normpath(os.path.join(os.getcwd(), "..", ".."))
+
+
+_REPO_ROOT = _find_repo_root()
 
 
 # ━━ Image helpers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -80,6 +157,20 @@ def _infer_model_type(model_cfg: str) -> str:
     return "vit_b"
 
 
+def _f32_b64(arr: np.ndarray) -> str:
+    """base64 of a C-contiguous float32 buffer (byte-exact, no decimal trip)."""
+    return base64.b64encode(
+        np.ascontiguousarray(arr, dtype=np.float32).tobytes()
+    ).decode("ascii")
+
+
+def _as_json(value: Any) -> Any:
+    """Accept either a JSON string or an already-decoded list/dict."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 def _patch_torchvision_nms() -> None:
     """Monkey-patch torchvision NMS with a pure-Python fallback.
 
@@ -87,7 +178,8 @@ def _patch_torchvision_nms() -> None:
     torch 2.4 + torchvision 0.10) and the C++ NMS ops fail to load.
     SamAutomaticMaskGenerator calls ``torchvision.ops.batched_nms``,
     which in old torchvision goes through a JIT-traced wrapper — so we
-    must patch ``batched_nms`` itself, not just ``nms``.
+    must patch ``batched_nms`` itself, not just ``nms``. A no-op on a
+    healthy env (ac-fm: torch 2.8 + torchvision 0.23).
     """
     import torch
 
@@ -158,744 +250,913 @@ def _patch_torchvision_nms() -> None:
         logger.info("Pure-Python NMS fallback installed")
 
 
-# ━━ Backend Abstraction ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━ Engines ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-class SamBackend(ABC):
-    """Abstract backend for SAM model variants.
+class _SamEngineBase:
+    """Shared engine shell: lazy load with a failure latch + single-flight lock.
 
-    Each concrete backend declares its capabilities via class variables.
-    Tools check these flags at execute-time and return descriptive errors
-    when a feature is unsupported by the active backend.
+    One instance per ``(variant, ckpt)`` (see ``_get_engine``). Engines hold
+    only loaded weights — no cache, no sessions; the GPU section is
+    single-flight per engine to bound VRAM under K concurrent eval workers.
     """
 
-    version: ClassVar[str]
-    supports_tracking: ClassVar[bool] = False
-    supports_text_prompt: ClassVar[bool] = False
+    def __init__(self, variant: str, ckpt: str) -> None:
+        self.variant = variant
+        self.ckpt = ckpt
+        self.ckpt_id = os.path.basename(ckpt.rstrip("/"))
+        self._model: Any = None
+        self._loaded = False
+        self._load_failed = False
+        self._lock = threading.Lock()
+        self._device = os.environ.get("SAM_DEVICE", "cuda:0")
 
-    @abstractmethod
-    async def load(self, model_cfg: str, device: str) -> None:
-        """Load model weights onto *device*."""
-        ...
+    def ensure(self) -> bool:
+        """Load the model once; latch on failure (no retry storm). Blocking."""
+        if self._loaded:
+            return True
+        if self._load_failed:
+            return False
+        with self._lock:
+            if self._loaded:
+                return True
+            if self._load_failed:
+                return False
+            try:
+                self._load()
+                self._loaded = True
+                return True
+            except Exception:
+                logger.warning(
+                    "model_sam: failed to load %s (%s) — latching degraded",
+                    self.ckpt,
+                    self.variant,
+                    exc_info=True,
+                )
+                self._load_failed = True
+                return False
 
-    @abstractmethod
-    async def unload(self) -> None:
-        """Release model and free GPU memory."""
-        ...
+    def _load(self) -> None:
+        raise NotImplementedError
 
-    # ── Core segmentation (all versions) ──
-
-    @abstractmethod
-    async def segment_points(
-        self,
-        image_b64: str,
-        points: list[list[float]],
-        labels: list[int],
-        multimask: bool = True,
-    ) -> dict: ...
-
-    @abstractmethod
-    async def segment_box(
-        self,
-        image_b64: str,
-        box: list[float],
-    ) -> dict: ...
-
-    @abstractmethod
-    async def auto_mask(
-        self,
-        image_b64: str,
-        points_per_side: int = 32,
-        min_mask_area: int = 100,
-    ) -> dict: ...
-
-    # ── Video tracking (SAM2+) ──
-
-    async def track_init(
-        self,
-        image_b64: str,
-        mask_index: int,
-        points: list[list[float]] | None = None,
-    ) -> dict:
-        """Initialize object tracking on a segmented mask."""
-        return {"error": f"{self.version} does not support tracking. Use sam2 or sam3."}
-
-    async def track_propagate(
-        self,
-        image_b64: str,
-        track_ids: list[str],
-    ) -> dict:
-        """Propagate tracked objects to a new frame."""
-        return {"error": f"{self.version} does not support tracking. Use sam2 or sam3."}
-
-    # ── Text-prompted segmentation (SAM3 / Grounded-SAM) ──
-
-    async def segment_text(
-        self,
-        image_b64: str,
-        text: str,
-        threshold: float = 0.3,
-    ) -> dict:
-        """Segment objects matching a text description."""
-        return {"error": f"{self.version} does not support text prompts natively. Use sam3."}
+    def _reject_envelope_payload(self, image_payload: str) -> None:
+        """Embedding injection is a sam1-only capability for now."""
+        env = _sniff_embedding_envelope(image_payload)
+        if env is not None:
+            raise ValueError(
+                "model_sam: embedding injection is supported for the sam1 variant "
+                "only (envelope variant=%r, this engine=%r)"
+                % (env.get("variant"), self.variant)
+            )
 
 
-# ── Mock helpers ──
+class _Sam1Engine(_SamEngineBase):
+    """SAM 1 via the official ``segment_anything`` package (local .pth ckpt).
 
-
-def _mock_segment_result(n_masks: int, prompt_type: str) -> dict:
-    """Generate a realistic-looking segmentation result for testing."""
-    masks = []
-    for i in range(n_masks):
-        x1, y1 = random.randint(10, 200), random.randint(10, 200)
-        masks.append(
-            {
-                "mask_index": i,
-                "bbox": [x1, y1, x1 + random.randint(40, 200), y1 + random.randint(40, 160)],
-                "score": round(random.uniform(0.5, 1.0), 3),
-                "area": random.randint(500, 50000),
-                "stability_score": round(random.uniform(0.8, 1.0), 3),
-            }
-        )
-    masks.sort(key=lambda m: m["score"], reverse=True)
-    return {"masks": masks, "count": len(masks), "prompt_type": prompt_type}
-
-
-def _mock_auto_result(points_per_side: int) -> dict:
-    """Generate mock auto-mask results."""
-    n = random.randint(5, min(20, points_per_side))
-    masks = []
-    for i in range(n):
-        x1, y1 = random.randint(0, 300), random.randint(0, 200)
-        masks.append(
-            {
-                "mask_index": i,
-                "bbox": [x1, y1, x1 + random.randint(30, 180), y1 + random.randint(30, 160)],
-                "score": round(random.uniform(0.3, 1.0), 3),
-                "area": random.randint(200, 80000),
-                "stability_score": round(random.uniform(0.7, 1.0), 3),
-                "predicted_iou": round(random.uniform(0.6, 1.0), 3),
-            }
-        )
-    masks.sort(key=lambda m: m["area"], reverse=True)
-    return {"masks": masks, "count": len(masks)}
-
-
-# ── SAM v1 Backend ──────────────────────────────────────────────────────────
-
-
-class Sam1Backend(SamBackend):
-    """Original Segment Anything Model (Meta, 2023).
-
-    Point/box/auto segmentation. No tracking or text prompts.
-
-    Uses ``segment_anything.sam_model_registry`` →
-    ``SamPredictor`` / ``SamAutomaticMaskGenerator``.
+    Every call builds a fresh ``SamPredictor`` (a thin wrapper), so no
+    per-image state survives a call.
     """
 
-    version = "sam"
-    supports_tracking = False
-    supports_text_prompt = False
-
-    def __init__(self) -> None:
-        self._predictor: Any = None
-        self._auto_gen: Any = None
-        self._device: str = "cpu"
-
-    async def load(self, model_cfg: str, device: str) -> None:
-        from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
+    def _load(self) -> None:
+        from segment_anything import sam_model_registry
 
         _patch_torchvision_nms()
-        checkpoint = model_cfg if model_cfg != "default" else _DEFAULT_SAM_CHECKPOINT
-        model_type = _infer_model_type(checkpoint)
-        self._device = device
-
-        logger.info("SAM v1: loading %s from %s on %s", model_type, checkpoint, device)
-        sam = sam_model_registry[model_type](checkpoint=checkpoint)
-        sam.to(device=device)
-
-        self._predictor = SamPredictor(sam)
-        self._auto_gen = SamAutomaticMaskGenerator(
-            sam,
-            points_per_side=32,
-            pred_iou_thresh=0.86,
-            stability_score_thresh=0.92,
-            min_mask_region_area=100,
-        )
+        model_type = _infer_model_type(self.ckpt)
         logger.info(
-            "SAM v1: model loaded (%s, %.0fM params)",
+            "model_sam: loading %s from %s on %s", model_type, self.ckpt, self._device
+        )
+        sam = sam_model_registry[model_type](checkpoint=self.ckpt)
+        sam.to(device=self._device)
+        self._model = sam
+        logger.info(
+            "model_sam: %s loaded (%.0fM params)",
             model_type,
             sum(p.numel() for p in sam.parameters()) / 1e6,
         )
 
-    async def unload(self) -> None:
-        import torch
+    # -- predictor state ------------------------------------------------------
 
-        logger.info("SAM v1: unloading")
-        self._predictor = None
-        self._auto_gen = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    def _new_predictor(self) -> Any:
+        from segment_anything import SamPredictor
 
-    async def segment_points(self, image_b64, points, labels, multimask=True):
-        image = _decode_image(image_b64)
-        self._predictor.set_image(image)
+        return SamPredictor(self._model)
 
-        masks, scores, _ = self._predictor.predict(
-            point_coords=np.array(points, dtype=np.float32),
-            point_labels=np.array(labels, dtype=np.int32),
-            multimask_output=multimask,
+    def _set_state(self, predictor: Any, image_payload: str) -> "tuple[int, int]":
+        """Set predictor state from a raw base64 image OR an embedding envelope.
+
+        Returns (H, W) of the original image. Envelope variant/ckpt mismatch
+        raises — never silently decode against the wrong engine.
+        """
+        env = _sniff_embedding_envelope(image_payload)
+        if env is not None:
+            if env.get("variant") != self.variant or env.get("ckpt_id") != self.ckpt_id:
+                raise ValueError(
+                    "model_sam: embedding envelope was computed by %r/%r but this node "
+                    "is configured for %r/%r — rewire or align configs"
+                    % (env.get("variant"), env.get("ckpt_id"), self.variant, self.ckpt_id)
+                )
+            import torch
+
+            feats = np.frombuffer(
+                base64.b64decode(env["b64"]), dtype=np.float32
+            ).reshape(env["shape"]).copy()
+            predictor.features = torch.from_numpy(feats).to(self._device)
+            predictor.original_size = tuple(env["original_hw"])
+            predictor.input_size = tuple(env["input_hw"])
+            predictor.is_image_set = True
+            return (int(env["original_hw"][0]), int(env["original_hw"][1]))
+        image = _decode_image(image_payload)
+        predictor.set_image(image)
+        return (int(image.shape[0]), int(image.shape[1]))
+
+    def _embedding_envelope(self, predictor: Any) -> str:
+        feats = predictor.features.detach().to("cpu").numpy()
+        return json.dumps(
+            {
+                "b64": _f32_b64(feats),
+                "shape": [int(x) for x in feats.shape],
+                "dtype": "float32",
+                "original_hw": [int(x) for x in predictor.original_size],
+                "input_hw": [int(x) for x in predictor.input_size],
+                "variant": self.variant,
+                "ckpt_id": self.ckpt_id,
+            }
         )
 
-        result_masks = []
-        for i in range(len(scores)):
-            m = masks[i]  # (H, W) bool
-            result_masks.append(
-                {
-                    "mask_index": i,
-                    "bbox": _mask_to_bbox_xyxy(m),
-                    "score": round(float(scores[i]), 4),
-                    "area": int(m.sum()),
-                    "mask_b64": _encode_mask(m),
-                }
+    # -- capabilities (sync, called via run_in_executor) ----------------------
+
+    def predict_points(
+        self,
+        image_payload: str,
+        points: list,
+        labels: list,
+        mask_input_b64: str,
+        multimask: bool,
+    ) -> "tuple[dict, str]":
+        with self._lock:
+            predictor = self._new_predictor()
+            hw = self._set_state(predictor, image_payload)
+            kwargs = {}
+            if mask_input_b64:
+                kwargs["mask_input"] = (
+                    np.frombuffer(base64.b64decode(mask_input_b64), dtype=np.float32)
+                    .reshape(1, 256, 256)
+                    .copy()
+                )
+            masks, scores, low_res = predictor.predict(
+                point_coords=np.array(points, dtype=np.float32),
+                point_labels=np.array(labels, dtype=np.int32),
+                multimask_output=multimask,
+                **kwargs,
             )
-        result_masks.sort(key=lambda x: x["score"], reverse=True)
-        return {"masks": result_masks, "count": len(result_masks), "prompt_type": "point"}
-
-    async def segment_box(self, image_b64, box):
-        image = _decode_image(image_b64)
-        self._predictor.set_image(image)
-
-        masks, scores, _ = self._predictor.predict(
-            box=np.array(box, dtype=np.float32),
-            multimask_output=False,
-        )
-
-        result_masks = []
+            emb_env = self._embedding_envelope(predictor)
+        cands = []
         for i in range(len(scores)):
             m = masks[i]
-            result_masks.append(
+            cands.append(
                 {
                     "mask_index": i,
-                    "bbox": _mask_to_bbox_xyxy(m),
-                    "score": round(float(scores[i]), 4),
-                    "area": int(m.sum()),
                     "mask_b64": _encode_mask(m),
+                    "bbox_xyxy": _mask_to_bbox_xyxy(m),
+                    "iou_score": round(float(scores[i]), 4),
+                    "area": int(m.sum()),
+                    "low_res_logits_b64": _f32_b64(low_res[i]),
                 }
             )
-        return {"masks": result_masks, "count": len(result_masks), "prompt_type": "box"}
+        cands.sort(key=lambda x: x["iou_score"], reverse=True)
+        return _masks_envelope(cands, hw), emb_env
 
-    async def auto_mask(self, image_b64, points_per_side=32, min_mask_area=100):
+    def predict_boxes(self, image_payload: str, boxes: list) -> "tuple[dict, str]":
+        with self._lock:
+            predictor = self._new_predictor()
+            hw = self._set_state(predictor, image_payload)
+            cands = []
+            for i, box in enumerate(boxes):
+                masks, scores, low_res = predictor.predict(
+                    box=np.array(box, dtype=np.float32),
+                    multimask_output=False,
+                )
+                m = masks[0]
+                cands.append(
+                    {
+                        "mask_index": i,
+                        "mask_b64": _encode_mask(m),
+                        "bbox_xyxy": _mask_to_bbox_xyxy(m),
+                        "iou_score": round(float(scores[0]), 4),
+                        "area": int(m.sum()),
+                        "low_res_logits_b64": _f32_b64(low_res[0]),
+                    }
+                )
+            emb_env = self._embedding_envelope(predictor)
+        return _masks_envelope(cands, hw), emb_env
+
+    def auto_masks(
+        self,
+        image_b64: str,
+        points_per_side: int,
+        pred_iou_thresh: float,
+        stability_score_thresh: float,
+        min_mask_area: int,
+        crop_n_layers: int,
+    ) -> dict:
+        from segment_anything import SamAutomaticMaskGenerator
+
         image = _decode_image(image_b64)
-
-        # Update generator params if they differ from defaults
-        self._auto_gen.points_per_side = points_per_side
-        self._auto_gen.min_mask_region_area = min_mask_area
-
-        raw_masks = self._auto_gen.generate(image)
-
-        result_masks = []
+        with self._lock:
+            # A fresh generator per call: its knobs come fully from node config
+            # (the old shared instance mutated params across concurrent calls).
+            gen = SamAutomaticMaskGenerator(
+                self._model,
+                points_per_side=points_per_side,
+                pred_iou_thresh=pred_iou_thresh,
+                stability_score_thresh=stability_score_thresh,
+                min_mask_region_area=min_mask_area,
+                crop_n_layers=crop_n_layers,
+            )
+            raw_masks = gen.generate(image)
+        cands = []
         for i, entry in enumerate(raw_masks):
             seg = entry["segmentation"]  # (H, W) bool
             # SAM auto returns bbox as [x, y, w, h] — convert to [x1, y1, x2, y2]
             bx, by, bw, bh = entry["bbox"]
-            result_masks.append(
+            cands.append(
                 {
                     "mask_index": i,
-                    "bbox": [int(bx), int(by), int(bx + bw), int(by + bh)],
-                    "score": round(float(entry["predicted_iou"]), 4),
+                    "mask_b64": _encode_mask(seg),
+                    "bbox_xyxy": [int(bx), int(by), int(bx + bw), int(by + bh)],
+                    "iou_score": round(float(entry["predicted_iou"]), 4),
                     "area": int(entry["area"]),
                     "stability_score": round(float(entry["stability_score"]), 4),
-                    "mask_b64": _encode_mask(seg),
                 }
             )
-        result_masks.sort(key=lambda x: x["area"], reverse=True)
-        return {"masks": result_masks, "count": len(result_masks)}
+        cands.sort(key=lambda x: x["area"], reverse=True)
+        return _masks_envelope(cands, (int(image.shape[0]), int(image.shape[1])))
+
+    def embed(self, image_b64: str) -> str:
+        with self._lock:
+            predictor = self._new_predictor()
+            self._set_state(predictor, image_b64)
+            return self._embedding_envelope(predictor)
 
 
-# ── SAM 2 Backend ───────────────────────────────────────────────────────────
+class _Sam2Engine(_SamEngineBase):
+    """SAM 2.1 image path via transformers (``Sam2Model`` + ``Sam2Processor``).
 
-
-class Sam2Backend(SamBackend):
-    """SAM 2 — MOCK backend (not installed, requires Python 3.10+).
-
-    Video-capable segmentation with memory attention (Meta, 2024).
-    All methods return random placeholder data.
-
-    Real integration: ``sam2.build_sam.build_sam2`` →
-    ``SAM2ImagePredictor`` / ``SAM2VideoPredictor``.
+    The HF implementation, not the facebookresearch/sam2 package — the
+    resident transformers (>=5.13) ships it, so the variant costs zero new
+    dependencies. Point/box prompts + the mask-generation pipeline for auto;
+    no embedding in/out (SAM 2 features are multi-level — envelope v2 first).
     """
 
-    version = "sam2"
-    supports_tracking = True
-    supports_text_prompt = False
+    def _load(self) -> None:
+        from transformers import Sam2Model, Sam2Processor
 
-    def __init__(self) -> None:
-        self._predictor: Any = None
-        self._video_predictor: Any = None
-        self._tracks: dict[str, dict[str, Any]] = {}
+        logger.info("model_sam: loading sam2 from %s on %s", self.ckpt, self._device)
+        self._processor = Sam2Processor.from_pretrained(self.ckpt)
+        self._model = Sam2Model.from_pretrained(self.ckpt).to(self._device).eval()
+        self._auto_pipe = None
+        logger.info(
+            "model_sam: sam2 loaded (%.0fM params)",
+            sum(p.numel() for p in self._model.parameters()) / 1e6,
+        )
 
-    async def load(self, model_cfg: str, device: str) -> None:
-        logger.info("SAM 2: loading model cfg=%s device=%s", model_cfg, device)
-        # TODO: real integration
-        # from sam2.build_sam import build_sam2, build_sam2_video_predictor
-        # from sam2.sam2_image_predictor import SAM2ImagePredictor
-        # model = build_sam2(model_cfg, device=device)
-        # self._predictor = SAM2ImagePredictor(model)
-        # self._video_predictor = build_sam2_video_predictor(model_cfg, device=device)
-        self._tracks = {}
+    def _post_process(self, outputs: Any, inputs: Any) -> Any:
+        args = [outputs.pred_masks.cpu(), inputs["original_sizes"].cpu()]
+        if "reshaped_input_sizes" in inputs:
+            try:
+                return self._processor.post_process_masks(
+                    *args, inputs["reshaped_input_sizes"].cpu()
+                )[0]
+            except TypeError:
+                pass
+        return self._processor.post_process_masks(*args)[0]
 
-    async def unload(self) -> None:
-        logger.info("SAM 2: unloading")
-        self._predictor = None
-        self._video_predictor = None
-        self._tracks = {}
+    def _predict(
+        self,
+        image_payload: str,
+        points: "list | None" = None,
+        labels: "list | None" = None,
+        boxes: "list | None" = None,
+        mask_input_b64: str = "",
+        multimask: bool = True,
+    ) -> "tuple[list, tuple[int, int]]":
+        import torch
 
-    async def segment_points(self, image_b64, points, labels, multimask=True):
-        return _mock_segment_result(3 if multimask else 1, "point")
+        self._reject_envelope_payload(image_payload)
+        image = _decode_image(image_payload)
+        kwargs = {}
+        if points is not None:
+            kwargs["input_points"] = [[points]]
+            kwargs["input_labels"] = [[labels]]
+        if boxes is not None:
+            kwargs["input_boxes"] = [boxes]
+        inputs = self._processor(images=image, return_tensors="pt", **kwargs).to(self._device)
+        fwd = {"multimask_output": multimask}
+        if mask_input_b64:
+            logits = (
+                np.frombuffer(base64.b64decode(mask_input_b64), dtype=np.float32)
+                .reshape(1, 1, 256, 256)
+                .copy()
+            )
+            fwd["input_masks"] = torch.from_numpy(logits).to(self._device)
+        with torch.no_grad():
+            outputs = self._model(**inputs, **fwd)
+        masks_full = self._post_process(outputs, inputs)  # (n_obj, n_masks, H, W)
+        ious = outputs.iou_scores.cpu().numpy()[0]  # (n_obj, n_masks)
+        low_res = outputs.pred_masks.float().cpu().numpy()[0]  # (n_obj, n_masks, 256, 256)
+        cands = []
+        idx = 0
+        for o in range(masks_full.shape[0]):
+            for m in range(masks_full.shape[1]):
+                mask = np.asarray(masks_full[o, m]).astype(bool)
+                if not mask.any():
+                    continue
+                cands.append(
+                    {
+                        "mask_index": idx,
+                        "mask_b64": _encode_mask(mask),
+                        "bbox_xyxy": _mask_to_bbox_xyxy(mask),
+                        "iou_score": round(float(ious[o, m]), 4),
+                        "area": int(mask.sum()),
+                        "low_res_logits_b64": _f32_b64(low_res[o, m]),
+                    }
+                )
+                idx += 1
+        return cands, (int(image.shape[0]), int(image.shape[1]))
 
-    async def segment_box(self, image_b64, box):
-        return _mock_segment_result(1, "box")
+    def predict_points(
+        self,
+        image_payload: str,
+        points: list,
+        labels: list,
+        mask_input_b64: str,
+        multimask: bool,
+    ) -> "tuple[dict, str]":
+        with self._lock:
+            cands, hw = self._predict(
+                image_payload,
+                points=points,
+                labels=labels,
+                mask_input_b64=mask_input_b64,
+                multimask=multimask,
+            )
+        cands.sort(key=lambda x: x["iou_score"], reverse=True)
+        return _masks_envelope(cands, hw), ""
 
-    async def auto_mask(self, image_b64, points_per_side=32, min_mask_area=100):
-        return _mock_auto_result(points_per_side)
+    def predict_boxes(self, image_payload: str, boxes: list) -> "tuple[dict, str]":
+        with self._lock:
+            cands, hw = self._predict(image_payload, boxes=boxes, multimask=False)
+        return _masks_envelope(cands, hw), ""
 
-    async def track_init(self, image_b64, mask_index, points=None):
-        track_id = f"trk_{uuid.uuid4().hex[:8]}"
-        self._tracks[track_id] = {"frame_count": 0, "mask_index": mask_index}
-        logger.info("SAM 2: initialized track %s (mask_index=%d)", track_id, mask_index)
-        # TODO: self._video_predictor.add_new_points_or_box(...)
-        return {
-            "track_id": track_id,
-            "status": "initialized",
-            "initial_bbox": [100, 100, 200, 200],
-        }
+    def auto_masks(
+        self,
+        image_b64: str,
+        points_per_side: int,
+        pred_iou_thresh: float,
+        stability_score_thresh: float,
+        min_mask_area: int,
+        crop_n_layers: int,
+    ) -> dict:
+        import inspect
 
-    async def track_propagate(self, image_b64, track_ids):
-        # TODO: self._video_predictor.propagate_in_video(...)
-        results = {}
-        for tid in track_ids:
-            state = self._tracks.get(tid)
-            if state is not None:
-                state["frame_count"] += 1
-                results[tid] = {
-                    "bbox": [
-                        100 + random.randint(-5, 5),
-                        100 + random.randint(-5, 5),
-                        200 + random.randint(-5, 5),
-                        200 + random.randint(-5, 5),
-                    ],
-                    "score": round(random.uniform(0.85, 0.99), 3),
-                    "frame_count": state["frame_count"],
-                    "status": "tracking",
-                }
-            else:
-                results[tid] = {"status": "lost", "score": 0.0}
-        active = sum(1 for r in results.values() if r["status"] == "tracking")
-        return {"tracks": results, "active_count": active}
+        from PIL import Image as PILImage
+        from transformers import pipeline
 
-
-# ── SAM 3 Backend ───────────────────────────────────────────────────────────
-
-
-class Sam3Backend(SamBackend):
-    """SAM 3 — MOCK backend (not yet released).
-
-    Planned extensions over SAM 2:
-    - Built-in text encoder for text-to-mask (no Grounding DINO needed)
-    - Depth-conditioned mask proposals for 3D-aware segmentation
-    - Improved multi-object tracking with re-identification after occlusion
-
-    All methods return random placeholder data.
-    """
-
-    version = "sam3"
-    supports_tracking = True
-    supports_text_prompt = True
-
-    def __init__(self) -> None:
-        self._model: Any = None
-        self._tracks: dict[str, dict[str, Any]] = {}
-
-    async def load(self, model_cfg: str, device: str) -> None:
-        logger.info("SAM 3: loading model cfg=%s device=%s", model_cfg, device)
-        # TODO: integrate when released
-        self._tracks = {}
-
-    async def unload(self) -> None:
-        logger.info("SAM 3: unloading")
-        self._model = None
-        self._tracks = {}
-
-    async def segment_points(self, image_b64, points, labels, multimask=True):
-        return _mock_segment_result(3 if multimask else 1, "point")
-
-    async def segment_box(self, image_b64, box):
-        return _mock_segment_result(1, "box")
-
-    async def auto_mask(self, image_b64, points_per_side=32, min_mask_area=100):
-        return _mock_auto_result(points_per_side)
-
-    async def track_init(self, image_b64, mask_index, points=None):
-        track_id = f"trk_{uuid.uuid4().hex[:8]}"
-        self._tracks[track_id] = {"frame_count": 0, "mask_index": mask_index}
-        return {
-            "track_id": track_id,
-            "status": "initialized",
-            "initial_bbox": [100, 100, 200, 200],
-        }
-
-    async def track_propagate(self, image_b64, track_ids):
-        results = {}
-        for tid in track_ids:
-            state = self._tracks.get(tid)
-            if state is not None:
-                state["frame_count"] += 1
-                results[tid] = {
-                    "bbox": [
-                        100 + random.randint(-5, 5),
-                        100 + random.randint(-5, 5),
-                        200 + random.randint(-5, 5),
-                        200 + random.randint(-5, 5),
-                    ],
-                    "score": round(random.uniform(0.90, 0.99), 3),
-                    "frame_count": state["frame_count"],
-                    "status": "tracking",
-                }
-            else:
-                results[tid] = {"status": "lost", "score": 0.0}
-        active = sum(1 for r in results.values() if r["status"] == "tracking")
-        return {"tracks": results, "active_count": active}
-
-    async def segment_text(self, image_b64, text, threshold=0.3):
-        # TODO: SAM 3 native text encoder
-        n_matches = random.randint(1, 3)
-        masks = []
-        for i in range(n_matches):
-            x1, y1 = random.randint(10, 200), random.randint(10, 200)
-            masks.append(
+        if int(crop_n_layers) > 0:
+            # transformers 5.13 upstream bug: the sam2 mask-generation
+            # pipeline torch.stack()s unequal-sized crops and crashes.
+            raise ValueError(
+                "sam2 auto does not support crop_n_layers>0 (transformers "
+                "pipeline bug: unequal crop sizes crash preprocessing) — "
+                "use variant=sam1 for cropped auto-segmentation"
+            )
+        image = _decode_image(image_b64)
+        with self._lock:
+            if self._auto_pipe is None:
+                self._auto_pipe = pipeline(
+                    "mask-generation",
+                    model=self._model,
+                    image_processor=self._processor.image_processor,
+                    device=self._device,
+                )
+            call_kwargs = {
+                "points_per_crop": int(points_per_side),
+                "pred_iou_thresh": float(pred_iou_thresh),
+                "stability_score_thresh": float(stability_score_thresh),
+            }
+            accepted: set = set()
+            for fn_name in ("_sanitize_parameters", "preprocess", "_forward", "postprocess"):
+                try:
+                    accepted |= set(
+                        inspect.signature(getattr(self._auto_pipe, fn_name)).parameters
+                    )
+                except (AttributeError, ValueError):
+                    pass
+            dropped = [k for k in call_kwargs if k not in accepted]
+            for k in dropped:
+                call_kwargs.pop(k)
+            if dropped:
+                logger.warning(
+                    "model_sam: sam2 auto pipeline does not accept %s — using its defaults",
+                    dropped,
+                )
+            out = self._auto_pipe(PILImage.fromarray(image), **call_kwargs)
+        masks = out.get("masks") or []
+        scores = out.get("scores")
+        if scores is None:
+            scores = [0.0] * len(masks)
+        cands = []
+        for i, (mask, score) in enumerate(zip(masks, scores)):
+            mask = np.asarray(mask).astype(bool)
+            area = int(mask.sum())
+            if area == 0 or area < int(min_mask_area):
+                continue
+            cands.append(
                 {
                     "mask_index": i,
-                    "bbox": [x1, y1, x1 + random.randint(50, 200), y1 + random.randint(50, 160)],
-                    "score": round(random.uniform(max(threshold, 0.4), 1.0), 3),
-                    "area": random.randint(500, 20000),
-                    "phrase_match": text,
+                    "mask_b64": _encode_mask(mask),
+                    "bbox_xyxy": _mask_to_bbox_xyxy(mask),
+                    "iou_score": round(float(score), 4),
+                    "area": area,
+                    # no stability_score: the HF pipeline does not expose it
                 }
             )
-        masks.sort(key=lambda m: m["score"], reverse=True)
-        return {"masks": masks, "count": len(masks), "query": text}
+        cands.sort(key=lambda x: x["area"], reverse=True)
+        return _masks_envelope(cands, (int(image.shape[0]), int(image.shape[1])))
 
 
-# ── Backend registry ──
+class _Sam3Engine(_SamEngineBase):
+    """SAM 3 concept/text segmentation via transformers (``Sam3Model``).
 
-SAM_BACKENDS: dict[str, type[SamBackend]] = {
-    "sam": Sam1Backend,
-    "sam2": Sam2Backend,
-    "sam3": Sam3Backend,
+    Weights are HF-gated (facebook/sam3, manual approval): until access is
+    granted on the model page, ``from_pretrained`` 403s and the engine
+    latches degraded (empty envelopes, logged).
+    """
+
+    def _load(self) -> None:
+        from transformers import Sam3Model, Sam3Processor
+
+        logger.info("model_sam: loading sam3 from %s on %s", self.ckpt, self._device)
+        self._processor = Sam3Processor.from_pretrained(self.ckpt)
+        self._model = Sam3Model.from_pretrained(self.ckpt).to(self._device).eval()
+        logger.info(
+            "model_sam: sam3 loaded (%.0fM params)",
+            sum(p.numel() for p in self._model.parameters()) / 1e6,
+        )
+
+    def segment_text(
+        self, image_b64: str, text: str, score_thresh: float, mask_threshold: float
+    ) -> dict:
+        import torch
+
+        image = _decode_image(image_b64)
+        with self._lock:
+            inputs = self._processor(images=image, text=text, return_tensors="pt").to(
+                self._device
+            )
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+            # target_sizes must be passed explicitly — the processor output
+            # carries no original_sizes, and without it masks come back at
+            # model resolution instead of the original image size.
+            res = self._processor.post_process_instance_segmentation(
+                outputs,
+                threshold=float(score_thresh),
+                mask_threshold=float(mask_threshold),
+                target_sizes=[(int(image.shape[0]), int(image.shape[1]))],
+            )[0]
+        masks = res.get("masks")
+        scores = res.get("scores")
+        boxes = res.get("boxes")
+
+        def _np(x: Any) -> np.ndarray:
+            return np.asarray(x.cpu() if hasattr(x, "cpu") else x)
+
+        cands = []
+        for i in range(0 if masks is None else len(masks)):
+            score = float(_np(scores[i])) if scores is not None else 0.0
+            if score < float(score_thresh):
+                continue
+            mask = _np(masks[i]).astype(bool)
+            if not mask.any():
+                continue
+            if boxes is not None:
+                bb = [int(round(float(v))) for v in _np(boxes[i]).tolist()]
+            else:
+                bb = _mask_to_bbox_xyxy(mask)
+            cands.append(
+                {
+                    "mask_index": i,
+                    "mask_b64": _encode_mask(mask),
+                    "bbox_xyxy": bb,
+                    "iou_score": round(score, 4),
+                    "area": int(mask.sum()),
+                }
+            )
+        cands.sort(key=lambda x: x["iou_score"], reverse=True)
+        return _masks_envelope(cands, (int(image.shape[0]), int(image.shape[1])))
+
+
+# ━━ Engine registry ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_ENGINE_CLASSES = {"sam1": _Sam1Engine, "sam2": _Sam2Engine, "sam3": _Sam3Engine}
+_DEFAULT_CKPT = {
+    "sam1": os.path.join(_REPO_ROOT, "data", "habitat", "checkpoints", "sam", "sam_vit_b.pth"),
+    "sam2": "facebook/sam2.1-hiera-base-plus",
+    "sam3": "facebook/sam3",
 }
+_ENGINES: dict = {}
+_ENGINES_LOCK = threading.Lock()
 
 
-# ━━ Tool Definitions ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#
-# Each tool holds a back-reference to the SamNodeSet (not the backend directly)
-# because get_tools() is called BEFORE initialize() in the WorkspaceComponentRegistry
-# lifecycle.  The backend is resolved lazily at execute-time.
+def _get_engine(variant: str, ckpt: str = "") -> _SamEngineBase:
+    """Lazy singleton per (variant, resolved ckpt) — checkpoints coexist."""
+    if variant not in _ENGINE_CLASSES:
+        raise ValueError(
+            "model_sam: unknown variant %r (known: %s)" % (variant, sorted(_ENGINE_CLASSES))
+        )
+    resolved = ckpt or _DEFAULT_CKPT[variant]
+    if variant == "sam1" and not os.path.isabs(resolved):
+        # sam1 ckpts are local files; HF variants take repo ids — never anchor those.
+        resolved = os.path.join(_REPO_ROOT, resolved)
+    key = (variant, resolved)
+    with _ENGINES_LOCK:
+        if key not in _ENGINES:
+            _ENGINES[key] = _ENGINE_CLASSES[variant](variant, resolved)
+        return _ENGINES[key]
 
 
-class SamSegmentPointTool(BaseCanvasNode):
-    """Point-prompted segmentation — all SAM versions."""
+def _sniff_embedding_envelope(payload: str) -> "dict | None":
+    """Return the parsed envelope if payload is one, else None (raw image b64).
 
-    node_type = "model_sam__segment_point"
-    display_name = "SAM: Segment Point"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="teal")
-    description = (
-        "Segment objects at specified point(s). Provide foreground points "
-        "(label=1) on the target and background points (label=0) to exclude "
-        "regions. Returns ranked candidate masks."
-    )
-    category = "tool"
-    icon = "Crosshair"
-    input_ports = [
-        PortDef("image_b64", "TEXT", "Base64-encoded PNG image"),
-        PortDef("points", "TEXT", "JSON list of [x, y] pixel coordinates"),
-        PortDef("labels", "TEXT", "JSON list of per-point labels: 1=foreground, 0=background"),
-        PortDef(
-            "multimask",
-            "TEXT",
-            "Return 3 candidate masks ranked by score (default true)",
-            optional=True,
+    An embedding envelope is a JSON object carrying at least b64/shape/variant;
+    a raw base64 PNG never parses as a JSON object, so the sniff is exact.
+    """
+    s = payload.lstrip()
+    if not s.startswith("{"):
+        return None
+    try:
+        obj = json.loads(payload)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(obj, dict) and "b64" in obj and "shape" in obj and "variant" in obj:
+        return obj
+    return None
+
+
+def _masks_envelope(cands: list, hw: "tuple[int, int]") -> dict:
+    return {
+        "masks": cands,
+        "count": len(cands),
+        "image_w": hw[1],
+        "image_h": hw[0],
+    }
+
+
+def _engine_from_config(node: BaseCanvasNode, default_variant: str = "sam1") -> _SamEngineBase:
+    variant = str(node.config.get("variant", default_variant) or default_variant)
+    ckpt = str(node.config.get("ckpt", "") or "").strip()
+    return _get_engine(variant, ckpt)
+
+
+_SAM1_OPT = {"value": "sam1", "label": "SAM 1 (vit_b/l/h by ckpt)"}
+_SAM2_OPT = {"value": "sam2", "label": "SAM 2.1 (HF hiera)"}
+_SAM3_OPT = {"value": "sam3", "label": "SAM 3 (HF, gated weights)"}
+
+
+def _variant_fields(options: list, default: str) -> list:
+    return [
+        ConfigField(
+            "variant",
+            "select",
+            label="SAM variant",
+            options=list(options),
+            default=default,
+        ),
+        ConfigField(
+            "ckpt",
+            "text",
+            label="Checkpoint override (sam1: .pth path; sam2/sam3: HF repo id or local dir)",
+            default="",
         ),
     ]
-    output_ports = [PortDef("result", "TEXT", "Segmentation result JSON")]
-
-    def __init__(self, nodeset: SamNodeSet | None = None) -> None:
-        super().__init__()
-        self._nodeset = nodeset
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        backend = self._nodeset._backend if self._nodeset else None
-        if backend is None:
-            return {"result": '{"error": "SAM nodeset not initialized"}'}
-        result = await backend.segment_points(
-            image_b64=inputs["image_b64"],
-            points=inputs["points"],
-            labels=inputs["labels"],
-            multimask=inputs.get("multimask", True),
-        )
-        return {"result": json.dumps(result, ensure_ascii=False)}
 
 
-class SamSegmentBoxTool(BaseCanvasNode):
-    """Box-prompted segmentation — all SAM versions."""
-
-    node_type = "model_sam__segment_box"
-    display_name = "SAM: Segment Box"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="teal")
-    description = (
-        "Segment the primary object within a bounding box. Useful when the "
-        "target's approximate location is known from detection or instruction."
-    )
-    category = "tool"
-    icon = "Square"
-    input_ports = [
-        PortDef("image_b64", "TEXT", "Base64-encoded PNG image"),
-        PortDef("box", "TEXT", "JSON [x1, y1, x2, y2] bounding box in pixels"),
-    ]
-    output_ports = [PortDef("result", "TEXT", "Segmentation result JSON")]
-
-    def __init__(self, nodeset: SamNodeSet | None = None) -> None:
-        super().__init__()
-        self._nodeset = nodeset
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        backend = self._nodeset._backend if self._nodeset else None
-        if backend is None:
-            return {"result": '{"error": "SAM nodeset not initialized"}'}
-        result = await backend.segment_box(
-            image_b64=inputs["image_b64"],
-            box=inputs["box"],
-        )
-        return {"result": json.dumps(result, ensure_ascii=False)}
+# ━━ Canvas nodes ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-class SamAutoMaskTool(BaseCanvasNode):
-    """Automatic full-scene segmentation — all SAM versions."""
+class SamSegmentPointsTool(BaseCanvasNode):
+    """Point-prompted segmentation — pure single-step forward.
 
-    node_type = "model_sam__auto_mask"
-    display_name = "SAM: Auto Mask"
+    Iterative refinement is the OUTER loop's job: each candidate carries
+    ``low_res_logits_b64``; wire one back into ``mask_input`` to close the
+    refinement cycle at graph level.
+    """
+
+    node_type = "model_sam__segment_points"
+    display_name = "SAM: Segment (points)"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
-        color="teal",
-        config_fields=[
+        color="violet",
+        config_fields=_variant_fields([_SAM1_OPT, _SAM2_OPT], "sam1")
+        + [
             ConfigField(
-                "points_per_side", "slider", label="Points/side", default=32, min=8, max=64, step=8
+                "multimask",
+                "toggle",
+                label="Return 3 ranked candidates (off = single best)",
+                default=True,
             )
         ],
     )
     description = (
-        "Automatically segment all objects in the image. Returns masks sorted "
-        "by area. Useful for scene understanding and discovering objects the "
-        "agent can interact with."
+        "Segment objects at specified point(s). Foreground points (label=1) on "
+        "the target, background points (label=0) to exclude regions. The image "
+        "port accepts a raw base64 PNG or a model_sam embedding envelope "
+        "(embedding injection: sam1 variant only)."
     )
     category = "tool"
-    icon = "Layers"
+    icon = "Crosshair"
     input_ports = [
-        PortDef("image_b64", "TEXT", "Base64-encoded PNG image"),
+        PortDef("image", "TEXT", "Base64 PNG image OR model_sam embedding envelope"),
+        PortDef("points", "TEXT", "JSON list of [x, y] pixel coordinates"),
+        PortDef("labels", "TEXT", "JSON list of per-point labels: 1=foreground, 0=background"),
         PortDef(
-            "points_per_side", "TEXT", "Grid density for point sampling (default 32)", optional=True
-        ),
-        PortDef(
-            "min_mask_area",
+            "mask_input",
             "TEXT",
-            "Discard masks smaller than this pixel area (default 100)",
+            "Optional low_res_logits_b64 from a previous round (iterative refinement)",
             optional=True,
         ),
     ]
-    output_ports = [PortDef("result", "TEXT", "Segmentation result JSON")]
-
-    def __init__(self, nodeset: SamNodeSet | None = None) -> None:
-        super().__init__()
-        self._nodeset = nodeset
+    output_ports = [
+        PortDef("masks", "TEXT", "Masks envelope JSON (each candidate carries logits)"),
+        PortDef("image_embedding", "TEXT", "Embedding envelope used for this call"),
+    ]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        backend = self._nodeset._backend if self._nodeset else None
-        if backend is None:
-            return {"result": '{"error": "SAM nodeset not initialized"}'}
-        result = await backend.auto_mask(
-            image_b64=inputs["image_b64"],
-            points_per_side=inputs.get("points_per_side", 32),
-            min_mask_area=inputs.get("min_mask_area", 100),
-        )
-        return {"result": json.dumps(result, ensure_ascii=False)}
+        engine = _engine_from_config(self)
+        points = _as_json(inputs["points"])
+        labels = _as_json(inputs["labels"])
+        mask_input_b64 = str(inputs.get("mask_input") or "")
+        multimask = bool(self.config.get("multimask", True))
+        image_payload = inputs["image"]
+        loop = asyncio.get_running_loop()
+
+        def _run() -> "tuple[dict, str] | None":
+            if not engine.ensure():
+                return None
+            return engine.predict_points(image_payload, points, labels, mask_input_b64, multimask)
+
+        out = await loop.run_in_executor(None, _run)
+        if out is None:
+            self._self_log("degraded", "SAM engine failed to load")
+            return {"masks": "", "image_embedding": ""}
+        envelope, emb_env = out
+        self._self_log("count", envelope["count"])
+        return {"masks": json.dumps(envelope, ensure_ascii=False), "image_embedding": emb_env}
+
+
+class SamSegmentBoxTool(BaseCanvasNode):
+    """Box-prompted segmentation — single box or a batch of boxes."""
+
+    node_type = "model_sam__segment_box"
+    display_name = "SAM: Segment (box)"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet", config_fields=_variant_fields([_SAM1_OPT, _SAM2_OPT], "sam1")
+    )
+    description = (
+        "Segment the primary object inside each bounding box. Accepts a single "
+        "[x1,y1,x2,y2] box or a list of boxes (one candidate per box). The "
+        "image port accepts a raw base64 PNG or a model_sam embedding envelope."
+    )
+    category = "tool"
+    icon = "Square"
+    input_ports = [
+        PortDef("image", "TEXT", "Base64 PNG image OR model_sam embedding envelope"),
+        PortDef("boxes", "TEXT", "JSON [x1,y1,x2,y2] or list of such boxes"),
+    ]
+    output_ports = [
+        PortDef("masks", "TEXT", "Masks envelope JSON (one candidate per box)"),
+        PortDef("image_embedding", "TEXT", "Embedding envelope used for this call"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        engine = _engine_from_config(self)
+        boxes = _as_json(inputs["boxes"])
+        if boxes and isinstance(boxes[0], (int, float)):
+            boxes = [boxes]  # single [x1,y1,x2,y2] -> batch of one
+        image_payload = inputs["image"]
+        loop = asyncio.get_running_loop()
+
+        def _run() -> "tuple[dict, str] | None":
+            if not engine.ensure():
+                return None
+            return engine.predict_boxes(image_payload, boxes)
+
+        out = await loop.run_in_executor(None, _run)
+        if out is None:
+            self._self_log("degraded", "SAM engine failed to load")
+            return {"masks": "", "image_embedding": ""}
+        envelope, emb_env = out
+        self._self_log("count", envelope["count"])
+        return {"masks": json.dumps(envelope, ensure_ascii=False), "image_embedding": emb_env}
+
+
+class SamSegmentAutoTool(BaseCanvasNode):
+    """Automatic full-scene segmentation (grid-batched point prompts)."""
+
+    node_type = "model_sam__segment_auto"
+    display_name = "SAM: Segment (auto)"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet",
+        config_fields=_variant_fields([_SAM1_OPT, _SAM2_OPT], "sam1")
+        + [
+            ConfigField(
+                "points_per_side", "slider", label="Points/side", default=32, min=8, max=64, step=8
+            ),
+            ConfigField("pred_iou_thresh", "text", label="Pred-IoU threshold", default=0.86),
+            ConfigField(
+                "stability_score_thresh", "text", label="Stability threshold", default=0.92
+            ),
+            ConfigField("min_mask_area", "text", label="Min mask area (px)", default=100),
+            ConfigField(
+                "crop_n_layers",
+                "slider",
+                label="Crop layers (sam1 only; 0 = whole image; >0 finds smaller objects, slower)",
+                default=0,
+                min=0,
+                max=3,
+                step=1,
+            ),
+        ],
+    )
+    description = (
+        "Segment everything in the image with a point grid (masks sorted by "
+        "area). Original image only — the generator re-encodes internally, so "
+        "it cannot consume a precomputed embedding."
+    )
+    category = "tool"
+    icon = "Layers"
+    input_ports = [PortDef("image_b64", "TEXT", "Base64-encoded PNG image")]
+    output_ports = [PortDef("masks", "TEXT", "Masks envelope JSON (area-sorted)")]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        engine = _engine_from_config(self)
+        pps = int(self.config.get("points_per_side", 32))
+        iou_th = float(self.config.get("pred_iou_thresh", 0.86))
+        stab_th = float(self.config.get("stability_score_thresh", 0.92))
+        min_area = int(float(self.config.get("min_mask_area", 100)))
+        crop_layers = int(float(self.config.get("crop_n_layers", 0)))
+        image_b64 = inputs["image_b64"]
+        loop = asyncio.get_running_loop()
+
+        def _run() -> "dict | None":
+            if not engine.ensure():
+                return None
+            return engine.auto_masks(image_b64, pps, iou_th, stab_th, min_area, crop_layers)
+
+        envelope = await loop.run_in_executor(None, _run)
+        if envelope is None:
+            self._self_log("degraded", "SAM engine failed to load")
+            return {"masks": ""}
+        self._self_log("count", envelope["count"])
+        return {"masks": json.dumps(envelope, ensure_ascii=False)}
 
 
 class SamSegmentTextTool(BaseCanvasNode):
-    """Text-prompted segmentation — SAM3 native (MOCK: returns random data)."""
+    """Concept/text-prompted segmentation — SAM 3 native.
+
+    Returns every instance matching a short noun-phrase concept. The
+    graph-level GDINO→segment_box composition remains available as the
+    non-SAM3 route; this node is the native one.
+    """
 
     node_type = "model_sam__segment_text"
-    display_name = "[Mock] SAM: Segment Text"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="teal")
+    display_name = "SAM: Segment (text)"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet",
+        config_fields=_variant_fields([_SAM3_OPT], "sam3")
+        + [
+            ConfigField(
+                "score_thresh", "text", label="Instance score threshold", default=0.5
+            ),
+            ConfigField(
+                "mask_threshold",
+                "text",
+                label="Mask binarization threshold (per-pixel)",
+                default=0.5,
+            ),
+        ],
+    )
     description = (
-        "[MOCK] Segment objects matching a natural language description (e.g. "
-        "'brown wooden chair'). Returns random placeholder masks. "
-        "Real implementation requires SAM3 backend (not yet available)."
+        "Segment every instance matching a short noun-phrase concept (e.g. "
+        "'red circle'). SAM 3 native text prompting; weights are HF-gated "
+        "(facebook/sam3) — until access is granted the engine runs degraded "
+        "(empty envelope)."
     )
     category = "tool"
     icon = "Type"
     input_ports = [
         PortDef("image_b64", "TEXT", "Base64-encoded PNG image"),
-        PortDef("text", "TEXT", "Natural language description of the target object(s)"),
-        PortDef("threshold", "TEXT", "Confidence threshold (default 0.3)", optional=True),
+        PortDef("text", "TEXT", "Noun-phrase concept to segment"),
     ]
-    output_ports = [PortDef("result", "TEXT", "Segmentation result JSON")]
-
-    def __init__(self, nodeset: SamNodeSet | None = None) -> None:
-        super().__init__()
-        self._nodeset = nodeset
+    output_ports = [
+        PortDef("masks", "TEXT", "Masks envelope JSON (score-sorted instances)")
+    ]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        backend = self._nodeset._backend if self._nodeset else None
-        if backend is None:
-            return {"result": '{"error": "SAM nodeset not initialized"}'}
-        result = await backend.segment_text(
-            image_b64=inputs["image_b64"],
-            text=inputs["text"],
-            threshold=inputs.get("threshold", 0.3),
-        )
-        return {"result": json.dumps(result, ensure_ascii=False)}
+        engine = _engine_from_config(self, default_variant="sam3")
+        image_b64 = inputs["image_b64"]
+        text = str(inputs["text"] or "").strip()
+        thresh = float(self.config.get("score_thresh", 0.5))
+        mask_th = float(self.config.get("mask_threshold", 0.5))
+        loop = asyncio.get_running_loop()
+
+        def _run() -> "dict | None":
+            if not engine.ensure():
+                return None
+            return engine.segment_text(image_b64, text, thresh, mask_th)
+
+        envelope = await loop.run_in_executor(None, _run)
+        if envelope is None:
+            self._self_log("degraded", "SAM engine failed to load")
+            return {"masks": ""}
+        self._self_log("count", envelope["count"])
+        return {"masks": json.dumps(envelope, ensure_ascii=False)}
 
 
-class SamTrackInitTool(BaseCanvasNode):
-    """Initialize object tracking — SAM2+ only (MOCK: returns random data)."""
+class SamEmbedImageTool(BaseCanvasNode):
+    """Image-encoder features as an embedding envelope (encode-once entry).
 
-    node_type = "model_sam__track_init"
-    display_name = "[Mock] SAM: Track Init"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="teal")
-    description = (
-        "[MOCK] Start tracking a segmented object across subsequent frames. "
-        "Returns placeholder track_id. Real implementation requires SAM2 or "
-        "SAM3 backend (not yet installed)."
+    Stash the envelope in a state container and feed it to the prompted
+    nodes' ``image`` port to skip the heavy encoder on later prompts.
+    """
+
+    node_type = "model_sam__embed_image"
+    display_name = "SAM: Embed Image"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet", config_fields=_variant_fields([_SAM1_OPT], "sam1")
     )
-    category = "tool"
-    icon = "Focus"
-    input_ports = [
-        PortDef("image_b64", "TEXT", "Base64-encoded PNG image (initial frame)"),
-        PortDef("mask_index", "TEXT", "Mask index from a prior segmentation result"),
-        PortDef(
-            "points",
-            "TEXT",
-            "Optional JSON list of [x, y] points to identify the object",
-            optional=True,
-        ),
-    ]
-    output_ports = [PortDef("result", "TEXT", "Track initialization result JSON")]
-
-    def __init__(self, nodeset: SamNodeSet | None = None) -> None:
-        super().__init__()
-        self._nodeset = nodeset
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        backend = self._nodeset._backend if self._nodeset else None
-        if backend is None:
-            return {"result": '{"error": "SAM nodeset not initialized"}'}
-        result = await backend.track_init(
-            image_b64=inputs["image_b64"],
-            mask_index=inputs["mask_index"],
-            points=inputs.get("points"),
-        )
-        return {"result": json.dumps(result, ensure_ascii=False)}
-
-
-class SamTrackPropagateTool(BaseCanvasNode):
-    """Propagate tracked objects to a new frame — SAM2+ only (MOCK: returns random data)."""
-
-    node_type = "model_sam__track_propagate"
-    display_name = "[Mock] SAM: Track Propagate"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="teal")
     description = (
-        "[MOCK] Feed a new frame to the tracker and get updated bboxes/scores "
-        "for all tracked objects. Returns random placeholder data. Real "
-        "implementation requires SAM2 or SAM3 backend (not yet installed)."
+        "Run only the SAM image encoder and return the embedding envelope "
+        "(float32 features + sizes + variant/ckpt provenance). Reuse is a "
+        "graph-level decision: store it, wire it back into prompted nodes."
     )
     category = "tool"
     icon = "ScanLine"
-    input_ports = [
-        PortDef("image_b64", "TEXT", "Base64-encoded PNG image (new frame)"),
-        PortDef("track_ids", "TEXT", "JSON list of track_id values from SamTrackInit"),
-    ]
-    output_ports = [PortDef("result", "TEXT", "Track propagation result JSON")]
-
-    def __init__(self, nodeset: SamNodeSet | None = None) -> None:
-        super().__init__()
-        self._nodeset = nodeset
+    input_ports = [PortDef("image_b64", "TEXT", "Base64-encoded PNG image")]
+    output_ports = [PortDef("image_embedding", "TEXT", "Embedding envelope JSON")]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        backend = self._nodeset._backend if self._nodeset else None
-        if backend is None:
-            return {"result": '{"error": "SAM nodeset not initialized"}'}
-        result = await backend.track_propagate(
-            image_b64=inputs["image_b64"],
-            track_ids=inputs["track_ids"],
-        )
-        return {"result": json.dumps(result, ensure_ascii=False)}
+        engine = _engine_from_config(self)
+        image_b64 = inputs["image_b64"]
+        loop = asyncio.get_running_loop()
+
+        def _run() -> "str | None":
+            if not engine.ensure():
+                return None
+            return engine.embed(image_b64)
+
+        emb_env = await loop.run_in_executor(None, _run)
+        if emb_env is None:
+            self._self_log("degraded", "SAM engine failed to load")
+            return {"image_embedding": ""}
+        return {"image_embedding": emb_env}
 
 
 # ━━ NodeSet ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 class SamNodeSet(BaseNodeSet):
-    """Segment Anything Model nodeset — SAM / SAM2 / SAM3.
+    """SAM-family segmentation primitives, served from the shared ac-fm env.
 
-    All six nodes are always registered.  Nodes that require features
-    unavailable in the active backend (e.g. tracking on SAM v1) return
-    a descriptive error dict at execute-time.
-
-    Configure via environment variables:
-        SAM_VERSION   = sam | sam2 | sam3   (default: sam2)
-        SAM_MODEL_CFG = checkpoint path     (default: "default")
-        SAM_DEVICE    = cuda:0 | cpu        (default: cuda:0)
+    Stateless server: engines (keyed by variant+ckpt from node config) hold
+    only loaded weights; no cache, no sessions. See module docstring for the
+    envelope contracts and design rulings.
     """
 
     name = "model_sam"
-    description = "SAM visual segmentation and object tracking (SAM / SAM2 / SAM3)"
+    description = (
+        "Segment Anything full series (SAM 1 / 2.1 / 3 as config variants) — "
+        "point/box/auto/text segmentation + image embedding, pure single-step "
+        "primitives on the shared ac-fm server"
+    )
+    parallelism = "shared"
+    server_python = conda_env_python("ac-fm", "SAM_PYTHON")
 
-    def __init__(self) -> None:
-        self._backend: SamBackend | None = None
+    def get_tools(self) -> list[BaseCanvasNode]:
+        return [
+            SamSegmentPointsTool(),
+            SamSegmentBoxTool(),
+            SamSegmentAutoTool(),
+            SamSegmentTextTool(),
+            SamEmbedImageTool(),
+        ]
 
     async def initialize(self, **kwargs: Any) -> None:
-        import os
-
-        version = os.environ.get("SAM_VERSION", "sam")
-        model_cfg = os.environ.get("SAM_MODEL_CFG", "default")
-        device = os.environ.get("SAM_DEVICE", "cuda:0")
-
-        backend_cls = SAM_BACKENDS.get(version)
-        if backend_cls is None:
-            raise ValueError(
-                f"Unknown SAM_VERSION={version!r}. Choose from: {sorted(SAM_BACKENDS)}"
-            )
-
-        self._backend = backend_cls()
-        await self._backend.load(model_cfg, device)
         logger.info(
-            "SAM nodeset ready: version=%s device=%s tracking=%s text=%s",
-            version,
-            device,
-            self._backend.supports_tracking,
-            self._backend.supports_text_prompt,
+            "model_sam ready (server_python=%s); engines load lazily per node config",
+            self.server_python,
         )
 
     async def shutdown(self) -> None:
-        if self._backend is not None:
-            await self._backend.unload()
-            self._backend = None
-        logger.info("SAM nodeset shut down")
-
-    def get_tools(self) -> list:
-        return [
-            SamSegmentPointTool(self),
-            SamSegmentBoxTool(self),
-            SamAutoMaskTool(self),
-            SamSegmentTextTool(self),
-            SamTrackInitTool(self),
-            SamTrackPropagateTool(self),
-        ]
+        # Loaded engines stay resident until subprocess teardown (house convention).
+        logger.info("model_sam shutdown")
