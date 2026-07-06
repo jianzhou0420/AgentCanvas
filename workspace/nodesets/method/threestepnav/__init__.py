@@ -157,8 +157,8 @@ def _views_by_dir(views: Any) -> dict[str, dict]:
 def _candidate_order(keys: Any) -> list[str]:
     """Upstream candidate-dict insertion order: the TRM emits angle indexes in
     ascending clockwise order (Policy_ViewSelection.py:374 ``nonzero()``), which
-    ``2π − idx/120·2π`` (:378) turns into DESCENDING angles, so
-    ``construct_image_dicts`` inserts bin '0' first (the 330°–360° else-branch),
+    ``2π - idx/120·2π`` (:378) turns into DESCENDING angles, so
+    ``construct_image_dicts`` inserts bin '0' first (the 330°-360° else-branch),
     then '11', '10', … '1' (base_il_trainer_llm.py:202-259)."""
     return sorted((str(k) for k in keys), key=lambda k: (int(k) != 0, -int(k)))
 

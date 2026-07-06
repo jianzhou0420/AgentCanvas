@@ -199,6 +199,7 @@ class _SSGManager:
         else leaves ``interested_objects`` empty (warning logged)."""
         import torch
         from sentence_transformers import SentenceTransformer
+
         from tmp._reference.spatialnav.spatial.agraph import (  # type: ignore
             SceneObjectConfig,
             SceneObjectGraph,

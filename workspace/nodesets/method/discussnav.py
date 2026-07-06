@@ -262,7 +262,7 @@ class DiscussNavPanoramaToViewsNode(BaseCanvasNode):
 
     Output ``view_tiles`` (and the parallel ``dir_ids``) therefore carry
     ~2-5 tiles aligned to the aggregator's 12-direction buckets — not 36 in
-    arbitrary view-index order. This (a) cuts InstructBLIP/RAM work ~10×, the
+    arbitrary view-index order. This (a) cuts InstructBLIP/RAM work ~10x, the
     bottleneck that timed out 5-worker runs, and (b) fixes the alignment bug
     where the aggregator indexed ``caps[d]`` into a 36-list whose first 12 were
     the look-DOWN (-30°) row, feeding down-tilted captions to eye-level slots.
@@ -296,7 +296,6 @@ class DiscussNavPanoramaToViewsNode(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="pink")
 
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
-        import math
 
         raw_views = inputs.get("views")
         views = list(raw_views) if isinstance(raw_views, list) else []
@@ -357,7 +356,7 @@ class DiscussNavPanoramaToViewsNode(BaseCanvasNode):
             dir_ids.append(str(b))
 
         # Stairs look-down (DiscussNav.py:189-200): when the instruction mentions
-        # stairs, additionally emit the −30° tile per navigable direction, tagged
+        # stairs, additionally emit the -30° tile per navigable direction, tagged
         # dir_id=f"{b}d". Upstream RAM-tags the look-down only (no caption); here
         # the tile rides the same list so RAM tags it, and the aggregator uses
         # only its tag (the look-down caption is computed-but-discarded).
@@ -1226,7 +1225,7 @@ class DiscussNavNodeSet(BaseNodeSet):
     name = "discussnav"
     display_name = "DiscussNav"
     description = "Multi-expert-discussion VLN — DiscussNav (Long et al., ICRA 2024) port"
-    # LLM-heavy: up to num_predictions×num_retry pred_vp samples + fusion +
+    # LLM-heavy: up to num_predictions*num_retry pred_vp samples + fusion +
     # decision + 2 summarisations per step. Override default budget.
     default_per_step_budget_sec = 90.0
 
