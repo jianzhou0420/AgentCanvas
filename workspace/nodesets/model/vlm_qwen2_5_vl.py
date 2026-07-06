@@ -30,7 +30,7 @@ newer-glibc Docker base flash-attention re-activates. Weights load once
 per subprocess on first ``initialize()`` and live until teardown.
 
 Model: Qwen2.5-VL-3B-Instruct (single-3090 budget; co-hosts with DetAny3D +
-Habitat — see scripts/install/install_ac_qwenvl.sh for the 3B rationale).
+Habitat, so 3B not 7B; config/react-eqa.yaml specifies 3B).
 Point ``model_dir`` (or ``$QWENVL_MODEL_DIR``) at a 7B checkout on a bigger
 GPU.
 

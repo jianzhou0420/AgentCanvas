@@ -4,7 +4,7 @@
 # =============================================================================
 # Creates the `ac-libero` conda env (Python 3.10) for the LIBERO
 # manipulation benchmark. Used in server mode by `env_libero` nodeset at
-# `workspace/nodesets/server/libero.py` (server_python points here).
+# `workspace/nodesets/env/env_libero/` (server_python points here).
 #
 # Why a separate env:
 #   LIBERO depends on robosuite 1.4.x + MuJoCo + numpy<2 + LIBERO's own
@@ -184,7 +184,7 @@ PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The $ENV_NAME env is used by workspace/nodesets/server/libero.py in server mode."
+echo "The $ENV_NAME env is used by workspace/nodesets/env/env_libero/ in server mode."
 echo "To set it explicitly:  export LIBERO_PYTHON=$LIBERO_PYTHON"
 echo "To activate manually:  conda activate $ENV_NAME"
 echo ""

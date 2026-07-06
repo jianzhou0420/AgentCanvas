@@ -47,7 +47,7 @@ import logging
 import os
 from typing import Any, ClassVar
 
-from app.components import BaseCanvasNode, BaseNodeSet, NodeUIConfig, PortDef
+from app.components import BaseCanvasNode, BaseNodeSet, NodeUIConfig, PortDef, conda_env_python
 
 log = logging.getLogger("agentcanvas.smartway_waypoint")
 
@@ -165,9 +165,7 @@ class SmartWayWaypointNodeSet(BaseNodeSet):
     # Smartway env: Py 3.8.20 + torch 2.1.1 + dinov2 + habitat-sim 0.1.7.
     # The depth encoder import chain needs vlnce_baselines on sys.path,
     # which the engine handles at load time.
-    server_python = os.environ.get(
-        "SMARTWAY_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-smartway/bin/python")
-    )
+    server_python = conda_env_python("ac-smartway", "SMARTWAY_PYTHON")
     # Pure-functional inference: K waypoint predictions per call, no
     # caller-scoped state — safe to share across batched-eval workers.
     parallelism: ClassVar[str] = "shared"

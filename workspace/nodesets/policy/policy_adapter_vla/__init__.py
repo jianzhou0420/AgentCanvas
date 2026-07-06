@@ -75,7 +75,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef
+from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef, conda_env_python
 from app.server.batched_inference import OUTPUTS_KEY, SAMPLES_KEY
 from workspace.nodesets.policy.policy_adapter_vla.adapters.canonical import CanonicalInfo
 
@@ -880,10 +880,7 @@ class PolicyAdapterVlaNodeSet(BaseNodeSet):
         "canonical→model, predict, model→canonical. Pair with env_adapter "
         "(env-side stages) and an env nodeset (env_libero / env_simpler)."
     )
-    server_python = os.environ.get(
-        "VLA_POLICY_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/ac-vla-policy/bin/python"),
-    )
+    server_python = conda_env_python("ac-vla-policy", "VLA_POLICY_PYTHON")
     # Subprocess env extras (TF 2.19 + tf-agents 0.19 path):
     #   - TF_USE_LEGACY_KERAS=1 — tf-agents 0.19.0 uses Keras 2 internal API
     #     (`keras._tf_keras.keras.__internal__`) which Keras 3 (TF 2.16+ default)

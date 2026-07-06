@@ -57,7 +57,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from app.components import BaseCanvasNode, BaseNodeSet, NodeUIConfig, PortDef
+from app.components import BaseCanvasNode, BaseNodeSet, NodeUIConfig, PortDef, conda_env_python
 
 
 log = logging.getLogger("agentcanvas.policy-octo")
@@ -293,10 +293,7 @@ class PolicyOctoNodeSet(BaseNodeSet):
         "Octo (RAIL Berkeley) — JAX/Flax VLA baseline for SimplerEnv. "
         "Single ``policy_octo__predict`` node."
     )
-    server_python = os.environ.get(
-        "OCTO_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/ac-octo/bin/python"),
-    )
+    server_python = conda_env_python("ac-octo", "OCTO_PYTHON")
     parallelism = "replicated"  # Per-worker JAX state.
     default_per_step_budget_sec = 30.0
 
