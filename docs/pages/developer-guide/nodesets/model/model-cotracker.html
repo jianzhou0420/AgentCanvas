@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoTracker NodeSet — AgentCanvas</title>
+<meta name="description" content="The CoTracker NodeSet ( CotrackerNodeSet , workspace/nodesets/model/model_cotracker.py ) wraps CoTracker3 (Meta) as a point-tracking primitive . It is the temporal counterpart to VGGT : where VGGT&#x27;s…">
+<meta property="og:title" content="CoTracker NodeSet — AgentCanvas">
+<meta property="og:description" content="The CoTracker NodeSet ( CotrackerNodeSet , workspace/nodesets/model/model_cotracker.py ) wraps CoTracker3 (Meta) as a point-tracking primitive . It is the temporal counterpart to VGGT : where VGGT&#x27;s…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-cotracker.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-cotracker.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">CoTracker NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>CoTracker NodeSet</h1>
+</header>
+
+<p>The <strong>CoTracker NodeSet</strong> (<code>CotrackerNodeSet</code>, <code>workspace/nodesets/model/model_cotracker.py</code>) wraps <a href="https://github.com/facebookresearch/co-tracker">CoTracker3</a> (Meta) as a <strong>point-tracking primitive</strong>. It is the <em>temporal</em> counterpart to <a href="model-vggt.html">VGGT</a>: where VGGT's track head follows query pixels across a <em>co-visible view set</em> in one feed-forward pass, CoTracker follows points densely through a <strong>video / frame sequence</strong>, handling occlusion and long-range motion. It fills the gap VGGT cannot — temporal correspondence over a walk, the substrate for motion cues, visual-odometry priors, and dynamic-object handling.</p>
+<p>env: <code>ac-cotracker</code> (dedicated) · backend: standalone <code>cotracker</code> package (git, <code>CoTrackerPredictor</code>) · variant: <code>cotracker3_offline</code> · weights: <code>facebook/cotracker3</code> <code>scaled_offline.pth</code> (fetched lazily)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_cotracker__track_grid</code></td>
+<td>Seed a <code>grid_size × grid_size</code> point grid on a chosen frame and track every point through the clip → <code>tracks</code> (JSON envelope of <code>tracks</code> / <code>visibility</code>). The "track everything" mode.</td>
+</tr>
+<tr>
+<td><code>model_cotracker__track_points</code></td>
+<td>Track caller-supplied query pixels <code>(t, x, y)</code> through the clip → <code>tracks</code> (same envelope).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-two-primitives"><span class="num">1.</span> Two primitives: grid vs query points</h2>
+<p><code>track_grid</code> is the dense "track everything" mode — it seeds a regular <code>grid_size × grid_size</code> grid on <code>grid_query_frame</code> (so <code>N = grid_size²</code> points) and follows them all. <code>track_points</code> is the targeted mode — the caller supplies exactly the pixels to follow, each as <code>(t, x, y)</code> = the frame the point is specified on plus its coordinates (a bare <code>(x, y)</code> defaults to frame 0). Both return the same envelope shape; a graph wires whichever fits — a dense grid for global motion, explicit queries to follow chosen landmarks.</p>
+<hr>
+<h2 id="2-video-in"><span class="num">2.</span> Video in — frames, 0–255 float</h2>
+<p>The <code>images</code> port is an <em>ordered</em> list of frames (base64). They are decoded and stacked to a <code>(1, T, 3, H, W)</code> tensor in <strong>0–255</strong> range — CoTracker's own convention, with <em>no</em> <code>[0,1]</code> normalization — and fed verbatim. All frames must share one resolution (CoTracker requires it); a size mismatch or a malformed frame degrades the node to an empty output rather than guessing.</p>
+<hr>
+<h2 id="3-weights"><span class="num">3.</span> Weights — checkpoint, not a repo clone</h2>
+<p>CoTracker's canonical loader (<code>torch.hub.load("facebookresearch/co-tracker", …)</code>) clones the whole upstream repo at runtime. Since the <code>cotracker</code> package is already pip-installed in the env, the nodeset instead downloads <strong>only the checkpoint</strong> into the torch-hub cache and constructs the predictor directly — no repo clone, offline-friendly once cached:</p>
+<pre class="hl">
+<span class="c1"># Load the offline predictor from a downloaded checkpoint — the repo is NOT cloned.</span>
+<span class="n">ckpt</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">hub</span><span class="o">.</span><span class="n">get_dir</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">checkpoints</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">scaled_offline.pth</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">ckpt</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">torch</span><span class="o">.</span><span class="n">hub</span><span class="o">.</span><span class="n">download_url_to_file</span><span class="p">(</span><span class="n">CKPT_URL</span><span class="p">,</span> <span class="n">ckpt</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">CoTrackerPredictor</span><span class="p">(</span><span class="n">checkpoint</span><span class="o">=</span><span class="n">ckpt</span><span class="p">,</span> <span class="n">offline</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">window_len</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+<span class="c1"># video: (1, T, 3, H, W) float in 0-255 (CoTracker&#x27;s own convention, no normalization)</span>
+<span class="n">tracks</span><span class="p">,</span> <span class="n">visibility</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">video</span><span class="p">,</span> <span class="n">grid_size</span><span class="o">=</span><span class="n">grid_size</span><span class="p">)</span>   <span class="c1"># or queries=(1,N,3) as (t,x,y)</span>
+
+</pre>
+<p>Only <code>cotracker3_offline</code> (the whole-clip predictor, <code>window_len=60</code>) is wired; the streaming <code>online</code> variant is reserved. The predictor is a lazy singleton per variant, frozen and moved to the device once.</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Multi-array envelope</h2>
+<p>Each port is a TEXT JSON envelope — the named arrays as raw C-contiguous float32 buffers, base64-encoded (byte-exact across the server-mode HTTP boundary, ~4× smaller than a JSON float list), plus the <code>variant</code>, the frame size <code>image_hw</code> = <code>[H, W]</code>, and <code>num_frames</code>:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;variant&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cotracker3_offline&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;image_hw&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">520</span><span class="p">,</span><span class="w"> </span><span class="mi">779</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;num_frames&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;tracks&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;C-contiguous float32 buffer&gt;&quot;</span><span class="p">},</span>
+<span class="w"> </span><span class="nt">&quot;visibility&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="mi">64</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">}}</span>
+
+</pre>
+<p><code>tracks</code> is <code>(T, N, 2)</code> — the <code>(x, y)</code> of every tracked point on every frame; <code>visibility</code> is <code>(T, N)</code>, a float 0/1 mask (cast from the model's bool). A point tracked <em>off-frame</em> keeps a predicted (extrapolated) position with visibility 0 — so out-of-bounds coordinates on invisible points are expected, not an error.</p>
+<hr>
+<h2 id="5-canvas-nodes"><span class="num">5.</span> Canvas Nodes</h2>
+<h3 id="model_cotracker__track_grid"><code>model_cotracker__track_grid</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — ordered list of <code>{rgb_base64}</code> dicts or raw base64 strings; T frames)</td></tr>
+<tr><td>Outputs</td><td><code>tracks</code> (TEXT — the §4 envelope <code>{tracks, visibility}</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>variant</code> (default <code>cotracker3_offline</code>) · <code>grid_size</code> (slider 1–50, default 10; <code>N = g²</code>) · <code>grid_query_frame</code> (slider, default 0)</td></tr>
+<tr><td>Backend call</td><td><code>model(video, grid_size=…, grid_query_frame=…)</code> under <code>no_grad</code> → tracks/visibility, batch dim squeezed</td></tr>
+</tbody>
+</table>
+<h3 id="model_cotracker__track_points"><code>model_cotracker__track_points</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — as above), <code>query_points</code> (ANY — <code>list[[t,x,y]]</code>; a <code>[x,y]</code> defaults <code>t=0</code>; or a JSON list)</td></tr>
+<tr><td>Outputs</td><td><code>tracks</code> (TEXT — same envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>variant</code> (default <code>cotracker3_offline</code>)</td></tr>
+<tr><td>Backend call</td><td><code>model(video, queries=(1,N,3))</code> → tracks/visibility for the supplied points</td></tr>
+</tbody>
+</table>
+<p>Engines are lazy singletons in a registry keyed by <code>variant</code>; GPU inference is single-flight per engine (one in-flight forward bounds peak VRAM — CoTracker's cost scales with clip length × point count × resolution).</p>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless tracking primitives — one server across eval workers); <code>server_python = conda_env_python("ac-cotracker", "COTRACKER_PYTHON")</code>. CoTracker runs in a <strong>dedicated env</strong>: it installs from git (the <code>cotracker</code> package is pinned to a commit, not on PyPI, and is not a transformers model), so it is kept out of the shared <code>ac-fm</code> stack for provenance and reproducibility. Unlike <a href="model-vggt.html">VGGT</a> this is <em>not</em> a <code>numpy&lt;2</code>-forced split — CoTracker is numpy-2-compatible — it is a cleanliness choice. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_cotracker/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>COTRACKER_PYTHON</code></td><td><code>ac-cotracker</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>COTRACKER_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, a frame missing/malformed base64, a frame-size mismatch, or (for <code>track_points</code>) absent/malformed <code>query_points</code>, yields <code>""</code> on the node's output. An empty envelope is a clean "no tracks this step" signal; consumers keep their own fallback and never receive fabricated trajectories.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-two-primitives">1. Two primitives: grid vs query points</a>
+      <a class="toc-h2" href="#2-video-in">2. Video in — frames, 0–255 float</a>
+      <a class="toc-h2" href="#3-weights">3. Weights — checkpoint, not a repo clone</a>
+      <a class="toc-h2" href="#4-envelope">4. Multi-array envelope</a>
+      <a class="toc-h2" href="#5-canvas-nodes">5. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_cotracker__track_grid">model_cotracker__track_grid</a>
+      <a class="toc-h3" href="#model_cotracker__track_points">model_cotracker__track_points</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

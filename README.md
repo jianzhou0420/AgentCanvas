@@ -446,6 +446,12 @@ Every nodeset and graph is credited to its author/maintainer on the board below 
               <li>SpatialBot ✅</li>
               <li>Qwen2.5-VL ✅</li>
               <li>DetAny3D ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depth-anything.html">Depth Anything V2</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-clip.html">CLIP</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-dinov2.html">DINOv2</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt.html">VGGT (feed-forward 3D)</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-matching.html">SuperPoint + LightGlue</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-cotracker.html">CoTracker</a> ✅</li>
               <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/foundation-models/vlm-prismatic.html">Prismatic VLM</a> ✅</li>
               <li>TSDF mapping ✅</li>
               <li>Semantic scene graph ✅</li>
