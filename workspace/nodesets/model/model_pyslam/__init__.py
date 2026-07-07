@@ -125,6 +125,40 @@ def _decode_depth_input(value: Any) -> np.ndarray | None:
     raise TypeError(f"cannot decode depth input of type {type(value).__name__}")
 
 
+def _pose_to_matrix(pose: Any) -> Any:
+    """Normalise an env pose to a 4x4 SE3 (list of lists), for trajectory eval.
+
+    ``env_habitat``'s observe ``pose`` port emits
+    ``{"position": [x,y,z], "orientation": [qx,qy,qz,qw]}`` (quaternion,
+    scalar-last). pySLAM's estimated pose translation is the **camera centre in
+    world coords** (``tracking.cur_t = -Rwc·tcw``), so a matching world pose here
+    needs the rotation from the quaternion and the translation from the position —
+    ATE(translation) only compares the centres, alignment absorbs the frame
+    offset. Passes an already-4x4 pose through unchanged.
+    """
+    if isinstance(pose, np.ndarray):
+        return pose.tolist() if pose.shape == (4, 4) else pose
+    if isinstance(pose, list):
+        return pose  # assume already 4x4 list-of-lists
+    if isinstance(pose, dict):
+        pos = pose.get("position") or [0.0, 0.0, 0.0]
+        quat = pose.get("orientation") or [0.0, 0.0, 0.0, 1.0]
+        qx, qy, qz, qw = (float(v) for v in quat)
+        n = qx * qx + qy * qy + qz * qz + qw * qw
+        s = 0.0 if n == 0.0 else 2.0 / n
+        xs, ys, zs = qx * s, qy * s, qz * s
+        wx, wy, wz = qw * xs, qw * ys, qw * zs
+        xx, xy, xz = qx * xs, qx * ys, qx * zs
+        yy, yz, zz = qy * ys, qy * zs, qz * zs
+        return [
+            [1.0 - (yy + zz), xy - wz, xz + wy, float(pos[0])],
+            [xy + wz, 1.0 - (xx + zz), yz - wx, float(pos[1])],
+            [xz - wy, yz + wx, 1.0 - (xx + yy), float(pos[2])],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    raise TypeError(f"cannot convert pose of type {type(pose).__name__} to 4x4")
+
+
 def _resize_depth_to(depth: np.ndarray, width: int, height: int) -> np.ndarray:
     """Nearest-neighbour resample a HxW metric depth map onto an (H,W) grid.
 
@@ -220,6 +254,7 @@ class PySlamResetTool(BaseCanvasNode):
             # depth normalised to [0,1] over max_depth → scale = max_depth).
             ns._config["depth_scale"] = float(self.config.get("depth_scale") or 1.0)
             ns._session.reset()
+            ns._gt_traj.clear()  # new episode → drop the previous GT trajectory
             info = {
                 "sensor": ns._session.sensor_type,
                 "feature": ns._session.feature_preset,
@@ -254,6 +289,9 @@ class PySlamTrackTool(BaseCanvasNode):
         PortDef("rgb", "IMAGE", "RGB frame (np.ndarray HxWx3 uint8, or .npy path)"),
         PortDef("depth", "DEPTH", "Depth frame in metres (np.ndarray HxW, RGB-D only)", optional=True),
         PortDef("timestamp", "ANY", "Frame timestamp in seconds (default = frame index)", optional=True),
+        PortDef("gt_pose", "ANY",
+                "Ground-truth agent pose this step (env observe.pose) — captured "
+                "frame-aligned for eval_trajectory when tracking succeeds", optional=True),
     ]
     output_ports = [
         PortDef("pose", "POSE", "4x4 world-from-camera pose (list of lists), or null if LOST"),
@@ -281,6 +319,13 @@ class PySlamTrackTool(BaseCanvasNode):
             if depth is not None:
                 depth = depth * float(ns._config.get("depth_scale") or 1.0)
             result = ns._session.track(rgb, depth, inputs.get("timestamp"))
+            # Capture GT frame-aligned to the estimated trajectory: append iff
+            # pySLAM produced a pose this step (same condition the session uses to
+            # grow its estimated trajectory), keeping the two lists index-aligned.
+            # A None slot (GT unwired that step) is dropped later by the eval node.
+            if result["pose"] is not None:
+                gt = inputs.get("gt_pose")
+                ns._gt_traj.append(_pose_to_matrix(gt) if gt is not None else None)
             log.info("pyslam track: state=%s map_pts=%s pose=%s rgb=%s depth=%s range=[%.2f,%.2f]",
                      result["state"], result["num_map_points"],
                      "Y" if result["pose"] is not None else "-",
@@ -312,8 +357,11 @@ class PySlamGetTrajectoryTool(BaseCanvasNode):
     icon = "Route"
     input_ports = [PortDef("trigger", "ANY", "Fire to read the trajectory", optional=True)]
     output_ports = [
-        PortDef("poses", "ANY", "List of 4x4 world-from-camera poses"),
+        PortDef("poses", "ANY", "List of 4x4 world-from-camera poses (estimated)"),
         PortDef("num_frames", "ANY", "Total frames fed to track()"),
+        PortDef("gt_poses", "ANY",
+                "Frame-aligned ground-truth poses captured by track (feed to "
+                "eval_trajectory alongside poses); empty if no gt_pose was wired"),
     ]
 
     def __init__(self, nodeset: ModelPySlamNodeSet | None = None) -> None:
@@ -323,9 +371,10 @@ class PySlamGetTrajectoryTool(BaseCanvasNode):
     async def forward(self, inputs: dict, ctx: Any) -> dict:
         ns = self._nodeset or _NODESET
         if ns is None or ns._session is None:
-            return {"poses": [], "num_frames": 0}
+            return {"poses": [], "num_frames": 0, "gt_poses": []}
         traj = ns._session.get_trajectory()
-        return {"poses": traj["poses"], "num_frames": traj["num_frames"]}
+        return {"poses": traj["poses"], "num_frames": traj["num_frames"],
+                "gt_poses": list(ns._gt_traj)}
 
 
 class PySlamGetMapTool(BaseCanvasNode):
@@ -584,9 +633,18 @@ class PySlamEvalTrajectoryTool(BaseCanvasNode):
                 mono = str(self.config.get("is_monocular") or "false").lower() == "true"
             else:
                 mono = bool(mono_in) if not isinstance(mono_in, str) else mono_in.lower() == "true"
-            out = ns._session.eval_trajectory(
-                inputs["poses_est"], inputs["poses_gt"], is_monocular=mono
-            )
+            # Keep only frame-aligned est/gt pairs (get_trajectory may hand over
+            # None gt slots for steps where no ground truth was wired).
+            est_in = inputs.get("poses_est") or []
+            gt_in = inputs.get("poses_gt") or []
+            pairs = [(e, g) for e, g in zip(est_in, gt_in, strict=False)
+                     if e is not None and g is not None]
+            if not pairs:
+                return {"ate_rmse": None, "rpe_rmse": None,
+                        "metrics": json.dumps({"error": "no frame-aligned est/gt pose pairs"})}
+            est = [e for e, _ in pairs]
+            gt = [g for _, g in pairs]
+            out = ns._session.eval_trajectory(est, gt, is_monocular=mono)
             return {
                 "ate_rmse": out.get("ate", {}).get("rmse"),
                 "rpe_rmse": out.get("rpe", {}).get("rmse"),
@@ -625,6 +683,11 @@ class ModelPySlamNodeSet(BaseNodeSet):
     def __init__(self) -> None:
         self._session: Any = None
         self._config: dict = {}
+        # Frame-aligned ground-truth poses for trajectory eval — the track node
+        # appends one here iff pySLAM produced an estimated pose that step, so
+        # this list stays index-aligned with the session's estimated trajectory
+        # (the same association pySLAM's own eval does by timestamp).
+        self._gt_traj: list = []
 
     async def initialize(self, **kwargs: Any) -> None:
         # Runs in the framework process. Create the container client (cheap) then

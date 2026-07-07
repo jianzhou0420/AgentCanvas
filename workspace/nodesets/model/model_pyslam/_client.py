@@ -78,12 +78,22 @@ class PySlamContainerClient:
         loop_preset: str = "DBOW3",
         headless: bool = True,
         image: str = DEFAULT_IMAGE,
+        gpu: bool | None = None,
     ) -> None:
         self.sensor_type = sensor_type
         self.feature_preset = feature_preset
         self.loop_preset = loop_preset
         self.headless = headless
         self.image = image
+        # GPU is exposed to the container via rootless-Docker CDI
+        # (``--device nvidia.com/gpu=all``); the ``cpu-fixed`` image already ships
+        # a cu128 torch, so the neural backends (learned depth / semantic seg /
+        # multiview) run on the GPU while the classic SLAM core stays on CPU.
+        # Default on; ``PYSLAM_GPU=0`` forces CPU-only. start_container falls back
+        # to CPU if the GPU request fails (no CDI / no GPU on the host).
+        if gpu is None:
+            gpu = os.environ.get("PYSLAM_GPU", "1").lower() not in ("0", "false", "no")
+        self.gpu = gpu
 
         self._built = False
         self._container: str | None = None
@@ -115,16 +125,15 @@ class PySlamContainerClient:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
-    def start_container(self) -> None:
-        """``docker run`` the shim and block until ``/health`` answers."""
-        self._port = self._free_port()
-        self._container = f"pyslam_bridge_{os.getpid()}_{self._port}"
-        # Pre-clean any stale container with this exact name (idempotent restart).
-        self._docker("rm", "-f", self._container, check=False)
-
-        run = [
+    def _run_args(self, gpu: bool) -> list[str]:
+        """Assemble the ``docker run`` argv. ``gpu`` inserts the CDI device flag
+        (``--device nvidia.com/gpu=all``) — rootless Docker reaches the GPU via
+        CDI, not the legacy ``--gpus`` cgroup path (which fails unprivileged)."""
+        gpu_args = ["--device", "nvidia.com/gpu=all"] if gpu else []
+        return [
             "run", "-d", "--name", self._container,
             "--label", "agentcanvas.pyslam=1",
+            *gpu_args,
             "-v", f"{self._nodeset_dir}:/opt/bridge:ro",
             "-w", "/opt/bridge",
             "-e", "PYTHONPATH=/opt/bridge",
@@ -136,10 +145,33 @@ class PySlamContainerClient:
             CONTAINER_PY, "-m", "uvicorn", "_server:app",
             "--host", "0.0.0.0", "--port", "8000",
         ]
-        proc = self._docker(*run)
+
+    def start_container(self) -> None:
+        """``docker run`` the shim and block until ``/health`` answers."""
+        self._port = self._free_port()
+        self._container = f"pyslam_bridge_{os.getpid()}_{self._port}"
+        # Pre-clean any stale container with this exact name (idempotent restart).
+        self._docker("rm", "-f", self._container, check=False)
+
+        proc = None
+        if self.gpu:
+            try:
+                proc = self._docker(*self._run_args(gpu=True))
+            except subprocess.CalledProcessError as exc:
+                # No CDI / no GPU on this host → degrade to CPU rather than fail.
+                log.warning(
+                    "pyslam GPU container start failed (%s); retrying CPU-only",
+                    (exc.stderr or "").strip()[:200],
+                )
+                self._docker("rm", "-f", self._container, check=False)
+                self.gpu = False
+        if proc is None:
+            proc = self._docker(*self._run_args(gpu=False))
+
         cid = proc.stdout.strip()
         self._base = f"http://127.0.0.1:{self._port}"
-        log.info("pyslam container started: %s (%s) → %s", self._container, cid[:12], self._base)
+        log.info("pyslam container started: %s (%s, gpu=%s) → %s",
+                 self._container, cid[:12], self.gpu, self._base)
         self._wait_healthy()
 
     def _container_status(self) -> str:

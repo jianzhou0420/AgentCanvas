@@ -196,7 +196,7 @@
 <table>
 <thead><tr><th>Field</th><th>Detail</th></tr></thead>
 <tbody>
-<tr><td>Inputs</td><td><code>rgb</code> (IMAGE — HxWx3 uint8 or .npy path), <code>depth</code> (DEPTH — metres, RGB-D only, opt), <code>timestamp</code> (ANY, opt)</td></tr>
+<tr><td>Inputs</td><td><code>rgb</code> (IMAGE — HxWx3 uint8 or .npy path), <code>depth</code> (DEPTH — metres, RGB-D only, opt), <code>timestamp</code> (ANY, opt), <code>gt_pose</code> (ANY — env <code>observe.pose</code>, captured frame-aligned for <code>eval_trajectory</code>, opt)</td></tr>
 <tr><td>Outputs</td><td><code>pose</code> (POSE — 4×4 world-from-camera, or <code>null</code> if LOST), <code>tracking_state</code> (TEXT), <code>num_map_points</code> (ANY)</td></tr>
 <tr><td>Backend call</td><td>depth resample → depth × <code>depth_scale</code> → <code>Slam.track(rgb, None, depth, id, ts)</code>; pose from <code>tracking.cur_R / cur_t</code></td></tr>
 </tbody>
@@ -218,7 +218,7 @@
 <thead><tr><th>Field</th><th>Detail</th></tr></thead>
 <tbody>
 <tr><td>Inputs</td><td><code>trigger</code> (ANY, opt)</td></tr>
-<tr><td>Outputs</td><td><code>poses</code> (ANY — list of 4×4), <code>num_frames</code> (ANY — total frames fed to <code>track</code>)</td></tr>
+<tr><td>Outputs</td><td><code>poses</code> (ANY — list of 4×4, estimated), <code>num_frames</code> (ANY — total frames fed to <code>track</code>), <code>gt_poses</code> (ANY — frame-aligned ground truth captured by <code>track</code>, for <code>eval_trajectory</code>)</td></tr>
 </tbody>
 </table>
 
@@ -280,11 +280,12 @@
 </table>
 <p>A near-straight-line trajectory (a straight-corridor episode) makes Umeyama alignment rank-deficient, so <code>ate_rmse</code> can come back <code>null</code> (evo cannot align) while <code>rpe_rmse</code> still returns via a no-align fallback — an evo limitation, not a fault.</p>
 
-<p><strong>Deferred capabilities.</strong> pySLAM also ships depth prediction, semantic segmentation, multi-view reconstruction (DUSt3R / MASt3R), and dense / volumetric mapping. These are intentionally not wrapped yet: they need model weights, a GPU, or Open3D the CPU image lacks — and depth prediction overlaps the existing <a href="model-depth-anything.html">Depth Anything</a> nodeset. The streaming session's own algorithm variety (feature detector, loop detector, sensor mode) is reached by <em>config passthrough</em> on the Reset node, not by new nodes.</p>
+<p><strong>Full-surface exposure (in progress).</strong> pySLAM also ships depth prediction, semantic segmentation, multi-view reconstruction (DUSt3R / MASt3R), and dense / volumetric mapping. The goal is to expose <em>all</em> of these as nodes — pySLAM is a first-class supported model, not a curated subset. Their backends are neural and want a GPU, so the container now requests one (§6); the remaining nodes (<code>predict_depth</code>, <code>segment_semantic</code>, <code>reconstruct_multiview</code>, <code>get_dense_map</code>) are the next to land. The streaming session's own algorithm variety (feature detector, loop detector, sensor mode) is reached by <em>config passthrough</em> on the Reset node, not by new nodes.</p>
 <hr>
 
 <h2 id="6-deployment"><span class="num">6.</span> Deployment &amp; lifecycle</h2>
 <p><code>initialize()</code> constructs the client and <code>docker run -d</code>s the image (nodeset dir bind-mounted at <code>/opt/bridge</code>, a free loopback port published), then polls <code>/health</code> until the shim answers — the blocking Docker call offloaded off the event loop. <code>shutdown()</code> posts <code>/close</code> (quits <code>Slam</code>, joins its background threads) then <code>docker rm -f</code>s the container. The image is built once via rootless Docker; pySLAM is cloned and compiled <strong>at build time</strong>, never entering the repo.</p>
+<p><strong>GPU.</strong> The container is launched with <code>--device nvidia.com/gpu=all</code> so the neural backends (learned depth, semantic segmentation, multi-view reconstruction) run on the GPU — the classic SLAM core stays on CPU. Rootless Docker reaches the GPU through <strong>CDI</strong> (the legacy <code>--gpus</code> cgroup path fails unprivileged); the image already carries a CUDA <code>torch</code>, so no separate GPU image is needed. GPU is on by default and falls back to CPU when unavailable — set <code>PYSLAM_GPU=0</code> to force CPU.</p>
 <pre class="hl">
 <span class="nb">export</span><span class="w"> </span><span class="nv">DOCKER_HOST</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">unix:///run/user/</span><span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="s2">/docker.sock</span><span class="s2">&quot;</span>
 bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.sh<span class="w"> </span>agentcanvas/pyslam:cpu-fixed
