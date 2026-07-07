@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Depth Anything NodeSet — AgentCanvas</title>
+<meta name="description" content="The Depth Anything NodeSet ( DepthAnythingNodeSet , workspace/nodesets/model/model_depth_anything.py ) turns a single RGB frame into a dense depth map via Depth Anything V2 — the geometric-perception…">
+<meta property="og:title" content="Depth Anything NodeSet — AgentCanvas">
+<meta property="og:description" content="The Depth Anything NodeSet ( DepthAnythingNodeSet , workspace/nodesets/model/model_depth_anything.py ) turns a single RGB frame into a dense depth map via Depth Anything V2 — the geometric-perception…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depth-anything.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-depth-anything.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Depth Anything NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>Depth Anything NodeSet</h1>
+</header>
+
+<p>The <strong>Depth Anything NodeSet</strong> (<code>DepthAnythingNodeSet</code>, <code>workspace/nodesets/model/model_depth_anything.py</code>) turns a single RGB frame into a <strong>dense depth map</strong> via <a href="https://arxiv.org/abs/2406.09414">Depth Anything V2</a> — the geometric-perception primitive for RGB-only agents. Obstacle avoidance, point-goal, sim2real, and lifting a 2D detection into 3D all need per-pixel depth without a depth sensor; this is the foundation-model way to get it.</p>
+<p>env: <code>ac-fm</code> · backend: <code>transformers</code> <code>AutoModelForDepthEstimation</code> + <code>AutoImageProcessor</code> · default <code>model_id</code>: <code>depth-anything/Depth-Anything-V2-Small-hf</code> (relative)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_depth_anything__estimate_depth</code></td>
+<td>Monocular depth per image at original resolution: list of <code>{rgb_base64}</code> → <code>depth</code> (TEXT — base64-npy JSON envelope of the (N,&nbsp;H,&nbsp;W) float32 tensor).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-monocular-depth"><span class="num">1.</span> Monocular depth — relative vs metric</h2>
+<p>The checkpoint decides the units, and the envelope's <code>depth_type</code> field labels them for the consumer:</p>
+<table>
+<thead>
+<tr><th><code>depth_type</code></th><th>Meaning</th><th>Checkpoints</th></tr>
+</thead>
+<tbody>
+<tr><td><code>relative</code> (default)</td><td>unitless, larger = nearer</td><td><code>Depth-Anything-V2-{Small,Base,Large}-hf</code></td></tr>
+<tr><td><code>metric</code></td><td>metres</td><td><code>Depth-Anything-V2-Metric-{Indoor,Outdoor}-*-hf</code></td></tr>
+</tbody>
+</table>
+<p>If <code>depth_type</code> is left blank it is inferred from the <code>model_id</code> (<code>metric</code> when the id contains "metric", else <code>relative</code>) — so swapping to a metric checkpoint labels the output correctly with no extra config.</p>
+<hr>
+<h2 id="2-forward-resolution"><span class="num">2.</span> Forward &amp; resolution</h2>
+<p>The processor resizes to the model's patch grid; one batched no-grad forward yields a low-resolution prediction, which is bicubic-upsampled back to the <strong>original input resolution</strong>:</p>
+<pre class="hl">
+<span class="n">pred</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">pixel_values</span><span class="o">=</span><span class="n">pixel_values</span><span class="p">)</span><span class="o">.</span><span class="n">predicted_depth</span>        <span class="c1"># (N, h&#x27;, w&#x27;) at patch grid</span>
+<span class="n">pred</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">interpolate</span><span class="p">(</span><span class="n">pred</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">)</span><span class="p">,</span>           <span class="c1"># bicubic back to input size</span>
+                     <span class="n">mode</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">bicubic</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">align_corners</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">squeeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>   <span class="c1"># (N, H, W)</span>
+
+</pre>
+<p><strong>All images in one call must share resolution</strong> — the envelope is a single <code>(N, H, W)</code> buffer. Mixed sizes degrade to empty with a self-log (split into uniform batches). In an agent loop <code>N</code> is typically 1 (per-frame depth).</p>
+<hr>
+<h2 id="3-depth-envelope"><span class="num">3.</span> Depth envelope</h2>
+<p>The output is a TEXT JSON envelope carrying the raw C-contiguous float32 buffer base64-encoded, plus <code>model_id</code> + <code>depth_type</code> self-description:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">N</span><span class="p">,</span><span class="w"> </span><span class="err">H</span><span class="p">,</span><span class="w"> </span><span class="err">W</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;base64 of the C-contiguous float32 buffer&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;depth-anything/Depth-Anything-V2-Small-hf&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;depth_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;relative&quot;</span><span class="p">}</span>
+
+</pre>
+<p>Byte-exact across the server-mode HTTP boundary and ~4× smaller than a JSON float list.</p>
+<hr>
+<h2 id="4-canvas-nodes"><span class="num">4.</span> Canvas Nodes</h2>
+<h3 id="model_depth_anything__estimate_depth"><code>model_depth_anything__estimate_depth</code></h3>
+<table>
+<thead>
+<tr><th>Field</th><th>Detail</th></tr>
+</thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings, uniform size)</td></tr>
+<tr><td>Outputs</td><td><code>depth</code> (TEXT — the §3 envelope; <code>""</code> on degraded / mixed resolutions)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (default <code>depth-anything/Depth-Anything-V2-Small-hf</code>), <code>depth_type</code> (blank → inferred from id)</td></tr>
+<tr><td>Backend call</td><td>one batched <code>model(pixel_values).predicted_depth</code> under <code>no_grad</code>, bicubic-upsampled to <code>(N, H, W)</code> float32</td></tr>
+</tbody>
+</table>
+<p>Engines are lazy singletons in a registry keyed by <code>model_id</code> — relative and metric checkpoints coexist in one server. GPU inference is single-flight per engine (one in-flight forward bounds peak VRAM under concurrent eval workers).</p>
+<hr>
+<h2 id="5-server-mode"><span class="num">5.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless estimator — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "DEPTH_ANYTHING_PYTHON")</code>. <code>AutoModelForDepthEstimation</code> + the Depth-Anything-V2 checkpoints (ungated) are native to the shared <code>ac-fm</code> env (transformers&nbsp;5.13), so no dedicated env is needed. The nodeset file stays Python-3.8-parseable (an override may point at a py3.8 env). Load: <code>POST /api/components/nodesets/model_depth_anything/load?mode=server</code>.</p>
+<hr>
+<h2 id="6-environment-variables"><span class="num">6.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>DEPTH_ANYTHING_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>DEPTH_ANYTHING_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="7-degraded-mode"><span class="num">7.</span> Degraded Mode</h2>
+<p>A model/processor load failure latches (<code>_load_failed</code> — no retry storm); that, an <code>images</code> entry missing its base64, or a batch of mixed resolutions all yield <code>depth = ""</code> with a <code>degraded</code> self-log. An empty envelope is a clean "no depth this step" signal, never a fabricated map.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-monocular-depth">1. Monocular depth — relative vs metric</a>
+      <a class="toc-h2" href="#2-forward-resolution">2. Forward &amp; resolution</a>
+      <a class="toc-h2" href="#3-depth-envelope">3. Depth envelope</a>
+      <a class="toc-h2" href="#4-canvas-nodes">4. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_depth_anything__estimate_depth">model_depth_anything__estimate_depth</a>
+      <a class="toc-h2" href="#5-server-mode">5. Server Mode</a>
+      <a class="toc-h2" href="#6-environment-variables">6. Environment Variables</a>
+      <a class="toc-h2" href="#7-degraded-mode">7. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
