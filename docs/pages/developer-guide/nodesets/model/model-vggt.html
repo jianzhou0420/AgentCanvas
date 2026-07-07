@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VGGT NodeSet — AgentCanvas</title>
+<meta name="description" content="The VGGT NodeSet ( VggtNodeSet , workspace/nodesets/model/model_vggt.py ) wraps VGGT (Visual Geometry Grounded Transformer, CVPR 2025) as a feed-forward 3D reconstruction primitive . Where Depth…">
+<meta property="og:title" content="VGGT NodeSet — AgentCanvas">
+<meta property="og:description" content="The VGGT NodeSet ( VggtNodeSet , workspace/nodesets/model/model_vggt.py ) wraps VGGT (Visual Geometry Grounded Transformer, CVPR 2025) as a feed-forward 3D reconstruction primitive . Where Depth…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-vggt.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">VGGT NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>VGGT NodeSet</h1>
+</header>
+
+<p>The <strong>VGGT NodeSet</strong> (<code>VggtNodeSet</code>, <code>workspace/nodesets/model/model_vggt.py</code>) wraps <a href="https://github.com/facebookresearch/vggt">VGGT</a> (Visual Geometry Grounded Transformer, CVPR&nbsp;2025) as a <strong>feed-forward 3D reconstruction primitive</strong>. Where <a href="model-depth-anything.html">Depth Anything</a> gives per-view <em>relative</em> depth, VGGT ingests <strong>1→N RGB views</strong> and, in a <em>single forward pass</em>, regresses camera poses, dense per-view depth, and a dense world-frame point map — no SLAM, no pairwise global-alignment loop. That turns a bare RGB stream into geometry, the substrate open-vocabulary 3D mapping (VGGT points + <a href="model-clip.html">CLIP</a> features) and RGB-only navigation build on.</p>
+<p>env: <code>ac-vggt</code> (dedicated) · backend: standalone <code>vggt</code> package (<code>VGGT.from_pretrained</code> via <code>huggingface_hub</code>) · default <code>model_id</code>: <code>facebook/VGGT-1B</code> (cc-by-nc-4.0; <code>-Commercial</code> variant for commercial use)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_vggt__reconstruct</code></td>
+<td>N RGB views → <code>cameras</code> (extrinsics + intrinsics), <code>depth</code> (+ confidence), <code>world_points</code> (+ confidence), all one forward pass. Each output is a base64-npy JSON envelope.</td>
+</tr>
+<tr>
+<td><code>model_vggt__track_points</code></td>
+<td>Track caller-supplied 2D query pixels across the view set (VGGT track head) → <code>tracks</code> (JSON envelope of <code>track</code> / <code>vis</code> / <code>conf</code>).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-one-forward"><span class="num">1.</span> One forward, three heads</h2>
+<p><code>reconstruct</code> runs VGGT's camera, depth, and point heads <strong>together in a single</strong> <code>model(images)</code> call — that is the model's native shape, so splitting it into per-head nodes would only re-run the shared transformer. The three output ports carry the three head groups; a graph wires whichever it needs (depth alone for obstacle checks, cameras + points for mapping). Arrays are ordered by input view (leading dim <code>S</code> = number of views).</p>
+<p><code>track_points</code> is split out as a second node precisely because it is the only surface that needs an extra input — the <code>query_points</code> that drive the track head. Everything else in VGGT is view-only.</p>
+<hr>
+<h2 id="2-preprocess"><span class="num">2.</span> Preprocessing verbatim, then pose decode</h2>
+<p>Images are preprocessed by VGGT's own <code>load_and_preprocess_images</code> — reused <strong>verbatim, with zero reimplementation</strong>. PIL's <code>Image.open</code> accepts a file-like object, so decoded base64 is handed in as <code>BytesIO</code> rather than re-deriving the resize / divisible-by-14 / crop-vs-pad logic (which would risk drift from upstream). The camera head emits a compact 9-D pose encoding; it is decoded to explicit matrices via <code>pose_encoding_to_extri_intri</code> — extrinsics <code>[S,3,4]</code> (OpenCV, cam-from-world) and intrinsics <code>[S,3,3]</code> (principal point assumed at the image centre, VGGT's own convention):</p>
+<pre class="hl">
+<span class="c1"># One forward runs the camera + depth + point heads together (VGGT&#x27;s native shape).</span>
+<span class="n">images</span> <span class="o">=</span> <span class="n">load_and_preprocess_images</span><span class="p">(</span><span class="n">files</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="n">mode</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>  <span class="c1"># BytesIO fed verbatim</span>
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_autocast</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">pred</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>                       <span class="c1"># pose_enc, depth(+conf), world_points(+conf)</span>
+<span class="c1"># 9-D pose encoding -&gt; extrinsic[S,3,4] + intrinsic[S,3,3] (centred principal point)</span>
+<span class="n">extr</span><span class="p">,</span> <span class="n">intr</span> <span class="o">=</span> <span class="n">pose_encoding_to_extri_intri</span><span class="p">(</span><span class="n">pred</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">pose_enc</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="p">(</span><span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">)</span><span class="p">)</span>
+
+</pre>
+<p>The aggregator runs under a bf16/fp16 autocast (the upstream recipe); the camera/depth/point heads re-disable it internally to fp32. The track head, however, runs <em>inside</em> the outer autocast, so its outputs are cast back to float32 before leaving the GPU (numpy has no bfloat16).</p>
+<hr>
+<h2 id="3-world-points"><span class="num">3.</span> World points — head vs unproject</h2>
+<p>VGGT gives two routes to a world-frame point cloud, selected by the <code>points_source</code> config:</p>
+<ul>
+<li><code>head</code> (default) — the point head's direct <code>world_points</code> output.</li>
+<li><code>unproject</code> — back-projecting the predicted depth through the predicted camera (<code>unproject_depth_map_to_point_map</code>). The upstream README notes this depth&nbsp;×&nbsp;camera path is often the <em>sharper</em> point cloud.</li>
+</ul>
+<p>Either way the <code>world_points</code> port carries a <code>(S,&nbsp;H,&nbsp;W,&nbsp;3)</code> array plus its <code>world_points_conf</code> <code>(S,&nbsp;H,&nbsp;W)</code>; the envelope records which source produced it.</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Multi-array envelope</h2>
+<p>Each port is a TEXT JSON envelope. Unlike the single-matrix embedding envelope (<a href="model-clip.html">CLIP</a> / DINOv2), a VGGT port carries several named arrays — each the raw C-contiguous float32 buffer base64-encoded (byte-exact across the server-mode HTTP boundary, ~4× smaller than a JSON float list) — alongside <code>model_id</code> and the preprocessed <code>image_hw</code>:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;model_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;facebook/VGGT-1B&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;image_hw&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">392</span><span class="p">,</span><span class="w"> </span><span class="mi">518</span><span class="p">],</span>
+<span class="w"> </span><span class="nt">&quot;extrinsics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;C-contiguous float32 buffer&gt;&quot;</span><span class="p">},</span>
+<span class="w"> </span><span class="nt">&quot;intrinsics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">}}</span>
+
+</pre>
+<p>Consumers read <code>env["extrinsics"]["b64"]</code> etc. and <code>np.frombuffer(...).reshape(shape)</code>. The <code>depth</code> port carries <code>depth</code> <code>(S,H,W)</code> + <code>depth_conf</code> <code>(S,H,W)</code>; <code>world_points</code> carries <code>world_points</code> <code>(S,H,W,3)</code> + <code>world_points_conf</code> <code>(S,H,W)</code> + <code>points_source</code>; <code>tracks</code> carries <code>track</code> <code>(S,N,2)</code> + <code>vis</code> <code>(S,N)</code> + <code>conf</code> <code>(S,N)</code>.</p>
+<hr>
+<h2 id="5-canvas-nodes"><span class="num">5.</span> Canvas Nodes</h2>
+<h3 id="model_vggt__reconstruct"><code>model_vggt__reconstruct</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings; 1..N views)</td></tr>
+<tr><td>Outputs</td><td><code>cameras</code>, <code>depth</code>, <code>world_points</code> (TEXT — the §4 envelopes; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (default <code>facebook/VGGT-1B</code>) · <code>mode</code> (<code>crop</code> / <code>pad</code>) · <code>points_source</code> (<code>head</code> / <code>unproject</code>)</td></tr>
+<tr><td>Backend call</td><td>one <code>model(images)</code> under <code>no_grad</code> + autocast → decode pose encoding → <code>(S, …)</code> float32 arrays, input order preserved</td></tr>
+</tbody>
+</table>
+<h3 id="model_vggt__track_points"><code>model_vggt__track_points</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — as above), <code>query_points</code> (ANY — <code>list[[x,y]]</code> in preprocessed-frame pixels, or a JSON list)</td></tr>
+<tr><td>Outputs</td><td><code>tracks</code> (TEXT — JSON envelope <code>{track, vis, conf}</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (default <code>facebook/VGGT-1B</code>) · <code>mode</code> (<code>crop</code> / <code>pad</code>)</td></tr>
+<tr><td>Backend call</td><td><code>model(images, query_points=…)</code> → track head; outputs cast to float32</td></tr>
+</tbody>
+</table>
+<p>Note that <code>query_points</code> are in the <em>preprocessed</em> image frame (width 518 in <code>crop</code> mode), not the original resolution — the caller reads <code>image_hw</code> from a prior <code>reconstruct</code> (or the same input) to place them. Engines are lazy singletons in a registry keyed by <code>model_id</code>; GPU inference is single-flight per engine (one in-flight forward bounds peak VRAM — VGGT's point/depth maps scale with view count × resolution).</p>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless geometry primitives — one server across eval workers); <code>server_python = conda_env_python("ac-vggt", "VGGT_PYTHON")</code>. VGGT is a <strong>dedicated env</strong>, not a piggyback on the shared <code>ac-fm</code>: it is the standalone <code>vggt</code> package (loaded via <code>huggingface_hub</code>, not <code>transformers</code>) and it pins <code>numpy&lt;2</code>, which cannot coexist with ac-fm's numpy-2 stack without downgrading numpy under the other FM nodesets. The file stays Python-3.8-parseable (an override may point at a py3.8 env). Load: <code>POST /api/components/nodesets/model_vggt/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>VGGT_PYTHON</code></td><td><code>ac-vggt</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>VGGT_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, an <code>images</code> entry missing its base64, or (for tracking) absent/malformed <code>query_points</code>, yields <code>""</code> on every output of that node. Consumers keep their own fallback — an empty envelope is a clean "no reconstruction this step" signal, never fabricated geometry.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-one-forward">1. One forward, three heads</a>
+      <a class="toc-h2" href="#2-preprocess">2. Preprocessing verbatim, then pose decode</a>
+      <a class="toc-h2" href="#3-world-points">3. World points — head vs unproject</a>
+      <a class="toc-h2" href="#4-envelope">4. Multi-array envelope</a>
+      <a class="toc-h2" href="#5-canvas-nodes">5. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_vggt__reconstruct">model_vggt__reconstruct</a>
+      <a class="toc-h3" href="#model_vggt__track_points">model_vggt__track_points</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
