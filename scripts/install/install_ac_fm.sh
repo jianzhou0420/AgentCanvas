@@ -4,7 +4,8 @@
 # =============================================================================
 # Creates the `ac-fm` conda env (Python 3.11): the common landing zone for
 # foundation-model nodesets that only declare *lower-bound* requirements
-# (BLIP-2, InstructBLIP, DINOv2, Grounding-DINO hf backend, Qwen2.5-VL).
+# (BLIP-2, InstructBLIP, DINOv2/DINOv3, Grounding-DINO hf backend, OWLv2,
+# SigLIP2, AIMv2, Qwen2.5-VL / Qwen3-VL, InternVL3, Gemma3, SmolVLM2).
 # Models whose code pins *exact* old versions (Prismatic, SpatialBot/Bunny
 # remote code, DetAny3D vendored stack) stay in their dedicated envs — they
 # can never share. RAM/RAM++ was evaluated and reclassified frozen
@@ -72,8 +73,11 @@ pip install \
     "accelerate>=1.1" \
     timm sentencepiece einops \
     "qwen-vl-utils==0.0.14" \
+    num2words \
     scipy \
     pillow numpy
+# num2words: required by the SmolVLM2 processor (spells out numbers in the
+# prompt template); pure-Python, no build step.
 # SAM 1 (model_sam nodeset) — pure-Python, lower-bound-only deps;
 # opencv-headless is required by SamAutomaticMaskGenerator's postprocessing.
 pip install \
@@ -101,8 +105,15 @@ from transformers import (  # noqa: F401
     InstructBlipForConditionalGeneration,
     AutoModelForZeroShotObjectDetection,
     Qwen2_5_VLForConditionalGeneration,
+    # wave-3 residents (2026-07-08):
+    Siglip2Model,
+    Owlv2ForObjectDetection,
+    InternVLForConditionalGeneration,
+    Gemma3ForConditionalGeneration,
+    SmolVLMForConditionalGeneration,
 )
 import qwen_vl_utils  # noqa: F401
+import num2words  # noqa: F401  (SmolVLM2 processor dep)
 try:
     import flash_attn  # noqa: F401
     print("flash-attn: active")

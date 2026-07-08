@@ -67,6 +67,7 @@
 </header>
 
 <p>The <strong>DINOv2 NodeSet</strong> (<code>DinoV2NodeSet</code>, <code>workspace/nodesets/model/model_dinov2.py</code>) wraps <a href="https://arxiv.org/abs/2304.07193">DINOv2</a> (23.04) ViT-S/14 with registers as a <strong>generic per-image feature primitive</strong>. It was extracted from the <code>smartway_waypoint</code> engine — where DINOv2 lived as the RGB backbone — in the TODO #56 boundary pass (2026-07-04, explicit user decision: the task-specific DDPPO depth encoder stays method-internal, the DINOv2 backbone does not).</p>
+<p>Since 2026-07-08 the tool has <strong>two backends</strong>, selected per node by the <code>backend</code> config. <code>hub</code> (default) is the byte-exact SmartWay path below. <code>hf</code> is transformers-native (<code>AutoModel</code> + <code>AutoImageProcessor</code>) and is the path for <strong>DINOv3</strong> (<code>facebook/dinov3-*</code>) and any HF-hosted DINOv2 checkpoint — one tool, one envelope, either backbone. The <code>hf</code> path reads the CLS <code>pooler_output</code> as the per-image descriptor and is <em>not</em> byte-exact with <code>hub</code> (different weights/preprocessing); use it when you want DINOv3 or a HF variant, not for SmartWay parity. <strong>DINOv3 repos are HF-gated</strong> — accept the licence at the model page once (with <code>HF_TOKEN</code> set) or the <code>hf</code> engine latches degraded.</p>
 <p>env: <code>ac-fm</code></p>
 <table>
 <thead>
@@ -123,15 +124,15 @@
 </tr>
 <tr>
 <td>Config</td>
-<td><code>hub_model</code> (default <code>dinov2_vits14_reg</code>), <code>processor_id</code> (default <code>facebook/dinov2-small</code>)</td>
+<td><code>backend</code> (<code>hub</code> default / <code>hf</code>), <code>hub_model</code> (default <code>dinov2_vits14_reg</code>), <code>processor_id</code> (default <code>facebook/dinov2-small</code>), <code>hf_model</code> (default <code>facebook/dinov2-with-registers-small</code>; set to <code>facebook/dinov3-*</code> for DINOv3)</td>
 </tr>
 <tr>
 <td>Backend call</td>
-<td>one batched <code>model(pixel_values)</code> under <code>no_grad</code> → <code>(N, D)</code> float32, input order preserved</td>
+<td><code>hub</code>: one batched <code>model(pixel_values)</code> under <code>no_grad</code>. <code>hf</code>: <code>AutoModel(pixel_values=…).pooler_output</code> under <code>no_grad</code>. Both → <code>(N, D)</code> float32, input order preserved</td>
 </tr>
 </tbody>
 </table>
-<p>Engines are lazy singletons in a registry keyed <code>(hub_repo, hub_model, processor_id)</code> — two configs coexist in one server without cross-serving features. GPU inference is single-flight per engine since 2026-07-05 (one in-flight forward bounds peak VRAM under concurrent eval workers).</p>
+<p>Engines are lazy singletons in a registry keyed by backend — <code>("hub", hub_repo, hub_model, processor_id)</code> or <code>("hf", hf_model)</code> — so a hub DINOv2 and a hf DINOv3 coexist in one server without cross-serving features. GPU inference is single-flight per engine since 2026-07-05 (one in-flight forward bounds peak VRAM under concurrent eval workers). The <code>hf</code>-backend path (<code>AutoModel</code> CLS <code>pooler_output</code>) was verified 2026-07-08 with the ungated <code>facebook/dinov2-with-registers-small</code> — <code>(N, 384)</code> — the same code path DINOv3 uses.</p>
 <hr>
 <h2 id="4-server-mode"><span class="num">4.</span> Server Mode</h2>
 <p><code>parallelism = "shared"</code> (stateless extractor — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "DINOV2_PYTHON")</code> since 2026-07-05.</p>

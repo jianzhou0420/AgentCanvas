@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InternVL3 NodeSet — AgentCanvas</title>
+<meta name="description" content="The InternVL3 NodeSet ( VLMInternVL3NodeSet , workspace/nodesets/model/vlm_internvl3.py ) wraps InternVL3 via transformers AutoModelForImageTextToText — the other flagship open vision-language model…">
+<meta property="og:title" content="InternVL3 NodeSet — AgentCanvas">
+<meta property="og:description" content="The InternVL3 NodeSet ( VLMInternVL3NodeSet , workspace/nodesets/model/vlm_internvl3.py ) wraps InternVL3 via transformers AutoModelForImageTextToText — the other flagship open vision-language model…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-internvl3.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/vlm-internvl3.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">InternVL3 NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>InternVL3 NodeSet</h1>
+</header>
+
+<p>The <strong>InternVL3 NodeSet</strong> (<code>VLMInternVL3NodeSet</code>, <code>workspace/nodesets/model/vlm_internvl3.py</code>) wraps <a href="https://huggingface.co/OpenGVLab/InternVL3-1B-hf">InternVL3</a> via <code>transformers</code> <code>AutoModelForImageTextToText</code> — the other flagship open vision-language model alongside <a href="vlm-qwen3-vl.html">Qwen3-VL</a>, and a consistently strong one on spatial/grounding and document benchmarks. It exposes the same generic <code>generate</code> primitive (a chat message list plus media paths → text) and, like Qwen3-VL, reasons over <strong>video</strong> as well as images: pass clip paths and it reasons over the temporal sequence, not just a single frame.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>transformers</code> <code>AutoModelForImageTextToText</code> + <code>AutoProcessor</code> · default: <code>OpenGVLab/InternVL3-1B-hf</code> (ungated)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vlm_internvl3__generate</code></td>
+<td>Generate from a chat <code>messages</code> list (or a plain <code>prompt</code>) with image and/or video paths attached to the last user turn → <code>text</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-primitive"><span class="num">1.</span> One primitive: multimodal generate</h2>
+<p>The tool takes either a full chat <code>messages</code> list (preferred — the caller builds the turns) or a plain <code>prompt</code> string, plus lists of image and video file paths (or URLs) on shared disk. Media is attached to the most recent user turn as chat content blocks; the processor loads it at template time. Stop sequences are truncated from the generated text. The contract mirrors the <a href="vlm-qwen3-vl.html">Qwen3-VL</a> node so the two flagship open VLMs are interchangeable behind one wire shape.</p>
+<hr>
+<h2 id="2-inputs"><span class="num">2.</span> Messages, media paths, stops</h2>
+<p><code>image_paths</code> and <code>video_paths</code> accept a JSON list (or a single string). They are attached to the last user turn — a turn already in block form is left untouched, so a fully-built <code>messages</code> list passes through verbatim. All generation knobs (max tokens, temperature, top-p, repetition penalty) are node config; <code>temperature = 0</code> selects greedy decoding.</p>
+<hr>
+<h2 id="3-generate"><span class="num">3.</span> Model &amp; generation</h2>
+<p>The engine builds the input via the modern <code>apply_chat_template(tokenize=True, add_generation_prompt=True, return_dict=True)</code> path — the processor loads images and video from path/URL directly, so no <code>qwen_vl_utils</code> and no <code>trust_remote_code</code> are needed. Use the transformers-native <code>-hf</code> checkpoints (<code>OpenGVLab/InternVL3-*-hf</code>); the plain (non-<code>-hf</code>) repos ship custom code and are intentionally not used here. Generation is greedy or sampled per config, then the prompt tokens are trimmed off before decoding:</p>
+<pre class="hl">
+<span class="n">msgs</span> <span class="o">=</span> <span class="p">[</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">role</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">user</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">content</span><span class="s2">&quot;</span><span class="p">:</span> <span class="p">[</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">type</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">image</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">image</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">image_path</span><span class="p">}</span><span class="p">,</span>
+                                     <span class="p">{</span><span class="s2">&quot;</span><span class="s2">type</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">video</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">video</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">clip_path</span><span class="p">}</span><span class="p">,</span>
+                                     <span class="p">{</span><span class="s2">&quot;</span><span class="s2">type</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">text</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">text</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">prompt</span><span class="p">}</span><span class="p">]</span><span class="p">}</span><span class="p">]</span>
+<span class="n">inputs</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">apply_chat_template</span><span class="p">(</span><span class="n">msgs</span><span class="p">,</span> <span class="n">tokenize</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">add_generation_prompt</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                                       <span class="n">return_dict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">return_tensors</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">pt</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">gen</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="o">*</span><span class="o">*</span><span class="n">inputs</span><span class="p">,</span> <span class="n">max_new_tokens</span><span class="o">=</span><span class="mi">2048</span><span class="p">,</span> <span class="n">do_sample</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">text</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">batch_decode</span><span class="p">(</span><span class="n">trimmed</span><span class="p">,</span> <span class="n">skip_special_tokens</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+</pre>
+<p>Each <code>model_id</code> is a lazy singleton in a registry (checkpoints coexist). On CUDA it loads in bfloat16 with flash-attn when the wheel is present (sdpa fallback otherwise); on CPU it loads in float32. Generation is single-flight per engine (one in-flight generate bounds peak VRAM under K eval workers — concurrent KV-cache growth can CUDA-OOM).</p>
+<hr>
+<h2 id="4-output"><span class="num">4.</span> Output</h2>
+<p>The <code>text</code> port is the decoded generation with the input prompt trimmed and any configured stop sequences cut. Empty on load failure or error (§8).</p>
+<hr>
+<h2 id="5-canvas-node"><span class="num">5.</span> Canvas Node</h2>
+<h3 id="vlm_internvl3__generate"><code>vlm_internvl3__generate</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>messages</code> (ANY), <code>prompt</code> (TEXT), <code>image_paths</code> (ANY), <code>video_paths</code> (ANY), <code>stop_sequences</code> (ANY)</td></tr>
+<tr><td>Outputs</td><td><code>text</code> (TEXT — the generation; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (text, blank = <code>$INTERNVL3_MODEL_ID</code> or the 1B-hf default), <code>max_new_tokens</code>, <code>temperature</code> (0 = greedy), <code>top_p</code>, <code>repetition_penalty</code></td></tr>
+<tr><td>Backend call</td><td><code>apply_chat_template</code> → <code>model.generate(...)</code> under a per-engine lock → trim prompt → <code>batch_decode</code></td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (K callers coalesce through one hosted copy; no per-call state); <code>server_python = conda_env_python("ac-fm", "INTERNVL3_PYTHON")</code>. InternVL3 runs in the <strong>shared <code>ac-fm</code> env</strong> — the transformers InternVL stack (Python 3.11 + torch 2.8.0+cu126 + transformers 5.13.0) is native there, loaded via <code>AutoModelForImageTextToText</code> + <code>AutoProcessor</code>. Weights are HF-downloaded and load lazily on the first generate. Point <code>model_id</code> (or <code>$INTERNVL3_MODEL_ID</code>) at a 2B / 8B / 14B-hf checkpoint on a bigger GPU. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/vlm_internvl3/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>INTERNVL3_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>INTERNVL3_MODEL_ID</code></td><td><code>OpenGVLab/InternVL3-1B-hf</code></td><td>Default HF model id when the node config is blank</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm), and any generation exception is caught; both yield <code>""</code> on the <code>text</code> port with a <code>degraded</code>/<code>error</code> self-log. An empty string is a clean "no answer this step" signal; consumers keep their own fallback and never receive a fabricated reply.</p>
+<p class="verified">Verified 2026-07-08: <code>OpenGVLab/InternVL3-1B-hf</code> loads as <code>InternVLForConditionalGeneration</code> / <code>InternVLProcessor</code>; an in-process <code>forward()</code> on CPU generated text over a real image (answered a one-word query).</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-primitive">1. One primitive: multimodal generate</a>
+      <a class="toc-h2" href="#2-inputs">2. Messages, media paths, stops</a>
+      <a class="toc-h2" href="#3-generate">3. Model &amp; generation</a>
+      <a class="toc-h2" href="#4-output">4. Output</a>
+      <a class="toc-h2" href="#5-canvas-node">5. Canvas Node</a>
+      <a class="toc-h3" href="#vlm_internvl3__generate">vlm_internvl3__generate</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
