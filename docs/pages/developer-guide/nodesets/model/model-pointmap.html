@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pointmap NodeSet — AgentCanvas</title>
+<meta name="description" content="The Pointmap NodeSet ( PointmapNodeSet , workspace/nodesets/model/model_pointmap.py ) wraps Sapiens single-image pointmap estimation via transformers Sapiens2ForPointmapEstimation : one RGB frame in,…">
+<meta property="og:title" content="Pointmap NodeSet — AgentCanvas">
+<meta property="og:description" content="The Pointmap NodeSet ( PointmapNodeSet , workspace/nodesets/model/model_pointmap.py ) wraps Sapiens single-image pointmap estimation via transformers Sapiens2ForPointmapEstimation : one RGB frame in,…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pointmap.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-pointmap.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Pointmap NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>Pointmap NodeSet</h1>
+</header>
+
+<p>The <strong>Pointmap NodeSet</strong> (<code>PointmapNodeSet</code>, <code>workspace/nodesets/model/model_pointmap.py</code>) wraps <a href="https://about.meta.com/realitylabs/codecavatars/sapiens/">Sapiens</a> single-image pointmap estimation via <code>transformers</code> <code>Sapiens2ForPointmapEstimation</code>: one RGB frame in, a dense per-pixel <strong>3D (X, Y, Z) coordinate</strong> map out. It is the monocular counterpart to <a href="model-vggt.html">VGGT</a>'s multi-view pointmap — where VGGT fuses several views into one 3D field, this lifts a <em>single</em> image into 3D geometry directly, no intrinsics and no second view. Obstacle geometry, free-space extent, "how far is that wall", and back-projecting a 2D detection into a 3D point all want this.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>transformers</code> <code>Sapiens2ForPointmapEstimation</code> + <code>AutoImageProcessor</code> · default: <code>facebook/sapiens2-pointmap-0.4b</code> (ungated)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_pointmap__estimate_pointmap</code></td>
+<td>Per-image 3D pointmap for a list of same-resolution frames → <code>pointmap</code> (JSON envelope of an <code>(N, H, W, 3)</code> XYZ map + per-image scales).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-primitive"><span class="num">1.</span> One primitive: RGB → 3D pointmap</h2>
+<p>The tool takes a list of same-resolution images and returns, per image, a per-pixel <code>(X, Y, Z)</code> coordinate in canonical camera space. It is the single-view sibling of <a href="model-normal.html">Surface Normals</a> and <a href="model-depth-anything.html">Depth Anything</a> — same input contract, same envelope convention — so a monocular geometry trio (depth · normals · pointmap) composes as drop-in Sapiens/DINO nodes. In an agent loop <code>N</code> is typically 1 (per-frame geometry).</p>
+<hr>
+<h2 id="2-images-in"><span class="num">2.</span> Images in — uniform resolution</h2>
+<p>The <code>images</code> port accepts a list of <code>{rgb_base64}</code> dicts (or raw base64 strings). All images in one call must share resolution — the envelope is a single <code>(N, H, W, 3)</code> buffer, so mixed sizes degrade to empty with a self-log (split into uniform batches). A malformed frame degrades the whole call rather than guessing.</p>
+<hr>
+<h2 id="3-weights"><span class="num">3.</span> Model &amp; post-processing</h2>
+<p>The engine loads <code>Sapiens2ForPointmapEstimation</code> + <code>AutoImageProcessor</code> for the configured <code>model_id</code>. A dedicated processor post-process crops the preprocessing padding and resizes each prediction back to its original <code>(H, W)</code>, returning one <code>{"pointmap": (3, H, W)}</code> per image in <strong>canonical camera space</strong>; a per-image <code>scale</code> factor is carried alongside rather than silently applied:</p>
+<pre class="hl">
+<span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">pixel_values</span><span class="o">=</span><span class="n">pixel_values</span><span class="p">)</span>
+<span class="c1"># dedicated post-process: crop preprocessing padding, resize back to (H, W)</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">post_process_pointmap_estimation</span><span class="p">(</span><span class="n">outputs</span><span class="p">,</span> <span class="n">target_sizes</span><span class="o">=</span><span class="p">[</span><span class="p">(</span><span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">)</span><span class="p">]</span> <span class="o">*</span> <span class="n">N</span><span class="p">)</span>
+<span class="n">pts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="p">[</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">pointmap</span><span class="s2">&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">permute</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span><span class="p">]</span><span class="p">)</span>  <span class="c1"># (N, H, W, 3) canonical</span>
+<span class="n">scales</span> <span class="o">=</span> <span class="n">outputs</span><span class="o">.</span><span class="n">scales</span>                          <span class="c1"># one scalar per image; XYZ / scale = metric</span>
+</pre>
+<p>Each <code>model_id</code> is a lazy singleton in a registry, frozen and moved to the device once; inference is single-flight per engine.</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Pointmap envelope</h2>
+<p>The output is a TEXT JSON envelope — the pointmap as a raw C-contiguous float32 buffer, base64-encoded (byte-exact across the server-mode HTTP boundary), plus one scale per image:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;buffer&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;facebook/sapiens2-pointmap-0.4b&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;scales&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0.247</span><span class="p">]</span><span class="p">}</span>
+</pre>
+<p><code>pointmap[n, y, x]</code> is an <code>(X, Y, Z)</code> coordinate in canonical camera space, at the <strong>original input resolution</strong>. Divide the XYZ by <code>scales[n]</code> to convert to metric coordinates — the raw prediction is scale-canonical, so the scale factor travels with the buffer rather than being baked in.</p>
+<hr>
+<h2 id="5-canvas-node"><span class="num">5.</span> Canvas Node</h2>
+<h3 id="model_pointmap__estimate_pointmap"><code>model_pointmap__estimate_pointmap</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings, uniform size)</td></tr>
+<tr><td>Outputs</td><td><code>pointmap</code> (TEXT — the §4 envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (text, default <code>facebook/sapiens2-pointmap-0.4b</code>)</td></tr>
+<tr><td>Backend call</td><td>processor → <code>model(...)</code> under <code>no_grad</code> → <code>post_process_pointmap_estimation</code> → <code>(N, H, W, 3)</code> + scales</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (a stateless pointmap estimator — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "POINTMAP_PYTHON")</code>. Pointmap estimation runs in the <strong>shared <code>ac-fm</code> env</strong> — <code>Sapiens2ForPointmapEstimation</code> is native to the transformers stack there. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_pointmap/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>POINTMAP_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>POINTMAP_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, a missing/malformed frame, or mixed input resolutions yields <code>""</code> on the node's output. An empty envelope is a clean "no pointmap this step" signal; consumers keep their own fallback and never receive a fabricated 3D map.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-primitive">1. One primitive: RGB → 3D pointmap</a>
+      <a class="toc-h2" href="#2-images-in">2. Images in — uniform resolution</a>
+      <a class="toc-h2" href="#3-weights">3. Model &amp; post-processing</a>
+      <a class="toc-h2" href="#4-envelope">4. Pointmap envelope</a>
+      <a class="toc-h2" href="#5-canvas-node">5. Canvas Node</a>
+      <a class="toc-h3" href="#model_pointmap__estimate_pointmap">model_pointmap__estimate_pointmap</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
