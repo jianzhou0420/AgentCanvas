@@ -27,10 +27,17 @@ nodes (Tier-2) that use pyslam's standalone classes as pure functions.
 
 Goal (2026-07-08): expose pySLAM's *whole* capability surface as first-class
 nodes — this is AgentCanvas supporting pySLAM-the-model, not a curated subset for
-one downstream graph. Depth, semantics and multi-view reconstruction are wired;
-still to come: loop-closure introspection — see the design note. Multi-view
-weights mount in from data/models/pyslam/ (external-weights decision 2026-07-08),
-keeping the image lean (code + compiled curope only).
+one downstream graph. The eleven nodes above ARE that whole callable surface:
+session verbs + stateless perception + neural depth / semantics / multi-view.
+A ``get_loop_closures`` node was considered and **deliberately dropped**
+(2026-07-08): loop closure is not a callable capability but an internal mechanism
+of the running SLAM session, and its *effect* (drift correction) is already
+exposed through the corrected ``get_trajectory`` / ``get_map`` output. Reading the
+loop events themselves means instrumenting pySLAM's loop-closing thread (transient
+state, no clean getter), so it is left unbuilt until a concrete consumer needs it
+(e.g. SLAM-accuracy attribution). Multi-view weights mount in from
+data/models/pyslam/ (external-weights decision 2026-07-08), keeping the image lean
+(code + compiled curope only).
 
 Classification (design §1): pySLAM has no MDP / episode selection / actions —
 it is "feed frames in, map accumulates, read products out", so it lives in
