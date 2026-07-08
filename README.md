@@ -371,7 +371,7 @@ Two kinds of contribution, both welcome — see [CONTRIBUTING.md](CONTRIBUTING.m
 - **Content — nodesets & graphs.** Write a nodeset that wraps a tool / simulator / model (e.g. real-time 3D Gaussian Splatting, a voxel-based SLAM system) or encodes a method (e.g. NavGPT, MapGPT), or compose a graph that wires existing nodesets into a complete agent. Open a PR into `workspace/`; review is light.
 - **Core — UI, backend, framework.** Bug fixes, new features, even refactors are welcome. The one ask: if a change is big enough to cost real time, open a [Discussion](https://github.com/jianzhou0420/AgentCanvas/discussions) first so we can align before you build.
 
-Every nodeset and graph is credited to its author/maintainer on the board below — with a citation link if it has an associated paper — so contributing here doesn't cost you authorship. The **AgentCanvas framework and all first-release components** are by **AC-Team**. The board is names-only by design: the **canonical inventory** with per-graph verification detail lives on the [doc-site Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html) and the [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) support-status pages.
+Every nodeset and graph is credited to its author/maintainer on the board below — with a citation link if it has an associated paper — so contributing here doesn't cost you authorship. The **AgentCanvas framework** and the first-release **methods, graphs, and environment integrations** are by **AC-Team**. The **foundation models and policies** below are **third-party** — AgentCanvas ships only a thin server-mode wrapper so each plugs into the graph (for human users and the AAS optimizer alike); credit for every model belongs to its original authors — the foundation models are pulled into a **separate table below**, split by source (transformers-native vs. `torch.hub` / `torchvision` / vendored upstream repo), with full per-model attribution on the Credits page. The board is names-only by design: the **canonical inventory** with per-graph verification detail lives on the [doc-site Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html) and the [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) support-status pages.
 
 ### Credits
 
@@ -436,41 +436,64 @@ Every nodeset and graph is credited to its author/maintainer on the board below 
               <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-adapters.html">R2R-CE policy registry (12 variants)</a> 🚧</li>
             </ul>
           </li>
-          <li><b>Perception &amp; foundation models</b>
+          <li><b>Mapping</b> <sub><i>(AgentCanvas-authored)</i></sub>
             <ul>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam.html">SAM</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-blip2.html">BLIP-2</a> + Faster R-CNN ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-instructblip.html">InstructBLIP</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-ram.html">RAM</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-grounding-dino.html">Grounding DINO</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-spatialbot.html">SpatialBot</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen2-5-vl.html">Qwen2.5-VL</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-detany3d.html">DetAny3D</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depth-anything.html">Depth Anything V2</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-clip.html">CLIP</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-dinov2.html">DINOv2 / DINOv3</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt.html">VGGT (feed-forward 3D)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-matching.html">SuperPoint + LightGlue</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-cotracker.html">CoTracker</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-opticalflow.html">Optical Flow (RAFT)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-normal.html">Surface Normals (Sapiens)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-segmentation.html">Segmentation (Mask2Former)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depthpro.html">DepthPro (metric depth)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pointmap.html">Pointmap (Sapiens 3D)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam-video.html">SAM Video (tracking)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-florence2.html">Florence-2 (unified vision)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen3-vl.html">Qwen3-VL (image + video)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-siglip2.html">SigLIP 2 (sigmoid embeddings)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-owlv2.html">OWLv2 (open-vocab detection)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-aimv2.html">AIMv2 (features)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-internvl3.html">InternVL3 (image + video)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-gemma3.html">Gemma 3 (image)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-smolvlm2.html">SmolVLM2 (image + video)</a> ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-prismatic.html">Prismatic VLM</a> ✅</li>
               <li>TSDF mapping ✅</li>
               <li>Semantic scene graph ✅</li>
             </ul>
           </li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+**Foundation models** — third-party models wrapped behind **one thin nodeset shell** (lazy load · single-flight GPU · base64-npy dataflow envelope) so each is a uniform building block for both **human users** and the **AAS optimizer**. *We do not author these — we ship only the shell; credit belongs to the original authors* (full per-model attribution + papers on the [Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)). Split by source:
+
+<table>
+  <thead align="center">
+    <tr>
+      <th>transformers-native <sub>(thin wrapper over <code>AutoModel</code> / <code>pipeline</code>)</sub></th>
+      <th>Other sources <sub>(<code>torch.hub</code> / <code>torchvision</code> / vendored upstream repo)</sub></th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-clip.html">CLIP</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-siglip2.html">SigLIP 2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-aimv2.html">AIMv2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-owlv2.html">OWLv2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam.html">SAM</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam-video.html">SAM Video</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-segmentation.html">Segmentation (Mask2Former)</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-florence2.html">Florence-2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depth-anything.html">Depth Anything V2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depthpro.html">DepthPro</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-normal.html">Surface Normals (Sapiens)</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pointmap.html">Pointmap (Sapiens 3D)</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-matching.html">SuperPoint + LightGlue</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-blip2.html">BLIP-2</a> + Faster R-CNN</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-instructblip.html">InstructBLIP</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen2-5-vl.html">Qwen2.5-VL</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen3-vl.html">Qwen3-VL</a> <sub>(image + video)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-internvl3.html">InternVL3</a> <sub>(image + video)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-gemma3.html">Gemma 3</a> <sub>(gated)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-smolvlm2.html">SmolVLM2</a> <sub>(image + video)</sub></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-dinov2.html">DINOv2 / DINOv3</a> <sub>(torch.hub + transformers hf)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-grounding-dino.html">Grounding DINO</a> <sub>(groundingdino-py + transformers hf_tiny)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-opticalflow.html">Optical Flow (RAFT)</a> <sub>(torchvision)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt.html">VGGT</a> <sub>(upstream repo)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-cotracker.html">CoTracker</a> <sub>(upstream repo)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-detany3d.html">DetAny3D</a> <sub>(vendored)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-ram.html">RAM / RAM++</a> <sub>(recognize-anything)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-spatialbot.html">SpatialBot</a> <sub>(Bunny remote code)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-prismatic.html">Prismatic VLM</a> <sub>(upstream repo)</sub></li>
         </ul>
       </td>
     </tr>
