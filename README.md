@@ -43,6 +43,7 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 ## What's NEW!
 
+- [2026/07] 🔥 **Broader foundation-model support** — 29 foundation models are now wired as thin server-mode shells (transformers-native + other sources), available to both hand-built graphs and the AAS optimizer: recent VLMs (Qwen3-VL, InternVL3, Gemma 3, SmolVLM2), open-vocabulary perception (SigLIP2, OWLv2, Grounding DINO), and geometry / depth backbones. See the [foundation-model coverage](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/index.html) and per-model [Credits](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html).
 - [2026/07] 🔥 **Edit node source from the canvas** — the new Source tab shows the selected node's scoped slice of its nodeset source (globals, referenced functions, the class itself) and splices edits back with syntax-checked hot-reload. PR: [#5](https://github.com/jianzhou0420/AgentCanvas/pull/5).
 - [2026/07] 🎉 **First public release** — AgentCanvas is open-sourced as a research preview (pre-1.0). Docs: [jianzhou0420.github.io/AgentCanvas](https://jianzhou0420.github.io/AgentCanvas/).
 
