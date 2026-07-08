@@ -13,15 +13,24 @@ nodes (Tier-2) that use pyslam's standalone classes as pure functions.
     model_pyslam__track            rgb + depth → pose + tracking_state (the workhorse)
     model_pyslam__get_trajectory   trigger → accumulated poses
     model_pyslam__get_map          trigger → sparse-map handle (path, not inline)
+    model_pyslam__get_dense_map    trigger → dense volumetric map handle (PYSLAM_VOLUMETRIC=1)
 
     Tier-2 — stateless perception (no session; share the container):
     model_pyslam__extract_features rgb → keypoints + descriptors
     model_pyslam__match_features   descriptors_a + descriptors_b → matched idx pairs
     model_pyslam__eval_trajectory  poses_est + poses_gt → ATE / RPE (evo)
 
-Deferred (need weights / GPU / Open3D, or overlap an existing FM nodeset):
-depth prediction (→ ``model_depth_anything``), semantic segmentation, multi-view
-reconstruction (DUSt3R/MASt3R), dense/volumetric mapping — see the design note.
+    Full-surface neural nodes (stateless; GPU — the :cuda image ships a cu128 torch):
+    model_pyslam__predict_depth        rgb [+ image_right] → dense metric depth map
+    model_pyslam__segment_semantic     rgb → per-pixel semantic (+ instance) map
+    model_pyslam__reconstruct_multiview [rgb, …] → fused 3-D scene (DUSt3R/MASt3R/VGGT)
+
+Goal (2026-07-08): expose pySLAM's *whole* capability surface as first-class
+nodes — this is AgentCanvas supporting pySLAM-the-model, not a curated subset for
+one downstream graph. Depth, semantics and multi-view reconstruction are wired;
+still to come: loop-closure introspection — see the design note. Multi-view
+weights mount in from data/models/pyslam/ (external-weights decision 2026-07-08),
+keeping the image lean (code + compiled curope only).
 
 Classification (design §1): pySLAM has no MDP / episode selection / actions —
 it is "feed frames in, map accumulates, read products out", so it lives in
@@ -53,6 +62,9 @@ Configure via environment variables (defaults = pure-CPU, no weights):
     PYSLAM_CAM_W / PYSLAM_CAM_H / PYSLAM_CAM_HFOV  — default camera intrinsics
     PYSLAM_IMAGE    — override the container image (default agentcanvas/pyslam:cpu-fixed)
     PYSLAM_ARTIFACT_DIR — host dir where get_map writes handles (default outputs/pyslam_maps)
+    PYSLAM_VOLUMETRIC = 0 | 1                  enable Slam's dense volumetric integrator
+    PYSLAM_VOLUMETRIC_TYPE = VOXEL_GRID | TSDF | VOXEL_SEMANTIC_GRID   (get_dense_map output)
+    PYSLAM_ENV      = INDOOR | OUTDOOR         dense depth-truncation regime (default INDOOR)
 
 Status: the backend pipeline (``_backend.py``) is validated end-to-end on a TUM
 RGB-D sequence through the real container (both former seams — camera marshalling,
@@ -421,6 +433,56 @@ class PySlamGetMapTool(BaseCanvasNode):
             return {"map_handle": f"ERROR: {exc}", "num_points": 0, "num_keyframes": 0}
 
 
+class PySlamGetDenseMapTool(BaseCanvasNode):
+    """Export the dense volumetric map (TSDF mesh / fused voxel cloud) to a handle.
+
+    Unlike Get Map (sparse landmarks), this is Slam's own volumetric integrator
+    output — a fused surface. It requires the session to be built with volumetric
+    integration ON (set ``PYSLAM_VOLUMETRIC=1`` in the nodeset env); otherwise it
+    returns an empty handle. Heavy geometry never rides the wire — only the path.
+    """
+
+    node_type = "model_pyslam__get_dense_map"
+    display_name = "pySLAM: Get Dense Map"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="indigo")
+    description = (
+        "Export the dense volumetric map — a fused voxel point cloud or TSDF mesh "
+        "built by pySLAM's volumetric integrator over the tracked frames — to a "
+        "file and return its path. Requires volumetric integration enabled "
+        "(PYSLAM_VOLUMETRIC=1); returns an empty handle otherwise."
+    )
+    category = "tool"
+    icon = "Box"
+    input_ports = [PortDef("trigger", "ANY", "Fire to export the dense map", optional=True)]
+    output_ports = [
+        PortDef("dense_handle", "TEXT", "Path to the exported dense map (.npz), or empty"),
+        PortDef("num_points", "ANY", "Number of fused voxel points"),
+        PortDef("num_vertices", "ANY", "Number of mesh vertices (TSDF)"),
+    ]
+
+    def __init__(self, nodeset: ModelPySlamNodeSet | None = None) -> None:
+        super().__init__()
+        self._nodeset = nodeset
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        ns = self._nodeset or _NODESET
+        if ns is None or ns._session is None or not ns._session.is_built:
+            return {"dense_handle": "", "num_points": 0, "num_vertices": 0}
+        try:
+            result = ns._session.get_dense_map()
+            log.info("pyslam get_dense_map: type=%s points=%s verts=%s tris=%s",
+                     result.get("type"), result["num_points"],
+                     result["num_vertices"], result["num_triangles"])
+            return {
+                "dense_handle": result["dense_handle"],
+                "num_points": result["num_points"],
+                "num_vertices": result["num_vertices"],
+            }
+        except Exception as exc:
+            log.exception("pyslam get_dense_map failed")
+            return {"dense_handle": f"ERROR: {exc}", "num_points": 0, "num_vertices": 0}
+
+
 # ── Tier-2 tool nodes (stateless perception) ────────────────────────────────
 #
 # These do not touch the SLAM session's map — they are pure functions over
@@ -656,6 +718,284 @@ class PySlamEvalTrajectoryTool(BaseCanvasNode):
                     "metrics": json.dumps({"error": str(exc)})}
 
 
+# ── Full-surface neural nodes ───────────────────────────────────────────────
+#
+# Beyond the SLAM session + feature/eval tools, pyslam bundles a bank of dense
+# perception backends (depth / semantics / multi-view reconstruction / dense
+# mapping). Exposing pyslam's *whole* surface — not a curated subset — means these
+# get first-class nodes too. Like Tier-2 they are stateless (no Slam session), but
+# they run neural nets on the GPU (the cpu-fixed image ships a cu128 torch), so the
+# first call may download a checkpoint. This is the first: dense depth prediction.
+
+
+class PySlamPredictDepthTool(BaseCanvasNode):
+    """Predict a dense depth map from an image (stateless — pyslam's estimator bank).
+
+    Exposes pyslam ``depth_estimation.depth_estimator_factory``: mono estimators
+    (Depth-Anything V2 / Depth Pro / MASt3R) need only ``rgb`` and run on the GPU;
+    stereo estimators (SGBM / RAFT-Stereo / CREStereo) also consume ``image_right``.
+    Learned models auto-download a checkpoint on first use; SGBM is pure OpenCV/CPU.
+    """
+
+    node_type = "model_pyslam__predict_depth"
+    display_name = "pySLAM: Predict Depth"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="indigo",
+        config_fields=[
+            ConfigField(
+                "estimator", "select", label="Estimator", default="DEPTH_ANYTHING_V2",
+                options=[
+                    {"value": "DEPTH_ANYTHING_V2", "label": "Depth-Anything V2 (mono, GPU)"},
+                    {"value": "DEPTH_PRO", "label": "Depth Pro (mono, GPU)"},
+                    {"value": "DEPTH_MAST3R", "label": "MASt3R (mono, GPU)"},
+                    {"value": "DEPTH_SGBM", "label": "SGBM (stereo, CPU, needs right image)"},
+                    {"value": "DEPTH_RAFT_STEREO", "label": "RAFT-Stereo (stereo, GPU)"},
+                    {"value": "DEPTH_CRESTEREO_PYTORCH", "label": "CREStereo (stereo, GPU)"},
+                ],
+            ),
+            ConfigField(
+                "environment", "select", label="Scene type", default="INDOOR",
+                options=[
+                    {"value": "INDOOR", "label": "Indoor"},
+                    {"value": "OUTDOOR", "label": "Outdoor"},
+                ],
+            ),
+            ConfigField("min_depth", "text", label="Min depth (m)", default="0.0"),
+            ConfigField("max_depth", "text", label="Max depth (m)", default="10.0"),
+        ],
+    )
+    description = (
+        "Predict a dense depth map from a single RGB image using pySLAM's depth "
+        "estimator bank. Mono estimators (Depth-Anything V2, Depth Pro, MASt3R) run "
+        "on the GPU from RGB alone; stereo estimators (SGBM, RAFT-Stereo, CREStereo) "
+        "also take a right image. Returns an HxW metric depth map (metres)."
+    )
+    category = "tool"
+    icon = "Layers"
+    input_ports = [
+        PortDef("rgb", "IMAGE", "RGB frame (np.ndarray HxWx3 uint8, or .npy path)"),
+        PortDef("image_right", "IMAGE",
+                "Right RGB frame — stereo estimators only (SGBM / RAFT / CREStereo)",
+                optional=True),
+    ]
+    output_ports = [
+        PortDef("depth", "DEPTH", "Predicted dense depth map (HxW float32, metres)"),
+        PortDef("depth_range", "ANY", "[min, max] of the predicted depth (metres)"),
+        PortDef("estimator", "TEXT", "Estimator that produced the depth"),
+    ]
+
+    def __init__(self, nodeset: ModelPySlamNodeSet | None = None) -> None:
+        super().__init__()
+        self._nodeset = nodeset
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        ns = self._nodeset or _NODESET
+        if ns is None or ns._session is None:
+            return {"depth": None, "depth_range": None, "estimator": "ERROR: not initialized"}
+        try:
+            rgb = _decode_image_input(inputs["rgb"])
+            right = inputs.get("image_right")
+            right = _decode_image_input(right) if right is not None else None
+            out = ns._session.predict_depth(
+                rgb, right,
+                estimator=self.config.get("estimator") or "DEPTH_ANYTHING_V2",
+                min_depth=float(self.config.get("min_depth") or 0.0),
+                max_depth=float(self.config.get("max_depth") or 10.0),
+                environment=self.config.get("environment") or "INDOOR",
+            )
+            log.info("pyslam predict_depth: est=%s shape=%s range=[%.3f,%.3f]",
+                     out["estimator"], out["shape"], out["min"], out["max"])
+            return {
+                "depth": out["depth"],
+                "depth_range": [out["min"], out["max"]],
+                "estimator": out["estimator"],
+            }
+        except Exception as exc:
+            log.exception("pyslam predict_depth failed")
+            return {"depth": None, "depth_range": None, "estimator": f"ERROR: {exc}"}
+
+
+class PySlamSegmentSemanticTool(BaseCanvasNode):
+    """Semantic-segment one image (stateless — pyslam's segmentation bank).
+
+    Exposes pyslam ``semantics.semantic_segmentation_factory``: DeepLabV3 /
+    SegFormer / CLIP / Detic / YOLO / … run on the GPU, RGB in, a per-pixel label
+    map (or probability / feature volume) out, plus an optional instance map.
+    Learned models auto-download a checkpoint on first use.
+    """
+
+    node_type = "model_pyslam__segment_semantic"
+    display_name = "pySLAM: Segment Semantic"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="indigo",
+        config_fields=[
+            ConfigField(
+                "model", "select", label="Model", default="DEEPLABV3",
+                options=[
+                    {"value": "DEEPLABV3", "label": "DeepLabV3 (torchvision)"},
+                    {"value": "SEGFORMER", "label": "SegFormer"},
+                    {"value": "CLIP", "label": "CLIP (open-vocab)"},
+                    {"value": "DETIC", "label": "Detic (open-vocab, instances)"},
+                    {"value": "YOLO", "label": "YOLO (instances)"},
+                    {"value": "EOV_SEG", "label": "EOV-Seg"},
+                ],
+            ),
+            ConfigField(
+                "feature_type", "select", label="Output", default="LABEL",
+                options=[
+                    {"value": "LABEL", "label": "Label map (HxW ints)"},
+                    {"value": "PROBABILITY_VECTOR", "label": "Probabilities (HxWxC)"},
+                    {"value": "FEATURE_VECTOR", "label": "Feature volume (HxWxD)"},
+                ],
+            ),
+            ConfigField(
+                "dataset", "select", label="Label set", default="CITYSCAPES",
+                options=[
+                    {"value": "CITYSCAPES", "label": "Cityscapes"},
+                    {"value": "ADE20K", "label": "ADE20K (indoor+outdoor)"},
+                    {"value": "VOC", "label": "Pascal VOC"},
+                    {"value": "NYU40", "label": "NYU40 (indoor)"},
+                ],
+            ),
+        ],
+    )
+    description = (
+        "Semantic-segment a single RGB image using pySLAM's segmentation bank "
+        "(DeepLabV3 / SegFormer / CLIP / Detic / YOLO). Returns a per-pixel "
+        "semantic map (label ints, or a probability/feature volume) and an "
+        "optional instance map. Runs on the GPU."
+    )
+    category = "tool"
+    icon = "Shapes"
+    input_ports = [PortDef("rgb", "IMAGE", "RGB frame (np.ndarray HxWx3 uint8, or .npy path)")]
+    output_ports = [
+        PortDef("semantics", "ANY",
+                "Per-pixel semantic map: HxW int labels, or HxWxC/HxWxD volume"),
+        PortDef("instances", "ANY", "Per-pixel instance map (HxW), or null if not produced"),
+        PortDef("num_classes", "ANY", "Number of classes in the label set"),
+    ]
+
+    def __init__(self, nodeset: ModelPySlamNodeSet | None = None) -> None:
+        super().__init__()
+        self._nodeset = nodeset
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        ns = self._nodeset or _NODESET
+        if ns is None or ns._session is None:
+            return {"semantics": None, "instances": None, "num_classes": 0}
+        try:
+            rgb = _decode_image_input(inputs["rgb"])
+            out = ns._session.segment_semantic(
+                rgb,
+                model=self.config.get("model") or "DEEPLABV3",
+                feature_type=self.config.get("feature_type") or "LABEL",
+                dataset=self.config.get("dataset") or "CITYSCAPES",
+            )
+            log.info("pyslam segment_semantic: model=%s shape=%s classes=%s instances=%s",
+                     out["model"], out["shape"], out["num_classes"],
+                     "Y" if out["instances"] is not None else "-")
+            return {
+                "semantics": out["semantics"],
+                "instances": out["instances"],
+                "num_classes": out["num_classes"],
+            }
+        except Exception as exc:
+            log.exception("pyslam segment_semantic failed")
+            return {"semantics": None, "instances": None, "num_classes": f"ERROR: {exc}"}
+
+
+class PySlamReconstructMultiviewTool(BaseCanvasNode):
+    """Feed-forward multi-view 3-D reconstruction from N images (stateless — GPU).
+
+    Exposes pyslam ``scene_from_views.scene_from_views_factory`` — the DUSt3R /
+    MASt3R / VGGT / MV-DUSt3R family. Give a list of ≥2 overlapping RGB views;
+    returns a fused global point cloud (handle), per-view camera-to-world poses,
+    and (optionally) a mesh. MASt3R / MV-DUSt3R load weights from the mounted
+    data/models/pyslam/ folder; the HF-runtime backends download on first use.
+    """
+
+    node_type = "model_pyslam__reconstruct_multiview"
+    display_name = "pySLAM: Reconstruct Multi-view"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="indigo",
+        config_fields=[
+            ConfigField(
+                "backend", "select", label="Backend", default="MAST3R",
+                options=[
+                    {"value": "MAST3R", "label": "MASt3R (metric, mounted weights)"},
+                    {"value": "DUST3R", "label": "DUSt3R (HF weights)"},
+                    # MVDUST3R: known gap — pyslam's bundled mvdust3r has a version
+                    # drift against its own dust3r copy (import error on
+                    # normalize_pointclouds); the other backends cover multi-view.
+                    {"value": "MVDUST3R", "label": "MV-DUSt3R (known gap — unsupported)"},
+                    {"value": "VGGT", "label": "VGGT (HF weights)"},
+                    {"value": "VGGT_ROBUST", "label": "VGGT-Robust (HF weights)"},
+                    {"value": "FAST3R", "label": "Fast3r (HF weights)"},
+                    {"value": "DEPTH_ANYTHING_V3", "label": "Depth-Anything V3 (HF weights)"},
+                ],
+            ),
+            ConfigField(
+                "as_pointcloud", "select", label="Output", default="true",
+                options=[
+                    {"value": "true", "label": "Point cloud"},
+                    {"value": "false", "label": "Mesh (+ point cloud)"},
+                ],
+            ),
+        ],
+    )
+    description = (
+        "Reconstruct a fused 3-D scene from a list of overlapping RGB images using "
+        "pySLAM's feed-forward multi-view stack (MASt3R / DUSt3R / VGGT / MV-DUSt3R). "
+        "Returns a global point-cloud handle plus per-view camera-to-world poses. "
+        "Runs on the GPU; the first call may load or download the model weights."
+    )
+    category = "tool"
+    icon = "Box"
+    input_ports = [
+        PortDef("images", "ANY",
+                "List of RGB frames (np.ndarray HxWx3 uint8, or .npy/image paths) — "
+                "at least 2 overlapping views"),
+    ]
+    output_ports = [
+        PortDef("scene_handle", "TEXT", "Path to the fused scene (.npz: points, colors, mesh)"),
+        PortDef("camera_poses", "ANY", "Per-view 4x4 camera-to-world poses"),
+        PortDef("num_points", "ANY", "Number of points in the fused cloud"),
+        PortDef("num_views", "ANY", "Number of input views reconstructed"),
+    ]
+
+    def __init__(self, nodeset: ModelPySlamNodeSet | None = None) -> None:
+        super().__init__()
+        self._nodeset = nodeset
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        ns = self._nodeset or _NODESET
+        if ns is None or ns._session is None:
+            return {"scene_handle": "ERROR: not initialized", "camera_poses": None,
+                    "num_points": 0, "num_views": 0}
+        try:
+            raw = inputs["images"]
+            if not isinstance(raw, (list, tuple)):
+                raise TypeError("reconstruct_multiview: 'images' must be a list of ≥2 views")
+            images = [_decode_image_input(im) for im in raw]
+            out = ns._session.reconstruct_multiview(
+                images,
+                backend=self.config.get("backend") or "MAST3R",
+                as_pointcloud=str(self.config.get("as_pointcloud") or "true").lower() == "true",
+            )
+            log.info("pyslam reconstruct_multiview: backend=%s views=%s points=%s verts=%s",
+                     out["backend"], out["num_views"], out["num_points"], out["num_vertices"])
+            return {
+                "scene_handle": out["scene_handle"],
+                "camera_poses": out["camera_poses"],
+                "num_points": out["num_points"],
+                "num_views": out["num_views"],
+            }
+        except Exception as exc:
+            log.exception("pyslam reconstruct_multiview failed")
+            return {"scene_handle": f"ERROR: {exc}", "camera_poses": None,
+                    "num_points": 0, "num_views": 0}
+
+
 # ── NodeSet ────────────────────────────────────────────────────────────────
 
 
@@ -703,12 +1043,18 @@ class ModelPySlamNodeSet(BaseNodeSet):
             "cam_width": os.environ.get("PYSLAM_CAM_W"),
             "cam_height": os.environ.get("PYSLAM_CAM_H"),
             "cam_hfov": os.environ.get("PYSLAM_CAM_HFOV", "90"),
+            "volumetric": os.environ.get("PYSLAM_VOLUMETRIC", "0").lower() in ("1", "true", "yes"),
+            "volumetric_type": os.environ.get("PYSLAM_VOLUMETRIC_TYPE", "VOXEL_GRID"),
+            "environment": os.environ.get("PYSLAM_ENV", "INDOOR"),
         }
         self._session = PySlamContainerClient(
             sensor_type=self._config["sensor_type"],
             feature_preset=self._config["feature_preset"],
             loop_preset=self._config["loop_preset"],
             headless=True,
+            volumetric=self._config["volumetric"],
+            volumetric_type=self._config["volumetric_type"],
+            environment=self._config["environment"],
         )
         await asyncio.to_thread(self._session.start_container)
         global _NODESET
@@ -763,8 +1109,13 @@ class ModelPySlamNodeSet(BaseNodeSet):
             PySlamTrackTool(self),
             PySlamGetTrajectoryTool(self),
             PySlamGetMapTool(self),
+            PySlamGetDenseMapTool(self),
             # Tier-2: stateless perception (share the container, no Slam session)
             PySlamExtractFeaturesTool(self),
             PySlamMatchFeaturesTool(self),
             PySlamEvalTrajectoryTool(self),
+            # Full-surface neural nodes (GPU; first call may download a checkpoint)
+            PySlamPredictDepthTool(self),
+            PySlamSegmentSemanticTool(self),
+            PySlamReconstructMultiviewTool(self),
         ]

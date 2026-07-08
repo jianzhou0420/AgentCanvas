@@ -71,15 +71,15 @@
     <span class="sep">/</span>
     <span class="here">pySLAM</span>
   </div>
-  <div class="last-updated">2026-07-07</div>
+  <div class="last-updated">2026-07-08</div>
 </div>
   <header class="page-header guide">
   <h1>pySLAM NodeSet</h1>
 </header>
 
 <p>The <strong>pySLAM NodeSet</strong> (<code>ModelPySlamNodeSet</code>, <code>workspace/nodesets/model/model_pyslam/</code>) wraps <a href="https://github.com/luigifreda/pyslam">pySLAM</a> (Luigi Freda, GPL-3.0) as a <strong>streaming visual-SLAM session</strong>. Where <a href="model-vggt.html">VGGT</a> reconstructs geometry from N views in one feed-forward pass, pySLAM ingests an RGB-D stream <strong>one frame at a time</strong> and incrementally tracks the camera pose while accumulating a sparse 3-D map — classic feature SLAM (ORB features + DBoW3 loop closure, C++ core), a moving camera building a map as it goes. Feed it a policy's egocentric frames and it reconstructs the walked scene alongside the run.</p>
-<p>The nodeset has <strong>two tiers</strong>: the streaming session above (four nodes), plus three <strong>stateless perception</strong> nodes that use pySLAM's standalone classes as pure functions — feature extraction, feature matching, and <code>evo</code> trajectory evaluation (ATE / RPE). The Tier-2 nodes share the same container but never touch the map.</p>
-<p>env: <strong>container</strong> — <code>agentcanvas/pyslam:cpu-fixed</code> (rootless Docker, CPU-only), <em>not</em> a conda env · backend: GPL-3.0 pySLAM behind an HTTP bridge, never imported in the framework process · front-end: <code>ORB2</code> features + <code>DBOW3</code> loop closure, RGB-D by default</p>
+<p>The nodeset has <strong>eleven nodes in three groups</strong>: the streaming session above (five nodes — the four core verbs plus a dense volumetric map); three <strong>stateless perception</strong> nodes that use pySLAM's standalone classes as pure functions — feature extraction, feature matching, and <code>evo</code> trajectory evaluation (ATE / RPE); and three <strong>neural full-surface</strong> nodes — dense depth prediction, semantic segmentation, and feed-forward multi-view reconstruction (DUSt3R / MASt3R / VGGT). The last two groups share the same container but never touch the map. The aim is to expose pySLAM's <em>whole</em> capability surface — AgentCanvas supporting pySLAM-the-model, not a curated subset for one downstream graph.</p>
+<p>env: <strong>container</strong> — <code>agentcanvas/pyslam:cpu-fixed</code> for the SLAM / feature / depth / semantic path, <code>agentcanvas/pyslam:cuda</code> (adds compiled multi-view backends) for <code>reconstruct_multiview</code>, rootless Docker, <em>not</em> a conda env · backend: GPL-3.0 pySLAM behind an HTTP bridge, never imported in the framework process · front-end: <code>ORB2</code> features + <code>DBOW3</code> loop closure, RGB-D by default · GPU via rootless CDI, on by default</p>
 <table>
 <thead>
 <tr><th>Primitive</th><th>Purpose</th></tr>
@@ -89,10 +89,15 @@
 <tr><td><code>model_pyslam__track</code></td><td>Feed one RGB(-D) frame → <code>pose</code> (4×4 world-from-camera) + <code>tracking_state</code> + <code>num_map_points</code>. The map accumulates as a side effect.</td></tr>
 <tr><td><code>model_pyslam__get_trajectory</code></td><td>The accumulated camera trajectory — one 4×4 pose per successfully tracked frame, plus the total frame count.</td></tr>
 <tr><td><code>model_pyslam__get_map</code></td><td>Export the sparse map (3-D landmarks) to a host-side <code>.npz</code> <strong>handle</strong> — the path travels the wire, never the geometry.</td></tr>
+<tr><td><code>model_pyslam__get_dense_map</code></td><td>Export the <strong>dense</strong> volumetric map (fused voxel cloud / TSDF mesh) from pySLAM's volumetric integrator. Requires <code>PYSLAM_VOLUMETRIC=1</code>; empty handle otherwise.</td></tr>
 <tr><td colspan="2"><strong>Stateless perception</strong> — pure functions over pySLAM's standalone classes, no map state:</td></tr>
 <tr><td><code>model_pyslam__extract_features</code></td><td>RGB → keypoints (N×6) + descriptors (N×D). pySLAM's local-feature front-end as a standalone tool.</td></tr>
 <tr><td><code>model_pyslam__match_features</code></td><td>Two descriptor blocks → matched index pairs (Hamming / L2 auto from dtype).</td></tr>
 <tr><td><code>model_pyslam__eval_trajectory</code></td><td>Estimated vs ground-truth trajectory → <strong>ATE</strong> + <strong>RPE</strong> statistics (<code>evo</code>, Umeyama-aligned).</td></tr>
+<tr><td colspan="2"><strong>Neural full-surface</strong> — pySLAM's dense-perception bank on the GPU, stateless:</td></tr>
+<tr><td><code>model_pyslam__predict_depth</code></td><td>RGB (+ right image) → dense metric depth map. Depth-Anything V2 / Depth Pro / MASt3R (mono) or SGBM / RAFT-Stereo / CREStereo (stereo).</td></tr>
+<tr><td><code>model_pyslam__segment_semantic</code></td><td>RGB → per-pixel semantic (+ instance) map. DeepLabV3 / SegFormer / CLIP / Detic / YOLO.</td></tr>
+<tr><td><code>model_pyslam__reconstruct_multiview</code></td><td>N overlapping RGB views → fused 3-D scene handle + per-view camera poses. DUSt3R / MASt3R / VGGT family (<code>:cuda</code> image).</td></tr>
 </tbody>
 </table>
 <hr>
@@ -143,7 +148,7 @@
 <tr><th>Layer</th><th>File</th><th>Where</th><th>Role</th></tr>
 </thead>
 <tbody>
-<tr><td>Nodes + NodeSet</td><td><code>__init__.py</code></td><td>framework</td><td>Seven canvas nodes (four session verbs + three stateless perception); the nodeset owns the container lifecycle and holds the client as its session.</td></tr>
+<tr><td>Nodes + NodeSet</td><td><code>__init__.py</code></td><td>framework</td><td>Eleven canvas nodes (five session verbs + three stateless perception + three neural full-surface); the nodeset owns the container lifecycle and holds the client as its session.</td></tr>
 <tr><td>Client</td><td><code>_client.py</code></td><td>framework</td><td><code>PySlamContainerClient</code> — presents the exact surface of a <code>PySlamSession</code> but forwards every call over HTTP; <code>docker run</code>/<code>rm</code>; writes map handles host-side.</td></tr>
 <tr><td>Shim</td><td><code>_server.py</code></td><td>container</td><td>A small FastAPI app — the only place <code>import pyslam</code> is legal. Holds one session; exposes <code>/reset</code>, <code>/track</code>, <code>/get_map</code>, …</td></tr>
 <tr><td>Session</td><td><code>_backend.py</code></td><td>container</td><td><code>PySlamSession</code> — drives one pySLAM <code>Slam</code> pinned to a single worker thread (pySLAM's background threads have thread affinity).</td></tr>
@@ -240,7 +245,20 @@
 </pre>
 <p>The <code>.npz</code> holds a <code>points</code> array of shape <code>(N, 3)</code> — the sparse landmark cloud in world coordinates.</p>
 
-<p>The first four nodes are the streaming session; the next three are <strong>stateless perception</strong> — they reuse the container but hold no map state, so they never gate on the session being built.</p>
+<h3 id="model_pyslam__get_dense_map"><code>model_pyslam__get_dense_map</code></h3>
+<p>Export the <strong>dense</strong> map — not the sparse landmark cloud but pySLAM's own volumetric integrator output, a fused voxel point cloud or TSDF mesh built over the tracked keyframes. A session verb: it requires the session to be built with volumetric integration on (<code>PYSLAM_VOLUMETRIC=1</code>) and returns an empty handle otherwise.</p>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>trigger</code> (ANY, opt)</td></tr>
+<tr><td>Outputs</td><td><code>dense_handle</code> (TEXT — path to a <code>.npz</code>, or empty), <code>num_points</code> (ANY — fused voxel points), <code>num_vertices</code> (ANY — TSDF mesh vertices)</td></tr>
+<tr><td>Config</td><td>via env: <code>PYSLAM_VOLUMETRIC</code> · <code>PYSLAM_VOLUMETRIC_TYPE</code> (<code>VOXEL_GRID</code> / <code>TSDF</code> / <code>VOXEL_SEMANTIC_GRID</code>) · <code>PYSLAM_ENV</code> (indoor / outdoor depth-truncation)</td></tr>
+<tr><td>Backend call</td><td>flush the integrator's keyframe queue and wait for it to drain (the integrator is a separate process), then <code>add_update_output_task</code> + <code>pop_output</code> → point cloud / mesh arrays</td></tr>
+</tbody>
+</table>
+<p>The drain-wait matters: the volumetric integrator consumes keyframes on its own process via multiprocessing queues, so popping an output before the queue drains returns a partial or empty map. The node blocks until the queue is empty, then extracts a complete volume (<code>VOXEL_GRID</code> is the verified default).</p>
+
+<p>The first five nodes are the streaming session; the next three are <strong>stateless perception</strong> — they reuse the container but hold no map state, so they never gate on the session being built.</p>
 
 <h3 id="model_pyslam__extract_features"><code>model_pyslam__extract_features</code></h3>
 <p>pySLAM's local-feature front-end as a standalone tool — detect keypoints and compute descriptors on one image.</p>
@@ -280,12 +298,52 @@
 </table>
 <p>A near-straight-line trajectory (a straight-corridor episode) makes Umeyama alignment rank-deficient, so <code>ate_rmse</code> can come back <code>null</code> (evo cannot align) while <code>rpe_rmse</code> still returns via a no-align fallback — an evo limitation, not a fault.</p>
 
-<p><strong>Full-surface exposure (in progress).</strong> pySLAM also ships depth prediction, semantic segmentation, multi-view reconstruction (DUSt3R / MASt3R), and dense / volumetric mapping. The goal is to expose <em>all</em> of these as nodes — pySLAM is a first-class supported model, not a curated subset. Their backends are neural and want a GPU, so the container now requests one (§6); the remaining nodes (<code>predict_depth</code>, <code>segment_semantic</code>, <code>reconstruct_multiview</code>, <code>get_dense_map</code>) are the next to land. The streaming session's own algorithm variety (feature detector, loop detector, sensor mode) is reached by <em>config passthrough</em> on the Reset node, not by new nodes.</p>
+<p>The last three nodes are <strong>neural full-surface</strong> — pySLAM ships a bank of learned dense-perception backends behind one factory each, and exposing pySLAM's <em>whole</em> surface means these get first-class nodes too. Like the stateless perception nodes they hold no map state, but they run neural nets on the GPU, so the first call loads (or downloads) a checkpoint. (The streaming session's own algorithm variety — feature detector, loop detector, sensor mode — is reached by <em>config passthrough</em> on the Reset node, not by new nodes.)</p>
+
+<h3 id="model_pyslam__predict_depth"><code>model_pyslam__predict_depth</code></h3>
+<p>Dense metric depth from a single image — pySLAM's depth-estimator bank as a standalone tool.</p>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>rgb</code> (IMAGE), <code>image_right</code> (IMAGE — stereo estimators only, opt)</td></tr>
+<tr><td>Outputs</td><td><code>depth</code> (DEPTH — HxW float32, metres), <code>depth_range</code> (ANY — <code>[min, max]</code>), <code>estimator</code> (TEXT)</td></tr>
+<tr><td>Config</td><td><code>estimator</code> (Depth-Anything V2 / Depth Pro / MASt3R mono · SGBM / RAFT-Stereo / CREStereo stereo) · <code>environment</code> (indoor / outdoor) · <code>min_depth</code> · <code>max_depth</code></td></tr>
+<tr><td>Backend call</td><td><code>depth_estimator_factory(...).infer(rgb, right)</code> → depth map; <code>device=None</code> picks CUDA</td></tr>
+</tbody>
+</table>
+<p>Mono estimators use <code>rgb</code> alone; stereo ones also consume <code>image_right</code>. SGBM is pure OpenCV/CPU; the learned estimators run on the GPU and auto-download a checkpoint on first use.</p>
+
+<h3 id="model_pyslam__segment_semantic"><code>model_pyslam__segment_semantic</code></h3>
+<p>Per-pixel semantic segmentation — pySLAM's segmentation bank as a standalone tool.</p>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>rgb</code> (IMAGE)</td></tr>
+<tr><td>Outputs</td><td><code>semantics</code> (ANY — HxW int labels, or HxWxC / HxWxD volume), <code>instances</code> (ANY — HxW, or null), <code>num_classes</code> (ANY)</td></tr>
+<tr><td>Config</td><td><code>model</code> (DeepLabV3 / SegFormer / CLIP / Detic / YOLO / EOV-Seg) · <code>feature_type</code> (label / probability / feature vector) · <code>dataset</code> (Cityscapes / ADE20K / VOC / NYU40)</td></tr>
+<tr><td>Backend call</td><td><code>semantic_segmentation_factory(...).infer(rgb)</code> → <code>SemanticSegmentationOutput</code>; <code>device=None</code> picks CUDA</td></tr>
+</tbody>
+</table>
+
+<h3 id="model_pyslam__reconstruct_multiview"><code>model_pyslam__reconstruct_multiview</code></h3>
+<p>Feed-forward multi-view 3-D reconstruction — pySLAM's <em>scene-from-views</em> stack (the DUSt3R / MASt3R / VGGT family). Give a list of ≥2 overlapping views; get a fused global point cloud plus per-view camera poses in one pass. Needs the <code>agentcanvas/pyslam:cuda</code> image (the multi-view backends carry compiled CUDA kernels).</p>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — a list of ≥2 overlapping RGB frames or paths)</td></tr>
+<tr><td>Outputs</td><td><code>scene_handle</code> (TEXT — path to a <code>.npz</code>: points, colours, mesh, intrinsics), <code>camera_poses</code> (ANY — per-view 4×4 cam-to-world), <code>num_points</code> (ANY), <code>num_views</code> (ANY)</td></tr>
+<tr><td>Config</td><td><code>backend</code> (MASt3R · DUSt3R · VGGT · VGGT-Robust · Fast3r · Depth-Anything V3) · <code>as_pointcloud</code> (point cloud, or mesh + cloud)</td></tr>
+<tr><td>Backend call</td><td><code>scene_from_views_factory(...).reconstruct(images, as_pointcloud)</code> → <code>SceneFromViewsResult</code></td></tr>
+</tbody>
+</table>
+<p><strong>Weights are external, not baked into the image</strong> (§6): MASt3R / MV-DUSt3R load checkpoints from a mounted <code>data/models/pyslam/</code> folder; the HuggingFace-runtime backends (VGGT / VGGT-Robust / Depth-Anything V3 / Fast3r / pure DUSt3R) download into a mounted cache on first use. <code>MV-DUSt3R</code> is a <strong>known gap</strong> — a version drift in pySLAM's bundled copy leaves it unusable; the other backends cover multi-view. MASt3R is the verified default (a 104k-point Chateau reconstruction runs end-to-end).</p>
 <hr>
 
 <h2 id="6-deployment"><span class="num">6.</span> Deployment &amp; lifecycle</h2>
 <p><code>initialize()</code> constructs the client and <code>docker run -d</code>s the image (nodeset dir bind-mounted at <code>/opt/bridge</code>, a free loopback port published), then polls <code>/health</code> until the shim answers — the blocking Docker call offloaded off the event loop. <code>shutdown()</code> posts <code>/close</code> (quits <code>Slam</code>, joins its background threads) then <code>docker rm -f</code>s the container. The image is built once via rootless Docker; pySLAM is cloned and compiled <strong>at build time</strong>, never entering the repo.</p>
-<p><strong>GPU.</strong> The container is launched with <code>--device nvidia.com/gpu=all</code> so the neural backends (learned depth, semantic segmentation, multi-view reconstruction) run on the GPU — the classic SLAM core stays on CPU. Rootless Docker reaches the GPU through <strong>CDI</strong> (the legacy <code>--gpus</code> cgroup path fails unprivileged); the image already carries a CUDA <code>torch</code>, so no separate GPU image is needed. GPU is on by default and falls back to CPU when unavailable — set <code>PYSLAM_GPU=0</code> to force CPU.</p>
+<p><strong>GPU.</strong> The container is launched with <code>--device nvidia.com/gpu=all</code> so the neural backends (learned depth, semantic segmentation, multi-view reconstruction) run on the GPU — the classic SLAM core stays on CPU. Rootless Docker reaches the GPU through <strong>CDI</strong> (the legacy <code>--gpus</code> cgroup path fails unprivileged). GPU is on by default and falls back to CPU when unavailable — set <code>PYSLAM_GPU=0</code> to force CPU.</p>
+<p><strong>Two images.</strong> <code>cpu-fixed</code> already carries a CUDA <code>torch</code> ("cpu" only means the SLAM C++ core is CPU-built), so the depth and semantic backends run on the GPU there with no separate image. The <em>multi-view</em> backends are the exception: they carry compiled CUDA kernels (<code>curope</code>) that must be built with <code>nvcc</code> present, so <code>reconstruct_multiview</code> needs the heavier <code>agentcanvas/pyslam:cuda</code> image (built by <code>docker/Dockerfile.cuda</code>) — point <code>PYSLAM_IMAGE</code> at it.</p>
+<p><strong>Weights are external.</strong> Neither image bakes in model weights — they carry only code and compiled kernels. The multi-view checkpoints live in a host <code>data/models/pyslam/</code> folder (with download scripts) and mount read-only into the container at runtime (<code>PYSLAM_WEIGHTS_DIR</code> overrides the location); the HuggingFace-runtime backends download into a mounted cache on first use. This keeps the image lean and lets weights update without a rebuild.</p>
 <pre class="hl">
 <span class="nb">export</span><span class="w"> </span><span class="nv">DOCKER_HOST</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">unix:///run/user/</span><span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="s2">/docker.sock</span><span class="s2">&quot;</span>
 bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.sh<span class="w"> </span>agentcanvas/pyslam:cpu-fixed
@@ -311,8 +369,13 @@ bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.s
 <tr><td><code>PYSLAM_SENSOR</code></td><td><code>rgbd</code></td><td>Sensor mode — <code>mono</code> / <code>stereo</code> / <code>rgbd</code></td></tr>
 <tr><td><code>PYSLAM_FEATURE</code></td><td><code>ORB2</code></td><td>A <code>feature_tracker_configs</code> preset name</td></tr>
 <tr><td><code>PYSLAM_LOOP</code></td><td><code>DBOW3</code></td><td>A <code>loop_detector_configs</code> preset name, or <code>off</code></td></tr>
-<tr><td><code>PYSLAM_IMAGE</code></td><td><code>agentcanvas/pyslam:cpu-fixed</code></td><td>Container image to run</td></tr>
-<tr><td><code>PYSLAM_ARTIFACT_DIR</code></td><td><code>outputs/pyslam_maps</code></td><td>Host dir where <code>get_map</code> writes handles</td></tr>
+<tr><td><code>PYSLAM_IMAGE</code></td><td><code>agentcanvas/pyslam:cpu-fixed</code></td><td>Container image to run — set to <code>agentcanvas/pyslam:cuda</code> for <code>reconstruct_multiview</code></td></tr>
+<tr><td><code>PYSLAM_ARTIFACT_DIR</code></td><td><code>outputs/pyslam_maps</code></td><td>Host dir where map / scene handles are written</td></tr>
+<tr><td><code>PYSLAM_VOLUMETRIC</code></td><td><code>0</code></td><td>Enable the dense volumetric integrator for <code>get_dense_map</code></td></tr>
+<tr><td><code>PYSLAM_VOLUMETRIC_TYPE</code></td><td><code>VOXEL_GRID</code></td><td>Dense-map output — <code>VOXEL_GRID</code> / <code>TSDF</code> / <code>VOXEL_SEMANTIC_GRID</code></td></tr>
+<tr><td><code>PYSLAM_ENV</code></td><td><code>INDOOR</code></td><td>Dense depth-truncation regime — <code>INDOOR</code> / <code>OUTDOOR</code></td></tr>
+<tr><td><code>PYSLAM_WEIGHTS_DIR</code></td><td><code>data/models/pyslam</code></td><td>Host folder of external multi-view weights mounted into the container</td></tr>
+<tr><td><code>PYSLAM_GPU</code></td><td><code>1</code></td><td>GPU on/off; <code>0</code> forces CPU-only</td></tr>
 </tbody>
 </table>
 <p>Per-node config fields on the <strong>Reset</strong> node (sensor type, presets, HFOV, depth scale) override these env defaults.</p>
@@ -343,9 +406,13 @@ bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.s
       <a class="toc-h3" href="#model_pyslam__track">model_pyslam__track</a>
       <a class="toc-h3" href="#model_pyslam__get_trajectory">model_pyslam__get_trajectory</a>
       <a class="toc-h3" href="#model_pyslam__get_map">model_pyslam__get_map</a>
+      <a class="toc-h3" href="#model_pyslam__get_dense_map">model_pyslam__get_dense_map</a>
       <a class="toc-h3" href="#model_pyslam__extract_features">model_pyslam__extract_features</a>
       <a class="toc-h3" href="#model_pyslam__match_features">model_pyslam__match_features</a>
       <a class="toc-h3" href="#model_pyslam__eval_trajectory">model_pyslam__eval_trajectory</a>
+      <a class="toc-h3" href="#model_pyslam__predict_depth">model_pyslam__predict_depth</a>
+      <a class="toc-h3" href="#model_pyslam__segment_semantic">model_pyslam__segment_semantic</a>
+      <a class="toc-h3" href="#model_pyslam__reconstruct_multiview">model_pyslam__reconstruct_multiview</a>
       <a class="toc-h2" href="#6-deployment">6. Deployment &amp; lifecycle</a>
       <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
       <a class="toc-h2" href="#8-operational-notes">8. Operational notes</a>

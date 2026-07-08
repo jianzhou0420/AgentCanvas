@@ -51,6 +51,17 @@ DEFAULT_IMAGE = os.environ.get("PYSLAM_IMAGE", "agentcanvas/pyslam:cpu-fixed")
 CONTAINER_PY = "/home/slam/.python/venvs/pyslam/bin/python"
 
 
+def _ci_header(headers: dict, name: str, default: str | None = None) -> str | None:
+    """Case-insensitive header lookup — Starlette lowercases response header names
+    on the wire, so ``headers.get("X-Num-Classes")`` misses. Values with no array
+    fallback (counts, flags) must go through this."""
+    low = name.lower()
+    for k, v in headers.items():
+        if k.lower() == low:
+            return v
+    return default
+
+
 def _rootless_docker_env() -> dict[str, str]:
     """Env that points the docker CLI at the user's rootless daemon.
 
@@ -79,12 +90,20 @@ class PySlamContainerClient:
         headless: bool = True,
         image: str = DEFAULT_IMAGE,
         gpu: bool | None = None,
+        volumetric: bool = False,
+        volumetric_type: str = "VOXEL_GRID",
+        environment: str = "INDOOR",
     ) -> None:
         self.sensor_type = sensor_type
         self.feature_preset = feature_preset
         self.loop_preset = loop_preset
         self.headless = headless
         self.image = image
+        # Dense volumetric mapping (get_dense_map) — passed to the in-container
+        # session via env; off by default (extra integrator thread + memory).
+        self.volumetric = volumetric
+        self.volumetric_type = volumetric_type
+        self.environment = environment
         # GPU is exposed to the container via rootless-Docker CDI
         # (``--device nvidia.com/gpu=all``); the ``cpu-fixed`` image already ships
         # a cu128 torch, so the neural backends (learned depth / semantic seg /
@@ -125,6 +144,43 @@ class PySlamContainerClient:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
+    def _weights_dir(self) -> str:
+        """Host path to the external multiview-weights folder (mounted into the
+        container). Defaults to ``<repo>/data/models/pyslam`` — a symlink into the
+        shared data tree; ``PYSLAM_WEIGHTS_DIR`` overrides. The weights live
+        outside the image by design (external-weights decision 2026-07-08): the
+        image carries only code + compiled curope, the .pth files mount in here."""
+        env = os.environ.get("PYSLAM_WEIGHTS_DIR")
+        if env:
+            return env
+        root = self._nodeset_dir  # <repo>/workspace/nodesets/model/model_pyslam
+        for _ in range(4):  # model_pyslam → model → nodesets → workspace → <repo>
+            root = os.path.dirname(root)
+        return os.path.join(root, "data", "models", "pyslam")
+
+    def _weight_mounts(self) -> list[str]:
+        """``-v`` flags binding the external weights into pyslam's expected paths.
+
+        Only existing dirs are mounted, so a missing weights folder just means the
+        matching backend errors at call time (it can't find its checkpoint) rather
+        than the container failing to start. Explicit-checkpoint dirs (mast3r /
+        mvdust3r / dust3r) mount read-only; the HF / torch caches mount read-write
+        so runtime downloads (VGGT / DAv3 / Fast3r / DUSt3R) persist across runs."""
+        wd = self._weights_dir()
+        thirdparty = "/home/slam/pyslam/thirdparty"
+        pairs = [
+            (os.path.join(wd, "mast3r", "checkpoints"), f"{thirdparty}/mast3r/checkpoints", "ro"),
+            (os.path.join(wd, "mvdust3r", "checkpoints"), f"{thirdparty}/mvdust3r/checkpoints", "ro"),
+            (os.path.join(wd, "dust3r", "checkpoints"), f"{thirdparty}/dust3r/checkpoints", "ro"),
+            (os.path.join(wd, "hf_cache"), "/home/slam/.cache/huggingface", "rw"),
+            (os.path.join(wd, "torch_cache"), "/home/slam/.cache/torch", "rw"),
+        ]
+        args: list[str] = []
+        for src, dst, mode in pairs:
+            if os.path.isdir(src):
+                args += ["-v", f"{src}:{dst}:{mode}"]
+        return args
+
     def _run_args(self, gpu: bool) -> list[str]:
         """Assemble the ``docker run`` argv. ``gpu`` inserts the CDI device flag
         (``--device nvidia.com/gpu=all``) — rootless Docker reaches the GPU via
@@ -134,12 +190,16 @@ class PySlamContainerClient:
             "run", "-d", "--name", self._container,
             "--label", "agentcanvas.pyslam=1",
             *gpu_args,
+            *self._weight_mounts(),
             "-v", f"{self._nodeset_dir}:/opt/bridge:ro",
             "-w", "/opt/bridge",
             "-e", "PYTHONPATH=/opt/bridge",
             "-e", f"PYSLAM_SENSOR={self.sensor_type}",
             "-e", f"PYSLAM_FEATURE={self.feature_preset}",
             "-e", f"PYSLAM_LOOP={self.loop_preset}",
+            "-e", f"PYSLAM_VOLUMETRIC={'1' if self.volumetric else '0'}",
+            "-e", f"PYSLAM_VOLUMETRIC_TYPE={self.volumetric_type}",
+            "-e", f"PYSLAM_ENV={self.environment}",
             "-p", f"127.0.0.1:{self._port}:8000",
             self.image,
             CONTAINER_PY, "-m", "uvicorn", "_server:app",
@@ -285,6 +345,27 @@ class PySlamContainerClient:
         log.info("pyslam map handle written (host): %d points, %d kf → %s", n_pts, n_kf, handle)
         return {"map_handle": handle, "num_points": n_pts, "num_keyframes": n_kf}
 
+    def get_dense_map(self, out_dir: str | None = None) -> dict:
+        body, headers = self._http("/get_dense_map", timeout=300)
+        npz = np.load(io.BytesIO(body))
+        n_pts = int(_ci_header(headers, "X-Num-Points", "0") or 0)
+        n_verts = int(_ci_header(headers, "X-Num-Vertices", "0") or 0)
+        n_tris = int(_ci_header(headers, "X-Num-Triangles", "0") or 0)
+        dense_type = _ci_header(headers, "X-Dense-Type", self.volumetric_type)
+        if n_pts == 0 and n_verts == 0:
+            return {"dense_handle": "", "num_points": 0, "num_vertices": 0,
+                    "num_triangles": 0, "type": dense_type}
+        out_dir = out_dir or self._host_artifact_dir
+        os.makedirs(out_dir, exist_ok=True)
+        self._map_seq += 1
+        handle = os.path.join(out_dir, f"dense_{self._map_seq:04d}.npz")
+        np.savez_compressed(handle, points=npz["points"], colors=npz["colors"],
+                            vertices=npz["vertices"], triangles=npz["triangles"])
+        log.info("pyslam dense handle written (host): %d pts, %d verts, %d tris → %s",
+                 n_pts, n_verts, n_tris, handle)
+        return {"dense_handle": handle, "num_points": n_pts, "num_vertices": n_verts,
+                "num_triangles": n_tris, "type": dense_type}
+
     # ── stateless perception surface (Tier-2, mirrors _backend module funcs) ──
 
     def extract_features(
@@ -326,6 +407,100 @@ class PySlamContainerClient:
             "idxs_a": npz["idxs_a"],
             "idxs_b": npz["idxs_b"],
             "num_matches": int(headers.get("X-Num-Matches", len(npz["idxs_a"]))),
+        }
+
+    def predict_depth(
+        self, rgb: np.ndarray, image_right: np.ndarray | None = None, *,
+        estimator: str = "DEPTH_ANYTHING_V2", min_depth: float = 0.0,
+        max_depth: float = 50.0, environment: str = "INDOOR",
+    ) -> dict:
+        buf = io.BytesIO()
+        arrays: dict[str, np.ndarray] = {"rgb": np.ascontiguousarray(rgb)}
+        if image_right is not None:
+            arrays["image_right"] = np.ascontiguousarray(image_right)
+        np.savez(buf, **arrays)
+        q = urllib.parse.urlencode({
+            "estimator": estimator, "min_depth": float(min_depth),
+            "max_depth": float(max_depth), "environment": environment,
+        })
+        # First call loads/downloads the checkpoint onto the GPU — allow a long timeout.
+        body, headers = self._http(f"/predict_depth?{q}", data=buf.getvalue(), timeout=600)
+        npz = np.load(io.BytesIO(body))
+        depth = npz["depth"]
+        # Derive the range from the array itself — the depth map is the source of
+        # truth; the X-Depth-* headers are advisory and Starlette lowercases header
+        # names on the wire, so a case-sensitive lookup would silently read 0.
+        return {
+            "depth": depth,
+            "estimator": headers.get("X-Estimator", estimator.upper()),
+            "shape": list(depth.shape),
+            "min": float(depth.min()) if depth.size else 0.0,
+            "max": float(depth.max()) if depth.size else 0.0,
+        }
+
+    def segment_semantic(
+        self, rgb: np.ndarray, *, model: str = "DEEPLABV3", feature_type: str = "LABEL",
+        dataset: str = "CITYSCAPES", image_size: tuple = (512, 512),
+    ) -> dict:
+        buf = io.BytesIO()
+        np.savez(buf, rgb=np.ascontiguousarray(rgb))
+        q = urllib.parse.urlencode({
+            "model": model, "feature_type": feature_type, "dataset": dataset,
+            "image_size": f"{int(image_size[0])},{int(image_size[1])}",
+        })
+        # First call may download a checkpoint onto the GPU — allow a long timeout.
+        body, headers = self._http(f"/segment_semantic?{q}", data=buf.getvalue(), timeout=600)
+        npz = np.load(io.BytesIO(body))
+        semantics = npz["semantics"] if "semantics" in npz.files else None
+        instances = npz["instances"] if "instances" in npz.files else None
+        return {
+            "semantics": semantics,
+            "instances": instances,
+            "num_classes": int(_ci_header(headers, "X-Num-Classes", "0") or 0),
+            "shape": None if semantics is None else list(semantics.shape),
+            "model": _ci_header(headers, "X-Model", model.upper()),
+            "feature_type": _ci_header(headers, "X-Feature-Type", feature_type.upper()),
+        }
+
+    def reconstruct_multiview(
+        self, images: list, *, out_dir: str | None = None,
+        backend: str = "MAST3R", as_pointcloud: bool = True,
+    ) -> dict:
+        buf = io.BytesIO()
+        arrays = {f"img_{i}": np.ascontiguousarray(im) for i, im in enumerate(images)}
+        np.savez(buf, **arrays)  # uncompressed — localhost
+        q = urllib.parse.urlencode({
+            "backend": backend, "as_pointcloud": int(bool(as_pointcloud)),
+        })
+        # First call loads a large transformer onto the GPU (+ possible HF/weights
+        # download) and DUSt3R-family global alignment is iterative — long timeout.
+        body, headers = self._http(f"/reconstruct_multiview?{q}", data=buf.getvalue(), timeout=1200)
+        npz = np.load(io.BytesIO(body))
+        n_pts = int(_ci_header(headers, "X-Num-Points", "0") or 0)
+        n_verts = int(_ci_header(headers, "X-Num-Vertices", "0") or 0)
+        n_faces = int(_ci_header(headers, "X-Num-Faces", "0") or 0)
+        n_views = int(_ci_header(headers, "X-Num-Views", str(len(images))) or len(images))
+        backend_name = _ci_header(headers, "X-Backend", backend.upper())
+        poses = npz["camera_poses"]  # (N,4,4)
+
+        out_dir = out_dir or self._host_artifact_dir
+        os.makedirs(out_dir, exist_ok=True)
+        self._map_seq += 1
+        handle = os.path.join(out_dir, f"scene_{self._map_seq:04d}_{n_pts:06d}.npz")
+        # Heavy geometry (points/colours/mesh/intrinsics) rides the handle; poses
+        # are small enough to also travel inline on the wire for downstream use.
+        np.savez_compressed(
+            handle, points=npz["points"], colors=npz["colors"],
+            vertices=npz["vertices"], faces=npz["faces"],
+            camera_poses=poses, intrinsics=npz["intrinsics"],
+        )
+        log.info("pyslam scene handle written (host): %s %d pts, %d verts, %d views → %s",
+                 backend_name, n_pts, n_verts, n_views, handle)
+        return {
+            "scene_handle": handle,
+            "camera_poses": [poses[i].tolist() for i in range(poses.shape[0])],
+            "num_points": n_pts, "num_vertices": n_verts, "num_faces": n_faces,
+            "num_views": n_views, "backend": backend_name,
         }
 
     def eval_trajectory(

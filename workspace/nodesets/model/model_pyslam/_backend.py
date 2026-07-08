@@ -48,6 +48,15 @@ import numpy as np
 log = logging.getLogger("agentcanvas.pyslam")
 
 
+def _queue_size(q: Any) -> int:
+    """multiprocessing.Queue.qsize() raises NotImplementedError on some platforms
+    (not Linux) — degrade to 'assume drained' so the dense-map wait can't hang."""
+    try:
+        return int(q.qsize())
+    except Exception:
+        return 0
+
+
 # ── camera intrinsics ─────────────────────────────────────────────────────
 
 
@@ -145,11 +154,21 @@ class PySlamSession:
         feature_preset: str = "ORB2",
         loop_preset: str = "DBOW3",
         headless: bool = True,
+        volumetric: bool = False,
+        volumetric_type: str = "VOXEL_GRID",
+        environment: str = "INDOOR",
     ) -> None:
         self.sensor_type = sensor_type
         self.feature_preset = feature_preset
         self.loop_preset = loop_preset
         self.headless = headless
+        # Dense volumetric mapping is a session verb: when on, Slam's own
+        # volumetric integrator (TSDF / voxel grid) consumes keyframes on its bg
+        # thread and get_dense_map() extracts the accumulated volume. Off by
+        # default — the integrator is extra threads + memory not every run wants.
+        self.volumetric = volumetric
+        self.volumetric_type = volumetric_type  # VOXEL_GRID | TSDF | VOXEL_SEMANTIC_GRID | ...
+        self.environment = environment  # INDOOR | OUTDOOR — sets dense depth-trunc thresholds
 
         self._slam: Any = None
         self._camera: Any = None
@@ -210,7 +229,7 @@ class PySlamSession:
 
     def _build(self) -> None:
         # LAZY imports — resolve only inside the ac-pyslam subprocess.
-        from pyslam.io.dataset_types import get_sensor_type
+        from pyslam.io.dataset_types import DatasetEnvironmentType, get_sensor_type
         from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
         from pyslam.loop_closing.loop_detector_configs import LoopDetectorConfigs
 
@@ -222,6 +241,19 @@ class PySlamSession:
         from pyslam.slam import PinholeCamera
         from pyslam.slam.slam import Slam
 
+        # Dense volumetric mapping is toggled through pyslam's global Parameters
+        # BEFORE Slam is constructed — Slam.init_volumetric_integrator() reads
+        # kDoVolumetricIntegration in __init__ to decide whether to spin up the
+        # integrator thread (slam.py:init_volumetric_integrator). Set it here so
+        # the switch is per-session, not a process-wide default.
+        if self.volumetric:
+            from pyslam.config_parameters import Parameters
+
+            Parameters.kDoVolumetricIntegration = True
+            Parameters.kVolumetricIntegrationType = self.volumetric_type
+            log.info("pyslam volumetric integration ON: type=%s", self.volumetric_type)
+
+        env_type = DatasetEnvironmentType[self.environment.upper()]
         self._camera = PinholeCamera(self._cam_cfg)
         feature_cfg = FeatureTrackerConfigs.get_config_from_name(self.feature_preset)
         loop_off = (not self.loop_preset) or self.loop_preset.lower() == "off"
@@ -232,11 +264,13 @@ class PySlamSession:
             feature_cfg,
             loop_cfg,
             sensor_type=get_sensor_type(self.sensor_type),
+            environment_type=env_type,
             headless=self.headless,
         )
         log.info(
-            "pyslam Slam built: sensor=%s feature=%s loop=%s headless=%s",
-            self.sensor_type, self.feature_preset, self.loop_preset, self.headless,
+            "pyslam Slam built: sensor=%s feature=%s loop=%s env=%s volumetric=%s headless=%s",
+            self.sensor_type, self.feature_preset, self.loop_preset,
+            self.environment, self.volumetric, self.headless,
         )
 
     def reset(self) -> None:
@@ -351,6 +385,107 @@ class PySlamSession:
         return {"map_handle": handle, "num_points": arrs["num_points"],
                 "num_keyframes": arrs["num_keyframes"]}
 
+    # -- dense volumetric map (session verb; requires volumetric=True at build) --
+    #
+    # Unlike the sparse map (a set of landmark points), the dense map is Slam's own
+    # volumetric integrator output: a TSDF mesh or a fused voxel point cloud. The
+    # integrator runs on a bg thread consuming keyframes; on demand we flush the
+    # keyframe queue, request a fresh output, and pop it. Verified against
+    # slam.get_dense_map / VolumetricIntegratorBase (flush_keyframe_queue +
+    # add_update_output_task + pop_output → VolumetricIntegrationOutput) 2026-07-08.
+
+    def get_dense_map_arrays(self) -> dict:
+        """Return the dense volumetric map as raw numpy arrays (no disk).
+
+        The container bridge uses this: the shim ships points/colors/vertices/
+        triangles to the framework side, which writes the host-owned handle (same
+        rootless-uid sidestep as get_map_arrays). Empty arrays if volumetric
+        integration is off or nothing has been integrated yet."""
+        return self._run(self._get_dense_map_arrays)
+
+    def _get_dense_map_arrays(self) -> dict:
+        empty = {
+            "points": np.empty((0, 3), np.float32), "colors": np.empty((0, 3), np.float32),
+            "vertices": np.empty((0, 3), np.float32), "triangles": np.empty((0, 3), np.int32),
+            "num_points": 0, "num_vertices": 0, "num_triangles": 0, "type": self.volumetric_type,
+        }
+        vi = getattr(self._slam, "volumetric_integrator", None)
+        if vi is None:
+            return empty
+        try:
+            # The integrator consumes keyframes on a separate bg process, so at
+            # extraction time its input queue (q_in) may still hold un-integrated
+            # keyframes — popping an output *now* would return a partial/empty map
+            # (the bug that made this return 0 points). Flush the pending keyframes,
+            # wait for q_in to drain (all integrated), THEN request + pop a complete
+            # output. Verified: without the drain-wait q_in=7 → 0 points; with it
+            # → full voxel cloud.
+            vi.flush_keyframe_queue()
+            deadline = time.monotonic() + 60.0
+            while _queue_size(vi.q_in) > 0 and time.monotonic() < deadline:
+                time.sleep(0.1)
+            vi.add_update_output_task()
+            out = vi.pop_output()
+        except Exception:
+            log.exception("pyslam dense-map extraction failed")
+            return empty
+        if out is None:
+            return empty
+
+        points, colors, vertices, triangles = self._dense_arrays(out)
+        return {
+            "points": points, "colors": colors, "vertices": vertices, "triangles": triangles,
+            "num_points": len(points), "num_vertices": len(vertices),
+            "num_triangles": len(triangles), "type": self.volumetric_type,
+        }
+
+    def get_dense_map(self, out_dir: str | None = None) -> dict:
+        """Standalone/local export of the dense map to a handle (bridge uses
+        get_dense_map_arrays instead). Empty handle if nothing to export."""
+        arrs = self.get_dense_map_arrays()
+        if arrs["num_points"] == 0 and arrs["num_vertices"] == 0:
+            return {"dense_handle": "", "num_points": 0, "num_vertices": 0,
+                    "num_triangles": 0, "type": self.volumetric_type}
+        out_dir = out_dir or os.environ.get(
+            "PYSLAM_ARTIFACT_DIR", os.path.join(os.getcwd(), "outputs", "pyslam_maps")
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        handle = os.path.join(out_dir, f"dense_{self._img_id:06d}.npz")
+        np.savez_compressed(handle, points=arrs["points"], colors=arrs["colors"],
+                            vertices=arrs["vertices"], triangles=arrs["triangles"])
+        log.info("pyslam dense map exported: %d points, %d verts, %d tris → %s",
+                 arrs["num_points"], arrs["num_vertices"], arrs["num_triangles"], handle)
+        return {"dense_handle": handle, "num_points": arrs["num_points"],
+                "num_vertices": arrs["num_vertices"], "num_triangles": arrs["num_triangles"],
+                "type": self.volumetric_type}
+
+    @staticmethod
+    def _dense_arrays(out: Any) -> tuple:
+        """Pull numpy point/colour/vertex/triangle arrays out of a
+        VolumetricIntegrationOutput (open3d-backed point cloud and/or mesh)."""
+        def _pts(pc: Any, attr: str) -> np.ndarray:
+            v = getattr(pc, attr, None)
+            if v is not None and len(v):
+                return np.asarray(v, dtype=np.float32)
+            o3d = getattr(pc, "point_cloud", None)  # the raw open3d PointCloud
+            if o3d is not None and hasattr(o3d, attr):
+                return np.asarray(getattr(o3d, attr), dtype=np.float32)
+            return np.empty((0, 3), dtype=np.float32)
+
+        points = colors = np.empty((0, 3), dtype=np.float32)
+        vertices = np.empty((0, 3), dtype=np.float32)
+        triangles = np.empty((0, 3), dtype=np.int32)
+        pc = getattr(out, "point_cloud", None)
+        if pc is not None:
+            points = _pts(pc, "points")
+            colors = _pts(pc, "colors")
+        mesh_wrap = getattr(out, "mesh", None)
+        o3d_mesh = getattr(mesh_wrap, "mesh", None) if mesh_wrap is not None else None
+        if o3d_mesh is not None:
+            vertices = np.asarray(getattr(o3d_mesh, "vertices", []), dtype=np.float32)
+            triangles = np.asarray(getattr(o3d_mesh, "triangles", []), dtype=np.int32)
+        return points, colors, vertices, triangles
+
     # -- map introspection (seam 2, verified against cpp_core.Map 2026-07-07) --
     # slam.map.num_points() -> int; get_points() -> set[MapPoint]; each
     # MapPoint.pt() -> 3-D world coord. num_keyframes() -> int.
@@ -401,6 +536,7 @@ class PySlamSession:
 
 _FEATURE_MANAGERS: dict = {}
 _FEATURE_MATCHERS: dict = {}
+_DEPTH_ESTIMATORS: dict = {}
 _STATELESS_LOCK = threading.Lock()
 
 
@@ -533,6 +669,300 @@ def match_features(
     idxs_a = np.asarray(res.idxs1 if res.idxs1 is not None else [], dtype=np.int64)
     idxs_b = np.asarray(res.idxs2 if res.idxs2 is not None else [], dtype=np.int64)
     return {"idxs_a": idxs_a, "idxs_b": idxs_b, "num_matches": int(idxs_a.shape[0])}
+
+
+# ── dense depth prediction (neural / classical, GPU when available) ──────────
+#
+# pyslam bundles a bank of depth estimators (its mono-SLAM depth bootstrap) behind
+# one factory. We expose it as a stateless node: RGB (+ right image for stereo) in,
+# a dense metric depth map out. ``device=None`` lets pyslam pick CUDA — the
+# cpu-fixed image ships a cu128 torch, so the neural backends run on the GPU while
+# the classical SLAM core stays on CPU. Estimators are cached by config because
+# construction loads weights onto the GPU (expensive; reuse across frames).
+#
+# Verified in-container 2026-07-08 (source, not README):
+#   depth_estimation.depth_estimator_factory.depth_estimator_factory(
+#       depth_estimator_type=DepthEstimatorType[NAME], device=None, camera=None,
+#       min_depth=0, max_depth=50, dataset_env_type=DatasetEnvironmentType[ENV],
+#       precision=torch.float16) → estimator; estimator.infer(image, image_right=None)
+#       → (depth_map HxW, None).  Types: DEPTH_SGBM(stereo,CPU), DEPTH_ANYTHING_V2
+#       / DEPTH_PRO (mono,GPU), DEPTH_RAFT_STEREO / DEPTH_CRESTEREO_PYTORCH (stereo,
+#       GPU), DEPTH_MAST3R / DEPTH_MVDUST3R (mono,GPU).  Env: INDOOR | OUTDOOR.
+
+
+def _get_depth_estimator(estimator: str, min_depth: float, max_depth: float, environment: str):
+    key = (estimator.upper(), float(min_depth), float(max_depth), environment.upper())
+    with _STATELESS_LOCK:
+        de = _DEPTH_ESTIMATORS.get(key)
+        if de is None:
+            from pyslam.depth_estimation.depth_estimator_factory import (
+                DepthEstimatorType,
+                depth_estimator_factory,
+            )
+            from pyslam.io.dataset_types import DatasetEnvironmentType
+
+            de = depth_estimator_factory(
+                depth_estimator_type=DepthEstimatorType[estimator.upper()],
+                device=None,  # None → pyslam picks CUDA when available
+                camera=None,  # mono estimators need no camera; stereo derive from image pair
+                min_depth=float(min_depth),
+                max_depth=float(max_depth),
+                dataset_env_type=DatasetEnvironmentType[environment.upper()],
+            )
+            _DEPTH_ESTIMATORS[key] = de
+        return de
+
+
+def predict_depth(
+    rgb: np.ndarray,
+    image_right: np.ndarray | None = None,
+    *,
+    estimator: str = "DEPTH_ANYTHING_V2",
+    min_depth: float = 0.0,
+    max_depth: float = 50.0,
+    environment: str = "INDOOR",
+) -> dict:
+    """Predict a dense depth map from one image (stateless, GPU when available).
+
+    Backed by pyslam ``depth_estimation.depth_estimator_factory`` — the same
+    estimator bank pySLAM uses to bootstrap depth for a monocular stream, exposed
+    here as a standalone tool. Mono estimators (DEPTH_ANYTHING_V2 / DEPTH_PRO /
+    DEPTH_MAST3R) use ``rgb`` only; stereo estimators (DEPTH_SGBM / DEPTH_RAFT_STEREO
+    / DEPTH_CRESTEREO_PYTORCH) additionally consume ``image_right``. ``infer``
+    returns ``(depth_map, None)``; we hand back the HxW float32 depth in metres
+    (metric scale depends on the estimator + ``max_depth``). Learned estimators
+    auto-download a checkpoint on first use and run on the GPU (``device=None`` →
+    CUDA when present); DEPTH_SGBM is pure OpenCV on the CPU.
+    """
+    de = _get_depth_estimator(estimator, min_depth, max_depth, environment)
+    rgb = np.ascontiguousarray(rgb)
+    img_r = None if image_right is None else np.ascontiguousarray(image_right)
+    depth_map, _ = de.infer(rgb, img_r)
+    depth = np.ascontiguousarray(np.asarray(depth_map, dtype=np.float32))
+    return {
+        "depth": depth,
+        "estimator": estimator.upper(),
+        "shape": list(depth.shape),
+        "min": float(depth.min()) if depth.size else 0.0,
+        "max": float(depth.max()) if depth.size else 0.0,
+    }
+
+
+# ── semantic segmentation (neural, GPU when available) ───────────────────────
+#
+# pyslam bundles a bank of segmentation backends behind one factory, used for its
+# semantic mapping. Exposed here as a stateless node: RGB in, a per-pixel semantic
+# map out (+ optional instance map). ``SemanticSegmentationOutput.semantics`` is
+# (H,W) int labels for LABEL, (H,W,C) for PROBABILITY_VECTOR, (H,W,D) for
+# FEATURE_VECTOR; ``.instances`` is an optional (H,W) instance map.
+#
+# Verified in-container 2026-07-08:
+#   semantics.semantic_segmentation_factory.semantic_segmentation_factory(
+#       semantic_segmentation_type=SemanticSegmentationType[NAME],
+#       semantic_feature_type=SemanticFeatureType[FEAT],
+#       semantic_dataset_type=SemanticDatasetType[DSET],
+#       image_size=(512,512), device=None) → seg; seg.infer(image) → output;
+#       seg.num_classes() → int.  Types: DEEPLABV3 / SEGFORMER / CLIP / EOV_SEG /
+#       DETIC / ODISE / RFDETR / YOLO.  Feat: NONE|LABEL|PROBABILITY_VECTOR|
+#       FEATURE_VECTOR.  Dset: CITYSCAPES|ADE20K|VOC|NYU40|FEATURE_SIMILARITY|
+#       CUSTOM_SET.  (torchvision/HF weights auto-download into the container cache.)
+
+_SEG_MODELS: dict = {}
+
+
+def _get_segmenter(model: str, feature_type: str, dataset: str, image_size: tuple):
+    key = (model.upper(), feature_type.upper(), dataset.upper(), tuple(image_size))
+    with _STATELESS_LOCK:
+        seg = _SEG_MODELS.get(key)
+        if seg is None:
+            import pyslam.semantics.semantic_segmentation_factory as F
+
+            seg = F.semantic_segmentation_factory(
+                semantic_segmentation_type=F.SemanticSegmentationType[model.upper()],
+                semantic_feature_type=F.SemanticFeatureType[feature_type.upper()],
+                semantic_dataset_type=F.SemanticDatasetType[dataset.upper()],
+                image_size=tuple(image_size),
+                device=None,  # None → pyslam picks CUDA when available
+            )
+            _SEG_MODELS[key] = seg
+        return seg
+
+
+def segment_semantic(
+    rgb: np.ndarray,
+    *,
+    model: str = "DEEPLABV3",
+    feature_type: str = "LABEL",
+    dataset: str = "CITYSCAPES",
+    image_size: tuple = (512, 512),
+) -> dict:
+    """Semantic-segment one image (stateless, GPU when available).
+
+    Backed by pyslam ``semantics.semantic_segmentation_factory`` — the same
+    segmentation bank pySLAM uses for semantic mapping, exposed as a standalone
+    tool. Returns the per-pixel ``semantics`` map (int labels for LABEL, float
+    (H,W,C)/(H,W,D) for PROBABILITY_VECTOR/FEATURE_VECTOR) and an optional
+    ``instances`` map. Learned models auto-download a checkpoint on first use and
+    run on the GPU (``device=None`` → CUDA when present).
+    """
+    seg = _get_segmenter(model, feature_type, dataset, image_size)
+    out = seg.infer(np.ascontiguousarray(rgb))
+    semantics = None if out.semantics is None else np.ascontiguousarray(out.semantics)
+    instances = None if out.instances is None else np.ascontiguousarray(out.instances)
+    try:
+        num_classes = int(seg.num_classes())
+    except Exception:
+        num_classes = 0
+    return {
+        "semantics": semantics,
+        "instances": instances,
+        "num_classes": num_classes,
+        "shape": None if semantics is None else list(semantics.shape),
+        "model": model.upper(),
+        "feature_type": feature_type.upper(),
+    }
+
+
+# ── multi-view reconstruction (DUSt3R / MASt3R / VGGT / … , GPU) ─────────────
+#
+# pyslam bundles a bank of feed-forward multi-view reconstructors behind one
+# factory: N images in → a fused 3-D scene (global point cloud + optional mesh,
+# per-view camera poses, intrinsics, depth). This is pyslam's "scene from views"
+# surface — the DUSt3R-family stack — exposed here as a stateless node (no Slam
+# session). Reconstructors are cached by backend name: construction loads a large
+# transformer onto the GPU, so reuse across calls.
+#
+# Verified in-container 2026-07-08 (source, not README):
+#   scene_from_views.scene_from_views_factory.scene_from_views_factory(
+#       scene_from_views_type=SceneFromViewsType[NAME], device=None) → reconstructor;
+#   reconstructor.reconstruct(images: List[np.ndarray], as_pointcloud=True)
+#       → SceneFromViewsResult{global_point_cloud(trimesh.PointCloud),
+#         global_mesh(trimesh.Trimesh), camera_poses(List[4x4]),
+#         processed_images, depth_predictions, point_clouds,
+#         intrinsics(List[3x3]), confidences}.
+#   Types: DEPTH_ANYTHING_V3 | MAST3R | MVDUST3R | VGGT | VGGT_ROBUST | DUST3R |
+#   FAST3R.  Weights mount in from data/models/pyslam/ (see _client._weight_mounts).
+#   KNOWN GAP: MVDUST3R errors at import — pyslam's bundled mvdust3r has a version
+#   drift vs its own dust3r copy (no normalize_pointclouds in dust3r.utils.geometry).
+#   Left unfixed by decision (2026-07-08): the other 6 backends cover multi-view;
+#   MASt3R is the verified default. Selecting MVDUST3R returns a benign node error.
+
+_SCENE_RECONSTRUCTORS: dict = {}
+
+
+def _allow_mast3r_checkpoint_globals() -> None:
+    """Let torch>=2.6 load the MASt3R/DUSt3R checkpoints.
+
+    pyslam's ``mast3r/model.py`` (and the DUSt3R loaders) call ``torch.load()``
+    without ``weights_only=False``; torch>=2.6 flipped that default to True, and
+    the officially-published MASt3R/DUSt3R checkpoints pickle an
+    ``argparse.Namespace`` of train args, which the safe unpickler rejects
+    (``UnsupportedGlobal: argparse.Namespace``). We allowlist exactly that global —
+    the torch-sanctioned fix for a *trusted* checkpoint (downloaded from naver
+    labs / Meta) — so the load succeeds without disabling the safe unpickler
+    wholesale. This is an upstream pyslam incompatibility with the image's torch
+    2.8, not a nodeset issue; the allowlist is a no-op for HF-safetensors backends
+    (VGGT / Depth-Anything-V3 / Fast3r) that never hit torch.load."""
+    import argparse
+    import contextlib
+
+    import torch
+
+    # very old torch without the API → weights_only already False, nothing to do
+    with contextlib.suppress(Exception):
+        torch.serialization.add_safe_globals([argparse.Namespace])
+
+
+def _get_scene_reconstructor(backend: str):
+    key = backend.upper()
+    with _STATELESS_LOCK:
+        rec = _SCENE_RECONSTRUCTORS.get(key)
+        if rec is None:
+            from pyslam.scene_from_views.scene_from_views_factory import (
+                scene_from_views_factory,
+            )
+            from pyslam.scene_from_views.scene_from_views_types import SceneFromViewsType
+
+            _allow_mast3r_checkpoint_globals()
+            rec = scene_from_views_factory(
+                scene_from_views_type=SceneFromViewsType[key],
+                device=None,  # None → pyslam picks CUDA when available
+            )
+            _SCENE_RECONSTRUCTORS[key] = rec
+        return rec
+
+
+def _pointcloud_arrays(pc: Any) -> tuple[np.ndarray, np.ndarray]:
+    """trimesh.PointCloud → (points Nx3 float32, colors Nx3 uint8).
+
+    trimesh stores colours as RGBA uint8 (Nx4); we drop alpha. Empty arrays if
+    the cloud is None or has no vertices."""
+    if pc is None:
+        return np.empty((0, 3), np.float32), np.empty((0, 3), np.uint8)
+    pts = np.asarray(getattr(pc, "vertices", []), dtype=np.float32)
+    if pts.size == 0:
+        return np.empty((0, 3), np.float32), np.empty((0, 3), np.uint8)
+    raw = getattr(pc, "colors", None)
+    empty = np.empty((0, 3), np.uint8)
+    if raw is None or not len(raw):
+        return pts, empty
+    cols = np.asarray(raw, dtype=np.uint8)  # trimesh stores RGBA uint8 (Nx4)
+    cols = cols[:, :3] if cols.ndim == 2 and cols.shape[1] >= 3 else empty
+    return pts, cols
+
+
+def _mesh_arrays(mesh: Any) -> tuple[np.ndarray, np.ndarray]:
+    """trimesh.Trimesh → (vertices Nx3 float32, faces Mx3 int32). Empty if None."""
+    if mesh is None:
+        return np.empty((0, 3), np.float32), np.empty((0, 3), np.int32)
+    verts = np.asarray(getattr(mesh, "vertices", []), dtype=np.float32)
+    faces = np.asarray(getattr(mesh, "faces", []), dtype=np.int32)
+    if verts.size == 0:
+        verts = np.empty((0, 3), np.float32)
+    if faces.size == 0:
+        faces = np.empty((0, 3), np.int32)
+    return verts, faces
+
+
+def reconstruct_multiview(
+    images: list,
+    *,
+    backend: str = "MAST3R",
+    as_pointcloud: bool = True,
+) -> dict:
+    """Feed-forward multi-view 3-D reconstruction from N images (stateless, GPU).
+
+    Backed by pyslam ``scene_from_views.scene_from_views_factory`` — the DUSt3R /
+    MASt3R / VGGT / MV-DUSt3R family. Give ≥2 overlapping views; returns a fused
+    global point cloud (points + colours), an optional global mesh, per-view
+    camera-to-world poses (4x4), and intrinsics (3x3). ``as_pointcloud=False``
+    asks the backend to also build a mesh. Weights load from the mounted
+    data/models/pyslam/ folder (MASt3R / MV-DUSt3R) or HuggingFace on first use
+    (VGGT / VGGT-Robust / DUSt3R / Depth-Anything-V3 / Fast3r).
+    """
+    imgs = [np.ascontiguousarray(im) for im in images]
+    if len(imgs) < 2:
+        raise ValueError("reconstruct_multiview: need at least 2 views")
+    rec = _get_scene_reconstructor(backend)
+    result = rec.reconstruct(imgs, as_pointcloud=bool(as_pointcloud))
+
+    points, colors = _pointcloud_arrays(getattr(result, "global_point_cloud", None))
+    vertices, faces = _mesh_arrays(getattr(result, "global_mesh", None))
+    poses = [np.asarray(p, dtype=np.float32) for p in (result.camera_poses or [])]
+    intr = [np.asarray(k, dtype=np.float32) for k in (getattr(result, "intrinsics", None) or [])]
+    return {
+        "points": points,
+        "colors": colors,
+        "vertices": vertices,
+        "faces": faces,
+        "camera_poses": poses,       # list of 4x4 cam-to-world
+        "intrinsics": intr,          # list of 3x3
+        "num_points": len(points),
+        "num_vertices": len(vertices),
+        "num_faces": len(faces),
+        "num_views": len(imgs),
+        "backend": backend.upper(),
+    }
 
 
 def _coerce_poses(poses: Any) -> list:
