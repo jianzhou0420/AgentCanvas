@@ -60,7 +60,10 @@ Configure via environment variables (defaults = pure-CPU, no weights):
     PYSLAM_FEATURE  = ORB2 | SUPERPOINT | ...  (default: ORB2  — feature_tracker_configs)
     PYSLAM_LOOP     = DBOW3 | off | ...        (default: DBOW3 — loop_detector_configs)
     PYSLAM_CAM_W / PYSLAM_CAM_H / PYSLAM_CAM_HFOV  — default camera intrinsics
-    PYSLAM_IMAGE    — override the container image (default agentcanvas/pyslam:cpu-fixed)
+    PYSLAM_IMAGE    — pin the container image; unset → GPU picks :cuda (full surface,
+                      incl. reconstruct_multiview), no-GPU picks :cpu-fixed
+    PYSLAM_GPU      = 0 | 1                     GPU on/off (default 1; CPU fallback if absent)
+    PYSLAM_WEIGHTS_DIR — host folder of external multiview weights (default data/models/pyslam)
     PYSLAM_ARTIFACT_DIR — host dir where get_map writes handles (default outputs/pyslam_maps)
     PYSLAM_VOLUMETRIC = 0 | 1                  enable Slam's dense volumetric integrator
     PYSLAM_VOLUMETRIC_TYPE = VOXEL_GRID | TSDF | VOXEL_SEMANTIC_GRID   (get_dense_map output)

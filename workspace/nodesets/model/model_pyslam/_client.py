@@ -45,7 +45,20 @@ import numpy as np
 
 log = logging.getLogger("agentcanvas.pyslam")
 
-DEFAULT_IMAGE = os.environ.get("PYSLAM_IMAGE", "agentcanvas/pyslam:cpu-fixed")
+# Two images. The CUDA image is a superset — SLAM + every neural backend, including
+# the compiled multi-view kernels (curope); cpu-fixed is the leaner SLAM / feature /
+# depth / semantic image (its torch is already cu128, so those run on the GPU too).
+# When PYSLAM_IMAGE is unset the client picks by GPU: GPU on → :cuda (the whole
+# surface works out of the box, incl. reconstruct_multiview), GPU off → :cpu-fixed
+# (the multi-view backends need the GPU image anyway). PYSLAM_IMAGE overrides.
+CUDA_IMAGE = "agentcanvas/pyslam:cuda"
+CPU_IMAGE = "agentcanvas/pyslam:cpu-fixed"
+
+
+def _default_image(gpu: bool) -> str:
+    """Resolve the container image when the caller didn't pin one: env override
+    first, else GPU → the full CUDA image, no-GPU → the leaner CPU image."""
+    return os.environ.get("PYSLAM_IMAGE") or (CUDA_IMAGE if gpu else CPU_IMAGE)
 # Absolute path to the pyslam venv interpreter inside the image (the .pth in its
 # site-packages exposes cpp_core/g2o/pyslam_utils, so no activate script needed).
 CONTAINER_PY = "/home/slam/.python/venvs/pyslam/bin/python"
@@ -88,7 +101,7 @@ class PySlamContainerClient:
         feature_preset: str = "ORB2",
         loop_preset: str = "DBOW3",
         headless: bool = True,
-        image: str = DEFAULT_IMAGE,
+        image: str | None = None,
         gpu: bool | None = None,
         volumetric: bool = False,
         volumetric_type: str = "VOXEL_GRID",
@@ -98,21 +111,26 @@ class PySlamContainerClient:
         self.feature_preset = feature_preset
         self.loop_preset = loop_preset
         self.headless = headless
-        self.image = image
         # Dense volumetric mapping (get_dense_map) — passed to the in-container
         # session via env; off by default (extra integrator thread + memory).
         self.volumetric = volumetric
         self.volumetric_type = volumetric_type
         self.environment = environment
         # GPU is exposed to the container via rootless-Docker CDI
-        # (``--device nvidia.com/gpu=all``); the ``cpu-fixed`` image already ships
-        # a cu128 torch, so the neural backends (learned depth / semantic seg /
-        # multiview) run on the GPU while the classic SLAM core stays on CPU.
-        # Default on; ``PYSLAM_GPU=0`` forces CPU-only. start_container falls back
-        # to CPU if the GPU request fails (no CDI / no GPU on the host).
+        # (``--device nvidia.com/gpu=all``); both images ship a cu128 torch, so the
+        # neural backends (learned depth / semantic seg / multiview) run on the GPU
+        # while the classic SLAM core stays on CPU. Default on; ``PYSLAM_GPU=0``
+        # forces CPU-only. start_container falls back to CPU if the GPU request
+        # fails (no CDI / no GPU on the host).
         if gpu is None:
             gpu = os.environ.get("PYSLAM_GPU", "1").lower() not in ("0", "false", "no")
         self.gpu = gpu
+        # Image is resolved AFTER gpu so an unpinned image follows GPU availability
+        # (GPU → the full :cuda image; CPU → the leaner :cpu-fixed). An explicit
+        # ``image=`` arg or ``PYSLAM_IMAGE`` still wins — and if pinned, the runtime
+        # CPU-fallback in start_container won't second-guess it.
+        self._image_pinned = bool(image) or bool(os.environ.get("PYSLAM_IMAGE"))
+        self.image = image or _default_image(gpu)
 
         self._built = False
         self._container: str | None = None
@@ -225,6 +243,12 @@ class PySlamContainerClient:
                 )
                 self._docker("rm", "-f", self._container, check=False)
                 self.gpu = False
+                # An unpinned image was chosen for GPU (:cuda) — now that we know
+                # there's no GPU, drop to the leaner CPU image, honouring the
+                # "no GPU → cpu image" default. A pinned image is left untouched.
+                if not self._image_pinned and self.image == CUDA_IMAGE:
+                    self.image = CPU_IMAGE
+                    log.info("pyslam falling back to CPU image %s", self.image)
         if proc is None:
             proc = self._docker(*self._run_args(gpu=False))
 
