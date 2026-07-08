@@ -134,6 +134,8 @@ export interface NodeSetInfo {
   loaded: boolean;
   mode: "local" | "server";
   requires_server: boolean;
+  /** Role bucket (workspace/nodesets/<role>/): env|method|model|policy|common|other. */
+  category?: string;
   tools: string[];
   // Declared nodeset-owned container schemas (from the server manifest), so
   // the State panel can show them statically before/without a run.

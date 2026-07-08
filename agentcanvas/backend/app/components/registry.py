@@ -1186,6 +1186,26 @@ class WorkspaceComponentRegistry:
                 result["unknown"].append(ns_name)
         return result
 
+    @staticmethod
+    def _nodeset_category(source_file: str | None) -> str:
+        """Role bucket a nodeset was filed under — its top-level ``nodesets/``
+        subdir (``env`` / ``method`` / ``model`` / ``policy`` / ``common`` /
+        ``other``).
+
+        Derived from the source path (``.../nodesets/<role>/...``) so the
+        taxonomy tracks the on-disk layout (``.claude/standard/nodeset-layout``)
+        with zero per-nodeset annotation. Falls back to ``"other"``.
+        """
+        if not source_file:
+            return "other"
+        parts = Path(source_file).parts
+        idxs = [i for i, p in enumerate(parts) if p == "nodesets"]
+        if idxs:
+            i = idxs[-1]
+            if i + 1 < len(parts) and not parts[i + 1].endswith(".py"):
+                return parts[i + 1]
+        return "other"
+
     def list_nodesets(self) -> list[dict]:
         """List all discovered nodesets with loaded status and available nodes."""
         result = []
@@ -1213,6 +1233,9 @@ class WorkspaceComponentRegistry:
                     "loaded": loaded,
                     "mode": mode,
                     "requires_server": requires_server,
+                    "category": self._nodeset_category(
+                        getattr(ns, "_source_file", None)
+                    ),
                     "tools": tools,
                     "containers": self._auto_server_containers.get(name, []),
                 }

@@ -63,17 +63,17 @@ function ConfigPanel({
 
   async function handleLoadNodeset() {
     if (!introspection?.env_nodeset) return;
-    try {
-      const apiBase = import.meta.env.VITE_API_URL || "";
-      await fetch(
-        `${apiBase}/api/components/nodesets/${encodeURIComponent(introspection.env_nodeset)}/load`,
-        { method: "POST" },
-      );
-      const updated = await evalApi.introspectGraph(graphName);
-      setIntrospection(updated);
-    } catch {
-      // silently fail
-    }
+    // Server-mode envs (e.g. env_libero) spawn a subprocess here — this can
+    // take tens of seconds. Surface HTTP failures instead of swallowing them;
+    // the caller (EnvInfoPanel) renders the in-flight + error state.
+    const apiBase = import.meta.env.VITE_API_URL || "";
+    const r = await fetch(
+      `${apiBase}/api/components/nodesets/${encodeURIComponent(introspection.env_nodeset)}/load`,
+      { method: "POST" },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    const updated = await evalApi.introspectGraph(graphName);
+    setIntrospection(updated);
   }
 
   return (
@@ -334,7 +334,7 @@ export default function EvalPage() {
 
         <div className="border-t border-gray-800" />
 
-        <RunHistory onSelectRun={handleSelectRun} />
+        <RunHistory onSelectRun={handleSelectRun} active={isRunning} />
       </div>
 
       {/* Right main area */}
