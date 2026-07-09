@@ -1,7 +1,13 @@
 """Auto-layout for AgentCanvas graph JSON files.
 
-Two-pass algorithm: topological layering (left-to-right X) followed by
-semantic post-processing (viewer stacking, container placement).
+Layered (Sugiyama-style) algorithm:
+
+1. break any cycles so layering can't stall (``_break_cycles``);
+2. longest-path layering fixes each node's column / X;
+3. median-heuristic ordering within each layer cuts edge crossings;
+4. a barycentre + isotonic (PAVA) pass assigns Y — straight chains stay
+   straight, branches sit next to where they connect, nothing overlaps;
+5. semantic post-processing places the viewer row and state containers.
 
 Usage (module)::
 
@@ -56,15 +62,6 @@ KNOWN_PROCESSING: frozenset[str] = frozenset(
     }
 )
 
-# Semantic priority for Y-sorting within a layer (lower = higher on canvas)
-_PRIORITY: dict[str, int] = {
-    "seed": 0,
-    "control": 1,
-    "processing": 2,
-    "viewer": 3,
-    "output": 3,
-}
-
 
 CONTAINER_TYPE = "stateContainer"
 
@@ -91,6 +88,28 @@ _TYPE_HEIGHT: dict[str, int] = {
 }
 _DEFAULT_HEIGHT = 80
 _LANE_GAP = 40  # minimum vertical gap between lanes
+
+# ── Node width estimation ────────────────────────────────────────────
+# The canvas measures every node's rendered width and passes it in
+# (``node_dims``); columns are then spaced by real width so wide nodes
+# never bleed into the next column.  These fallbacks cover the no-dims
+# path (CLI / tests), where a fixed h_spacing pitch is used instead.
+
+_COL_GAP = 72  # horizontal gap between a column's right edge and the next
+_DEFAULT_WIDTH = 200
+_DUMMY_H = 22  # channel height reserved per long edge crossing a column
+_TYPE_WIDTH: dict[str, int] = {
+    "iterIn": 150,
+    "iterOut": 150,
+    "graphIn": 130,
+    "graphOut": 130,
+    "imageViewer": 260,
+    "textViewer": 240,
+    "textScroll": 240,
+    "actionLog": 240,
+    "metrics": 220,
+    "stateContainer": 200,
+}
 
 # Per-widget height contributions (px)
 _HEADER_HEIGHT = 40
@@ -206,52 +225,192 @@ def _is_known_type(t: str) -> bool:
     )
 
 
-# ── Chain decomposition ───────────────────────────────────────────────
+# ── Cycle breaking (make an arbitrary digraph acyclic for layering) ────
 
 
-def _find_chains(
-    node_ids: list[str],
-    fwd: dict[str, list[str]],
-    rev: dict[str, list[str]],
-    layer: dict[str, int],
-) -> list[list[str]]:
-    """Greedy longest-path chain decomposition.
+def _break_cycles(
+    node_ids: list[str], fwd: dict[str, list[str]]
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Drop back-edges so longest-path layering never stalls on a cycle.
 
-    Returns chains ordered by length (longest first = spine).
-    Each node appears in exactly one chain.
+    Kahn's layering only makes progress on a DAG: any cycle leaves its nodes
+    (and everything downstream of them) stuck at layer 0, piling them into one
+    overlapping column.  The loop's ``iterOut → iterIn`` edge is dropped
+    upstream, but graphs routinely contain *other* incidental cycles — e.g. a
+    cache node that both feeds and is fed by an observer.  A depth-first sweep
+    keeps every tree / forward / cross edge and drops each edge that points
+    back at a node still on the recursion stack (a cycle-closing back-edge).
+    Nodes and neighbours are visited in sorted order, so the resulting DAG is
+    deterministic across interpreter runs.
+
+    Returns ``(dag_fwd, dag_rev)`` adjacency with parallel edges collapsed.
     """
-    remaining = set(node_ids)
-    chains: list[list[str]] = []
+    WHITE, GREY, BLACK = 0, 1, 2
+    color: dict[str, int] = {nid: WHITE for nid in node_ids}
+    dag_fwd: dict[str, list[str]] = defaultdict(list)
 
-    while remaining:
-        # Tie-break on node id to make chain decomposition deterministic
-        # across interpreter runs (Python hash randomization otherwise
-        # shuffles set iteration, and therefore lane assignment).
-        ordered = sorted(remaining, key=lambda nid: (layer.get(nid, 0), nid))
-        dp: dict[str, int] = {}
-        parent: dict[str, str | None] = {}
+    for root in node_ids:
+        if color[root] != WHITE:
+            continue
+        color[root] = GREY
+        stack: list[tuple[str, Any]] = [(root, iter(sorted(set(fwd.get(root, [])))))]
+        while stack:
+            u, succ_it = stack[-1]
+            descended = False
+            for v in succ_it:
+                if color.get(v, BLACK) == GREY:
+                    continue  # back-edge → drop (would close a cycle)
+                dag_fwd[u].append(v)  # tree / forward / cross edge → keep
+                if color[v] == WHITE:
+                    color[v] = GREY
+                    stack.append((v, iter(sorted(set(fwd.get(v, []))))))
+                    descended = True
+                    break
+            if not descended:
+                color[u] = BLACK
+                stack.pop()
 
-        for nid in ordered:
-            preds = sorted(p for p in rev.get(nid, []) if p in remaining and p in dp)
-            if preds:
-                best = max(preds, key=lambda p: (dp[p], p))
-                dp[nid] = dp[best] + 1
-                parent[nid] = best
-            else:
-                dp[nid] = 1
-                parent[nid] = None
+    dag_rev: dict[str, list[str]] = defaultdict(list)
+    for u, vs in dag_fwd.items():
+        for v in vs:
+            dag_rev[v].append(u)
+    return dag_fwd, dag_rev
 
-        end = max(sorted(remaining), key=lambda nid: dp.get(nid, 0))
-        chain: list[str] = []
-        cur: str | None = end
-        while cur is not None:
-            chain.append(cur)
-            cur = parent.get(cur)
-        chain.reverse()
-        chains.append(chain)
-        remaining -= set(chain)
 
-    return chains
+# ── Within-layer ordering (crossing minimisation) ─────────────────────
+
+
+def _weighted_median(vals: list[float]) -> float | None:
+    """Weighted-median ordering key (Sugiyama).  ``None`` when no neighbours."""
+    if not vals:
+        return None
+    vals = sorted(vals)
+    m = len(vals) // 2
+    if len(vals) % 2 == 1:
+        return float(vals[m])
+    if len(vals) == 2:
+        return (vals[0] + vals[1]) / 2.0
+    left = vals[m - 1] - vals[0]
+    right = vals[-1] - vals[m]
+    if left + right == 0:
+        return (vals[m - 1] + vals[m]) / 2.0
+    return (vals[m - 1] * right + vals[m] * left) / (left + right)
+
+
+def _order_layers(
+    layers: dict[int, list[str]],
+    adj_prev: dict[str, list[str]],
+    adj_next: dict[str, list[str]],
+    sweeps: int = 6,
+) -> dict[str, int]:
+    """Order nodes within each layer to reduce edge crossings.
+
+    Alternates downward / upward median sweeps, re-sorting every layer by the
+    weighted median of its neighbours' positions in the adjacent layer.
+    Mutates ``layers`` in place and returns the final ``node → index`` map.
+    A node with no neighbours on the reference side keeps its current index as
+    the sort key, so the pass is stable and deterministic.
+    """
+    pos: dict[str, int] = {}
+    for li in layers:
+        for i, nid in enumerate(layers[li]):
+            pos[nid] = i
+
+    layer_ids = sorted(layers)
+    for s in range(sweeps):
+        going_down = s % 2 == 0
+        seq = layer_ids[1:] if going_down else layer_ids[-2::-1]
+        adj = adj_prev if going_down else adj_next
+        for li in seq:
+            keyed = [
+                (nid, _weighted_median([pos[u] for u in adj.get(nid, []) if u in pos]))
+                for nid in layers[li]
+            ]
+            keyed = [(nid, k if k is not None else float(pos[nid])) for nid, k in keyed]
+            keyed.sort(key=lambda t: t[1])
+            layers[li] = [nid for nid, _ in keyed]
+            for i, nid in enumerate(layers[li]):
+                pos[nid] = i
+    return pos
+
+
+# ── Coordinate assignment (Y) ─────────────────────────────────────────
+
+
+def _pava(targets: list[float], min_gaps: list[float]) -> list[float]:
+    """Isotonic layer placement: top-y values closest (least-squares) to
+    ``targets`` that preserve order and keep ``min_gaps[i]`` between
+    consecutive nodes.
+
+    Substituting ``z_i = top_i − Σ_{k<i} gap_k`` turns the separation
+    constraints into plain monotonicity (``z`` non-decreasing), solved exactly
+    by pool-adjacent-violators — minimal-movement overlap removal.
+    """
+    n = len(targets)
+    if n == 0:
+        return []
+    prefix = [0.0] * n
+    for i in range(1, n):
+        prefix[i] = prefix[i - 1] + min_gaps[i - 1]
+    t = [targets[i] - prefix[i] for i in range(n)]
+
+    vals: list[float] = []
+    counts: list[int] = []
+    weights: list[int] = []
+    for x in t:
+        vals.append(x)
+        counts.append(1)
+        weights.append(1)
+        while len(vals) > 1 and vals[-2] > vals[-1]:
+            v2, c2, w2 = vals.pop(), counts.pop(), weights.pop()
+            v1, c1, w1 = vals.pop(), counts.pop(), weights.pop()
+            vals.append((v1 * w1 + v2 * w2) / (w1 + w2))
+            counts.append(c1 + c2)
+            weights.append(w1 + w2)
+    z: list[float] = []
+    for v, c in zip(vals, counts):
+        z.extend([v] * c)
+    return [z[i] + prefix[i] for i in range(n)]
+
+
+def _coord_pass(
+    layers: dict[int, list[str]],
+    adj: dict[str, list[str]],
+    layer: dict[str, int],
+    h_of: Any,
+    direction: str,
+) -> dict[str, float]:
+    """One coordinate sweep: give each node a top-y near the barycentre of its
+    already-placed neighbours on one side, resolving overlaps per layer.
+
+    ``direction='down'`` anchors leftward (layers processed left→right, pull to
+    lower-layer neighbours); ``'up'`` anchors rightward.  A node with no
+    reference-side neighbour keeps its stacked initial position.
+    """
+    top: dict[str, float] = {}
+    for li in layers:
+        cy = 0.0
+        for nid in layers[li]:
+            top[nid] = cy
+            cy += h_of(nid) + _LANE_GAP
+
+    seq = sorted(layers) if direction == "down" else sorted(layers, reverse=True)
+    for li in seq:
+        col = layers[li]
+        if not col:
+            continue
+        desired: list[float] = []
+        for nid in col:
+            refs = [
+                top[u]
+                for u in adj.get(nid, [])
+                if (layer[u] < li if direction == "down" else layer[u] > li)
+            ]
+            desired.append(sum(refs) / len(refs) if refs else top[nid])
+        gaps = [h_of(col[i]) + _LANE_GAP for i in range(len(col) - 1)]
+        for nid, c in zip(col, _pava(desired, gaps)):
+            top[nid] = c
+    return top
 
 
 # ── Core algorithm ────────────────────────────────────────────────────
@@ -263,6 +422,7 @@ def layout_graph(
     h_spacing: int = H_SPACING,
     v_spacing: int = V_SPACING,
     node_heights: dict[str, int] | None = None,
+    node_dims: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Compute auto-layout positions for a graph definition.
 
@@ -270,6 +430,13 @@ def layout_graph(
         node_heights: Optional ``{node_type: height_px}`` map from live
             registry (see :func:`build_height_map`).  Falls back to
             static estimates when ``None``.
+        node_dims: Optional ``{node_id: {"width": px, "height": px}}`` map of
+            *real rendered* sizes measured by the canvas.  When present, rows
+            are spaced by each node's true height and columns by each column's
+            widest node (cumulative X) — so wide nodes never overlap the next
+            column.  When ``None``, columns fall back to the fixed
+            ``h_spacing`` pitch and heights to ``node_heights`` / static
+            estimates (the CLI / test path).
 
     Returns a **new** dict with only ``nodes[].position`` and
     ``containers[].position`` updated.  All other fields are preserved.
@@ -284,6 +451,34 @@ def layout_graph(
         return graph
 
     node_map: dict[str, dict[str, Any]] = {n["id"]: n for n in nodes}
+
+    # Long-edge routing dummies (Phase 5): id -> (width, height).  Consulted by
+    # the size accessors so dummies stay thin (0 width, a slim channel height).
+    _dummy_sizes: dict[str, tuple[int, int]] = {}
+
+    # Real-size accessors: prefer the canvas-measured dimension, else estimate.
+    def _dim(nid: str, key: str) -> float | None:
+        if node_dims and nid in node_dims:
+            v = node_dims[nid].get(key)
+            if v:
+                return float(v)
+        return None
+
+    def _h_of(nid: str) -> int:
+        if nid in _dummy_sizes:
+            return _dummy_sizes[nid][1]
+        real = _dim(nid, "height")
+        if real is not None:
+            return int(round(real))
+        return _node_height(node_map.get(nid, {}).get("type", ""), node_heights)
+
+    def _w_of(nid: str) -> int:
+        if nid in _dummy_sizes:
+            return _dummy_sizes[nid][0]
+        real = _dim(nid, "width")
+        if real is not None:
+            return int(round(real))
+        return _TYPE_WIDTH.get(node_map.get(nid, {}).get("type", ""), _DEFAULT_WIDTH)
 
     # Annotation nodes (notes) are pulled out of the main layout: their
     # positions are computed by Phase 10 from the bounding box of the placed
@@ -330,13 +525,18 @@ def layout_graph(
     layout_nids: set[str] = set(node_map) - annotation_nids
 
     # Restrict adjacency to layout nodes (drops any stray annotation wires).
-    lf: dict[str, list[str]] = defaultdict(list)
-    lr: dict[str, list[str]] = defaultdict(list)
+    lf0: dict[str, list[str]] = defaultdict(list)
     for nid in layout_nids:
         for succ in fwd.get(nid, []):
             if succ in layout_nids:
-                lf[nid].append(succ)
-                lr[succ].append(nid)
+                lf0[nid].append(succ)
+
+    # Break any residual cycles (beyond the loop back-edge already dropped in
+    # Phase 1) so longest-path layering never stalls.  A single incidental
+    # cycle — e.g. a cache node that both feeds and is fed by an observer —
+    # would otherwise leave every downstream node at layer 0, collapsing the
+    # whole graph into one overlapping column at x=0.
+    lf, lr = _break_cycles(sorted(layout_nids), lf0)
 
     in_deg: dict[str, int] = {nid: len(lr.get(nid, [])) for nid in layout_nids}
 
@@ -344,7 +544,7 @@ def layout_graph(
 
     layer: dict[str, int] = {nid: 0 for nid in layout_nids}
     remaining = {nid: len(lr.get(nid, [])) for nid in layout_nids}
-    q: deque[str] = deque(nid for nid, d in remaining.items() if d == 0)
+    q: deque[str] = deque(sorted(nid for nid, d in remaining.items() if d == 0))
     while q:
         nid = q.popleft()
         for succ in lf.get(nid, []):
@@ -353,7 +553,7 @@ def layout_graph(
             if remaining[succ] == 0:
                 q.append(succ)
     for nid, d in remaining.items():
-        if d > 0:
+        if d > 0:  # pragma: no cover — _break_cycles guarantees a DAG
             log.warning("Unreachable node (possible cycle): %s", nid)
 
     # ── Phase 3: Classify nodes ───────────────────────────────────────
@@ -373,102 +573,133 @@ def layout_graph(
         if c == "processing" and ntype and not _is_known_type(ntype):
             log.warning("Unknown node type '%s' (id=%s), treating as processing", ntype, nid)
 
-    # ── Phase 4: (no dedicated viewer column) ────────────────────────
+    # ── Phase 4: Split flow nodes from viewers / containers ──────────
     #
-    # Viewers / outputs are NOT promoted to a dedicated column here — they
-    # are placed as a single horizontal row at the very bottom of the
-    # canvas in Phase 9, so their layer/lane carry through from the natural
-    # topo order and will be overridden when they land in the viewer row.
-
-    # ── Phase 5: Swim-lane layout ────────────────────────────────────
-    #
-    # One global chain decomposition over the whole graph: the longest
-    # chain is the spine (center lane), the rest alternate above / below.
+    # Viewers / outputs are placed as a single horizontal row at the bottom of
+    # the canvas (Phase 9); state containers go below the flow (Phase 8).  The
+    # remaining "regulars" are what the layered flow below arranges.
 
     viewer_nids = {nid for nid in cat if cat[nid] in ("viewer", "output")}
     container_nids = {nid for nid in cat if cat[nid] == "container"}
+    regulars = layout_nids - viewer_nids - container_nids
 
-    local_lane: dict[str, int] = {}
-    regulars = sorted(
-        layout_nids - viewer_nids - container_nids,
-        key=lambda nid: layer[nid],
-    )
-    if regulars:
-        chains = _find_chains(regulars, lf, lr, layer)
-        n_chains = len(chains)
-        mid = n_chains // 2
-        remap: dict[int, int] = {0: mid}
-        above, below = mid - 1, mid + 1
-        for i in range(1, n_chains):
-            if i % 2 == 1 and above >= 0:
-                remap[i] = above
-                above -= 1
-            else:
-                remap[i] = below
-                below += 1
-        for chain_idx, chain in enumerate(chains):
-            for nid in chain:
-                local_lane[nid] = remap[chain_idx]
-
-    # Viewers: excluded from lane assignment — they live in the dedicated
-    # bottom row computed in Phase 9.
-
-    # Container nodes (type=stateContainer in nodes array): placed in fresh
-    # lanes below every regular lane, centered on their connections.
-    for nid in container_nids:
-        connected = list(
-            {e["source"] for e in edges if e.get("target") == nid and e["source"] in local_lane}
-            | {e["target"] for e in edges if e.get("source") == nid and e["target"] in local_lane}
-        )
-        max_lane = max(local_lane.values(), default=-1)
-        local_lane[nid] = max_lane + 1
-        if connected:
-            layer[nid] = round(sum(layer[c] for c in connected) / len(connected))
-
-    # ── Phase 6: Y positions (single lane stack, no band gap) ────────
+    # ── Phase 5: Long-edge routing dummies + within-layer ordering ───
     #
-    # Every laned node (regulars + containers) contributes its height to its
-    # lane's span; lanes stack top-to-bottom by index with _LANE_GAP.
+    # (a) Reserve channels.  A DAG edge spanning >1 column would be drawn
+    # straight through the columns between its endpoints and vanish behind
+    # their nodes (wires render beneath node bodies).  Replace each such edge
+    # with a chain of thin dummy nodes — one per crossed column — so the
+    # ordering + coordinate passes push real nodes off the edge's lane, leaving
+    # a clear horizontal channel.  Dummies never get an output position; their
+    # coordinates become the edge's routing waypoints (Phase 10).
+    #
+    # (b) Order each layer (real + dummy) by the median heuristic to cut
+    # crossings — replacing the old fixed "spine centre, others alternating"
+    # lane assignment that ignored connectivity.
 
-    spans: dict[int, int] = {}
-    for nid, li in local_lane.items():
-        h = _node_height(node_map[nid].get("type", ""), node_heights)
-        spans[li] = max(spans.get(li, 0), h)
+    layers: dict[int, list[str]] = defaultdict(list)
+    for nid in sorted(regulars, key=lambda n: (layer[n], n)):
+        layers[layer[nid]].append(nid)
 
-    y_base: dict[int, float] = {}
-    y_cursor = 0.0
-    for li in sorted(spans.keys()):
-        y_base[li] = y_cursor
-        y_cursor += spans[li] + _LANE_GAP
+    edge_chain: dict[tuple[str, str], list[str]] = {}
+    _dcount = 0
+    for u in sorted(regulars):
+        for v in sorted(set(lf.get(u, []))):
+            if v not in regulars or layer[v] - layer[u] <= 1:
+                continue
+            chain: list[str] = []
+            for li in range(layer[u] + 1, layer[v]):
+                did = f"__route_{_dcount}"
+                _dcount += 1
+                _dummy_sizes[did] = (0, _DUMMY_H)
+                layer[did] = li
+                layers[li].append(did)
+                chain.append(did)
+            edge_chain[(u, v)] = chain
+
+    dummy_ids = set(_dummy_sizes)
+    route_nids = regulars | dummy_ids
+
+    # Routing edges: each long forward edge threaded through its dummy chain,
+    # so every routing edge spans exactly one column.
+    redges: list[tuple[str, str]] = []
+    for u in sorted(regulars):
+        for v in sorted(set(lf.get(u, []))):
+            if v not in regulars:
+                continue
+            chain = edge_chain.get((u, v))
+            if chain:
+                prev = u
+                for d in chain:
+                    redges.append((prev, d))
+                    prev = d
+                redges.append((prev, v))
+            elif layer[v] - layer[u] == 1:
+                redges.append((u, v))
+
+    adj_prev: dict[str, list[str]] = defaultdict(list)
+    adj_next: dict[str, list[str]] = defaultdict(list)
+    for a, b in redges:
+        adj_next[a].append(b)
+        adj_prev[b].append(a)
+    _order_layers(layers, adj_prev, adj_next)
+
+    # ── Phase 6: Y positions (barycentre pull + non-overlap) ─────────
+    #
+    # Undirected neighbour set over the routing graph (long edges threaded
+    # through dummies, so the edge straightens and real nodes are pushed off
+    # its lane) plus leftward / loop edges linked directly (so the loop's two
+    # ends align vertically).  Two passes — anchored left, then right — pull
+    # each node toward the mean top-y of its neighbours; per-layer isotonic
+    # resolution (_pava) enforces non-overlap while moving nodes as little as
+    # possible.  Averaging keeps straight chains straight and centres branches
+    # on their connection points.
+
+    adj: dict[str, list[str]] = defaultdict(list)
+    seen_pairs: set[tuple[str, str]] = set()
+
+    def _link(a: str, b: str) -> None:
+        if a != b and (a, b) not in seen_pairs:
+            seen_pairs.add((a, b))
+            adj[a].append(b)
+            adj[b].append(a)
+
+    for a, b in redges:
+        _link(a, b)
+    # Leftward / loop edges (dropped from the DAG) stay direct links — no
+    # dummies — so the loop's ends align but we don't route them.
+    for e in edges:
+        s, t = e.get("source", ""), e.get("target", "")
+        if s in regulars and t in regulars and layer.get(t, 0) <= layer.get(s, 0):
+            _link(s, t)
+
+    down = _coord_pass(layers, adj, layer, _h_of, "down")
+    up = _coord_pass(layers, adj, layer, _h_of, "up")
+    top = {nid: (down[nid] + up[nid]) / 2.0 for nid in route_nids}
+    for li in sorted(layers):
+        col = layers[li]
+        gaps = [_h_of(col[i]) + _LANE_GAP for i in range(len(col) - 1)]
+        for nid, c in zip(col, _pava([top[nid] for nid in col], gaps)):
+            top[nid] = c
 
     node_y: dict[str, float] = {}
-    for nid in node_map:
-        if nid in viewer_nids or nid in annotation_nids:
-            continue
-        node_y[nid] = y_base.get(local_lane.get(nid, 0), 0.0)
+    if top:
+        min_top = min(top.values())
+        for nid in top:
+            node_y[nid] = top[nid] - min_top
 
-    # ── Phase 7: Apply positions to non-viewer nodes ─────────────────
-
-    for n in nodes:
-        nid = n["id"]
-        if nid in viewer_nids or nid in annotation_nids:
-            continue
-        n["position"] = {
-            "x": layer[nid] * h_spacing,
-            "y": round(node_y.get(nid, 0)),
-        }
-
-    # ── Phase 9: Viewer row (single horizontal row at the canvas bottom)
+    # ── Phase 7: Viewer-row placement (layer + y only; X in Phase 8) ─
     #
-    # All viewers/outputs live in one dedicated row below every lane of
-    # the graph.  X is anchored to each viewer's upstream source column
-    # so a viewer visually sits under the node that feeds it; duplicate
-    # columns bump rightward by one h_spacing to avoid collisions.
+    # Viewers/outputs live in one dedicated row below every flow lane.  Each is
+    # anchored to its upstream source column so it sits under the node that
+    # feeds it; duplicate columns bump one column rightward to avoid overlap.
+    # Only layer[] and node_y[] are set here — pixel X is assigned in Phase 8
+    # once every column's width is known.
 
     if viewer_nids:
         non_viewer_bottom = max(
             (
-                node_y.get(nid, 0) + _node_height(node_map[nid].get("type", ""), node_heights)
+                node_y.get(nid, 0) + _h_of(nid)
                 for nid in node_map
                 if nid not in viewer_nids and nid not in annotation_nids
             ),
@@ -495,15 +726,44 @@ def layout_graph(
             used_cols.add(col)
             layer[nid] = col
             node_y[nid] = viewer_row_y
-            for n in nodes:
-                if n["id"] == nid:
-                    n["position"] = {
-                        "x": col * h_spacing,
-                        "y": round(viewer_row_y),
-                    }
-                    break
 
-    # ── Phase 8: Container positioning ────────────────────────────────
+    # ── Phase 8: Column X (width-aware) + apply positions ────────────
+    #
+    # Every flow node and viewer now has a column index (layer[]) and a top-y
+    # (node_y[]).  Columns are laid out left→right: each column's pixel X is the
+    # running sum of the preceding columns' widths + _COL_GAP, where a column's
+    # width is its widest member's real (canvas-measured) width.  So a node
+    # wider than the old fixed pitch pushes the whole rest of the graph right
+    # instead of overlapping its neighbour.  Without node_dims this collapses
+    # to the fixed h_spacing pitch (the CLI / test path).
+
+    placed = regulars | viewer_nids
+    col_w: dict[int, int] = {}
+    for nid in placed:
+        li = layer[nid]
+        col_w[li] = max(col_w.get(li, 0), _w_of(nid))
+
+    if node_dims and col_w:
+        col_x: dict[int, int] = {}
+        cx = 0
+        for li in range(min(col_w), max(col_w) + 1):
+            col_x[li] = cx
+            cx += col_w.get(li, _DEFAULT_WIDTH) + _COL_GAP
+
+        def _col_x(li: int) -> int:
+            return col_x.get(li, li * h_spacing)
+    else:
+
+        def _col_x(li: int) -> int:
+            return li * h_spacing
+
+    for n in nodes:
+        nid = n["id"]
+        if nid not in placed:
+            continue
+        n["position"] = {"x": _col_x(layer[nid]), "y": round(node_y.get(nid, 0.0))}
+
+    # ── Phase 9: Container positioning ────────────────────────────────
 
     if containers:
         ag_map: dict[str, list[str]] = defaultdict(list)
@@ -512,7 +772,7 @@ def layout_graph(
 
         all_bottom = max(
             (
-                node_y.get(nid, 0) + _node_height(node_map[nid].get("type", ""), node_heights)
+                node_y.get(nid, 0) + _h_of(nid)
                 for nid in node_map
                 if nid not in annotation_nids
             ),
@@ -522,24 +782,51 @@ def layout_graph(
 
         for c in containers:
             cid = c.get("id", "")
-            connected = [nid for nid in ag_map.get(cid, []) if nid in node_map]
-            if connected:
-                xs = [layer[nid] * h_spacing for nid in connected]
-                c["position"] = {
-                    "x": round(sum(xs) / len(xs)),
-                    "y": round(container_y_offset),
+            connected = [nid for nid in ag_map.get(cid, []) if nid in layer]
+            xs = (
+                [_col_x(layer[nid]) for nid in connected]
+                if connected
+                else [_col_x(layer[nid]) for nid in node_map if nid in layer]
+            )
+            c["position"] = {
+                "x": round(sum(xs) / len(xs)) if xs else 0,
+                "y": round(container_y_offset),
+            }
+            c_real = _dim(cid, "height")
+            c_h = int(round(c_real)) if c_real is not None else _node_height("stateContainer", node_heights)
+            container_y_offset += c_h + _LANE_GAP
+
+    # ── Phase 10: Long-edge routing waypoints ────────────────────────
+    #
+    # Each long forward edge gets the centre points of its dummy chain as
+    # ``waypoints`` — the clear channel the frontend can route the wire through
+    # so it never disappears behind the nodes in the columns it crosses.  Short
+    # edges get none (adjacent columns route fine as a plain curve).
+
+    if edge_chain:
+
+        def _col_center(li: int) -> float:
+            return _col_x(li) + col_w.get(li, _DEFAULT_WIDTH) / 2.0
+
+        wp_map: dict[tuple[str, str], list[dict[str, int]]] = {
+            (u, v): [
+                {
+                    "x": round(_col_center(layer[d])),
+                    "y": round(node_y.get(d, 0.0) + _DUMMY_H / 2),
                 }
-            else:
-                all_x = [layer[nid] * h_spacing for nid in node_map]
-                c["position"] = {
-                    "x": round(sum(all_x) / len(all_x)) if all_x else 0,
-                    "y": round(container_y_offset),
-                }
-            container_y_offset += _node_height("stateContainer", node_heights) + _LANE_GAP
+                for d in chain
+            ]
+            for (u, v), chain in edge_chain.items()
+            if chain
+        }
+        for e in edges:
+            key = (e.get("source", ""), e.get("target", ""))
+            if key in wp_map:
+                e["waypoints"] = wp_map[key]
 
     # Annotation nodes (notes) are pass-through: their `position` was set
     # by the user on the canvas and copied into `graph` by the deepcopy at
-    # the top of this function. Phases 1-9 exclude them from every layout
+    # the top of this function. Phases 1-10 exclude them from every layout
     # calculation, so we leave their positions untouched here.
 
     return graph
