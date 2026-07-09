@@ -354,9 +354,13 @@ validate_installation() {
     # `conda run` runs the ac-mp3d activate.d hook (setup_pythonpath), which now
     # exports both LD_LIBRARY_PATH (env lib/ — MatterSim's libicuuc->libstdc++
     # chain needs GLIBCXX_3.4.30 that stock 20.04 lacks) and PYTHONPATH (build/),
-    # so a plain conda run finds and imports MatterSim. (An explicit `env
-    # LD_LIBRARY_PATH=` here would instead OVERRIDE the hook's correct value.)
-    result=$(conda run -n "$ENV_NAME" python - <<'PYEOF' 2>&1
+    # so a plain conda run finds and imports MatterSim.
+    #
+    # The test code is passed via `python -c "$(cat …)"` (an ARGUMENT), NOT
+    # `python - <<HEREDOC` (stdin): `conda run` does not forward stdin to the
+    # child, so the heredoc form silently ran an EMPTY program and this check
+    # ALWAYS reported FAILED regardless of whether MatterSim actually imports.
+    result=$(conda run -n "$ENV_NAME" python -c "$(cat <<'PYEOF'
 import sys, os
 build_dir = os.environ.get("_MP3D_BUILD_DIR", "")
 if build_dir:
@@ -371,7 +375,7 @@ except ImportError as e:
     print("IMPORT_FAILED:", e)
     sys.exit(1)
 PYEOF
-)
+)" 2>&1)
 
     if echo "$result" | grep -q "MatterSim imported successfully"; then
         print_success "MatterSim import test passed."
