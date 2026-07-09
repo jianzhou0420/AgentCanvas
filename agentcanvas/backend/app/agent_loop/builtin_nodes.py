@@ -1515,6 +1515,47 @@ class TrajectoryViewerSink(BaseCanvasNode):
         ],
     )
 
+    # Points before the top-down plane is trusted. Below this, all three axes
+    # sit at noise-level spread so the vertical (min-variance) axis is undefined
+    # and _auto_plane's <3-point "XZ" fallback would otherwise get locked in.
+    _AXES_MIN_PTS = 8
+
+    @staticmethod
+    def _resolve_axes(ctx: Any, axes_cfg: str, est_hist: list, gt_hist: list):
+        """Resolve the top-down plane once it is trustworthy, else ``None``.
+
+        ``auto`` recomputed per frame flips XZ/YZ/XY while the trajectory is
+        near-stationary — every axis at noise-level spread, so the argmin
+        vertical is unstable and _auto_plane even hands back a bare ``XZ`` under
+        three points. Locking naively then freezes that meaningless early pick
+        (observed: it latched ``XZ`` — a side view — by frame 4). Instead we wait
+        until the GT path has real extent (``_AXES_MIN_PTS``), then lock the first
+        plane that repeats a few frames and hold it for the run. Returns ``None``
+        while still settling so the caller can hold the trajectory back rather
+        than flash a wrong plane. State rides ``ctx`` (``vacc_*``) like the pose
+        history."""
+        if axes_cfg != "auto":
+            return axes_cfg
+        locked = getattr(ctx, "vacc_axes", None)
+        if locked:
+            return locked
+        src = gt_hist or est_hist  # GT is the frame the estimate is aligned into
+        if len(src) < TrajectoryViewerSink._AXES_MIN_PTS:
+            return None
+        from ..standard.wire_types import _auto_plane
+
+        pick = _auto_plane(src)
+        if pick == getattr(ctx, "vacc_axes_cand", None):
+            run = (getattr(ctx, "vacc_axes_run", None) or 0) + 1
+        else:
+            run = 1
+        setattr(ctx, "vacc_axes_cand", pick)
+        setattr(ctx, "vacc_axes_run", run)
+        if run >= 3:
+            setattr(ctx, "vacc_axes", pick)
+            return pick
+        return None
+
     async def forward(self, inputs: dict, ctx: Any) -> dict:
         from ..standard.wire_types import (
             pose_translation,
@@ -1522,7 +1563,7 @@ class TrajectoryViewerSink(BaseCanvasNode):
             serialize_trajectory_for_viewer,
         )
 
-        axes = self.config.get("axes") or "XZ"
+        axes_cfg = self.config.get("axes") or "XZ"
         fields: dict[str, Any] = {}
 
         # Accumulate est / gt centres in persistent node state (``vacc_*`` avoids
@@ -1540,7 +1581,12 @@ class TrajectoryViewerSink(BaseCanvasNode):
 
         est_hist = getattr(ctx, "vacc_est", None) or []
         gt_hist = getattr(ctx, "vacc_gt", None) or []
-        if est_hist or gt_hist:
+        # One resolved plane for both the trajectory and the map scatter, locked
+        # once stable (see _resolve_axes). ``None`` = still settling: hold the
+        # trajectory back for a beat rather than draw it in a wrong plane that
+        # then snaps — the path is barely a dot at that point anyway.
+        axes = self._resolve_axes(ctx, axes_cfg, est_hist, gt_hist)
+        if axes is not None and (est_hist or gt_hist):
             align = (self.config.get("align") or "on") != "off"
             fields.update(
                 serialize_trajectory_for_viewer(est_hist, gt_hist, axes=axes, align=align)
@@ -1548,8 +1594,9 @@ class TrajectoryViewerSink(BaseCanvasNode):
 
         handle = inputs.get("map_handle")
         if isinstance(handle, str) and handle and not handle.startswith("ERROR"):
+            plane = axes or getattr(ctx, "vacc_axes", None) or "XZ"
             pts2d = project_pointcloud_2d(
-                handle, axes=axes, cap=int(self.config.get("max_points") or 5000)
+                handle, axes=plane, cap=int(self.config.get("max_points") or 5000)
             )
             if pts2d:
                 fields["points"] = pts2d
