@@ -62,10 +62,15 @@ fi
 CONDA_PREFIX="$(dirname "$(dirname "$VLNCE_PYTHON")")"
 echo "vlnce Python: $VLNCE_PYTHON"
 
-# ── Step 2: Install VLN-CE (editable) ──
+# ── Step 2: Install habitat-lab + VLN-CE (editable, absolute paths) ──
+# Moved OUT of ac_vlnce.yaml: conda resolves relative pip paths
+# ('-e third_party/...') against the pip-subprocess cwd, which broke env-create
+# whenever it ran from a non-root dir. Absolute paths here are cwd-independent.
+# Order matters: vlnce_baselines imports habitat, so habitat-lab goes first.
 
 echo ""
-echo "=== Step 2: Installing VLN-CE package ==="
+echo "=== Step 2: Installing habitat-lab + VLN-CE packages ==="
+"$VLNCE_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/habitat-lab" 2>&1 | tail -3
 "$VLNCE_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/VLN-CE" 2>&1 | tail -3
 
 # ── Step 3: Remove conda OpenGL libs (use system NVIDIA drivers) ──
@@ -129,14 +134,16 @@ EOF
 echo ""
 echo "=== Step 6: Verifying installation ==="
 
+# Verify steps are diagnostics only — never abort the install (set -e) on a
+# failed import; mirror the `|| echo WARN` guard already used below.
 echo -n "  PyTorch: "
-"$VLNCE_PYTHON" -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())" 2>&1
+"$VLNCE_PYTHON" -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())" 2>&1 || echo "WARN: torch import failed"
 
 echo -n "  habitat-sim: "
-"$VLNCE_PYTHON" -c "import habitat_sim; print(habitat_sim.__version__)" 2>&1
+"$VLNCE_PYTHON" -c "import habitat_sim; print(habitat_sim.__version__)" 2>&1 || echo "WARN: habitat_sim import failed"
 
 echo -n "  habitat-lab: "
-"$VLNCE_PYTHON" -c "import habitat; print('OK')" 2>&1
+"$VLNCE_PYTHON" -c "import habitat; print('OK')" 2>&1 || echo "WARN: habitat import failed"
 
 echo -n "  vlnce_baselines: "
 "$VLNCE_PYTHON" -s -c "import vlnce_baselines; print('OK')" 2>&1 || echo "WARN: import failed (may need PYTHONPATH)"
