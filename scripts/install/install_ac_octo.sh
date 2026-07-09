@@ -140,6 +140,11 @@ if [ "$DO_ENV" = "1" ]; then
 
     echo ""
     echo "=== Step 4: Editable install of ManiSkill2_real2sim + SimplerEnv + octo ==="
+    # ruckig (mani_skill2_real2sim dep) ships only sdists past 0.12.x whose
+    # cmake.targets config breaks scikit-build-core>=0.10 — pre-install the last
+    # cp310-wheel version so pip never builds it from source (same fix as
+    # install_ac_simpler.sh). Must precede the ManiSkill editable install.
+    "$OCTO_PYTHON" -m pip install --only-binary :all: 'ruckig==0.12.2'
     "$OCTO_PYTHON" -m pip install -e "$MANISKILL_REPO"
     "$OCTO_PYTHON" -m pip install -e "$SIMPLERENV_REPO"
     "$OCTO_PYTHON" -m pip install -e "$OCTO_REPO"
