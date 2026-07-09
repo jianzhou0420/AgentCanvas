@@ -283,6 +283,11 @@ setup_pythonpath() {
 export _OLD_PYTHONPATH_MP3D="\${PYTHONPATH:-}"
 export PYTHONPATH="${MP3D_DIR}/build:\${PYTHONPATH:-}"
 export MATTERPORT_DATA_DIR="\${MATTERPORT_DATA_DIR:-${REPO_ROOT}/data/mp3d/v1/scans}"
+# MatterSim's link chain (libicuuc -> libstdc++) needs GLIBCXX_3.4.30 from the
+# env's libstdc++ (libstdcxx-ng); stock Ubuntu 20.04's system libstdc++ is too
+# old. Prepend the env lib/ so it wins — same hook pattern as vlnce/hmeqa/smartway.
+export _OLD_LD_LIBRARY_PATH_MP3D="\${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}"
 ACTIVATE
 
     cat > "$deactivate_script" <<DEACTIVATE
@@ -291,6 +296,8 @@ ACTIVATE
 export PYTHONPATH="\${_OLD_PYTHONPATH_MP3D}"
 unset _OLD_PYTHONPATH_MP3D
 unset MATTERPORT_DATA_DIR
+export LD_LIBRARY_PATH="\${_OLD_LD_LIBRARY_PATH_MP3D}"
+unset _OLD_LD_LIBRARY_PATH_MP3D
 DEACTIVATE
 
     chmod +x "$activate_script" "$deactivate_script"
@@ -343,8 +350,11 @@ validate_installation() {
 
     print_info "Running import test inside '$ENV_NAME' environment ..."
 
-    local result
-    result=$(conda run -n "$ENV_NAME" python - <<'PYEOF' 2>&1
+    local result conda_prefix
+    conda_prefix=$(conda run -n "$ENV_NAME" python -c "import sys; print(sys.prefix)" 2>/dev/null)
+    # LD_LIBRARY_PATH so MatterSim's libicuuc->libstdc++ chain finds the env's
+    # GLIBCXX_3.4.30 (stock 20.04 libstdc++ lacks it) — mirrors the activate hook.
+    result=$(conda run -n "$ENV_NAME" env LD_LIBRARY_PATH="$conda_prefix/lib:${LD_LIBRARY_PATH:-}" python - <<'PYEOF' 2>&1
 import sys, os
 build_dir = os.environ.get("_MP3D_BUILD_DIR", "")
 if build_dir:
