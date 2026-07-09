@@ -1,18 +1,18 @@
-"""Runnable proof that AgentCanvas can be driven code-first.
+"""Runnable proof that AgentCanvas can be driven Graph SDK.
 
-    python -m app.code_first_demo
+    python -m app.graph_sdk_demo
 
-Defines three tiny pure-Python nodes, builds a graph with the code-first
-:class:`app.code_first.Graph` builder, runs it in-process (no FastAPI, no
+Defines three tiny pure-Python nodes, builds a graph with the Graph SDK
+:class:`app.graph_sdk.Graph` builder, runs it in-process (no FastAPI, no
 canvas GUI), and shows that the same graph round-trips through canvas JSON.
 No env, no GPU, no LLM — this is the equivalent of the executor unit tests,
-exercised through the public code-first surface.
+exercised through the public Graph SDK surface.
 """
 
 from __future__ import annotations
 
 from app.agent_loop.builtin_nodes import register_node
-from app.code_first import Graph
+from app.graph_sdk import Graph
 from app.components.bases import BaseCanvasNode, PortDef
 from app.graph_def import GraphDefinition
 
@@ -60,8 +60,8 @@ for _cls in (ConstNode, AddNode, ScaleNode):
 
 
 def build() -> Graph:
-    """(7 + 5) * 3 == 36, expressed as a code-first graph."""
-    g = Graph(name="code_first_demo", eval_graph=False)
+    """(7 + 5) * 3 == 36, expressed as a Graph SDK graph."""
+    g = Graph(name="graph_sdk_demo", eval_graph=False)
 
     c7 = g.add("demo_const", value=7)
     c5 = g.add("demo_const", value=5)

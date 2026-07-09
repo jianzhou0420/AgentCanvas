@@ -1,12 +1,13 @@
 """Reconstruct the verified MapGPT-MP3D graph purely in Python code.
 
-    python -m app.mapgpt_mp3d_codefirst          # build + verify vs the JSON
-    python -m app.mapgpt_mp3d_codefirst --save   # + write the code-built JSON
+    python -m app.mapgpt_mp3d_sdk          # build + verify vs the JSON
+    python -m app.mapgpt_mp3d_sdk --save   # + write the code-built JSON
+    python -m app.mapgpt_mp3d_sdk --run    # + run one episode in-process
 
 This takes the hand-authored, verified canvas graph
 ``workspace/graphs/vln/verified/mapgpt_mp3d.json`` (22 nodes, 49 wires, a
 state container + access grants, an iterIn/iterOut episode loop) and rebuilds
-the *same* topology through the code-first :class:`app.code_first.Graph`
+the *same* topology through the Graph SDK :class:`app.graph_sdk.Graph`
 builder — no JSON authoring, no canvas GUI.
 
 Wiring is written explicitly as ``g.connect(source.out("x"), target.in_("y"))``
@@ -15,9 +16,15 @@ Wiring is written explicitly as ``g.connect(source.out("x"), target.in_("y"))``
 ``main()`` proves faithfulness by comparing a semantic signature (node
 types + configs, wire multiset, containers, grants, budget) of the code-built
 graph against the verified JSON, ignoring UI-only noise (positions, edge ids,
-synthesised iterIn ports). It does NOT run the episode — that needs the env
-nodeset + GPU + LLM and must go through the sanctioned ``/experiment:run``
-path on a hosted backend.
+synthesised iterIn ports).
+
+``--run`` executes one episode **in-process** via
+``Graph.run(load_nodesets=True)`` — the Graph SDK run path scans the workspace
+registry, auto-loads the ``mapgpt`` (local) and ``env_mp3d`` (server-mode)
+nodesets, drives the executor, then tears the env server down.  This still
+spawns an ``env_mp3d`` subprocess (needs the ``ac-mp3d`` conda env + MP3D data
++ a ``gpt-5-mini`` key) and is an *experiment*: a real multi-episode eval
+belongs behind ``/experiment:run``, not this convenience flag.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ import argparse
 import json
 from pathlib import Path
 
-from app.code_first import Graph
+from app.graph_sdk import Graph
 from app.graph_def import GraphDefinition
 
 VERIFIED_JSON = (
@@ -262,6 +269,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--save", metavar="PATH", nargs="?", const="__default__",
                     help="write the code-built graph JSON (default: alongside the verified graph)")
+    ap.add_argument("--run", action="store_true",
+                    help="run one episode in-process via g.run(load_nodesets=True); spawns the "
+                         "env_mp3d server (an experiment — multi-ep eval belongs behind /experiment:run)")
     args = ap.parse_args()
 
     g = build()
@@ -280,12 +290,17 @@ def main() -> None:
 
     if args.save is not None:
         path = (
-            VERIFIED_JSON.parent / "mapgpt_mp3d_codefirst.json"
+            VERIFIED_JSON.parent / "mapgpt_mp3d_sdk.json"
             if args.save == "__default__"
             else Path(args.save)
         )
         g.save(path)
         print(f"saved: {path}")
+
+    if args.run:
+        print("\nrunning one episode in-process (load_nodesets=True) — spawning env_mp3d server…")
+        result = g.run(load_nodesets=True, validate=True)
+        print(f"metrics: {result.metrics}")
 
 
 if __name__ == "__main__":
