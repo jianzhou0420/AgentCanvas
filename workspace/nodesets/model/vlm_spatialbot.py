@@ -342,7 +342,7 @@ class CaptionViewsTool(BaseCanvasNode):
         config_fields=[
             _MODEL_PATH_FIELD,
             ConfigField("prompt", "text", label="Prompt", default=_SPATIAL_PROMPT),
-            ConfigField("max_new_tokens", "text", label="max_new_tokens", default=200),
+            ConfigField("max_new_tokens", "slider", label="max_new_tokens", default=200, min=16, max=1024, step=8),
         ],
     )
     input_ports = [
@@ -402,7 +402,7 @@ class GenerateTool(BaseCanvasNode):
         color="violet",
         config_fields=[
             _MODEL_PATH_FIELD,
-            ConfigField("max_new_tokens", "text", label="max_new_tokens", default=200),
+            ConfigField("max_new_tokens", "slider", label="max_new_tokens", default=200, min=16, max=1024, step=8),
         ],
     )
     input_ports = [

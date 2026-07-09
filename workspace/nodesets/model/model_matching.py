@@ -67,6 +67,17 @@ log = logging.getLogger("agentcanvas.model_matching")
 _DETECT_MODEL_DEFAULT = "magic-leap-community/superpoint"
 _MATCH_MODEL_DEFAULT = "ETH-CVG/lightglue_superpoint"
 
+# transformers ships SuperPoint as the only standalone keypoint detector;
+# LightGlue matchers exist for SuperPoint and DISK features only.
+_DETECT_OPTIONS = [
+    {"value": "magic-leap-community/superpoint", "label": "SuperPoint (official)"},
+    {"value": "stevenbucaille/superpoint", "label": "SuperPoint (mirror)"},
+]
+_MATCH_OPTIONS = [
+    {"value": "ETH-CVG/lightglue_superpoint", "label": "LightGlue (SuperPoint)"},
+    {"value": "ETH-CVG/lightglue_disk", "label": "LightGlue (DISK)"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -264,8 +275,8 @@ class DetectKeypointsTool(BaseCanvasNode):
         color="cyan",
         config_fields=[
             ConfigField(
-                "model_id", "text", label="HF keypoint-detection repo id",
-                default=_DETECT_MODEL_DEFAULT,
+                "model_id", "select", label="Detector",
+                options=list(_DETECT_OPTIONS), default=_DETECT_MODEL_DEFAULT,
             ),
         ],
     )
@@ -320,12 +331,12 @@ class MatchTool(BaseCanvasNode):
         color="cyan",
         config_fields=[
             ConfigField(
-                "model_id", "text", label="HF keypoint-matching repo id",
-                default=_MATCH_MODEL_DEFAULT,
+                "model_id", "select", label="Matcher",
+                options=list(_MATCH_OPTIONS), default=_MATCH_MODEL_DEFAULT,
             ),
             ConfigField(
-                "threshold", "slider", label="Match score threshold",
-                default=0.0, min=0.0, max=1.0, step=0.05,
+                "threshold", "text", label="Match score threshold",
+                default="0.0",
             ),
         ],
     )

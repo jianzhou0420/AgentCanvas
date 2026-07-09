@@ -241,8 +241,8 @@ class Owlv2DetectTool(BaseCanvasNode):
                 default=_DEFAULT_QUERIES,
             ),
             ConfigField(
-                "threshold", "slider", "Detection score threshold (OWLv2 ~0.1)",
-                default=_DEFAULT_THRESHOLD, min=0.01, max=1.0, step=0.01,
+                "threshold", "text", "Detection score threshold (OWLv2 ~0.1)",
+                default=str(_DEFAULT_THRESHOLD),
             ),
         ],
     )

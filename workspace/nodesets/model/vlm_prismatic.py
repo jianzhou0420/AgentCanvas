@@ -15,7 +15,7 @@ token set (``A``–``D``, ``Yes``/``No``); unregistered tokens raise inside
 prismatic and the node reports an error.
 
 FM-template alignment (2026-07-05): model identity is node config —
-``model_id`` (blank = ``$VLM_PRISMATIC_MODEL_ID`` or the 7B default), engines
+``model_id`` (default prism-dinosiglip+7b), engines
 in a lazy registry keyed by the resolved id, load-failure latch, single-flight
 GPU lock, config fields on the node UI. The former degraded path that
 **fabricated a uniform distribution** is gone (mock output is not a
@@ -55,6 +55,18 @@ log = logging.getLogger("agentcanvas.vlm_prismatic")
 
 _DEFAULT_MODEL_ID = "prism-dinosiglip+7b"
 
+# Curated prismatic-vlms registry ids (internal keys, not HF repos).
+_MODEL_OPTIONS = [
+    {"value": "prism-dinosiglip+7b", "label": "Prism DINOSigLIP 7B"},
+    {"value": "prism-dinosiglip+13b", "label": "Prism DINOSigLIP 13B"},
+    {"value": "prism-clip+7b", "label": "Prism CLIP 7B"},
+    {"value": "prism-clip+13b", "label": "Prism CLIP 13B"},
+    {"value": "prism-siglip+7b", "label": "Prism SigLIP 7B"},
+    {"value": "prism-siglip+13b", "label": "Prism SigLIP 13B"},
+    {"value": "reproduction-llava-v15+7b", "label": "LLaVa-v1.5 repro 7B"},
+    {"value": "reproduction-llava-v15+13b", "label": "LLaVa-v1.5 repro 13B"},
+]
+
 
 def _to_pil_rgb(img):
     """Accept numpy/list/PIL → RGB PIL.Image."""
@@ -88,7 +100,7 @@ class _PrismaticEngine:
 
     @classmethod
     def get(cls, model_id: str = "") -> "_PrismaticEngine":
-        resolved = model_id or os.environ.get("VLM_PRISMATIC_MODEL_ID", _DEFAULT_MODEL_ID)
+        resolved = model_id or _DEFAULT_MODEL_ID
         key = (resolved,)
         with cls._registry_lock:
             if key not in cls._instances:
@@ -150,9 +162,8 @@ def _coerce_token_list(tokens) -> list:
 
 
 _MODEL_ID_FIELD = ConfigField(
-    "model_id", "text",
-    label="Prismatic model id (blank = $VLM_PRISMATIC_MODEL_ID or 7B default)",
-    default="",
+    "model_id", "select", label="Prismatic model",
+    options=list(_MODEL_OPTIONS), default=_DEFAULT_MODEL_ID,
 )
 
 
@@ -190,7 +201,7 @@ class ScoreTokensNode(BaseCanvasNode):
         color="violet",
         config_fields=[
             _MODEL_ID_FIELD,
-            ConfigField("temperature", "text", label="Softmax temperature", default=1.0),
+            ConfigField("temperature", "slider", label="Softmax temperature", default=1.0, min=0.0, max=2.0, step=0.05),
         ],
     )
 
@@ -272,7 +283,7 @@ class GenerateNode(BaseCanvasNode):
                 "max_new_tokens", "slider", label="Max new tokens",
                 default=128, min=16, max=1024, step=16,
             ),
-            ConfigField("temperature", "text", label="Temperature (0 = greedy)", default=0.2),
+            ConfigField("temperature", "slider", label="Temperature (0 = greedy)", default=0.2, min=0.0, max=2.0, step=0.05),
         ],
     )
 

@@ -72,6 +72,23 @@ log = logging.getLogger("agentcanvas.model_segmentation")
 _SEMANTIC_MODEL_DEFAULT = "facebook/mask2former-swin-tiny-ade-semantic"
 _PANOPTIC_MODEL_DEFAULT = "facebook/mask2former-swin-tiny-coco-panoptic"
 
+# Curated Mask2Former checkpoints (swin backbones × task-specific heads).
+_SEMANTIC_OPTIONS = [
+    {"value": "facebook/mask2former-swin-tiny-ade-semantic", "label": "Swin-T / ADE20K"},
+    {"value": "facebook/mask2former-swin-small-ade-semantic", "label": "Swin-S / ADE20K"},
+    {"value": "facebook/mask2former-swin-base-ade-semantic", "label": "Swin-B / ADE20K"},
+    {"value": "facebook/mask2former-swin-large-ade-semantic", "label": "Swin-L / ADE20K"},
+    {"value": "facebook/mask2former-swin-large-cityscapes-semantic", "label": "Swin-L / Cityscapes"},
+]
+_PANOPTIC_OPTIONS = [
+    {"value": "facebook/mask2former-swin-tiny-coco-panoptic", "label": "Swin-T / COCO"},
+    {"value": "facebook/mask2former-swin-small-coco-panoptic", "label": "Swin-S / COCO"},
+    {"value": "facebook/mask2former-swin-base-coco-panoptic", "label": "Swin-B / COCO"},
+    {"value": "facebook/mask2former-swin-large-coco-panoptic", "label": "Swin-L / COCO"},
+    {"value": "facebook/mask2former-swin-large-cityscapes-panoptic", "label": "Swin-L / Cityscapes"},
+    {"value": "facebook/mask2former-swin-large-mapillary-vistas-panoptic", "label": "Swin-L / Mapillary"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -251,8 +268,8 @@ class SemanticSegmentTool(BaseCanvasNode):
         color="blue",
         config_fields=[
             ConfigField(
-                "model_id", "text", "HF Mask2Former semantic model repo id",
-                default=_SEMANTIC_MODEL_DEFAULT,
+                "model_id", "select", label="Model",
+                options=list(_SEMANTIC_OPTIONS), default=_SEMANTIC_MODEL_DEFAULT,
             ),
         ],
     )
@@ -319,8 +336,8 @@ class PanopticSegmentTool(BaseCanvasNode):
         color="blue",
         config_fields=[
             ConfigField(
-                "model_id", "text", "HF Mask2Former panoptic model repo id",
-                default=_PANOPTIC_MODEL_DEFAULT,
+                "model_id", "select", label="Model",
+                options=list(_PANOPTIC_OPTIONS), default=_PANOPTIC_MODEL_DEFAULT,
             ),
         ],
     )

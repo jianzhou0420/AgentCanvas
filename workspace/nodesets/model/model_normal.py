@@ -62,6 +62,14 @@ log = logging.getLogger("agentcanvas.model_normal")
 
 _MODEL_ID_DEFAULT = "facebook/sapiens2-normal-0.4b"
 
+# Curated Sapiens2 normal-head size ladder.
+_MODEL_OPTIONS = [
+    {"value": "facebook/sapiens2-normal-0.4b", "label": "Sapiens2 Normal 0.4B"},
+    {"value": "facebook/sapiens2-normal-0.8b", "label": "Sapiens2 Normal 0.8B"},
+    {"value": "facebook/sapiens2-normal-1b", "label": "Sapiens2 Normal 1B"},
+    {"value": "facebook/sapiens2-normal-5b", "label": "Sapiens2 Normal 5B"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -199,7 +207,7 @@ class NormalEstimateTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="blue",
         config_fields=[
-            ConfigField("model_id", "text", "HF normal-estimation model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [
