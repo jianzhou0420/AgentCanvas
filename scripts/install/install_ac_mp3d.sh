@@ -110,12 +110,13 @@ check_prerequisites() {
         fi
     fi
 
-    # cmake
+    # cmake — the ac-mp3d env yaml provides cmake>=3.10 and build_mattersim uses
+    # the env's cmake, so a MISSING system cmake is only a warning (the build no
+    # longer depends on a system-wide cmake, which may be absent on fresh hosts).
     if check_command cmake; then
         print_success "cmake found: $(cmake --version | head -1)"
     else
-        print_error "cmake is not installed. Install it with: sudo apt-get install cmake"
-        ok=false
+        print_warning "system cmake not found — build will use the ac-mp3d env's cmake (from the env yaml)."
     fi
 
     # make
@@ -228,7 +229,9 @@ build_mattersim() {
     # -I conda include: GLM headers (glm/glm.hpp)
     # -DCV_LOAD_IMAGE_ANYDEPTH: OpenCV 4.x removed the old C constant
     # System jsoncpp (libjsoncpp-dev) is used for ABI compatibility
-    CMAKE_PREFIX_PATH="$conda_prefix" cmake -S "$MP3D_DIR" -B "$build_dir" \
+    # Use the ac-mp3d env's cmake (from the env yaml) so the build does not
+    # depend on a system-wide cmake (which may be absent on fresh hosts).
+    CMAKE_PREFIX_PATH="$conda_prefix" "$conda_prefix/bin/cmake" -S "$MP3D_DIR" -B "$build_dir" \
         "$render_flag" \
         -DPYTHON_EXECUTABLE="$conda_prefix/bin/python" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
