@@ -16,6 +16,8 @@ import {
   Save,
   Package,
   Wand2,
+  Spline,
+  Waypoints,
 } from "lucide-react";
 
 // Error boundary
@@ -107,6 +109,8 @@ export default function CanvasPage() {
 
   // Tab state
   const activeTabId = useFlowStore((s) => s.activeTabId);
+  const routingMode = useFlowStore((s) => s.routingMode);
+  const toggleRoutingMode = useFlowStore((s) => s.toggleRoutingMode);
 
   // Canvas stack navigation (ADR-006) — per-tab via projection
   const canvasStack = useFlowStore((s) => s.canvasStack);
@@ -264,8 +268,21 @@ export default function CanvasPage() {
       access_grants: fromFlowAccessGrants(grantEdges),
     };
 
+    // Real rendered sizes so the backend spaces columns by width and rows by
+    // height — otherwise wide nodes (long type names, many ports) overlap the
+    // next fixed-pitch column.
+    const dimensions: Record<string, { width: number; height: number }> = {};
+    for (const n of nodes) {
+      const w = n.measured?.width ?? n.width;
+      const h = n.measured?.height ?? n.height;
+      if (w && h) dimensions[n.id] = { width: w, height: h };
+    }
+
     try {
-      const result = await api.layoutGraph(graph as Record<string, unknown>);
+      const result = await api.layoutGraph(
+        graph as Record<string, unknown>,
+        dimensions,
+      );
       const posMap = new Map<string, { x: number; y: number }>();
       for (const n of (result as unknown as { nodes: NodeDef[] }).nodes || []) {
         posMap.set(n.id, n.position);
@@ -278,6 +295,18 @@ export default function CanvasPage() {
         const newPos = posMap.get(n.id);
         return newPos ? { ...n, position: newPos } : n;
       });
+      // Routing waypoints per edge id → merged into edge.data so the
+      // RoutedEdge can draw the orthogonal path through the reserved channels.
+      const wpMap = new Map<string, { x: number; y: number }[]>();
+      for (const e of (result as unknown as {
+        edges: { id?: string; waypoints?: { x: number; y: number }[] }[];
+      }).edges || []) {
+        if (e.id && e.waypoints) wpMap.set(e.id, e.waypoints);
+      }
+      const updatedEdges = edges.map((e) => ({
+        ...e,
+        data: { ...(e.data ?? {}), waypoints: wpMap.get(e.id) },
+      }));
       // Update both tab state AND projection — otherwise onNodesChange
       // (drag) reads stale positions from the tab and snaps back.
       useFlowStore.setState((s) => {
@@ -286,9 +315,15 @@ export default function CanvasPage() {
         return {
           tabs: {
             ...s.tabs,
-            [s.activeTabId]: { ...tab, nodes: updatedNodes, dirty: true },
+            [s.activeTabId]: {
+              ...tab,
+              nodes: updatedNodes,
+              edges: updatedEdges,
+              dirty: true,
+            },
           },
           nodes: updatedNodes,
+          edges: updatedEdges,
         };
       });
     } catch (err) {
@@ -446,6 +481,18 @@ export default function CanvasPage() {
               >
                 <Wand2 size={12} />
                 Auto Layout
+              </button>
+              <button
+                onClick={toggleRoutingMode}
+                className="flex items-center gap-1 rounded border border-gray-700 bg-gray-900/90 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                title="Toggle wire routing: curved vs orthogonal (routes long wires around nodes; run Auto Layout first)"
+              >
+                {routingMode === "orthogonal" ? (
+                  <Waypoints size={12} />
+                ) : (
+                  <Spline size={12} />
+                )}
+                {routingMode === "orthogonal" ? "Orthogonal" : "Curved"}
               </button>
             </div>
             {/* key={activeTabId} forces React Flow remount on tab switch */}

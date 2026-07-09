@@ -120,3 +120,119 @@ def test_acyclic_chain_left_to_right():
 def test_empty_graph_is_noop():
     """An empty graph returns without raising."""
     assert layout_graph({"nodes": [], "edges": []}) == {"nodes": [], "edges": []}
+
+
+def test_incidental_cycle_does_not_collapse():
+    """A non-loop cycle must not pile the whole graph into one column.
+
+    Regression for the old layering: it only dropped the ``iterOut→iterIn``
+    back-edge, so any *other* cycle (here a cache node that both feeds and is
+    fed by an observer — exactly navgpt_mp3d's shape) stalled Kahn's algorithm
+    and left every downstream node at layer 0 / x=0.  ``_break_cycles`` now
+    guarantees a DAG, so the flow spreads left→right.
+    """
+    graph = {
+        "nodes": [
+            _node("obs", "promptTemplate"),
+            _node("cache", "promptTemplate"),
+            _node("iter_in", "iterIn"),
+            _node("body", "llmCall"),
+            _node("iter_out", "iterOut", pairedWith="iter_in"),
+        ],
+        "edges": [
+            _edge("obs", "cache"),
+            _edge("cache", "obs"),  # incidental 2-node cycle
+            _edge("obs", "iter_in"),
+            _edge("iter_in", "body"),
+            _edge("body", "iter_out"),
+            _edge("iter_out", "iter_in"),  # loop back-edge
+        ],
+    }
+    p = _pos(layout_graph(graph))
+    # Flow spreads across distinct columns instead of collapsing onto x=0.
+    assert len({v["x"] for v in p.values()}) >= 4
+    assert sum(1 for v in p.values() if v["x"] == 0) <= 1
+    # Loop spine stays strictly left→right.
+    assert p["iter_in"]["x"] < p["body"]["x"] < p["iter_out"]["x"]
+
+
+def test_wide_node_widens_its_column():
+    """With measured dims, a node wider than the pitch pushes the rest right.
+
+    Regression for aoplanner_ce overlap: X used to be ``layer * 280`` regardless
+    of node width, so a wide node bled into the next column.  Column X is now
+    the cumulative sum of real column widths.
+    """
+    graph = {
+        "nodes": [
+            _node("a", "promptTemplate"),
+            _node("b", "llmCall"),
+            _node("c", "promptTemplate"),
+        ],
+        "edges": [_edge("a", "b"), _edge("b", "c")],
+    }
+    dims = {
+        "a": {"width": 160, "height": 90},
+        "b": {"width": 500, "height": 120},  # much wider than the 280 pitch
+        "c": {"width": 160, "height": 90},
+    }
+    p = _pos(layout_graph(graph, node_dims=dims))
+    # Each column clears the previous node's real width.
+    assert p["b"]["x"] - p["a"]["x"] >= 160
+    assert p["c"]["x"] - p["b"]["x"] >= 500
+
+
+def test_dims_real_height_prevents_vertical_overlap():
+    """Same-column nodes are separated by their real measured heights."""
+    graph = {
+        "nodes": [
+            _node("a", "promptTemplate"),
+            _node("b", "llmCall"),
+            _node("b2", "llmCall"),
+            _node("c", "promptTemplate"),
+        ],
+        "edges": [
+            _edge("a", "b"),
+            _edge("a", "b2"),
+            _edge("b", "c"),
+            _edge("b2", "c"),
+        ],
+    }
+    dims = {
+        "a": {"width": 160, "height": 90},
+        "b": {"width": 200, "height": 120},
+        "b2": {"width": 200, "height": 320},  # tall
+        "c": {"width": 160, "height": 90},
+    }
+    p = _pos(layout_graph(graph, node_dims=dims))
+    assert p["b"]["x"] == p["b2"]["x"]  # same column
+    lo, hi = sorted([p["b"], p["b2"]], key=lambda q: q["y"])
+    upper_h = 120 if lo is p["b"] else 320
+    assert hi["y"] - lo["y"] >= upper_h  # no vertical overlap
+
+
+def test_diamond_branches_dont_overlap():
+    """Parallel branches of a diamond get distinct rows; merge node is rightmost."""
+    graph = {
+        "nodes": [
+            _node("a", "promptTemplate"),
+            _node("b", "llmCall"),
+            _node("c", "llmCall"),
+            _node("d", "promptTemplate"),
+            _node("e", "promptTemplate"),
+        ],
+        "edges": [
+            _edge("a", "b"),
+            _edge("a", "c"),
+            _edge("b", "d"),
+            _edge("c", "d"),
+            _edge("d", "e"),
+        ],
+    }
+    p = _pos(layout_graph(graph))
+    coords = [(v["x"], v["y"]) for v in p.values()]
+    assert len(coords) == len(set(coords)), f"overlap: {coords}"
+    # Parallel branches share a column but not a row.
+    assert p["b"]["x"] == p["c"]["x"] and p["b"]["y"] != p["c"]["y"]
+    # Merge/tail is the rightmost node.
+    assert p["e"]["x"] == max(v["x"] for v in p.values())
