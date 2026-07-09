@@ -132,6 +132,10 @@ bash "$SCRIPT_DIR/../data/fetch_ckpt_smartway.sh"
 # ── Step 6: Verify ──
 echo ""
 echo "=== Step 6: Verifying installation ==="
+# Load the env's lib/ so the bare-python imports below pick the env's
+# libstdc++ (stock Ubuntu 20.04 lacks GLIBCXX_3.4.29 that numba/llvmlite, pulled
+# in by the vlnce_baselines depth-encoder chain, needs).
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 echo -n "  PyTorch: "
 "$SMARTWAY_PYTHON" -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())" 2>&1
 echo -n "  habitat-sim: "

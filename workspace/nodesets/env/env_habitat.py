@@ -2311,6 +2311,22 @@ class EnvHabitatNodeSet(BaseNodeSet):
     name = "env_habitat"
     description = "Habitat-Sim VLN-CE environment"
     server_python = conda_env_python("ac-vlnce", "VLNCE_PYTHON")
+    # Ubuntu 20.04's stock libstdc++ lacks GLIBCXX_3.4.29 that the ac-vlnce
+    # env's numba/llvmlite (pulled in transitively by ``import habitat``)
+    # needs. Prepend the conda env's lib/ so its libstdc++ wins at server-spawn
+    # time — mirrors policy_adapter_vlnce, which already guards its own spawn.
+    # Without this, env_habitat server mode fails to import habitat on a fresh
+    # stock-20.04 host (llvmlite OSError: GLIBCXX_3.4.29 not found).
+    _vlnce_env_lib = (
+        os.path.join(os.path.dirname(os.path.dirname(server_python)), "lib")
+        if server_python
+        else ""
+    )
+    server_env = (
+        {"LD_LIBRARY_PATH": f"{_vlnce_env_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+        if _vlnce_env_lib
+        else {}
+    )
     env_panel = HabitatEnvPanel
     parallelism = "replicated"  # Stateful simulator: per-worker scene + agent pose.
     # ADR-028: Habitat steps are physics-bound and typically complete in
