@@ -1,0 +1,228 @@
+{
+  "name": "pySLAM on TUM RGB-D (classic SLAM demo)",
+  "description": "pySLAM's showcase: a classic RGB-D benchmark sequence (TUM fr3/long_office_household by default) streamed frame-by-frame into a live SLAM session — no simulator, no policy, no GPU. env_tum is a streaming-replay environment: tum_reset arms the placed sequence and emits its camera intrinsics; the loop advances one frame per step (tum_step_replay, a degenerate 'action'), observe_egocentric pulls that frame's RGB-D + ground-truth pose, and model_pyslam__track feeds it to the SLAM front-end (ORB2 features + DBOW3 loop closure, RGB-D metric depth). The loop stops when the sequence is exhausted (step_replay.terminated -> iterOut.stop). Depth is metric metres straight from the reader (TUM factor 5000), so pyslam_reset.depth_scale is 1.0. Intrinsics are the published freiburg3 pinhole, wired from tum_reset into pyslam_reset so the camera matches exactly. Three live views: observationViewer shows the raw RGB+depth; trajectoryViewer_slam grows the estimated camera path (blue) against the TUM ground truth (grey) top-down, live per frame — with align=on it SE3-fits the estimate onto the GT frame each update (standard ATE convention: GT is the reference, the estimate is aligned onto it), so the two overlay and the visible gap is the drift; pointCloudViewer_slam renders the sparse map in 3-D live, fed by an in-loop pyslam_get_map_live throttled to every 20 frames (stream_every=20) so the map densifies on screen without dumping the full cloud every step. A second, after-loop pyslam_get_map (stream_every=0) produces the final complete map handle + point count for the graphOut ports. After the loop, get_trajectory + eval_trajectory report ATE/RPE against ground truth — a real SLAM-accuracy number. This is the demo the VLN-CE probe could not be: pySLAM as the protagonist on its home turf. Runs on model_pyslam:cpu-fixed (no GPU). Fetch the sequence with workspace/nodesets/env/env_tum/download.sh.",
+  "presetId": "pyslam_tum_slam",
+  "step_budget": 5000,
+  "nodes": [
+    {
+      "id": "tum_reset",
+      "type": "env_tum__reset",
+      "label": "TUM: Reset (arm sequence)",
+      "position": { "x": 0, "y": 200 },
+      "config": { "max_frames": "0" }
+    },
+    {
+      "id": "pyslam_reset",
+      "type": "model_pyslam__reset",
+      "label": "pySLAM: Reset (episode start)",
+      "position": { "x": 300, "y": 360 },
+      "config": {
+        "sensor_type": "rgbd",
+        "feature_preset": "ORB2",
+        "loop_preset": "DBOW3",
+        "cam_hfov": "90",
+        "depth_scale": "1.0"
+      }
+    },
+    {
+      "id": "iterIn_tum",
+      "type": "iterIn",
+      "label": "Iter In",
+      "position": { "x": 300, "y": 200 },
+      "config": {
+        "version": 3,
+        "pairedWith": "iterOut_tum",
+        "initPorts": [
+          { "name": "slam_ready", "wire_type": "ANY", "persist": true }
+        ]
+      }
+    },
+    {
+      "id": "tum_step",
+      "type": "env_tum__step_replay",
+      "label": "TUM: Step (advance frame)",
+      "position": { "x": 640, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "tum_observe_loop",
+      "type": "env_tum__observe_egocentric",
+      "label": "TUM: Observe (egocentric)",
+      "position": { "x": 960, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "pyslam_track",
+      "type": "model_pyslam__track",
+      "label": "pySLAM: Track (per frame)",
+      "position": { "x": 1280, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "iterOut_tum",
+      "type": "iterOut",
+      "label": "Iter Out",
+      "position": { "x": 1600, "y": 200 },
+      "config": {
+        "pairedWith": "iterIn_tum",
+        "ports": [
+          { "name": "slam_ready", "wire_type": "ANY", "persist": true, "required": true }
+        ]
+      }
+    },
+    {
+      "id": "observationViewer",
+      "type": "imageViewer",
+      "label": "Observation (RGB + Depth)",
+      "position": { "x": 960, "y": 460 },
+      "config": {
+        "rows": 1,
+        "cols": 2,
+        "ports": [
+          { "name": "rgb", "wire_type": "IMAGE" },
+          { "name": "depth", "wire_type": "DEPTH" }
+        ]
+      }
+    },
+    {
+      "id": "trajectoryViewer_slam",
+      "type": "trajectoryViewer",
+      "label": "SLAM Trajectory (live)",
+      "position": { "x": 1600, "y": 460 },
+      "config": { "axes": "auto", "align": "on", "max_points": "5000" }
+    },
+    {
+      "id": "pyslam_get_traj",
+      "type": "model_pyslam__get_trajectory",
+      "label": "pySLAM: Get Trajectory",
+      "position": { "x": 1960, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "pyslam_get_map",
+      "type": "model_pyslam__get_map",
+      "label": "pySLAM: Get Map (final)",
+      "position": { "x": 1960, "y": 360 },
+      "config": { "stream_every": "0" }
+    },
+    {
+      "id": "pyslam_get_map_live",
+      "type": "model_pyslam__get_map",
+      "label": "pySLAM: Get Map (live, every 20)",
+      "position": { "x": 1280, "y": 420 },
+      "config": { "stream_every": "20" }
+    },
+    {
+      "id": "pyslam_eval",
+      "type": "model_pyslam__eval_trajectory",
+      "label": "pySLAM: Eval Trajectory (ATE / RPE)",
+      "position": { "x": 2280, "y": 200 },
+      "config": { "is_monocular": "false" }
+    },
+    {
+      "id": "tum_evaluate",
+      "type": "env_tum__evaluate",
+      "label": "TUM: Evaluate (replay summary)",
+      "position": { "x": 1960, "y": 520 },
+      "config": {}
+    },
+    {
+      "id": "pointCloudViewer_slam",
+      "type": "pointCloudViewer",
+      "label": "SLAM Map (3-D, live)",
+      "position": { "x": 1600, "y": 660 },
+      "config": { "max_points": "30000", "point_size": "1.5" }
+    },
+    {
+      "id": "output_port__slam_trajectory",
+      "type": "graphOut",
+      "label": "slam_trajectory",
+      "position": { "x": 2620, "y": 120 },
+      "config": { "portName": "slam_trajectory", "wireType": "ANY" }
+    },
+    {
+      "id": "output_port__slam_map_handle",
+      "type": "graphOut",
+      "label": "slam_map_handle",
+      "position": { "x": 2620, "y": 200 },
+      "config": { "portName": "slam_map_handle", "wireType": "TEXT" }
+    },
+    {
+      "id": "output_port__slam_num_points",
+      "type": "graphOut",
+      "label": "slam_num_points",
+      "position": { "x": 2620, "y": 280 },
+      "config": { "portName": "slam_num_points", "wireType": "ANY" }
+    },
+    {
+      "id": "output_port__slam_ate",
+      "type": "graphOut",
+      "label": "slam_ate_rmse",
+      "position": { "x": 2620, "y": 360 },
+      "config": { "portName": "slam_ate_rmse", "wireType": "ANY" }
+    },
+    {
+      "id": "output_port__slam_rpe",
+      "type": "graphOut",
+      "label": "slam_rpe_rmse",
+      "position": { "x": 2620, "y": 440 },
+      "config": { "portName": "slam_rpe_rmse", "wireType": "ANY" }
+    },
+    {
+      "id": "output_port__slam_eval_metrics",
+      "type": "graphOut",
+      "label": "slam_eval_metrics",
+      "position": { "x": 2620, "y": 520 },
+      "config": { "portName": "slam_eval_metrics", "wireType": "TEXT" }
+    },
+    {
+      "id": "output_port__replay_metrics",
+      "type": "graphOut",
+      "label": "replay_metrics",
+      "position": { "x": 2620, "y": 600 },
+      "config": { "portName": "replay_metrics", "wireType": "METRICS" }
+    }
+  ],
+  "edges": [
+    { "id": "e_reset_intr_to_pyslam", "source": "tum_reset", "sourceHandle": "intrinsics", "target": "pyslam_reset", "targetHandle": "intrinsics" },
+    { "id": "e_reset_ok_to_pyslam", "source": "tum_reset", "sourceHandle": "episode_ok", "target": "pyslam_reset", "targetHandle": "trigger" },
+    { "id": "e_pyslam_reset_ready_to_iterin", "source": "pyslam_reset", "sourceHandle": "episode_ok", "target": "iterIn_tum", "targetHandle": "init_slam_ready" },
+
+    { "id": "e_iterin_init_ready_to_step", "source": "iterIn_tum", "sourceHandle": "init_slam_ready", "target": "tum_step", "targetHandle": "trigger" },
+    { "id": "e_iterin_iterout_ready_to_step", "source": "iterIn_tum", "sourceHandle": "iterout_slam_ready", "target": "tum_step", "targetHandle": "trigger" },
+
+    { "id": "e_step_info_to_observe", "source": "tum_step", "sourceHandle": "info", "target": "tum_observe_loop", "targetHandle": "trigger" },
+    { "id": "e_step_terminated_to_stop", "source": "tum_step", "sourceHandle": "terminated", "target": "iterOut_tum", "targetHandle": "stop" },
+
+    { "id": "e_observe_rgb_to_track", "source": "tum_observe_loop", "sourceHandle": "rgb", "target": "pyslam_track", "targetHandle": "rgb" },
+    { "id": "e_observe_depth_to_track", "source": "tum_observe_loop", "sourceHandle": "depth", "target": "pyslam_track", "targetHandle": "depth" },
+    { "id": "e_observe_pose_to_track_gt", "source": "tum_observe_loop", "sourceHandle": "pose", "target": "pyslam_track", "targetHandle": "gt_pose" },
+    { "id": "e_observe_ts_to_track", "source": "tum_observe_loop", "sourceHandle": "timestamp", "target": "pyslam_track", "targetHandle": "timestamp" },
+
+    { "id": "e_observe_rgb_to_view", "source": "tum_observe_loop", "sourceHandle": "rgb", "target": "observationViewer", "targetHandle": "rgb" },
+    { "id": "e_observe_depth_to_view", "source": "tum_observe_loop", "sourceHandle": "depth", "target": "observationViewer", "targetHandle": "depth" },
+
+    { "id": "e_track_pts_to_iterout", "source": "pyslam_track", "sourceHandle": "num_map_points", "target": "iterOut_tum", "targetHandle": "slam_ready" },
+
+    { "id": "e_track_pose_to_trajviewer", "source": "pyslam_track", "sourceHandle": "pose", "target": "trajectoryViewer_slam", "targetHandle": "pose" },
+    { "id": "e_observe_pose_to_trajviewer_gt", "source": "tum_observe_loop", "sourceHandle": "pose", "target": "trajectoryViewer_slam", "targetHandle": "gt_pose" },
+
+    { "id": "e_finalstop_to_gettraj", "source": "iterOut_tum", "sourceHandle": "final_stop", "target": "pyslam_get_traj", "targetHandle": "trigger" },
+    { "id": "e_finalstop_to_getmap", "source": "iterOut_tum", "sourceHandle": "final_stop", "target": "pyslam_get_map", "targetHandle": "trigger" },
+    { "id": "e_finalstop_to_tumeval", "source": "iterOut_tum", "sourceHandle": "final_stop", "target": "tum_evaluate", "targetHandle": "trigger" },
+
+    { "id": "e_gettraj_est_to_eval", "source": "pyslam_get_traj", "sourceHandle": "poses", "target": "pyslam_eval", "targetHandle": "poses_est" },
+    { "id": "e_gettraj_gt_to_eval", "source": "pyslam_get_traj", "sourceHandle": "gt_poses", "target": "pyslam_eval", "targetHandle": "poses_gt" },
+
+    { "id": "e_track_to_getmaplive", "source": "pyslam_track", "sourceHandle": "num_map_points", "target": "pyslam_get_map_live", "targetHandle": "trigger" },
+    { "id": "e_getmaplive_to_pcviewer", "source": "pyslam_get_map_live", "sourceHandle": "map_handle", "target": "pointCloudViewer_slam", "targetHandle": "cloud" },
+
+    { "id": "e_gettraj_to_out", "source": "pyslam_get_traj", "sourceHandle": "poses", "target": "output_port__slam_trajectory", "targetHandle": "value" },
+    { "id": "e_getmap_to_out", "source": "pyslam_get_map", "sourceHandle": "map_handle", "target": "output_port__slam_map_handle", "targetHandle": "value" },
+    { "id": "e_getmap_pts_to_out", "source": "pyslam_get_map", "sourceHandle": "num_points", "target": "output_port__slam_num_points", "targetHandle": "value" },
+    { "id": "e_eval_ate_to_out", "source": "pyslam_eval", "sourceHandle": "ate_rmse", "target": "output_port__slam_ate", "targetHandle": "value" },
+    { "id": "e_eval_rpe_to_out", "source": "pyslam_eval", "sourceHandle": "rpe_rmse", "target": "output_port__slam_rpe", "targetHandle": "value" },
+    { "id": "e_eval_metrics_to_out", "source": "pyslam_eval", "sourceHandle": "metrics", "target": "output_port__slam_eval_metrics", "targetHandle": "value" },
+    { "id": "e_tumeval_to_out", "source": "tum_evaluate", "sourceHandle": "metrics", "target": "output_port__replay_metrics", "targetHandle": "value" }
+  ]
+}

@@ -1496,11 +1496,19 @@ class TrajectoryViewerSink(BaseCanvasNode):
         layout="trajectory",
         config_fields=[
             ConfigField(
-                "axes", "select", label="Plane", default="XZ",
+                "axes", "select", label="Plane", default="auto",
                 options=[
-                    {"value": "XZ", "label": "X-Z (top-down)"},
+                    {"value": "auto", "label": "Auto (drop vertical axis)"},
+                    {"value": "XZ", "label": "X-Z"},
                     {"value": "XY", "label": "X-Y"},
                     {"value": "YZ", "label": "Y-Z"},
+                ],
+            ),
+            ConfigField(
+                "align", "select", label="Align est→GT", default="on",
+                options=[
+                    {"value": "on", "label": "On (SE3-fit estimate onto GT)"},
+                    {"value": "off", "label": "Off (raw frames)"},
                 ],
             ),
             ConfigField("max_points", "text", label="Max map points", default="5000"),
@@ -1533,7 +1541,10 @@ class TrajectoryViewerSink(BaseCanvasNode):
         est_hist = getattr(ctx, "vacc_est", None) or []
         gt_hist = getattr(ctx, "vacc_gt", None) or []
         if est_hist or gt_hist:
-            fields.update(serialize_trajectory_for_viewer(est_hist, gt_hist, axes=axes))
+            align = (self.config.get("align") or "on") != "off"
+            fields.update(
+                serialize_trajectory_for_viewer(est_hist, gt_hist, axes=axes, align=align)
+            )
 
         handle = inputs.get("map_handle")
         if isinstance(handle, str) and handle and not handle.startswith("ERROR"):

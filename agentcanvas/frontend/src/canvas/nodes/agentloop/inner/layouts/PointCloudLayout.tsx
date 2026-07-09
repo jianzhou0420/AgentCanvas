@@ -14,7 +14,7 @@
 import { Handle, Position } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { useNodeOutput } from "./useNodeOutput";
 import {
@@ -124,6 +124,54 @@ function PointsScene({
   );
 }
 
+/** Auto-frames the (growing) cloud to the bbox, but ONLY until the user first
+ *  orbits/zooms — after that the user's viewpoint is never touched again. This
+ *  is what lets the live map stream (a new cloud every N frames) without the
+ *  camera snapping back to default each update. Lives inside <Canvas> so it can
+ *  reach the R3F camera + OrbitControls via useThree. */
+function CameraRig({
+  position,
+  target,
+  near,
+  far,
+}: {
+  position: [number, number, number];
+  target: [number, number, number];
+  near: number;
+  far: number;
+}) {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls) as {
+    target: THREE.Vector3;
+    update: () => void;
+    addEventListener: (t: string, f: () => void) => void;
+    removeEventListener: (t: string, f: () => void) => void;
+  } | null;
+  const userMoved = useRef(false);
+
+  useEffect(() => {
+    if (!controls) return;
+    const onStart = () => {
+      userMoved.current = true;
+    };
+    controls.addEventListener("start", onStart);
+    return () => controls.removeEventListener("start", onStart);
+  }, [controls]);
+
+  useEffect(() => {
+    if (userMoved.current || !controls) return;
+    const cam = camera as THREE.PerspectiveCamera;
+    cam.position.set(position[0], position[1], position[2]);
+    cam.near = near;
+    cam.far = far;
+    cam.updateProjectionMatrix();
+    controls.target.set(target[0], target[1], target[2]);
+    controls.update();
+  }, [camera, controls, position, target, near, far]);
+
+  return null;
+}
+
 export default function PointCloudLayout({ id, data, schema }: PointCloudLayoutProps) {
   const nodeOutput = useNodeOutput(id) as
     | { fields?: CloudFields; status?: string }
@@ -137,7 +185,8 @@ export default function PointCloudLayout({ id, data, schema }: PointCloudLayoutP
   const bbox = fields.bbox || null;
   const pointSize = Math.max(0.5, Number(data.point_size) || 1.5);
 
-  // Camera framing from the bbox (recompute → remount Canvas via key).
+  // Camera framing from the bbox — consumed by CameraRig, which applies it only
+  // until the user first orbits (no Canvas remount; the view is never reset).
   const cam = useMemo(() => {
     if (!bbox) return null;
     const [mn, mx] = bbox;
@@ -233,8 +282,12 @@ export default function PointCloudLayout({ id, data, schema }: PointCloudLayoutP
               its 300x150 <canvas> default (the L-gap). Resizing the box updates
               `dims` (ResizeObserver) → the canvas follows in lockstep. */}
           {ready ? (
+            // NO `key` here: a changing key would remount the whole Canvas on
+            // every new cloud (the live map streams a fresh one every N frames)
+            // and reset OrbitControls to the default view. The geometry updates
+            // in place via PointsScene's useMemo; CameraRig frames it only until
+            // the user first orbits, then leaves the viewpoint alone.
             <Canvas
-              key={fields.positions_b64?.slice(0, 24)}
               style={{ width: "100%", height: "100%", display: "block" }}
               dpr={[1, 1.5]}
               gl={{ antialias: true, powerPreference: "low-power" }}
@@ -247,7 +300,13 @@ export default function PointCloudLayout({ id, data, schema }: PointCloudLayoutP
                 centres={fields.camera_centres}
                 pointSize={pointSize}
               />
-              <OrbitControls makeDefault target={cam!.center} enableDamping={false} />
+              <CameraRig
+                position={cam!.position}
+                target={cam!.center}
+                near={cam!.near}
+                far={cam!.far}
+              />
+              <OrbitControls makeDefault enableDamping={false} />
             </Canvas>
           ) : (
             <div className="absolute inset-0 flex items-center justify-center text-[10px] text-gray-600">

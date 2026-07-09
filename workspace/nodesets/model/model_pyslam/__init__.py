@@ -111,6 +111,13 @@ log = logging.getLogger("agentcanvas.pyslam")
 # correct per-worker isolation — each replicated worker is its own subprocess.
 _NODESET: ModelPySlamNodeSet | None = None
 
+# Per-node call counters for get_map's ``stream_every`` throttle (live in-loop
+# map streaming). Keyed by graph node id; the executor fires a fresh node
+# instance each step, so the counter can't live on the instance. Only the
+# throttled (in-loop) get_map node touches this — the default stream_every=0
+# (after-loop / one-shot) never counts.
+_GETMAP_COUNTERS: dict[str, int] = {}
+
 
 # ── payload decoding (mirrors model_detany3d: accept ndarray or path) ──────
 
@@ -408,11 +415,23 @@ class PySlamGetMapTool(BaseCanvasNode):
 
     node_type = "model_pyslam__get_map"
     display_name = "pySLAM: Get Map"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="indigo")
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="indigo",
+        config_fields=[
+            ConfigField(
+                "stream_every", "text",
+                label="Stream every N frames (0 = one-shot / after-loop; N>0 = live in-loop)",
+                default="0",
+            ),
+        ],
+    )
     description = (
         "Export the current sparse map (3-D landmarks + keyframes) to a file and "
         "return its path (a handle). Consumers load the handle on demand rather "
-        "than receiving megabytes of points inline on every wire."
+        "than receiving megabytes of points inline on every wire. Set "
+        "stream_every=N>0 to fire this node inside the loop and export only every "
+        "Nth frame — a live-growing map for pointCloudViewer without dumping the "
+        "full map every step (skipped frames return an empty handle, cheaply)."
     )
     category = "tool"
     icon = "Boxes"
@@ -431,6 +450,20 @@ class PySlamGetMapTool(BaseCanvasNode):
         ns = self._nodeset or _NODESET
         if ns is None or ns._session is None or not ns._session.is_built:
             return {"map_handle": "", "num_points": 0, "num_keyframes": 0}
+        # stream_every throttle: when >0 (live in-loop streaming) only export the
+        # map every Nth firing; skipped firings return an empty handle with no
+        # container round-trip / disk dump, and the pointCloudViewer sink no-ops
+        # on an empty cloud (keeps the last render). 0 = export every call.
+        try:
+            every = int(self.config.get("stream_every") or 0)
+        except (TypeError, ValueError):
+            every = 0
+        if every > 0:
+            key = getattr(self, "node_id", "") or "_"
+            n = _GETMAP_COUNTERS.get(key, 0) + 1
+            _GETMAP_COUNTERS[key] = n
+            if n % every != 0:
+                return {"map_handle": "", "num_points": 0, "num_keyframes": 0}
         try:
             result = ns._session.get_map()
             return {

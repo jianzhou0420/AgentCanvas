@@ -478,6 +478,20 @@ def pose_translation(pose: Any) -> list[float] | None:
     return None
 
 
+def _auto_plane(pts: Any) -> str:
+    """Pick the top-down projection plane from the data: drop the axis of
+    smallest spread (the near-constant vertical for a floor-level walk) and keep
+    the other two in canonical X<Y<Z order. Frame-agnostic — works whether the
+    trajectory sits in pySLAM's camera frame (vertical ~= Y) or an aligned mocap
+    world frame (TUM fr3: vertical = Z). Falls back to ``XZ`` under 3 points."""
+    arr = np.asarray([p[:3] for p in (pts or []) if p is not None and len(p) >= 3], dtype=float)
+    if len(arr) < 3:
+        return "XZ"
+    drop = int(np.argmin(arr.std(axis=0)))
+    keep = [i for i in (0, 1, 2) if i != drop]
+    return "XYZ"[keep[0]] + "XYZ"[keep[1]]
+
+
 def _project_axes(pts: Any, axes: str = "XZ") -> list[list[float]]:
     """Project a list/array of ``[x, y, z]`` onto a 2-D plane (e.g. ``"XZ"`` =
     top-down bird's-eye). Vectorised for ndarray input (point scatters)."""
@@ -493,13 +507,65 @@ def _project_axes(pts: Any, axes: str = "XZ") -> list[list[float]]:
     return out
 
 
+def _umeyama_se3(src: Any, dst: Any) -> tuple[Any, Any]:
+    """Rigid (SE3, no scale) fit ``R, t`` minimising ``||R@src_i + t - dst_i||``.
+
+    Classic Kabsch/Umeyama with the reflection guard. ``src``/``dst`` are Nx3.
+    RGB-D trajectories are metric, so no scale term (that is the monocular case,
+    handled by ``eval_trajectory``'s Sim3 path, not the viewer)."""
+    src = np.asarray(src, dtype=float)
+    dst = np.asarray(dst, dtype=float)
+    mu_s = src.mean(axis=0)
+    mu_d = dst.mean(axis=0)
+    h = (src - mu_s).T @ (dst - mu_d)
+    u, _, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    r = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    t = mu_d - r @ mu_s
+    return r, t
+
+
+def align_est_to_gt(est_xyz: Any, gt_xyz: Any) -> list[list[float]]:
+    """Transform the estimated trajectory into the ground-truth frame.
+
+    est and GT live in different coordinate frames (pySLAM's first-camera frame
+    vs the env/mocap world frame), so a raw overlay never lines up. Following the
+    standard ATE convention — GT is the fixed reference, the *estimate* is aligned
+    onto it — we fit an SE3 over the frame-paired prefix (``zip`` of the two
+    histories) and apply it to **all** est points. Needs ≥3 pairs; otherwise the
+    est is returned unchanged. This mirrors what ``eval_trajectory`` does before
+    computing ATE, so the overlay and the reported error agree."""
+    est = [p for p in (est_xyz or []) if p is not None and len(p) >= 3]
+    gt = [p for p in (gt_xyz or []) if p is not None and len(p) >= 3]
+    pairs = min(len(est), len(gt))
+    if pairs < 3:
+        return [[float(p[0]), float(p[1]), float(p[2])] for p in est]
+    r, t = _umeyama_se3([p[:3] for p in est[:pairs]], [p[:3] for p in gt[:pairs]])
+    arr = np.asarray([p[:3] for p in est], dtype=float)
+    return ((arr @ r.T) + t).tolist()
+
+
 def serialize_trajectory_for_viewer(
-    est_xyz: Any, gt_xyz: Any = None, axes: str = "XZ"
+    est_xyz: Any, gt_xyz: Any = None, axes: str = "XZ", align: bool = False
 ) -> dict:
     """Build the ``trajectoryViewer`` payload from accumulated ``[x, y, z]``
     centres. Returns ``{est_path, gt_path, current, axes}`` — 2-D polylines the
-    SVG layout auto-fits to its viewBox. ``current`` marks the latest pose."""
-    est = _project_axes(est_xyz or [], axes)
+    SVG layout auto-fits to its viewBox. ``current`` marks the latest pose.
+
+    ``align=True`` fits the estimate into the GT frame (SE3, see
+    :func:`align_est_to_gt`) before projecting, so the blue estimate overlays the
+    grey ground truth and the visible gap *is* the drift. With no GT (or <3
+    pairs) it is a no-op. The alignment is recomputed from scratch each call, so
+    a live-growing overlay wobbles early (few pairs) then settles.
+
+    ``axes="auto"`` (the default for the sink) chooses the top-down plane from
+    the data — dropping the near-constant vertical axis — because aligning into
+    an arbitrary world frame means a fixed ``XZ`` is no longer necessarily
+    top-down. The resolved plane is returned in ``axes``."""
+    est_src = align_est_to_gt(est_xyz, gt_xyz) if (align and gt_xyz) else (est_xyz or [])
+    if axes == "auto":
+        axes = _auto_plane(list(est_src) + list(gt_xyz or []))
+    est = _project_axes(est_src, axes)
     gt = _project_axes(gt_xyz or [], axes)
     current = est[-1] if est else (gt[-1] if gt else None)
     return {"est_path": est, "gt_path": gt, "current": current, "axes": axes}
