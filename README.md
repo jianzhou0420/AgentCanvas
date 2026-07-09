@@ -43,9 +43,9 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 ## What's NEW!
 
-[![pySLAM streaming SLAM on TUM RGB-D — live camera trajectory vs ground truth, a 3-D map densifying in real time, then an orbit of the finished map](docs/assets/videos/pyslam-tum-slam-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html)
-
 - [2026/07] 🎥 **pySLAM classic-SLAM demo** — pySLAM as the protagonist on TUM RGB-D: a streaming-replay env feeds a benchmark sequence frame-by-frame into a live SLAM session — the estimated camera trajectory fitted onto ground truth top-down and a sparse 3-D map densifying in real time, no simulator or policy, CPU-only. Full clip + walkthrough on the [pySLAM nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html).
+
+  [![pySLAM streaming SLAM on TUM RGB-D — live camera trajectory vs ground truth, a 3-D map densifying in real time, then an orbit of the finished map](docs/assets/videos/pyslam-tum-slam-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html)
 - [2026/07] 🔥 **Edit node source from the canvas** — the new Source tab shows the selected node's scoped slice of its nodeset source (globals, referenced functions, the class itself) and splices edits back with syntax-checked hot-reload. PR: [#5](https://github.com/jianzhou0420/AgentCanvas/pull/5).
 - [2026/07] 🎉 **First public release** — AgentCanvas is open-sourced as a research preview (pre-1.0). Docs: [jianzhou0420.github.io/AgentCanvas](https://jianzhou0420.github.io/AgentCanvas/).
 
