@@ -1,6 +1,6 @@
 {
   "name": "pySLAM Probe (VLN-CE, pure policy)",
-  "description": "A pure-policy VLN-CE navigator (CMA via policy_adapter_vlnce, NO LLM) with pySLAM observing the RGB-D stream. Cloned from vln/verified/straightforward.json; the only additions are four model_pyslam nodes: reset (fires once at episode start), track (per-step, consumes observe_loop's rgb+depth → SLAM pose), and get_trajectory / get_map after the loop (final_stop). The CMA policy drives navigation; pySLAM passively builds a map + trajectory alongside so we can see what the SLAM reconstructs from a policy-driven walk. Camera intrinsics are auto-aligned: env_habitat's observe emits an intrinsics port {fx,fy,cx,cy,width,height} wired into pyslam_reset, so the pinhole matches the real RGB sensor exactly; the track node resamples depth onto the RGB grid when the env renders them at different resolutions (CMA's RGB 224 vs depth 256). model_pyslam runs in local mode via the container bridge (docker agentcanvas/pyslam:cpu-fixed), so this graph runs end-to-end through the GraphExecutor.",
+  "description": "A pure-policy VLN-CE navigator (CMA via policy_adapter_vlnce, NO LLM) with pySLAM observing the RGB-D stream. Cloned from vln/verified/straightforward.json; the only additions are four model_pyslam nodes: reset (fires once at episode start), track (per-step, consumes observe_loop's rgb+depth → SLAM pose), and get_trajectory / get_map after the loop (final_stop). The CMA policy drives navigation; pySLAM passively builds a map + trajectory alongside so we can see what the SLAM reconstructs from a policy-driven walk. Camera intrinsics are auto-aligned: env_habitat's observe emits an intrinsics port {fx,fy,cx,cy,width,height} wired into pyslam_reset, so the pinhole matches the real RGB sensor exactly; the track node resamples depth onto the RGB grid when the env renders them at different resolutions (CMA's RGB 224 vs depth 256). model_pyslam runs in local mode via the container bridge (docker agentcanvas/pyslam:cpu-fixed), so this graph runs end-to-end through the GraphExecutor. Two built-in geometry viewers make the SLAM visible: trajectoryViewer_slam draws the estimated camera path (blue) vs ground truth (grey) top-down, growing live per step from track's pose + observe_loop's gt pose (a pure in-loop sink); pointCloudViewer_slam renders the get_map point cloud — the sparse map — in a 3-D orbit view once the loop finishes (an after-loop band node). The map scatter is intentionally NOT wired into the trajectory view: get_map fires post-loop, and mixing an after-loop input with the live per-step poses would pull the trajectory node into the after-loop band (connectivity rule in graph_def.py).",
   "presetId": "pyslam_slam_probe",
   "step_budget": 100,
   "nodes": [
@@ -221,6 +221,20 @@
       "label": "slam_eval_metrics",
       "position": { "x": 2520, "y": 940 },
       "config": { "portName": "slam_eval_metrics", "wireType": "TEXT" }
+    },
+    {
+      "id": "trajectoryViewer_slam",
+      "type": "trajectoryViewer",
+      "label": "SLAM Trajectory (live)",
+      "position": { "x": 2820, "y": 520 },
+      "config": { "axes": "XZ", "max_points": "5000" }
+    },
+    {
+      "id": "pointCloudViewer_slam",
+      "type": "pointCloudViewer",
+      "label": "SLAM Map (3-D)",
+      "position": { "x": 2820, "y": 820 },
+      "config": { "max_points": "30000", "point_size": "1.5" }
     }
   ],
   "edges": [
@@ -269,6 +283,10 @@
     { "id": "e_pyslam_traj_gt_to_eval", "source": "pyslam_get_traj", "sourceHandle": "gt_poses", "target": "pyslam_eval", "targetHandle": "poses_gt" },
     { "id": "e_pyslam_eval_ate_to_out", "source": "pyslam_eval", "sourceHandle": "ate_rmse", "target": "output_port__slam_ate", "targetHandle": "value" },
     { "id": "e_pyslam_eval_rpe_to_out", "source": "pyslam_eval", "sourceHandle": "rpe_rmse", "target": "output_port__slam_rpe", "targetHandle": "value" },
-    { "id": "e_pyslam_eval_metrics_to_out", "source": "pyslam_eval", "sourceHandle": "metrics", "target": "output_port__slam_eval_metrics", "targetHandle": "value" }
+    { "id": "e_pyslam_eval_metrics_to_out", "source": "pyslam_eval", "sourceHandle": "metrics", "target": "output_port__slam_eval_metrics", "targetHandle": "value" },
+
+    { "id": "e_track_pose_to_trajviewer", "source": "pyslam_track", "sourceHandle": "pose", "target": "trajectoryViewer_slam", "targetHandle": "pose" },
+    { "id": "e_observeloop_pose_to_trajviewer_gt", "source": "observe_loop", "sourceHandle": "pose", "target": "trajectoryViewer_slam", "targetHandle": "gt_pose" },
+    { "id": "e_getmap_handle_to_pcviewer", "source": "pyslam_get_map", "sourceHandle": "map_handle", "target": "pointCloudViewer_slam", "targetHandle": "cloud" }
   ]
 }

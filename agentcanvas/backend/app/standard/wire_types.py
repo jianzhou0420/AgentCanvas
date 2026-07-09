@@ -441,3 +441,154 @@ def base64_to_depth(b64: str) -> np.ndarray:
     buf = io.BytesIO(base64.b64decode(b64))
     img = Image.open(buf).convert("L")
     return np.array(img, dtype=np.float32) / 255.0
+
+
+# ── Geometry viewers (trajectory / point cloud) ──
+#
+# pySLAM (and any future mapping nodeset) produce two heavy geometry products
+# the built-in image/text/metric viewers can't show: a growing camera
+# trajectory (a list of 4x4 poses) and a fused 3-D point cloud (written to an
+# ``.npz`` handle on disk, per the heavy-geometry-on-disk convention). These
+# helpers turn those into the compact ``viewer_data`` payloads the
+# ``trajectoryViewer`` (SVG bird's-eye) and ``pointCloudViewer`` (three.js
+# orbit) layouts consume. All pure functions — no model / GPU / import-boundary
+# dependency — so they unit-test with a synthetic array or ``.npz``.
+
+_AXIS = {"X": 0, "Y": 1, "Z": 2}
+
+
+def pose_translation(pose: Any) -> list[float] | None:
+    """Extract a world-space ``[x, y, z]`` centre from a pose in any of the
+    shapes that flow on the canvas: a 4x4 SE3 matrix (list-of-lists or ndarray,
+    translation in the last column — pySLAM's estimated ``track`` pose), a POSE
+    dict ``{"position": [x, y, z], ...}`` (env ``observe`` ground truth), or a
+    bare 3-vector. Returns ``None`` for anything unrecognisable."""
+    if pose is None:
+        return None
+    if isinstance(pose, dict):
+        p = pose.get("position")
+        if p is not None and len(p) >= 3:
+            return [float(p[0]), float(p[1]), float(p[2])]
+        return None
+    m = np.asarray(pose, dtype=float)
+    if m.shape == (4, 4):
+        return [float(m[0, 3]), float(m[1, 3]), float(m[2, 3])]
+    if m.ndim == 1 and m.size >= 3:
+        return [float(m[0]), float(m[1]), float(m[2])]
+    return None
+
+
+def _project_axes(pts: Any, axes: str = "XZ") -> list[list[float]]:
+    """Project a list/array of ``[x, y, z]`` onto a 2-D plane (e.g. ``"XZ"`` =
+    top-down bird's-eye). Vectorised for ndarray input (point scatters)."""
+    axes = axes if axes in ("XZ", "XY", "YZ", "ZX", "YX", "ZY") else "XZ"
+    ia, ib = _AXIS[axes[0]], _AXIS[axes[1]]
+    arr = np.asarray(pts, dtype=float)
+    if arr.ndim == 2 and arr.shape[1] >= 3:
+        return arr[:, [ia, ib]].tolist()
+    out: list[list[float]] = []
+    for p in pts or []:
+        if p is not None and len(p) >= 3:
+            out.append([float(p[ia]), float(p[ib])])
+    return out
+
+
+def serialize_trajectory_for_viewer(
+    est_xyz: Any, gt_xyz: Any = None, axes: str = "XZ"
+) -> dict:
+    """Build the ``trajectoryViewer`` payload from accumulated ``[x, y, z]``
+    centres. Returns ``{est_path, gt_path, current, axes}`` — 2-D polylines the
+    SVG layout auto-fits to its viewBox. ``current`` marks the latest pose."""
+    est = _project_axes(est_xyz or [], axes)
+    gt = _project_axes(gt_xyz or [], axes)
+    current = est[-1] if est else (gt[-1] if gt else None)
+    return {"est_path": est, "gt_path": gt, "current": current, "axes": axes}
+
+
+def _load_pointcloud(cloud: Any, cap: int = 30000) -> tuple[Any, Any]:
+    """Load + uniformly subsample a point cloud to ``cap`` points.
+
+    Accepts an ``.npz`` handle path (``points`` (Nx3) + optional ``colors``,
+    the schema pySLAM's get_map / get_dense_map / reconstruct handles write) or
+    an inline ``Nx3``/``Nx6`` array. Returns ``(points float32 Nx3, colors
+    uint8 Nx3 | None)``; ``(None, None)`` when empty / unreadable. Colours are
+    normalised to ``uint8`` (floats in ``[0,1]`` are scaled up)."""
+    import os
+
+    pts = None
+    cols = None
+    if isinstance(cloud, str):
+        if not cloud or cloud.startswith("ERROR") or not os.path.exists(cloud):
+            return None, None
+        data = np.load(cloud)
+        if "points" not in data:
+            return None, None
+        pts = np.asarray(data["points"], dtype=np.float32)
+        if "colors" in data:
+            cols = np.asarray(data["colors"])
+    else:
+        arr = np.asarray(cloud, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] < 3:
+            return None, None
+        pts = arr[:, :3]
+        if arr.shape[1] >= 6:
+            cols = arr[:, 3:6]
+    if pts is None or len(pts) == 0:
+        return None, None
+    n = len(pts)
+    if n > cap > 0:
+        idx = np.linspace(0, n - 1, cap).astype(np.int64)  # uniform stride
+        pts = pts[idx]
+        if cols is not None:
+            cols = cols[idx]
+    if cols is not None:
+        cols = np.asarray(cols)
+        if cols.ndim == 2 and cols.shape[1] >= 3:
+            cols = cols[:, :3]
+            if cols.dtype != np.uint8:
+                cmax = float(cols.max()) if cols.size else 1.0
+                if cmax <= 1.0 + 1e-6:
+                    cols = (np.clip(cols, 0.0, 1.0) * 255).astype(np.uint8)
+                else:
+                    cols = np.clip(cols, 0, 255).astype(np.uint8)
+        else:
+            cols = None
+    return (
+        np.ascontiguousarray(pts, dtype=np.float32),
+        None if cols is None else np.ascontiguousarray(cols, dtype=np.uint8),
+    )
+
+
+def serialize_pointcloud_for_viewer(cloud: Any, cap: int = 30000) -> dict:
+    """Build the ``pointCloudViewer`` payload. Returns ``{positions_b64,
+    colors_b64, count, bbox}`` where ``positions_b64`` is a base64 native-endian
+    (little-endian on x86/ARM — what the browser's ``Float32Array`` reads)
+    ``float32`` XYZ block and ``colors_b64`` a ``uint8`` RGB block (or ``None``).
+    Sending typed arrays base64-packed avoids a ~180k-number JSON blob over the
+    WebSocket for a 30k-point cloud."""
+    import base64
+
+    pts, cols = _load_pointcloud(cloud, cap)
+    if pts is None:
+        return {"positions_b64": "", "colors_b64": None, "count": 0, "bbox": None}
+    positions_b64 = base64.b64encode(pts.tobytes()).decode("ascii")
+    colors_b64 = (
+        base64.b64encode(cols.tobytes()).decode("ascii") if cols is not None else None
+    )
+    bbox = [pts.min(axis=0).tolist(), pts.max(axis=0).tolist()]
+    return {
+        "positions_b64": positions_b64,
+        "colors_b64": colors_b64,
+        "count": len(pts),
+        "bbox": bbox,
+    }
+
+
+def project_pointcloud_2d(cloud: Any, axes: str = "XZ", cap: int = 5000) -> list[list[float]]:
+    """2-D projected scatter of a point cloud for the ``trajectoryViewer``
+    bird's-eye overlay (cheap — capped low; the full cloud goes to the 3-D
+    viewer). Returns ``[[u, v], ...]`` or ``[]``."""
+    pts, _ = _load_pointcloud(cloud, cap)
+    if pts is None:
+        return []
+    return _project_axes(pts, axes)
