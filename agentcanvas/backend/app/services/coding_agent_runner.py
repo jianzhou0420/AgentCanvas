@@ -1,11 +1,11 @@
-"""Coding-agent run manager — owns one agent20 run (auto_host + driver).
+"""Coding-agent run manager — owns one beta-coding-agent run (auto_host + driver).
 
 Backs the Coding-Agent Monitor tab. One run at a time (v1, single worker):
 ``start()`` spawns a dedicated ``env_habitat`` auto_host (via ``BaseServer``,
-dynamic free port, PDEATHSIG) and then the agent20 driver
-(``scripts/agent20/run_episodes.py``) as a process-group child; ``stop()``
+dynamic free port, PDEATHSIG) and then the beta-coding-agent driver
+(``beta-coding-agent/run_episodes.py``) as a process-group child; ``stop()``
 tears both down (driver first). Run state beyond process liveness is derived
-from the driver's own artifacts under ``outputs/agent20/{run_name}/`` —
+from the driver's own artifacts under ``outputs/beta-coding-agent/{run_name}/`` —
 ``summary.json`` for finished episodes, ``episode_{i}.jsonl`` presence for the
 active one — so the service holds no duplicate bookkeeping that could drift.
 
@@ -30,8 +30,8 @@ from typing import Any
 log = logging.getLogger("agentcanvas.coding-agent")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DRIVER_PATH = REPO_ROOT / "scripts" / "agent20" / "run_episodes.py"
-OUTPUT_ROOT = REPO_ROOT / "outputs" / "agent20"
+DRIVER_PATH = REPO_ROOT / "beta-coding-agent" / "run_episodes.py"
+OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 
 NODESET_NAME = "env_habitat"
 
@@ -43,7 +43,7 @@ def _free_port() -> int:
 
 
 class CodingAgentRunner:
-    """Singleton service (lifespan-owned) managing at most one agent20 run."""
+    """Singleton service (lifespan-owned) managing at most one beta-coding-agent run."""
 
     def __init__(self, registry: Any) -> None:
         self._registry = registry
@@ -211,6 +211,7 @@ class CodingAgentRunner:
             sorted(
                 int(p.stem.split("_")[1])
                 for p in run_dir.glob("episode_*.jsonl")
+                if p.stem.split("_")[1].isdigit()
             )
             if run_dir is not None and run_dir.exists()
             else []

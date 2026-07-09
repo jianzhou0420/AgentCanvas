@@ -1,4 +1,4 @@
-"""Coding-Agent Monitor API — control + live-log surface for agent20 runs.
+"""Coding-Agent Monitor API — control + live-log surface for beta-coding-agent runs.
 
 Thin shell over ``services.coding_agent_runner.CodingAgentRunner``. Live text
 comes from the driver's per-episode trajectory JSONL (flushed per event, so
@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from ...services.coding_agent_runner import OUTPUT_ROOT
 from ...state import get_services
 
 router = APIRouter()
@@ -69,6 +70,87 @@ async def stop() -> dict:
 @router.get("/status")
 async def status() -> dict:
     return _runner().status()
+
+
+@router.get("/runs")
+async def list_runs() -> dict:
+    """All run dirs under outputs/beta-coding-agent/ (UI- and CLI-launched alike)."""
+    if not OUTPUT_ROOT.exists():
+        return {"runs": []}
+    runs = []
+    for d in OUTPUT_ROOT.iterdir():
+        if not d.is_dir():
+            continue
+        eps = sorted(int(p.stem.split("_")[1]) for p in d.glob("episode_*.jsonl")
+                     if p.stem.split("_")[1].isdigit())
+        has_summary = (d / "summary.json").exists()
+        if not eps and not has_summary:
+            continue  # e.g. auto_host log folders — not a run
+        entry: dict = {"name": d.name, "mtime": d.stat().st_mtime, "episodes": eps}
+        if has_summary:
+            try:
+                data = json.loads((d / "summary.json").read_text())
+                agg = data.get("aggregate") or {}
+                cfg = data.get("config") or {}
+                entry.update(
+                    success=agg.get("success"),
+                    episode_count=agg.get("episode_count"),
+                    model=cfg.get("model"),
+                    skill=cfg.get("skill"),
+                )
+            except ValueError:
+                pass
+        runs.append(entry)
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return {"runs": runs}
+
+
+@router.get("/runs/{run_name}/summary")
+async def run_summary(run_name: str) -> dict:
+    """Per-episode outcomes for one run — same shape the live status uses."""
+    runner = _runner()
+    try:
+        run_dir = runner.run_dir(run_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if run_dir is None or not run_dir.exists():
+        raise HTTPException(404, f"unknown run: {run_name}")
+
+    started = sorted(int(p.stem.split("_")[1]) for p in run_dir.glob("episode_*.jsonl")
+                     if p.stem.split("_")[1].isdigit())
+    episodes: list[dict] = []
+    aggregate = None
+    config: dict = {}
+    summary_path = run_dir / "summary.json"
+    if summary_path.exists():
+        try:
+            data = json.loads(summary_path.read_text())
+            aggregate = data.get("aggregate")
+            cfg = data.get("config") or {}
+            config = {k: cfg.get(k) for k in ("split", "model", "skill", "max_turns", "episodes")}
+            for e in data.get("episodes", []):
+                m = e.get("metrics") or {}
+                a = e.get("agent") or {}
+                episodes.append(
+                    {
+                        "index": e.get("index"),
+                        "success": m.get("success"),
+                        "spl": m.get("spl"),
+                        "distance_to_goal": m.get("distance_to_goal"),
+                        "env_steps": a.get("env_steps"),
+                        "called_stop": a.get("called_stop"),
+                        "error": e.get("error"),
+                    }
+                )
+        except ValueError:
+            pass
+    return {
+        "run_name": run_name,
+        "started_episodes": started,
+        "episodes": episodes,
+        "aggregate": aggregate,
+        "config": config,
+    }
 
 
 @router.get("/runs/{run_name}/episode/{index}/textlog")
