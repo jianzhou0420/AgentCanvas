@@ -14,8 +14,8 @@ transformers, qwen_vl_utils) live behind lazy imports and only load inside
 the server subprocess.
 
 FM-template alignment (2026-07-05, second pass): model identity is node
-config — ``model_dir`` (blank = ``$QWENVL_MODEL_DIR`` or the repo-anchored
-3B default), engines in a lazy registry keyed by the resolved dir (the old
+config — ``model_dir`` (default Qwen2.5-VL-3B-Instruct), engines in a lazy
+registry keyed by the resolved id (the old
 module-global bundle ignored a changed dir), load-failure latch (empty text
 + ``degraded`` self-log), generation knobs on the node UI. The single-flight
 generate lock is per-engine now (one in-flight generate bounds peak VRAM
@@ -31,7 +31,7 @@ per subprocess on first ``initialize()`` and live until teardown.
 
 Model: Qwen2.5-VL-3B-Instruct (single-3090 budget; co-hosts with DetAny3D +
 Habitat, so 3B not 7B; config/react-eqa.yaml specifies 3B).
-Point ``model_dir`` (or ``$QWENVL_MODEL_DIR``) at a 7B checkout on a bigger
+Point ``model_dir`` at a 7B / 32B / 72B checkpoint on a bigger
 GPU.
 
 last updated: 2026-07-05
@@ -40,7 +40,6 @@ last updated: 2026-07-05
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Any, ClassVar
 
@@ -56,24 +55,16 @@ from app.components import (
 log = logging.getLogger("agentcanvas.vlm_qwen2_5_vl")
 
 
-def _find_repo_root() -> str:
-    """Walk upward from this file until a dir containing ``data/`` is found.
+_DEFAULT_MODEL_DIR = "Qwen/Qwen2.5-VL-3B-Instruct"
 
-    A fixed ``../../..`` breaks when this file is served from a workspace
-    OVERLAY copy; fall back to the auto_host server CWD's repo root.
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    for up in range(2, 7):
-        cand = os.path.normpath(os.path.join(here, *[".."] * up))
-        if os.path.isdir(os.path.join(cand, "data")):
-            return cand
-    return os.path.normpath(os.path.join(os.getcwd(), "..", ".."))
-
-
-_DEFAULT_MODEL_DIR = os.environ.get(
-    "QWENVL_MODEL_DIR",
-    os.path.join(_find_repo_root(), "data", "qwen2_5_vl", "Qwen2.5-VL-3B-Instruct"),
-)
+# Curated Qwen2.5-VL Instruct sizes (HF ids; from_pretrained downloads on first
+# use, or resolves a local dir if model_dir is set to a path).
+_MODEL_OPTIONS = [
+    {"value": "Qwen/Qwen2.5-VL-3B-Instruct", "label": "Qwen2.5-VL 3B Instruct"},
+    {"value": "Qwen/Qwen2.5-VL-7B-Instruct", "label": "Qwen2.5-VL 7B Instruct"},
+    {"value": "Qwen/Qwen2.5-VL-32B-Instruct", "label": "Qwen2.5-VL 32B Instruct"},
+    {"value": "Qwen/Qwen2.5-VL-72B-Instruct", "label": "Qwen2.5-VL 72B Instruct"},
+]
 
 
 class _QwenEngine:
@@ -96,7 +87,7 @@ class _QwenEngine:
 
     @classmethod
     def get(cls, model_dir: str = "") -> "_QwenEngine":
-        resolved = os.path.normpath(model_dir or _DEFAULT_MODEL_DIR)
+        resolved = model_dir or _DEFAULT_MODEL_DIR
         key = (resolved,)
         with cls._registry_lock:
             if key not in cls._instances:
@@ -242,18 +233,17 @@ class GenerateNode(BaseCanvasNode):
         color="violet",
         config_fields=[
             ConfigField(
-                "model_dir", "text",
-                "Model directory (blank = $QWENVL_MODEL_DIR or the 3B default)",
-                default="",
+                "model_dir", "select", label="Model",
+                options=list(_MODEL_OPTIONS), default=_DEFAULT_MODEL_DIR,
             ),
             ConfigField(
                 "max_new_tokens", "slider", "Max new tokens",
                 default=2048, min=128, max=4096, step=128,
             ),
-            ConfigField("temperature", "text", "Temperature (0 = greedy)", default=0.7),
-            ConfigField("top_p", "text", "Top-p", default=0.8),
-            ConfigField("top_k", "text", "Top-k", default=100),
-            ConfigField("repetition_penalty", "text", "Repetition penalty", default=1.05),
+            ConfigField("temperature", "slider", "Temperature (0 = greedy)", default=0.7, min=0.0, max=2.0, step=0.05),
+            ConfigField("top_p", "slider", "Top-p", default=0.8, min=0.0, max=1.0, step=0.05),
+            ConfigField("top_k", "slider", "Top-k", default=100, min=0, max=200, step=1),
+            ConfigField("repetition_penalty", "slider", "Repetition penalty", default=1.05, min=1.0, max=2.0, step=0.05),
         ],
     )
 

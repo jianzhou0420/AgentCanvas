@@ -18,8 +18,7 @@ Dependency note: the SmolVLM processor requires the ``num2words`` package (it
 spells out numbers in the prompt template); it is installed in the ``ac-fm`` env.
 Without it the engine load latches ``degraded``.
 
-FM-template alignment: model identity is node config — ``model_id`` (blank =
-``$SMOLVLM2_MODEL_ID`` or the 256M-Video default), engines in a lazy registry
+FM-template alignment: model identity is node config — ``model_id`` (default SmolVLM2-256M-Video-Instruct), engines in a lazy registry
 keyed by the resolved id, load-failure latch, generation knobs on the node UI.
 The single-flight generate lock is per-engine.
 
@@ -31,7 +30,7 @@ CPU falls back to float32. Override the env with $SMOLVLM2_PYTHON. This file mus
 stay Python-3.8-parseable.
 
 Model default: SmolVLM2-256M-Video-Instruct (tiny; co-hosts trivially). Point
-``model_id`` (or $SMOLVLM2_MODEL_ID) at the 500M / 2.2B checkpoints for quality.
+``model_id`` at the 500M / 2.2B checkpoints for quality.
 
 Load: POST /api/components/nodesets/vlm_smolvlm2/load?mode=server
 
@@ -39,7 +38,6 @@ last updated: 2026-07-08
 """
 
 import logging
-import os
 import threading
 from typing import Any, ClassVar
 
@@ -54,8 +52,15 @@ from app.components import (
 
 log = logging.getLogger("agentcanvas.vlm_smolvlm2")
 
-_MODEL_ID_DEFAULT = os.environ.get(
-    "SMOLVLM2_MODEL_ID", "HuggingFaceTB/SmolVLM2-256M-Video-Instruct")
+_MODEL_ID_DEFAULT = "HuggingFaceTB/SmolVLM2-256M-Video-Instruct"
+
+# Curated SmolVLM2 sizes (note: 256M/500M are -Video-Instruct, 2.2B is bare
+# -Instruct).
+_MODEL_OPTIONS = [
+    {"value": "HuggingFaceTB/SmolVLM2-256M-Video-Instruct", "label": "SmolVLM2 256M (Video)"},
+    {"value": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct", "label": "SmolVLM2 500M (Video)"},
+    {"value": "HuggingFaceTB/SmolVLM2-2.2B-Instruct", "label": "SmolVLM2 2.2B"},
+]
 
 
 class _SmolVLM2Engine:
@@ -210,11 +215,11 @@ class GenerateNode(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("model_id", "text", "HF model id (blank = $SMOLVLM2_MODEL_ID or the 256M-Video default)", default=""),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default="HuggingFaceTB/SmolVLM2-256M-Video-Instruct"),
             ConfigField("max_new_tokens", "slider", "Max new tokens", default=1024, min=64, max=4096, step=64),
-            ConfigField("temperature", "text", "Temperature (0 = greedy)", default=0.0),
-            ConfigField("top_p", "text", "Top-p", default=1.0),
-            ConfigField("repetition_penalty", "text", "Repetition penalty", default=1.0),
+            ConfigField("temperature", "slider", "Temperature (0 = greedy)", default=0.0, min=0.0, max=2.0, step=0.05),
+            ConfigField("top_p", "slider", "Top-p", default=1.0, min=0.0, max=1.0, step=0.05),
+            ConfigField("repetition_penalty", "slider", "Repetition penalty", default=1.0, min=1.0, max=2.0, step=0.05),
         ],
     )
 

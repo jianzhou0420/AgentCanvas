@@ -16,8 +16,7 @@ attached to the last user turn as chat content blocks and the processor loads it
 via the modern ``apply_chat_template(tokenize=True, return_dict=True)`` path —
 no ``qwen_vl_utils`` dependency.
 
-FM-template alignment: model identity is node config — ``model_id`` (blank =
-``$QWEN3VL_MODEL_ID`` or the 2B-Instruct default), engines in a lazy registry
+FM-template alignment: model identity is node config — ``model_id`` (default Qwen3-VL-2B-Instruct), engines in a lazy registry
 keyed by the resolved id (checkpoints coexist), load-failure latch (empty text +
 ``degraded`` self-log), generation knobs on the node UI. The single-flight
 generate lock is per-engine (one in-flight generate bounds peak VRAM under K
@@ -31,8 +30,7 @@ CPU falls back to float32. Override the env with $QWEN3VL_PYTHON. This file must
 stay Python-3.8-parseable.
 
 Model default: Qwen3-VL-2B-Instruct (lightest; co-hosts with other FM nodesets).
-Point ``model_id`` (or $QWEN3VL_MODEL_ID) at 4B / 8B / a Thinking checkpoint on
-a bigger GPU.
+Point ``model_id`` at 4B / 8B / 32B on a bigger GPU.
 
 Load: POST /api/components/nodesets/vlm_qwen3_vl/load?mode=server
 
@@ -40,7 +38,6 @@ last updated: 2026-07-08
 """
 
 import logging
-import os
 import threading
 from typing import Any, ClassVar
 
@@ -55,7 +52,16 @@ from app.components import (
 
 log = logging.getLogger("agentcanvas.vlm_qwen3_vl")
 
-_MODEL_ID_DEFAULT = os.environ.get("QWEN3VL_MODEL_ID", "Qwen/Qwen3-VL-2B-Instruct")
+_MODEL_ID_DEFAULT = "Qwen/Qwen3-VL-2B-Instruct"
+
+# Curated Qwen3-VL Instruct sizes.
+_MODEL_OPTIONS = [
+    {"value": "Qwen/Qwen3-VL-2B-Instruct", "label": "Qwen3-VL 2B Instruct"},
+    {"value": "Qwen/Qwen3-VL-4B-Instruct", "label": "Qwen3-VL 4B Instruct"},
+    {"value": "Qwen/Qwen3-VL-8B-Instruct", "label": "Qwen3-VL 8B Instruct"},
+    {"value": "Qwen/Qwen3-VL-32B-Instruct", "label": "Qwen3-VL 32B Instruct"},
+    {"value": "Qwen/Qwen3-VL-30B-A3B-Instruct", "label": "Qwen3-VL 30B MoE (A3B)"},
+]
 
 
 class _Qwen3VLEngine:
@@ -211,12 +217,12 @@ class GenerateNode(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("model_id", "text", "HF model id (blank = $QWEN3VL_MODEL_ID or the 2B default)", default=""),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default="Qwen/Qwen3-VL-2B-Instruct"),
             ConfigField("max_new_tokens", "slider", "Max new tokens", default=2048, min=128, max=4096, step=128),
-            ConfigField("temperature", "text", "Temperature (0 = greedy)", default=0.7),
-            ConfigField("top_p", "text", "Top-p", default=0.8),
-            ConfigField("top_k", "text", "Top-k", default=20),
-            ConfigField("repetition_penalty", "text", "Repetition penalty", default=1.0),
+            ConfigField("temperature", "slider", "Temperature (0 = greedy)", default=0.7, min=0.0, max=2.0, step=0.05),
+            ConfigField("top_p", "slider", "Top-p", default=0.8, min=0.0, max=1.0, step=0.05),
+            ConfigField("top_k", "slider", "Top-k", default=20, min=0, max=100, step=1),
+            ConfigField("repetition_penalty", "slider", "Repetition penalty", default=1.0, min=1.0, max=2.0, step=0.05),
         ],
     )
 

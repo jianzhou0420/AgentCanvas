@@ -86,6 +86,39 @@ _BACKEND_DEFAULT = "hub"
 # Set model_id to facebook/dinov3-* for DINOv3 (gated — accept the licence once).
 _HF_MODEL_DEFAULT = "facebook/dinov2-with-registers-small"
 
+# torch.hub DINOv2 backbone entry names (from facebookresearch/dinov2 hubconf).
+_HUB_MODEL_OPTIONS = [
+    {"value": "dinov2_vits14_reg", "label": "ViT-S/14 + registers"},
+    {"value": "dinov2_vitb14_reg", "label": "ViT-B/14 + registers"},
+    {"value": "dinov2_vitl14_reg", "label": "ViT-L/14 + registers"},
+    {"value": "dinov2_vitg14_reg", "label": "ViT-g/14 + registers"},
+    {"value": "dinov2_vits14", "label": "ViT-S/14"},
+    {"value": "dinov2_vitb14", "label": "ViT-B/14"},
+    {"value": "dinov2_vitl14", "label": "ViT-L/14"},
+    {"value": "dinov2_vitg14", "label": "ViT-g/14"},
+]
+# HF image-processor repos paired with the hub backbone (preprocessing only).
+_PROCESSOR_OPTIONS = [
+    {"value": "facebook/dinov2-small", "label": "dinov2-small processor"},
+    {"value": "facebook/dinov2-base", "label": "dinov2-base processor"},
+    {"value": "facebook/dinov2-large", "label": "dinov2-large processor"},
+    {"value": "facebook/dinov2-giant", "label": "dinov2-giant processor"},
+]
+# HF transformers repos for the hf backend: DINOv2 (ungated) + DINOv3 (gated).
+_HF_MODEL_OPTIONS = [
+    {"value": "facebook/dinov2-with-registers-small", "label": "DINOv2 ViT-S + reg (HF)"},
+    {"value": "facebook/dinov2-with-registers-base", "label": "DINOv2 ViT-B + reg (HF)"},
+    {"value": "facebook/dinov2-with-registers-large", "label": "DINOv2 ViT-L + reg (HF)"},
+    {"value": "facebook/dinov2-small", "label": "DINOv2 ViT-S (HF)"},
+    {"value": "facebook/dinov2-base", "label": "DINOv2 ViT-B (HF)"},
+    {"value": "facebook/dinov2-large", "label": "DINOv2 ViT-L (HF)"},
+    {"value": "facebook/dinov2-giant", "label": "DINOv2 ViT-g (HF)"},
+    {"value": "facebook/dinov3-vits16-pretrain-lvd1689m", "label": "DINOv3 ViT-S/16 (gated)"},
+    {"value": "facebook/dinov3-vitb16-pretrain-lvd1689m", "label": "DINOv3 ViT-B/16 (gated)"},
+    {"value": "facebook/dinov3-vitl16-pretrain-lvd1689m", "label": "DINOv3 ViT-L/16 (gated)"},
+    {"value": "facebook/dinov3-convnext-base-pretrain-lvd1689m", "label": "DINOv3 ConvNeXt-Base (gated)"},
+]
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Engine — lazy singleton per (backend, model key)
@@ -257,12 +290,11 @@ class ExtractFeaturesTool(BaseCanvasNode):
                 ],
                 default=_BACKEND_DEFAULT,
             ),
-            ConfigField("hub_model", "text", "hub: torch.hub model name", default=_HUB_MODEL_DEFAULT),
-            ConfigField("processor_id", "text", "hub: HF image-processor ID", default=_PROCESSOR_DEFAULT),
+            ConfigField("hub_model", "select", label="Hub model (backend=hub)", options=list(_HUB_MODEL_OPTIONS), default=_HUB_MODEL_DEFAULT),
+            ConfigField("processor_id", "select", label="Processor (backend=hub)", options=list(_PROCESSOR_OPTIONS), default=_PROCESSOR_DEFAULT),
             ConfigField(
-                "hf_model", "text",
-                "hf: HF repo id (facebook/dinov3-* [gated] or facebook/dinov2-*)",
-                default=_HF_MODEL_DEFAULT,
+                "hf_model", "select", label="HF model (backend=hf)",
+                options=list(_HF_MODEL_OPTIONS), default=_HF_MODEL_DEFAULT,
             ),
         ],
     )

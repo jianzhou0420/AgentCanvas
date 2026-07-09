@@ -65,6 +65,14 @@ log = logging.getLogger("agentcanvas.model_pointmap")
 
 _MODEL_ID_DEFAULT = "facebook/sapiens2-pointmap-0.4b"
 
+# Curated Sapiens2 pointmap-head size ladder (all carry the pointmap head).
+_MODEL_OPTIONS = [
+    {"value": "facebook/sapiens2-pointmap-0.4b", "label": "Sapiens2 Pointmap 0.4B"},
+    {"value": "facebook/sapiens2-pointmap-0.8b", "label": "Sapiens2 Pointmap 0.8B"},
+    {"value": "facebook/sapiens2-pointmap-1b", "label": "Sapiens2 Pointmap 1B"},
+    {"value": "facebook/sapiens2-pointmap-5b", "label": "Sapiens2 Pointmap 5B"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -210,7 +218,7 @@ class PointmapEstimateTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="blue",
         config_fields=[
-            ConfigField("model_id", "text", "HF pointmap-estimation model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [

@@ -16,8 +16,7 @@ pre-processing, no ``trust_remote_code``. Use the transformers-native ``-hf``
 checkpoints (``OpenGVLab/InternVL3-*-hf``); the plain (non-``-hf``) repos ship
 custom code and are intentionally not used here.
 
-FM-template alignment: model identity is node config — ``model_id`` (blank =
-``$INTERNVL3_MODEL_ID`` or the 1B-hf default), engines in a lazy registry keyed
+FM-template alignment: model identity is node config — ``model_id`` (default InternVL3-1B-hf), engines in a lazy registry keyed
 by the resolved id (checkpoints coexist), load-failure latch (empty text +
 ``degraded`` self-log), generation knobs on the node UI. The single-flight
 generate lock is per-engine (one in-flight generate bounds peak VRAM under K
@@ -31,7 +30,7 @@ CPU falls back to float32. Override the env with $INTERNVL3_PYTHON. This file
 must stay Python-3.8-parseable.
 
 Model default: InternVL3-1B-hf (lightest; co-hosts with other FM nodesets).
-Point ``model_id`` (or $INTERNVL3_MODEL_ID) at 2B / 8B / 14B-hf on a bigger GPU.
+Point ``model_id`` at 2B / 8B / 14B-hf on a bigger GPU.
 
 Load: POST /api/components/nodesets/vlm_internvl3/load?mode=server
 
@@ -39,7 +38,6 @@ last updated: 2026-07-08
 """
 
 import logging
-import os
 import threading
 from typing import Any, ClassVar
 
@@ -54,7 +52,17 @@ from app.components import (
 
 log = logging.getLogger("agentcanvas.vlm_internvl3")
 
-_MODEL_ID_DEFAULT = os.environ.get("INTERNVL3_MODEL_ID", "OpenGVLab/InternVL3-1B-hf")
+_MODEL_ID_DEFAULT = "OpenGVLab/InternVL3-1B-hf"
+
+# Curated InternVL3 transformers-native (-hf) sizes.
+# (No -hf build exists for 9B or 4B.)
+_MODEL_OPTIONS = [
+    {"value": "OpenGVLab/InternVL3-1B-hf", "label": "InternVL3 1B-hf"},
+    {"value": "OpenGVLab/InternVL3-2B-hf", "label": "InternVL3 2B-hf"},
+    {"value": "OpenGVLab/InternVL3-8B-hf", "label": "InternVL3 8B-hf"},
+    {"value": "OpenGVLab/InternVL3-14B-hf", "label": "InternVL3 14B-hf"},
+    {"value": "OpenGVLab/InternVL3-38B-hf", "label": "InternVL3 38B-hf"},
+]
 
 
 class _InternVL3Engine:
@@ -208,11 +216,11 @@ class GenerateNode(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("model_id", "text", "HF model id (blank = $INTERNVL3_MODEL_ID or the 1B-hf default)", default=""),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default="OpenGVLab/InternVL3-1B-hf"),
             ConfigField("max_new_tokens", "slider", "Max new tokens", default=2048, min=128, max=4096, step=128),
-            ConfigField("temperature", "text", "Temperature (0 = greedy)", default=0.0),
-            ConfigField("top_p", "text", "Top-p", default=1.0),
-            ConfigField("repetition_penalty", "text", "Repetition penalty", default=1.0),
+            ConfigField("temperature", "slider", "Temperature (0 = greedy)", default=0.0, min=0.0, max=2.0, step=0.05),
+            ConfigField("top_p", "slider", "Top-p", default=1.0, min=0.0, max=1.0, step=0.05),
+            ConfigField("repetition_penalty", "slider", "Repetition penalty", default=1.0, min=1.0, max=2.0, step=0.05),
         ],
     )
 
