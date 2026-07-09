@@ -61,6 +61,14 @@ log = logging.getLogger("agentcanvas.model_aimv2")
 
 _MODEL_ID_DEFAULT = "apple/aimv2-large-patch14-224"
 
+# Curated AIMv2 size ladder at the standard patch14 / 224px config.
+_MODEL_OPTIONS = [
+    {"value": "apple/aimv2-large-patch14-224", "label": "AIMv2 Large (patch14, 224)"},
+    {"value": "apple/aimv2-huge-patch14-224", "label": "AIMv2 Huge (patch14, 224)"},
+    {"value": "apple/aimv2-1B-patch14-224", "label": "AIMv2 1B (patch14, 224)"},
+    {"value": "apple/aimv2-3B-patch14-224", "label": "AIMv2 3B (patch14, 224)"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -187,7 +195,7 @@ class Aimv2ExtractFeaturesTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("model_id", "text", "HF AIMv2 model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [

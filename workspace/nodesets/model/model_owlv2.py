@@ -57,6 +57,16 @@ from app.components import (
 log = logging.getLogger("agentcanvas.model_owlv2")
 
 _MODEL_ID_DEFAULT = "google/owlv2-base-patch16-ensemble"
+
+# Curated OWLv2 open-vocab detector variants.
+_MODEL_OPTIONS = [
+    {"value": "google/owlv2-base-patch16-ensemble", "label": "OWLv2 Base p16 (ensemble)"},
+    {"value": "google/owlv2-base-patch16", "label": "OWLv2 Base p16"},
+    {"value": "google/owlv2-base-patch16-finetuned", "label": "OWLv2 Base p16 (finetuned)"},
+    {"value": "google/owlv2-large-patch14-ensemble", "label": "OWLv2 Large p14 (ensemble)"},
+    {"value": "google/owlv2-large-patch14", "label": "OWLv2 Large p14"},
+    {"value": "google/owlv2-large-patch14-finetuned", "label": "OWLv2 Large p14 (finetuned)"},
+]
 _DEFAULT_QUERIES = "chair, door, table"
 _DEFAULT_THRESHOLD = 0.1
 
@@ -224,15 +234,15 @@ class Owlv2DetectTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("model_id", "text", "HF OWLv2 model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
             ConfigField(
                 "queries", "text",
                 "Candidate labels (comma/newline separated or JSON list)",
                 default=_DEFAULT_QUERIES,
             ),
             ConfigField(
-                "threshold", "text", "Detection score threshold (OWLv2 ~0.1)",
-                default=str(_DEFAULT_THRESHOLD),
+                "threshold", "slider", "Detection score threshold (OWLv2 ~0.1)",
+                default=_DEFAULT_THRESHOLD, min=0.01, max=1.0, step=0.01,
             ),
         ],
     )

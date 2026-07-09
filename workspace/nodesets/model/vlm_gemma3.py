@@ -18,8 +18,7 @@ license on Hugging Face (and a logged-in ``HF_TOKEN``). Without access the
 engine load latches ``degraded`` (empty text) — accept the licence at the model
 page once, then it downloads normally.
 
-FM-template alignment: model identity is node config — ``model_id`` (blank =
-``$GEMMA3_MODEL_ID`` or the 4B-it default), engines in a lazy registry keyed by
+FM-template alignment: model identity is node config — ``model_id`` (default gemma-3-4b-it), engines in a lazy registry keyed by
 the resolved id, load-failure latch, generation knobs on the node UI. The
 single-flight generate lock is per-engine.
 
@@ -30,7 +29,7 @@ wheel is present (sdpa fallback otherwise); CPU falls back to float32. Override
 the env with $GEMMA3_PYTHON. This file must stay Python-3.8-parseable.
 
 Model default: gemma-3-4b-it (smallest multimodal Gemma 3; the 1B is text-only).
-Point ``model_id`` (or $GEMMA3_MODEL_ID) at 12B / 27B-it on a bigger GPU.
+Point ``model_id`` at 12B / 27B-it on a bigger GPU.
 
 Load: POST /api/components/nodesets/vlm_gemma3/load?mode=server
 
@@ -38,7 +37,6 @@ last updated: 2026-07-08
 """
 
 import logging
-import os
 import threading
 from typing import Any, ClassVar
 
@@ -53,7 +51,14 @@ from app.components import (
 
 log = logging.getLogger("agentcanvas.vlm_gemma3")
 
-_MODEL_ID_DEFAULT = os.environ.get("GEMMA3_MODEL_ID", "google/gemma-3-4b-it")
+_MODEL_ID_DEFAULT = "google/gemma-3-4b-it"
+
+# Curated Gemma-3 multimodal -it sizes (1b-it is text-only, excluded).
+_MODEL_OPTIONS = [
+    {"value": "google/gemma-3-4b-it", "label": "Gemma 3 4B-it"},
+    {"value": "google/gemma-3-12b-it", "label": "Gemma 3 12B-it"},
+    {"value": "google/gemma-3-27b-it", "label": "Gemma 3 27B-it"},
+]
 
 
 class _Gemma3Engine:
@@ -202,11 +207,11 @@ class GenerateNode(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("model_id", "text", "HF model id (blank = $GEMMA3_MODEL_ID or the 4B-it default)", default=""),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default="google/gemma-3-4b-it"),
             ConfigField("max_new_tokens", "slider", "Max new tokens", default=2048, min=128, max=4096, step=128),
-            ConfigField("temperature", "text", "Temperature (0 = greedy)", default=0.0),
-            ConfigField("top_p", "text", "Top-p", default=1.0),
-            ConfigField("repetition_penalty", "text", "Repetition penalty", default=1.0),
+            ConfigField("temperature", "slider", "Temperature (0 = greedy)", default=0.0, min=0.0, max=2.0, step=0.05),
+            ConfigField("top_p", "slider", "Top-p", default=1.0, min=0.0, max=1.0, step=0.05),
+            ConfigField("repetition_penalty", "slider", "Repetition penalty", default=1.0, min=1.0, max=2.0, step=0.05),
         ],
     )
 

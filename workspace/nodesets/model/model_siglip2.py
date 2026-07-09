@@ -82,6 +82,16 @@ from app.components import (
 log = logging.getLogger("agentcanvas.model_siglip2")
 
 _MODEL_ID_DEFAULT = "google/siglip2-base-patch16-224"
+
+# Curated SigLIP2 variants (fixed-res + NaFlex); shared by all three nodes.
+_MODEL_OPTIONS = [
+    {"value": "google/siglip2-base-patch16-224", "label": "SigLIP2 Base p16 (224)"},
+    {"value": "google/siglip2-base-patch16-256", "label": "SigLIP2 Base p16 (256)"},
+    {"value": "google/siglip2-large-patch16-256", "label": "SigLIP2 Large p16 (256)"},
+    {"value": "google/siglip2-so400m-patch14-384", "label": "SigLIP2 SoViT-400m p14 (384)"},
+    {"value": "google/siglip2-base-patch16-naflex", "label": "SigLIP2 Base NaFlex"},
+    {"value": "google/siglip2-so400m-patch16-naflex", "label": "SigLIP2 SoViT-400m NaFlex"},
+]
 # SigLIP's training/eval tokenisation: pad every caption to a fixed 64 tokens.
 _TEXT_MAX_LEN = 64
 
@@ -303,7 +313,7 @@ class Siglip2EncodeImageTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="cyan",
         config_fields=[
-            ConfigField("model_id", "text", "HF SigLIP2 model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [
@@ -354,7 +364,7 @@ class Siglip2EncodeTextTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="cyan",
         config_fields=[
-            ConfigField("model_id", "text", "HF SigLIP2 model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [
@@ -407,7 +417,7 @@ class Siglip2ClassifyTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="cyan",
         config_fields=[
-            ConfigField("model_id", "text", "HF SigLIP2 model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [

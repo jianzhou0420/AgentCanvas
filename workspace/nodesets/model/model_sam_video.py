@@ -70,6 +70,14 @@ from app.components import (
 log = logging.getLogger("agentcanvas.model_sam_video")
 
 _CKPT_DEFAULT = "facebook/sam2.1-hiera-tiny"
+
+# Curated SAM 2.1 Hiera video checkpoints (transformers-native Sam2VideoModel).
+_CKPT_OPTIONS = [
+    {"value": "facebook/sam2.1-hiera-tiny", "label": "SAM 2.1 Hiera Tiny"},
+    {"value": "facebook/sam2.1-hiera-small", "label": "SAM 2.1 Hiera Small"},
+    {"value": "facebook/sam2.1-hiera-base-plus", "label": "SAM 2.1 Hiera Base-Plus"},
+    {"value": "facebook/sam2.1-hiera-large", "label": "SAM 2.1 Hiera Large"},
+]
 _OBJ_ID = 1  # single-object tracking
 
 
@@ -259,7 +267,7 @@ class SamVideoTrackTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="violet",
         config_fields=[
-            ConfigField("ckpt", "text", "HF SAM 2 video checkpoint (hiera tiny/small/base+/large)", default=_CKPT_DEFAULT),
+            ConfigField("ckpt", "select", label="Checkpoint", options=list(_CKPT_OPTIONS), default=_CKPT_DEFAULT),
         ],
     )
     input_ports = [

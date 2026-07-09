@@ -75,6 +75,15 @@ log = logging.getLogger("agentcanvas.model_florence2")
 
 _MODEL_ID_DEFAULT = "florence-community/Florence-2-base"
 
+# Curated native (transformers-loadable) conversions under florence-community/.
+# Point at florence-community/*, not microsoft/* (the latter needs remote code).
+_MODEL_OPTIONS = [
+    {"value": "florence-community/Florence-2-base", "label": "Florence-2 Base"},
+    {"value": "florence-community/Florence-2-base-ft", "label": "Florence-2 Base (fine-tuned)"},
+    {"value": "florence-community/Florence-2-large", "label": "Florence-2 Large"},
+    {"value": "florence-community/Florence-2-large-ft", "label": "Florence-2 Large (fine-tuned)"},
+]
+
 # Task tokens Florence-2 understands. The three marked (text) consume the
 # ``text_input`` config (a phrase / category list); the rest ignore it.
 _TASKS = [
@@ -250,9 +259,8 @@ class Florence2RunTool(BaseCanvasNode):
         color="blue",
         config_fields=[
             ConfigField(
-                "model_id", "text",
-                "HF Florence-2 repo id (use a florence-community/* native conversion, not microsoft/*)",
-                default=_MODEL_ID_DEFAULT,
+                "model_id", "select", label="Model",
+                options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT,
             ),
             ConfigField(
                 "task", "select", label="Task",
