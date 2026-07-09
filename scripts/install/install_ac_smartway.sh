@@ -144,7 +144,13 @@ done
 # ── Step 5: Checkpoint downloads ──
 echo ""
 echo "=== Step 5: Downloading SmartWay checkpoints ==="
-bash "$SCRIPT_DIR/../data/fetch_ckpt_smartway.sh"
+# Guarded: a ckpt-download failure (flaky Google-Drive / gated HF / offline)
+# must NOT abort the env install under `set -e` — Step 6 verify still runs and
+# the env is usable; checkpoints can be fetched later. Pass SMARTWAY_PYTHON so
+# the fetch script's `python` resolves under this non-interactive spawn (no env
+# activated → a bare `python` is off PATH; the fetch aborted here before).
+PYTHON="$SMARTWAY_PYTHON" bash "$SCRIPT_DIR/../data/fetch_ckpt_smartway.sh" \
+    || echo "[WARN] SmartWay ckpt fetch failed — env installed OK; fetch later: bash scripts/data/fetch_ckpt_smartway.sh"
 
 # ── Step 6: Verify ──
 echo ""
