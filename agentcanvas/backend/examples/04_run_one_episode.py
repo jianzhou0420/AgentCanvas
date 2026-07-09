@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from app.mapgpt_mp3d_sdk import build
 
-
 if __name__ == "__main__":
     g = build()
     print("running one episode in-process (load_nodesets=True) — spawning env_mp3d server…")

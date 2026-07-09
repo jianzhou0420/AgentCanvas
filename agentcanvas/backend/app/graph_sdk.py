@@ -45,6 +45,7 @@ script — is :meth:`Graph.to_code` (see :mod:`app.graph_sdk_codegen`).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -478,7 +479,7 @@ class Graph:
     def composite(
         self,
         id: str,
-        subgraph: "Graph | GraphDefinition",
+        subgraph: Graph | GraphDefinition,
         *,
         type: str = "compositeNode",
         label: str = "",
@@ -579,10 +580,9 @@ class Graph:
             finally:
                 if reg is not None and teardown_nodesets and started:
                     for ns in started:
-                        try:
+                        # best-effort cleanup
+                        with contextlib.suppress(Exception):
                             await reg.unload_nodeset(ns)
-                        except Exception:  # pragma: no cover - best-effort cleanup
-                            pass
 
         executor = asyncio.run(_drive())
         return RunResult._from_run(executor, sess)
@@ -711,10 +711,9 @@ class Graph:
             finally:
                 if reg is not None and teardown_nodesets and started:
                     for ns in started:
-                        try:
+                        # best-effort cleanup
+                        with contextlib.suppress(Exception):
                             await reg.unload_nodeset(ns)
-                        except Exception:  # pragma: no cover - best-effort cleanup
-                            pass
 
         return EvalResult._from_run(asyncio.run(_drive()))
 

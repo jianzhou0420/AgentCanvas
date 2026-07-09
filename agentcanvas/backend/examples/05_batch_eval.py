@@ -21,7 +21,6 @@ import sys
 
 from app.mapgpt_mp3d_sdk import build
 
-
 if __name__ == "__main__":
     episodes = int(sys.argv[1]) if len(sys.argv) > 1 else 2
     split = sys.argv[2] if len(sys.argv) > 2 else "val_unseen"

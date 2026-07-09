@@ -12,9 +12,9 @@ exercised through the public Graph SDK surface.
 from __future__ import annotations
 
 from app.agent_loop.builtin_nodes import register_node
-from app.graph_sdk import Graph
 from app.components.bases import BaseCanvasNode, PortDef
 from app.graph_def import GraphDefinition
+from app.graph_sdk import Graph
 
 # ── three tiny pure-Python demo nodes ────────────────────────────────────
 

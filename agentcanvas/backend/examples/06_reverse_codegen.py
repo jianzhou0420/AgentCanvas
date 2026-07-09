@@ -14,10 +14,9 @@ import json
 import sys
 from pathlib import Path
 
-from agentcanvas import Graph, graph_to_code
+from agentcanvas import graph_to_code
 from app.graph_def import GraphDefinition
 from app.mapgpt_mp3d_sdk import VERIFIED_JSON, _diff, signature
-
 
 if __name__ == "__main__":
     src_path = Path(sys.argv[1]) if len(sys.argv) > 1 else VERIFIED_JSON

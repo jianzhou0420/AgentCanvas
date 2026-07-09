@@ -33,8 +33,8 @@ import argparse
 import json
 from pathlib import Path
 
-from app.graph_sdk import Graph
 from app.graph_def import GraphDefinition
+from app.graph_sdk import Graph
 
 VERIFIED_JSON = (
     Path(__file__).resolve().parents[3]

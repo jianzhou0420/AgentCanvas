@@ -22,9 +22,8 @@ import json
 
 import pytest
 
-from .graph_sdk import Graph
 from .graph_def import GraphDefinition
-
+from .graph_sdk import Graph
 
 # ── running: pure-Python nodes in-process ────────────────────────────────
 

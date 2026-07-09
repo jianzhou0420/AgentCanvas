@@ -15,7 +15,6 @@ import json
 from app.graph_def import GraphDefinition
 from app.mapgpt_mp3d_sdk import VERIFIED_JSON, _diff, build, signature
 
-
 if __name__ == "__main__":
     g = build()
     built = g.to_dict()
