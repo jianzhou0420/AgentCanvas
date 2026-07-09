@@ -148,6 +148,11 @@ EOF
 echo ""
 echo "=== Step 6: Verifying installation ==="
 
+# Load the env's lib/ so the bare-python imports below pick the env's
+# libstdc++ (stock Ubuntu 20.04 lacks GLIBCXX_3.4.29 that numba/llvmlite needs).
+# Real server-mode spawn gets this via EnvHMEQANodeSet.server_env.
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+
 echo -n "  PyTorch: "
 "$HMEQA_PYTHON" -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())" 2>&1
 

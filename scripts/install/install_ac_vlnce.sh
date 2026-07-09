@@ -134,6 +134,14 @@ EOF
 echo ""
 echo "=== Step 6: Verifying installation ==="
 
+# Load the env's lib/ so the bare-python imports below pick the env's
+# libstdc++. Stock Ubuntu 20.04's system libstdc++ lacks GLIBCXX_3.4.29 that
+# numba/llvmlite (pulled in by `import habitat`) needs; without this the verify
+# spuriously WARNs on a perfectly sound env. Real server-mode spawns get the
+# same LD_LIBRARY_PATH via each nodeset's `server_env` (env_habitat,
+# policy_adapter_vlnce).
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+
 # Verify steps are diagnostics only — never abort the install (set -e) on a
 # failed import; mirror the `|| echo WARN` guard already used below.
 echo -n "  PyTorch: "

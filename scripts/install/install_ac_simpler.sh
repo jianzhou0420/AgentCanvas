@@ -111,6 +111,13 @@ echo "=== Step 3: Installing SIMPLER + runtime deps ==="
 # Pin setuptools<81 to keep the import path working.
 "$SIMPLER_PYTHON" -m pip install 'setuptools<81'
 
+# ruckig (transitive dep of mani_skill2_real2sim) ships only sdists past 0.12.x,
+# and the latest (0.17.x) uses a `cmake.targets` config that scikit-build-core
+# >= 0.10 rejects ("Use build.targets instead of cmake.targets") — so building
+# it from source fails during the ManiSkill editable install below. Pre-install
+# the last version with a cp310 wheel so pip never builds ruckig from source.
+"$SIMPLER_PYTHON" -m pip install --only-binary :all: 'ruckig==0.12.2'
+
 # ManiSkill2_real2sim brings sapien, mani_skill2_real2sim, gymnasium, etc.
 "$SIMPLER_PYTHON" -m pip install -e "$MANISKILL_REPO"
 "$SIMPLER_PYTHON" -m pip install -e "$SIMPLERENV_REPO"

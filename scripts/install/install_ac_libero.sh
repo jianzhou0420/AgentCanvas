@@ -140,6 +140,15 @@ else
     "$LIBERO_PYTHON" -m pip install "$LIBERO_INSTALL_TARGET"
 fi
 
+# LIBERO prompts interactively ("Do you want to specify a custom path...") on the
+# FIRST `import libero`, writing ~/.libero/config.yaml. Under a non-interactive
+# install the input() hits EOF and import fails. Answer "N" (use default paths)
+# once to create the config so later imports — the verify below and server-mode
+# spawns — are non-interactive.
+echo "N" | "$LIBERO_PYTHON" -c "import libero" >/dev/null 2>&1 \
+    && echo "  [ok] libero config initialized (~/.libero/config.yaml)" \
+    || echo "  [WARN] libero config init failed — first import may still prompt."
+
 # AgentCanvas backend has no setup.py — the framework injects
 # PYTHONPATH=<backend>:<workspace> at server-mode spawn time
 # (registry.py:289-308). No pip install needed here. The verification
