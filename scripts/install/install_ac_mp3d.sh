@@ -350,11 +350,13 @@ validate_installation() {
 
     print_info "Running import test inside '$ENV_NAME' environment ..."
 
-    local result conda_prefix
-    conda_prefix=$(conda run -n "$ENV_NAME" python -c "import sys; print(sys.prefix)" 2>/dev/null)
-    # LD_LIBRARY_PATH so MatterSim's libicuuc->libstdc++ chain finds the env's
-    # GLIBCXX_3.4.30 (stock 20.04 libstdc++ lacks it) — mirrors the activate hook.
-    result=$(conda run -n "$ENV_NAME" env LD_LIBRARY_PATH="$conda_prefix/lib:${LD_LIBRARY_PATH:-}" python - <<'PYEOF' 2>&1
+    local result
+    # `conda run` runs the ac-mp3d activate.d hook (setup_pythonpath), which now
+    # exports both LD_LIBRARY_PATH (env lib/ — MatterSim's libicuuc->libstdc++
+    # chain needs GLIBCXX_3.4.30 that stock 20.04 lacks) and PYTHONPATH (build/),
+    # so a plain conda run finds and imports MatterSim. (An explicit `env
+    # LD_LIBRARY_PATH=` here would instead OVERRIDE the hook's correct value.)
+    result=$(conda run -n "$ENV_NAME" python - <<'PYEOF' 2>&1
 import sys, os
 build_dir = os.environ.get("_MP3D_BUILD_DIR", "")
 if build_dir:
