@@ -75,6 +75,23 @@ fi
 CONDA_PREFIX="$(dirname "$(dirname "$SMARTWAY_PYTHON")")"
 echo "smartway Python: $SMARTWAY_PYTHON"
 
+# ── Step 1b: Install habitat-lab + VLN-CE (editable, ABSOLUTE paths) ──
+# Moved OUT of ac_smartway.yaml: mamba resolves relative pip paths
+# ('-e third_party/...') against the pip-subprocess cwd, NOT the shell cwd, so
+# the `cd $PROJECT_ROOT` above does NOT help — env-create fails with "... is
+# not a valid editable requirement" (the exact xunyi failure; confirmed on a
+# fresh 20.04 host 2026-07-09). Absolute paths here are cwd-independent.
+# apply_thirdparty_patches.sh injects VLN-CE/setup.py, required by the
+# `pip install -e .../VLN-CE` below (install_ac_vlnce.sh does the same — and
+# a standalone smartway install, run without install_ac_vlnce.sh first, would
+# otherwise lack that setup.py entirely).
+# Order matters: vlnce_baselines imports habitat, so habitat-lab goes first.
+echo ""
+echo "=== Step 1b: Patching + installing habitat-lab + VLN-CE (absolute paths) ==="
+bash "$SCRIPT_DIR/patches/apply_thirdparty_patches.sh"
+"$SMARTWAY_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/habitat-lab" 2>&1 | tail -3
+"$SMARTWAY_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/VLN-CE" 2>&1 | tail -3
+
 # ── Step 2: Remove conda OpenGL libs (same NVIDIA-driver hand-off as vlnce) ──
 echo ""
 echo "=== Step 2: Removing conda OpenGL libs (use NVIDIA drivers) ==="
