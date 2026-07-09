@@ -342,7 +342,7 @@ def _pava(targets: list[float], min_gaps: list[float]) -> list[float]:
     ``targets`` that preserve order and keep ``min_gaps[i]`` between
     consecutive nodes.
 
-    Substituting ``z_i = top_i − Σ_{k<i} gap_k`` turns the separation
+    Substituting ``z_i = top_i - Sum_{k<i} gap_k`` turns the separation
     constraints into plain monotonicity (``z`` non-decreasing), solved exactly
     by pool-adjacent-violators — minimal-movement overlap removal.
     """
@@ -368,7 +368,7 @@ def _pava(targets: list[float], min_gaps: list[float]) -> list[float]:
             counts.append(c1 + c2)
             weights.append(w1 + w2)
     z: list[float] = []
-    for v, c in zip(vals, counts):
+    for v, c in zip(vals, counts, strict=True):
         z.extend([v] * c)
     return [z[i] + prefix[i] for i in range(n)]
 
@@ -408,7 +408,7 @@ def _coord_pass(
             ]
             desired.append(sum(refs) / len(refs) if refs else top[nid])
         gaps = [h_of(col[i]) + _LANE_GAP for i in range(len(col) - 1)]
-        for nid, c in zip(col, _pava(desired, gaps)):
+        for nid, c in zip(col, _pava(desired, gaps), strict=True):
             top[nid] = c
     return top
 
@@ -469,7 +469,7 @@ def layout_graph(
             return _dummy_sizes[nid][1]
         real = _dim(nid, "height")
         if real is not None:
-            return int(round(real))
+            return round(real)
         return _node_height(node_map.get(nid, {}).get("type", ""), node_heights)
 
     def _w_of(nid: str) -> int:
@@ -477,7 +477,7 @@ def layout_graph(
             return _dummy_sizes[nid][0]
         real = _dim(nid, "width")
         if real is not None:
-            return int(round(real))
+            return round(real)
         return _TYPE_WIDTH.get(node_map.get(nid, {}).get("type", ""), _DEFAULT_WIDTH)
 
     # Annotation nodes (notes) are pulled out of the main layout: their
@@ -679,7 +679,7 @@ def layout_graph(
     for li in sorted(layers):
         col = layers[li]
         gaps = [_h_of(col[i]) + _LANE_GAP for i in range(len(col) - 1)]
-        for nid, c in zip(col, _pava([top[nid] for nid in col], gaps)):
+        for nid, c in zip(col, _pava([top[nid] for nid in col], gaps), strict=True):
             top[nid] = c
 
     node_y: dict[str, float] = {}
@@ -793,7 +793,7 @@ def layout_graph(
                 "y": round(container_y_offset),
             }
             c_real = _dim(cid, "height")
-            c_h = int(round(c_real)) if c_real is not None else _node_height("stateContainer", node_heights)
+            c_h = round(c_real) if c_real is not None else _node_height("stateContainer", node_heights)
             container_y_offset += c_h + _LANE_GAP
 
     # ── Phase 10: Long-edge routing waypoints ────────────────────────
