@@ -70,8 +70,12 @@ echo "vlnce Python: $VLNCE_PYTHON"
 
 echo ""
 echo "=== Step 2: Installing habitat-lab + VLN-CE packages ==="
-"$VLNCE_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/habitat-lab" 2>&1 | tail -3
-"$VLNCE_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/VLN-CE" 2>&1 | tail -3
+# Trim the log to the last 3 lines but STILL abort on failure: a bare
+# `pip ... | tail` masks pip's exit code (tail returns 0), so under `set -e` a
+# broken editable install would sail through unnoticed. The `set -o pipefail`
+# subshell restores failure propagation while keeping the log short.
+( set -o pipefail; "$VLNCE_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/habitat-lab" 2>&1 | tail -3 )
+( set -o pipefail; "$VLNCE_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/VLN-CE" 2>&1 | tail -3 )
 
 # ── Step 3: Remove conda OpenGL libs (use system NVIDIA drivers) ──
 
