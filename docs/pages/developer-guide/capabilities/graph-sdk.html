@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10Graph SDK — AgentCanvas</title>
+<meta name="description" content="Build and run the same graphs as a Python library — no canvas, no JSON authoring.">
+<meta property="og:title" content="10Graph SDK — AgentCanvas">
+<meta property="og:description" content="Build and run the same graphs as a Python library — no canvas, no JSON authoring.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/graph-sdk.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/graph-sdk.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">10Graph SDK</span>
+  </div>
+  <div class="last-updated">2026-07-09</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">10</span>Graph SDK</h1>
+  <p class="tagline">Build and run the same graphs as a Python library — no canvas, no JSON authoring.</p>
+</header>
+
+
+
+<p>Every graph on the platform is a <code>GraphDefinition</code> — a pure dataclass the canvas emits, the JSON stores, and the <code>GraphExecutor</code> runs (<a href="graph-expressible-agents.html">Graph-Expressible Agents</a>). The Graph SDK adds a third way to produce and drive that same object: <strong>write it in Python</strong>, imported like LangGraph / LangChain rather than authored as JSON or wired on the canvas. Same nodes, same executor, same eval — just a builder in front and a runner behind. Because it is the same <code>GraphDefinition</code>, code ⇄ JSON ⇄ canvas stay fully reversible.</p>
+<p><em>Design docs: <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · builds on <a href="graph-expressible-agents.html">Graph-Expressible Agents</a>, <a href="nested-graph-system.html">Nested Graph System</a>, <a href="hook-system.html">Hook System</a>, <a href="batch-evaluation-job-queue.html">Batch Evaluation</a></em></p>
+<hr>
+<h2 id="1-three-ways"><span class="num">1.</span> Three ways to the same graph</h2>
+<table>
+<thead>
+<tr>
+<th>Author with</th>
+<th>Surface</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Canvas</strong></td>
+<td>Visual editor (<a href="visual-canvas-editor.html">#9</a>)</td>
+<td><code>GraphDefinition</code> JSON</td>
+</tr>
+<tr>
+<td><strong>JSON</strong></td>
+<td>Hand-written <code>workspace/graphs/**.json</code></td>
+<td><code>GraphDefinition</code> JSON</td>
+</tr>
+<tr>
+<td><strong>Code</strong> (this page)</td>
+<td><code>from agentcanvas import Graph</code></td>
+<td>the same <code>GraphDefinition</code> — in memory, runnable, serialisable</td>
+</tr>
+</tbody>
+</table>
+<p>The Graph SDK surface is a thin, ergonomic wrapper over the existing dataclass model (<code>app/graph_def.py</code>) and the in-process engine (<code>app/agent_loop/graph_executor.py</code>). It adds no new execution machinery — every method assembles the same <code>NodeDef</code> / <code>EdgeDef</code> / <code>ContainerDef</code> the canvas emits.</p>
+<h2 id="2-build"><span class="num">2.</span> Build a graph in code</h2>
+<p>Three moves — <code>add</code> a node, <code>connect</code> two ports, mark the graph's boundary — then <code>run</code>. Node ids auto-generate; extra kwargs become the node's <code>config</code>. A <code>graphOut</code>'s <code>portName</code> becomes the run's output key.</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
+
+<span class="n">g</span> <span class="o">=</span> <span class="n">Graph</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">demo</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">seven</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">const</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span>
+<span class="n">five</span>  <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">const</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+<span class="n">add</span>   <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">add</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">out</span>   <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">graph_out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">total</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">seven</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">add</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">a</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+<span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">five</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span>  <span class="n">add</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">b</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+<span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">add</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">sum</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span>     <span class="n">out</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="p">)</span>            <span class="c1"># in-process — no FastAPI, no GPU</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">total</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>     <span class="c1"># -&gt; 36</span>
+</pre>
+<p>Shared state is first-class too: <code>g.container(id, states=…)</code> declares a blackboard and <code>g.grant(node, container_id)</code> gives a node read/write access — the same containers + access grants the canvas draws.</p>
+<h2 id="3-run"><span class="num">3.</span> Run it in-process</h2>
+<p><code>g.run()</code> drives <code>GraphExecutor.run()</code> directly — the same engine as the canvas Play button — with no FastAPI, no scheduler, and no GPU-admission gate (that lives in <code>JobScheduler</code>, not the executor). Pure-Python / builtin graphs run untouched. <strong>Nodeset</strong> graphs (<code>mapgpt__*</code>, <code>env_mp3d__*</code>, …) run too: <code>load_nodesets</code> defaults to <code>"auto"</code>, so <code>run()</code> scans the workspace registry and auto-loads exactly the nodesets the graph needs — spawning server-mode subprocesses for env nodesets, precisely as the backend does — then tears down what it started.</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">mapgpt_mp3d_sdk</span><span class="w"> </span><span class="kn">import</span> <span class="n">build</span>
+
+<span class="n">g</span> <span class="o">=</span> <span class="n">build</span><span class="p">(</span><span class="p">)</span>                                    <span class="c1"># the real MapGPT-MP3D graph, in code</span>
+
+<span class="c1"># One episode, in-process. load_nodesets=&quot;auto&quot; (the default) scans the</span>
+<span class="c1"># workspace registry and auto-loads every nodeset the graph needs — spawning</span>
+<span class="c1"># the env_mp3d simulator subprocess — then tears it down afterwards.</span>
+<span class="n">r</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">metrics</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>                    <span class="c1"># {&#x27;success&#x27;: 0.0, &#x27;spl&#x27;: 0.0, &#x27;nav_error&#x27;: 5.16, ...}</span>
+
+<span class="c1"># Batch eval — drives the SAME BatchEvalRunner the backend eval API uses:</span>
+<span class="c1"># one executor run per episode, metrics averaged over completed episodes.</span>
+<span class="n">ev</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">eval</span><span class="p">(</span><span class="n">episodes</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">dataset</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">R2R</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">split</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">val_unseen</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">metrics</span><span class="p">)</span>                              <span class="c1"># aggregate: {&#x27;success&#x27;: ..., &#x27;spl&#x27;: ...}</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">episodes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">metrics</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>               <span class="c1"># per-episode breakdown</span>
+</pre>
+<p>The env node never runs inside the calling process. <code>ensure_nodesets_for_graph()</code> spawns an <code>auto_host</code> subprocess in the nodeset's own conda env (e.g. <code>ac-mp3d</code>), registers HTTP-proxy node classes into the global <code>NODE_HANDLERS</code>, and the executor reaches the simulator through those proxies:</p>
+<div class="highlight"><pre><span></span><code>  g.run(load_nodesets="auto")
+      │  scan_all()  +  ensure_nodesets_for_graph()   → register node types into NODE_HANDLERS
+      ▼
+  GraphExecutor.run(graph, DefaultSession)             ← same engine as the canvas Play button
+      │  mapgpt__*  nodes  → run in-process (local mode)
+      │  env_mp3d__* nodes ──HTTP──▶  auto_host subprocess  (ac-mp3d env, MatterSim + GPU)
+      ▼
+  RunResult.outputs["metrics"]                          → teardown: env server unloaded
+</code></pre></div>
+<div class="highlight"><p><strong>A real env run is an experiment.</strong> Spawning the simulator uses the GPU and the LLM, so a multi-episode sweep belongs behind <code>/experiment:run</code> (GPU admission, port regulation), not a bare call. The code path is identical either way — only admission control differs.</p></div>
+<h2 id="4-batch-eval"><span class="num">4.</span> Batch evaluation</h2>
+<p><code>g.eval(episodes=N, dataset=…, split=…)</code> is the Graph SDK entry to <a href="batch-evaluation-job-queue.html">Batch Evaluation</a>. It constructs the very same <code>BatchEvalRunner</code> the backend eval API uses (<code>app/agent_loop/eval_batch.py</code>) — one <code>GraphExecutor</code> run per episode, episode placement pushed through the env panel, per-episode metrics harvested from the graph's <code>metrics</code> <code>graphOut</code>, and the aggregate computed as the mean over <em>completed</em> episodes. The returned <code>EvalResult</code> carries <code>.metrics</code> (aggregate), <code>.episodes</code> (per-episode), and <code>.by_task</code>. "Correct" here is structural: <code>g.eval</code> does not re-implement evaluation, it reuses the audited runner.</p>
+<h2 id="5-sugar"><span class="num">5.</span> Authoring sugar: loop / hook / composite</h2>
+<p>The fiddly parts of a graph get intent-named helpers. <code>g.loop(init=…, carry=…)</code> declares a two-sided iterIn/iterOut episode loop (<a href="graph-expressible-agents.html">Graph-Expressible Agents §3</a>) with the correct <code>persist</code> flags set automatically — init-only ports persist across steps, carried ports do not persist on the init side (the iterOut carry supersedes) — so the loop can't accidentally starve on iteration 1. Wire it through the returned handle:</p>
+<pre class="hl">
+<span class="n">loop</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">loop</span><span class="p">(</span>
+    <span class="n">init</span><span class="o">=</span><span class="p">[</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span><span class="p">,</span>            <span class="c1"># seed-only; persists across steps</span>
+    <span class="n">carry</span><span class="o">=</span><span class="p">[</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span><span class="p">,</span>          <span class="c1"># written back each step by iterOut</span>
+<span class="p">)</span>
+
+<span class="n">loop</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">reset</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>     <span class="c1"># run-start value</span>
+<span class="n">loop</span><span class="o">.</span><span class="n">feed</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">observe</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span> <span class="c1"># wires BOTH init + carry sides</span>
+<span class="n">loop</span><span class="o">.</span><span class="n">carry</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">step</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>   <span class="c1"># per-step write-back</span>
+<span class="n">loop</span><span class="o">.</span><span class="n">stop</span><span class="p">(</span><span class="n">budget</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">done</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>                          <span class="c1"># termination signal</span>
+</pre>
+<p>Two more: <code>g.hook(event, command, …)</code> attaches a lifecycle shell hook (<a href="hook-system.html">Hook System</a>) — <code>GraphStart</code>, <code>PreNodeExecute</code>, <code>PostNodeExecute</code>, <code>GraphComplete</code>, <code>GraphError</code>. <code>g.composite(id, subgraph)</code> wraps a nested graph as a composite node (<a href="nested-graph-system.html">Nested Graph System</a>); <code>flatten_graph()</code> expands it before execution, so composites run in-process like everything else.</p>
+<h2 id="6-reverse"><span class="num">6.</span> Reverse — graph → code</h2>
+<p>The inverse direction (roadmap <strong>F4</strong>): compile <em>any</em> <code>GraphDefinition</code> — canvas-authored, loaded from JSON, or code-built — back into a self-contained builder script via <code>graph_to_code(gd)</code> (or <code>Graph.to_code()</code>). The emitted script rebuilds the same topology through this very API; the round-trip is semantically exact (node types + configs, wire multiset, containers, grants, hooks), verified against the reference MapGPT-MP3D graph.</p>
+<pre class="hl">
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span><span class="p">,</span> <span class="n">graph_to_code</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">graph_def</span><span class="w"> </span><span class="kn">import</span> <span class="n">GraphDefinition</span>
+
+<span class="n">gd</span> <span class="o">=</span> <span class="n">GraphDefinition</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">mapgpt_mp3d.json</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">graph_to_code</span><span class="p">(</span><span class="n">gd</span><span class="p">)</span><span class="p">)</span>            <span class="c1"># a standalone, runnable builder script</span>
+<span class="c1"># ...or on a live Graph:  Graph.from_definition(gd).to_code()</span>
+</pre>
+<h2 id="7-packaging"><span class="num">7.</span> Packaging &amp; install</h2>
+<p>The SDK ships as an installable package: <code>pyproject.toml</code> at <code>agentcanvas/backend/</code> plus a top-level <code>agentcanvas</code> namespace that re-exports the surface, so <code>pip install -e .</code> makes <code>from agentcanvas import Graph</code> work with no <code>PYTHONPATH</code>. The SDK core is stdlib-only; the heavy runtime dependencies a real nodeset run needs (FastAPI, torch, simulators) stay in <code>requirements.txt</code> / the conda env, kept out of <code>pyproject.toml</code> so the import stays light. Runnable examples live under <code>agentcanvas/backend/examples/</code>.</p>
+<h2 id="8-key-files"><span class="num">8.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/graph_sdk.py</code></td>
+<td><code>Graph</code> builder — <code>add</code> / <code>connect</code> / <code>loop</code> / <code>hook</code> / <code>composite</code>, <code>run(load_nodesets=…)</code>, <code>eval(…)</code>; <code>RunResult</code> / <code>EvalResult</code> / <code>Loop</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_sdk_codegen.py</code></td>
+<td><code>graph_to_code()</code> — the reverse compiler (graph → standalone builder script)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_def.py</code></td>
+<td><code>GraphDefinition</code> / <code>NodeDef</code> / <code>EdgeDef</code> dataclasses — the shared model all three surfaces produce</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+<td><code>GraphExecutor.run()</code> — the in-process engine <code>g.run()</code> drives</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/eval_batch.py</code></td>
+<td><code>BatchEvalRunner</code> — the audited batch runner <code>g.eval()</code> drives</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/registry.py</code></td>
+<td><code>ensure_nodesets_for_graph()</code> — nodeset load + env-server spawn on <code>load_nodesets</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/agentcanvas/</code> + <code>pyproject.toml</code></td>
+<td>Pip-installable <code>agentcanvas</code> namespace (re-exports the surface)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/test_graph_sdk.py</code> · <code>examples/</code></td>
+<td>Hermetic tests (8) + runnable examples (build / run / eval / codegen)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Build in code (add / connect / boundary / container / grant)</td>
+<td>Done</td>
+<td>Assembles the same <code>GraphDefinition</code> dataclasses; round-trips to canvas JSON</td>
+</tr>
+<tr>
+<td>In-process run — pure-Python / builtin graphs</td>
+<td>Done</td>
+<td><code>g.run()</code> drives <code>GraphExecutor.run()</code> directly; no FastAPI / scheduler / GPU gate</td>
+</tr>
+<tr>
+<td>In-process run — nodeset graphs</td>
+<td>Done</td>
+<td><code>load_nodesets="auto"</code> scans + loads via <code>ensure_nodesets_for_graph()</code>; env nodes reached over HTTP to an <code>auto_host</code> subprocess; teardown after. A real env episode is an <strong>experiment</strong> → <code>/experiment:run</code></td>
+</tr>
+<tr>
+<td>Batch eval (<code>g.eval</code>)</td>
+<td>Done</td>
+<td>Reuses <code>BatchEvalRunner</code>; aggregate = mean over completed episodes. Verified end-to-end on MapGPT-MP3D</td>
+</tr>
+<tr>
+<td>Authoring sugar — loop / hook / composite</td>
+<td>Done</td>
+<td><code>g.loop</code> reproduces the hand-wired MapGPT loop byte-for-byte; composites flatten + run</td>
+</tr>
+<tr>
+<td>Reverse codegen (<code>to_code</code>, F4)</td>
+<td>Done</td>
+<td>Round-trip semantically exact against the verified MapGPT-MP3D graph</td>
+</tr>
+<tr>
+<td>Packaging (<code>pip install</code> → <code>import agentcanvas</code>)</td>
+<td>Done</td>
+<td><code>pyproject.toml</code> + <code>agentcanvas</code> shim; verified importable with no <code>PYTHONPATH</code> in an isolated venv</td>
+</tr>
+<tr>
+<td>Single-run metric channel</td>
+<td>Known</td>
+<td>Read <code>result.outputs["metrics"]</code> (the <code>graphOut</code> channel). <code>result.metrics</code> (the session channel) is empty for graphs whose evaluate node emits metrics without a top-level <code>{done, metrics}</code> — an upstream metric-outlet split, not a Graph SDK defect</td>
+</tr>
+<tr>
+<td>Per-episode <code>scene_id</code> in eval</td>
+<td>Known</td>
+<td>Empty for server-mode env nodesets — the env panel's <code>on_load</code> readback is stubbed in server mode (upstream); aggregate metrics are unaffected</td>
+</tr>
+</tbody>
+</table>
+<p>Core surface fully implemented; the two <em>Known</em> rows are upstream behaviours documented for honesty, not Graph SDK defects.</p>
+<nav class="page-nav">
+  <p><a href="visual-canvas-editor.html">← 9. Visual Canvas Editor</a> · <a href="index.html">↑ Capabilities index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-three-ways">1. Three ways to the same graph</a>
+      <a class="toc-h2" href="#2-build">2. Build a graph in code</a>
+      <a class="toc-h2" href="#3-run">3. Run it in-process</a>
+      <a class="toc-h2" href="#4-batch-eval">4. Batch evaluation</a>
+      <a class="toc-h2" href="#5-sugar">5. Authoring sugar: loop / hook / composite</a>
+      <a class="toc-h2" href="#6-reverse">6. Reverse — graph → code</a>
+      <a class="toc-h2" href="#7-packaging">7. Packaging &amp; install</a>
+      <a class="toc-h2" href="#8-key-files">8. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>
