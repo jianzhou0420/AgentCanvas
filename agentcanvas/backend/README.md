@@ -5,6 +5,23 @@ VLN-agent graphs **in Python code**, LangGraph-style — no graph JSON, no canva
 GUI required. The same `GraphDefinition` a code-built graph produces also opens
 unchanged in the canvas, so code ⇄ JSON ⇄ canvas is fully reversible.
 
+## What's New
+
+**2026-07-09 · v0.1 — first Graph SDK release.** The code-first surface grew from
+a build-only PoC into a full SDK:
+
+- **Run nodeset graphs in-process** — `g.run()` auto-loads the graph's nodesets
+  (spawning env-server subprocesses, tearing them down after), so real graphs
+  like MapGPT-MP3D run straight from Python, not only via the backend.
+- **Batch eval from code** — `g.eval(episodes=N, dataset=…, split=…)` drives the
+  same `BatchEvalRunner` the backend uses; metrics averaged over completed episodes.
+- **Reverse codegen** — `graph_to_code()` / `Graph.to_code()` compiles any graph
+  back into a standalone builder script (round-trips exactly).
+- **Authoring sugar** — `g.loop()` / `g.hook()` / `g.composite()`.
+- **Pip-installable** — `pip install -e .` → `from agentcanvas import Graph`, no `PYTHONPATH`.
+
+Verified end-to-end on MapGPT-MP3D (1-ep `g.run` + 2-ep `g.eval`).
+
 ## Install
 
 The SDK surface is stdlib-only and importable as soon as the package is on the
