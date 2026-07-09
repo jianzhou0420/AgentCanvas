@@ -228,6 +228,11 @@ echo "=== Step 2e: Editable install of lerobot / libero / openpi-client (--no-de
     -e "$LIBERO_DIR" \
     -e "$OPENPI_CLIENT_DIR"
 
+# Initialize LIBERO's dataset-path config non-interactively — first `import
+# libero` otherwise prompts ("custom path? Y/N") and fails under a
+# non-interactive install. Same fix as install_ac_libero.sh.
+echo "N" | "$VLA_PYTHON" -c "import libero" >/dev/null 2>&1 || true
+
 # ── Step 2f: lerobot transitive deps that --no-deps skipped ──
 #
 # These are lerobot 0.4.1's pyproject.toml deps NOT covered by the
