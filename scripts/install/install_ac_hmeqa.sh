@@ -71,7 +71,10 @@ echo ""
 echo "=== Step 2: Installing Prismatic VLM (pinned upstream) ==="
 PRISMATIC_COMMIT="7573aeb4f8cb49b4107b6ef0dc7845377c57b4a7"
 PRISMATIC_URL="git+https://github.com/allenzren/prismatic-vlms.git@${PRISMATIC_COMMIT}"
-"$HMEQA_PYTHON" -m pip install "$PRISMATIC_URL" 2>&1 | tail -5
+# pipefail subshell: `pip ... | tail` masks pip's exit code (tail returns 0), so
+# under `set -e` a failed install would slip through. Keep the log trimmed but
+# abort on real failure.
+( set -o pipefail; "$HMEQA_PYTHON" -m pip install "$PRISMATIC_URL" 2>&1 | tail -5 )
 
 # ── Step 3: Remove conda OpenGL libs (use system NVIDIA drivers) ──
 #
