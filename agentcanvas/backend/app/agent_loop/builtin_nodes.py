@@ -1549,10 +1549,10 @@ class TrajectoryViewerSink(BaseCanvasNode):
             run = (getattr(ctx, "vacc_axes_run", None) or 0) + 1
         else:
             run = 1
-        setattr(ctx, "vacc_axes_cand", pick)
-        setattr(ctx, "vacc_axes_run", run)
+        ctx.vacc_axes_cand = pick
+        ctx.vacc_axes_run = run
         if run >= 3:
-            setattr(ctx, "vacc_axes", pick)
+            ctx.vacc_axes = pick
             return pick
         return None
 
