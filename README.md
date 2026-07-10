@@ -43,6 +43,7 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 ## What's NEW!
 
+- [2026/07] 🚀 **Graph SDK — build & run agents in Python** — the same canvas graphs, now an importable library: `from agentcanvas import Graph`, add/connect nodes, run and batch-eval in-process, or compile a graph back into a standalone builder script. Same `GraphDefinition`, fully reversible with canvas + JSON. PR: [#35](https://github.com/jianzhou0420/AgentCanvas/pull/35).
 - [2026/07] 🎥 **pySLAM classic-SLAM demo** — pySLAM as the protagonist on TUM RGB-D: a streaming-replay env feeds a benchmark sequence frame-by-frame into a live SLAM session — the estimated camera trajectory fitted onto ground truth top-down and a sparse 3-D map densifying in real time, no simulator or policy, CPU-only. Full clip + walkthrough on the [pySLAM nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html).
 
   [![pySLAM streaming SLAM on TUM RGB-D — live camera trajectory vs ground truth, a 3-D map densifying in real time, then an orbit of the finished map](docs/assets/videos/pyslam-tum-slam-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html)
