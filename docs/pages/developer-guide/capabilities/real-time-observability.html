@@ -58,7 +58,7 @@
     <span class="sep">/</span>
     <span class="here">6Real-Time Observability</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-07-09</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">6</span>Real-Time Observability</h1>
@@ -184,7 +184,7 @@
 <span class="p">}</span>
 </code></pre></div>
 <h2 id="3-output-viewer-nodes"><span class="num">3.</span> Output Viewer Nodes</h2>
-<p>Output viewer nodes are canvas nodes that display data to the researcher. They don't produce outputs — they're sinks. All subclass <code>_SinkBase</code> in <code>agent_loop/builtin_nodes.py</code>, which walks each node's <code>display_fields</code>, runs <code>serialize_for_display()</code> on the wired inputs, and emits one <code>viewer_data</code> WS event per firing.</p>
+<p>Output viewer nodes are canvas nodes that display data to the researcher. They don't produce outputs — they're sinks. Most subclass <code>_SinkBase</code> in <code>agent_loop/builtin_nodes.py</code>, which walks each node's <code>display_fields</code>, runs <code>serialize_for_display()</code> on the wired inputs, and emits one <code>viewer_data</code> WS event per firing. A few (<code>imageViewer</code>, and the geometry viewers <code>trajectoryViewer</code> / <code>pointCloudViewer</code>) subclass <code>BaseCanvasNode</code> directly with a custom layout + serialization, but still self-emit the same <code>viewer_data</code> events.</p>
 <table>
 <thead>
 <tr>
@@ -218,6 +218,16 @@
 <td><code>metrics</code></td>
 <td>SPL / SR / nDTW / SDTW</td>
 <td><code>metric_table</code> renderer.</td>
+</tr>
+<tr>
+<td><code>trajectoryViewer</code></td>
+<td>Top-down camera trajectory (estimated vs GT) + map-point scatter</td>
+<td>Custom <code>trajectory</code> layout — hand-rolled SVG bird's-eye (no chart lib). Grows live per step from accumulated <code>pose</code> / <code>gt_pose</code> (same <code>vacc_*</code> history path); an optional <code>map_handle</code> adds a projected point scatter. Projected by <code>serialize_trajectory_for_viewer</code> in <code>standard/wire_types.py</code>. With <code>align=on</code> (default) it SE3-fits the estimate onto the GT frame (<code>align_est_to_gt</code>, the standard ATE convention) so the two overlay and the gap reads as drift; <code>axes=auto</code> (default) picks the top-down plane from the data (drops the smallest-spread axis) since aligning into an arbitrary world frame makes a fixed <code>XZ</code> no longer necessarily top-down.</td>
+</tr>
+<tr>
+<td><code>pointCloudViewer</code></td>
+<td>3-D orbit view of a fused point cloud</td>
+<td>Custom <code>pointcloud</code> layout — three.js / React-Three-Fiber in a lazy-loaded chunk. Takes a cloud <code>.npz</code> handle (get_map / dense / reconstruct) or an inline array; <code>serialize_pointcloud_for_viewer</code> subsamples to a cap and packs base64 <code>Float32Array</code>/<code>Uint8Array</code> blocks. Fires on a handle, not per-step — a source can stream a live-growing cloud by exporting on a throttle (e.g. <code>model_pyslam__get_map</code>'s <code>stream_every</code>). The canvas is pinned to fill its box via CSS (<code>.ac-pc-box canvas</code>) because React Flow's zoom transform pollutes R3F's own measurement; a <code>CameraRig</code> auto-frames the cloud only until the first user orbit, so live updates never reset the viewpoint.</td>
 </tr>
 <tr>
 <td><code>graphOut</code></td>
