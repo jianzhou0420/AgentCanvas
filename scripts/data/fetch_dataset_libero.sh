@@ -93,11 +93,17 @@ if [ "$DO_NORM_STATS" = true ]; then
         mkdir -p "$NORM_STATS_DIR"
         # The vendored openpi downloader (fsspec/gcsfs) pulls the release
         # checkpoint dir from gs://openpi-assets; norm_stats live in its assets.
-        PYTHONPATH="$PROJECT_ROOT" "$VLA_PYTHON" - "$NORM_STATS_DIR" <<'PYEOF'
+        # PYTHONPATH must include agentcanvas/backend: importing the openpi
+        # module pulls policy_adapter_vla/__init__.py, which imports `app`
+        # (the backend) — without backend on the path this dies with
+        # `ModuleNotFoundError: No module named 'app'` before any download.
+        # token="anon": gs://openpi-assets is a public bucket; anonymous access
+        # avoids requiring GCP credentials (or gsutil) on the host.
+        PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" "$VLA_PYTHON" - "$NORM_STATS_DIR" <<'PYEOF'
 import sys, shutil, pathlib
 dst = pathlib.Path(sys.argv[1])
 from workspace.nodesets.policy.policy_adapter_vla.models.openpi.shared import download
-ckpt = download.maybe_download("gs://openpi-assets/checkpoints/pi0_libero")
+ckpt = download.maybe_download("gs://openpi-assets/checkpoints/pi0_libero", token="anon")
 # norm_stats.json is shipped under the checkpoint's assets/ tree.
 hits = list(pathlib.Path(ckpt).rglob("norm_stats.json"))
 if not hits:

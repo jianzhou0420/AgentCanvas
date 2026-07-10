@@ -75,6 +75,23 @@ fi
 CONDA_PREFIX="$(dirname "$(dirname "$SMARTWAY_PYTHON")")"
 echo "smartway Python: $SMARTWAY_PYTHON"
 
+# ── Step 1b: Install habitat-lab + VLN-CE (editable, ABSOLUTE paths) ──
+# Moved OUT of ac_smartway.yaml: mamba resolves relative pip paths
+# ('-e third_party/...') against the pip-subprocess cwd, NOT the shell cwd, so
+# the `cd $PROJECT_ROOT` above does NOT help — env-create fails with "... is
+# not a valid editable requirement" (the exact xunyi failure; confirmed on a
+# fresh 20.04 host 2026-07-09). Absolute paths here are cwd-independent.
+# apply_thirdparty_patches.sh injects VLN-CE/setup.py, required by the
+# `pip install -e .../VLN-CE` below (install_ac_vlnce.sh does the same — and
+# a standalone smartway install, run without install_ac_vlnce.sh first, would
+# otherwise lack that setup.py entirely).
+# Order matters: vlnce_baselines imports habitat, so habitat-lab goes first.
+echo ""
+echo "=== Step 1b: Patching + installing habitat-lab + VLN-CE (absolute paths) ==="
+bash "$SCRIPT_DIR/patches/apply_thirdparty_patches.sh"
+"$SMARTWAY_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/habitat-lab" 2>&1 | tail -3
+"$SMARTWAY_PYTHON" -m pip install -e "$PROJECT_ROOT/third_party/VLN-CE" 2>&1 | tail -3
+
 # ── Step 2: Remove conda OpenGL libs (same NVIDIA-driver hand-off as vlnce) ──
 echo ""
 echo "=== Step 2: Removing conda OpenGL libs (use NVIDIA drivers) ==="
@@ -127,11 +144,21 @@ done
 # ── Step 5: Checkpoint downloads ──
 echo ""
 echo "=== Step 5: Downloading SmartWay checkpoints ==="
-bash "$SCRIPT_DIR/../data/fetch_ckpt_smartway.sh"
+# Guarded: a ckpt-download failure (flaky Google-Drive / gated HF / offline)
+# must NOT abort the env install under `set -e` — Step 6 verify still runs and
+# the env is usable; checkpoints can be fetched later. Pass SMARTWAY_PYTHON so
+# the fetch script's `python` resolves under this non-interactive spawn (no env
+# activated → a bare `python` is off PATH; the fetch aborted here before).
+PYTHON="$SMARTWAY_PYTHON" bash "$SCRIPT_DIR/../data/fetch_ckpt_smartway.sh" \
+    || echo "[WARN] SmartWay ckpt fetch failed — env installed OK; fetch later: bash scripts/data/fetch_ckpt_smartway.sh"
 
 # ── Step 6: Verify ──
 echo ""
 echo "=== Step 6: Verifying installation ==="
+# Load the env's lib/ so the bare-python imports below pick the env's
+# libstdc++ (stock Ubuntu 20.04 lacks GLIBCXX_3.4.29 that numba/llvmlite, pulled
+# in by the vlnce_baselines depth-encoder chain, needs).
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 echo -n "  PyTorch: "
 "$SMARTWAY_PYTHON" -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())" 2>&1
 echo -n "  habitat-sim: "

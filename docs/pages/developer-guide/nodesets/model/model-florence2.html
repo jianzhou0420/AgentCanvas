@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Florence-2 NodeSet — AgentCanvas</title>
+<meta name="description" content="The Florence-2 NodeSet ( Florence2NodeSet , workspace/nodesets/model/model_florence2.py ) wraps Microsoft&#x27;s Florence-2 unified vision model via transformers Florence2ForConditionalGeneration .…">
+<meta property="og:title" content="Florence-2 NodeSet — AgentCanvas">
+<meta property="og:description" content="The Florence-2 NodeSet ( Florence2NodeSet , workspace/nodesets/model/model_florence2.py ) wraps Microsoft&#x27;s Florence-2 unified vision model via transformers Florence2ForConditionalGeneration .…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-florence2.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-florence2.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Florence-2 NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>Florence-2 NodeSet</h1>
+</header>
+
+<p>The <strong>Florence-2 NodeSet</strong> (<code>Florence2NodeSet</code>, <code>workspace/nodesets/model/model_florence2.py</code>) wraps Microsoft's <a href="https://arxiv.org/abs/2311.06242">Florence-2</a> unified vision model via <code>transformers</code> <code>Florence2ForConditionalGeneration</code>. Florence-2 is a single compact seq2seq model that does many perception tasks through one interface: you pass a <strong>task token</strong> and it emits the answer — a caption, a set of detection boxes, region-grounded phrases, or OCR. One model covers ground that would otherwise take a captioner + a detector + a grounder + an OCR engine, which is exactly what an agent's "look at this frame and tell me X" step wants: switch the task, reuse the weights.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>transformers</code> <code>Florence2ForConditionalGeneration</code> + <code>AutoProcessor</code> · default: <code>florence-community/Florence-2-base</code> (ungated)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_florence2__run</code></td>
+<td>Run one Florence-2 task (config <code>task</code> token, optional <code>text_input</code>) on a single image → <code>result</code> (the task's <code>post_process_generation</code> dict as JSON).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-primitive"><span class="num">1.</span> One primitive, many tasks</h2>
+<p>The tool exposes a single node whose behaviour is chosen by the <code>task</code> config. The three tasks marked (text) also consume the <code>text_input</code> config — a phrase or category to ground; the rest ignore it.</p>
+<table>
+<thead><tr><th>Task token</th><th>What it returns</th></tr></thead>
+<tbody>
+<tr><td><code>&lt;CAPTION&gt;</code> / <code>&lt;DETAILED_CAPTION&gt;</code> / <code>&lt;MORE_DETAILED_CAPTION&gt;</code></td><td>A caption string (increasing verbosity)</td></tr>
+<tr><td><code>&lt;OD&gt;</code></td><td>Object detection — boxes + class labels</td></tr>
+<tr><td><code>&lt;DENSE_REGION_CAPTION&gt;</code> / <code>&lt;REGION_PROPOSAL&gt;</code></td><td>Region boxes with captions / bare region proposals</td></tr>
+<tr><td><code>&lt;CAPTION_TO_PHRASE_GROUNDING&gt;</code> (text)</td><td>Boxes for each phrase in <code>text_input</code></td></tr>
+<tr><td><code>&lt;OPEN_VOCABULARY_DETECTION&gt;</code> (text)</td><td>Boxes for arbitrary categories named in <code>text_input</code></td></tr>
+<tr><td><code>&lt;REFERRING_EXPRESSION_SEGMENTATION&gt;</code> (text)</td><td>Polygons for the object <code>text_input</code> refers to</td></tr>
+<tr><td><code>&lt;OCR&gt;</code></td><td>Recognized text (plain string)</td></tr>
+<tr><td><code>&lt;OCR_WITH_REGION&gt;</code></td><td>Recognized text + quad boxes</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="2-image-in"><span class="num">2.</span> Image in — one at a time</h2>
+<p>The <code>image</code> port accepts a single <code>{rgb_base64}</code> dict or a raw base64 string (a one-element list is unwrapped). Florence-2 generates per image and its result is a per-image dict, so this node is deliberately single-image; loop at graph level for a batch. A missing or malformed image degrades to <code>""</code>.</p>
+<hr>
+<h2 id="3-generate"><span class="num">3.</span> Model &amp; generation</h2>
+<p>The prompt is the task token, optionally followed by <code>text_input</code> for the grounding / open-vocab / referring tasks. Florence-2 generates the answer as a tagged token string, which the processor's <code>post_process_generation</code> parses into a structured dict keyed by the task token:</p>
+<pre class="hl">
+<span class="n">prompt</span> <span class="o">=</span> <span class="n">task</span> <span class="o">+</span> <span class="n">text_input</span>                    <span class="c1"># e.g. &quot;&lt;CAPTION_TO_PHRASE_GROUNDING&gt;a chair&quot;</span>
+<span class="n">inputs</span> <span class="o">=</span> <span class="n">processor</span><span class="p">(</span><span class="n">text</span><span class="o">=</span><span class="n">prompt</span><span class="p">,</span> <span class="n">images</span><span class="o">=</span><span class="n">image</span><span class="p">,</span> <span class="n">return_tensors</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">pt</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">gen_ids</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="n">input_ids</span><span class="o">=</span><span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">input_ids</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="n">pixel_values</span><span class="o">=</span><span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">pixel_values</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span>
+                         <span class="n">max_new_tokens</span><span class="o">=</span><span class="mi">1024</span><span class="p">,</span> <span class="n">num_beams</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">do_sample</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">text</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">batch_decode</span><span class="p">(</span><span class="n">gen_ids</span><span class="p">,</span> <span class="n">skip_special_tokens</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">post_process_generation</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">task</span><span class="o">=</span><span class="n">task</span><span class="p">,</span> <span class="n">image_size</span><span class="o">=</span><span class="p">(</span><span class="n">W</span><span class="p">,</span> <span class="n">H</span><span class="p">)</span><span class="p">)</span>
+</pre>
+<p>Boxes and polygons come back in <strong>original pixel coordinates</strong> — <code>post_process_generation</code> rescales from Florence-2's internal 1000&times;1000 grid to the image's <code>(W, H)</code>. Each <code>model_id</code> is a lazy singleton in a registry, frozen and moved to the device once (fp16 on CUDA, fp32 on CPU); inference is single-flight per engine.</p>
+<hr>
+<h2 id="4-result"><span class="num">4.</span> Result envelope</h2>
+<p>The output <code>result</code> is <code>post_process_generation</code>'s dict serialized as JSON, keyed by the task token. For a caption:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;&lt;CAPTION&gt;&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;a yellow square on a black background&quot;</span><span class="p">}</span>
+</pre>
+<p>For object detection (boxes are <code>[x1, y1, x2, y2]</code> in pixels):</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;&lt;OD&gt;&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;bboxes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[[</span><span class="mi">64</span><span class="p">,</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span><span class="w"> </span><span class="mi">210</span><span class="p">,</span><span class="w"> </span><span class="mi">300</span><span class="p">]],</span><span class="w"> </span><span class="nt">&quot;labels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;chair&quot;</span><span class="p">]</span><span class="p">}</span><span class="p">}</span>
+</pre>
+<p>Referring / region segmentation tasks return <code>polygons</code> instead of <code>bboxes</code>; OCR-with-region returns <code>quad_boxes</code>. The dict is returned verbatim so downstream nodes parse the shape they expect for the task they asked for.</p>
+<hr>
+<h2 id="5-canvas-node"><span class="num">5.</span> Canvas Node</h2>
+<h3 id="model_florence2__run"><code>model_florence2__run</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>image</code> (ANY — a <code>{rgb_base64}</code> dict or raw base64 string)</td></tr>
+<tr><td>Outputs</td><td><code>result</code> (TEXT — the §4 JSON dict; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — florence-community base/large ±ft), <code>task</code> (select), <code>text_input</code> (text), <code>max_new_tokens</code> (slider), <code>num_beams</code> (slider)</td></tr>
+<tr><td>Backend call</td><td>processor → <code>model.generate(...)</code> under <code>no_grad</code> → <code>batch_decode</code> → <code>post_process_generation</code></td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (a stateless generator — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "FLORENCE2_PYTHON")</code>. Florence-2 runs in the <strong>shared <code>ac-fm</code> env</strong> — <code>Florence2ForConditionalGeneration</code> is native to the transformers stack there. Use a <code>florence-community/*</code> checkpoint: the original <code>microsoft/Florence-2-*</code> repos still ship the remote-code layout and do not load natively (missing lm_head + a tokenizer with no image_token). The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_florence2/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>FLORENCE2_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>FLORENCE2_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, a missing/malformed image, or an unknown task token yields <code>""</code> on the node's output. An empty result is a clean "no answer this step" signal; consumers keep their own fallback and never receive a fabricated detection or caption.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-primitive">1. One primitive, many tasks</a>
+      <a class="toc-h2" href="#2-image-in">2. Image in — one at a time</a>
+      <a class="toc-h2" href="#3-generate">3. Model &amp; generation</a>
+      <a class="toc-h2" href="#4-result">4. Result envelope</a>
+      <a class="toc-h2" href="#5-canvas-node">5. Canvas Node</a>
+      <a class="toc-h3" href="#model_florence2__run">model_florence2__run</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

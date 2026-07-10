@@ -161,6 +161,11 @@ export default function UnifiedGraphEditor({
         );
       }
     }
+    // Data wires render through the RoutedEdge (curved / orthogonal toggle);
+    // access-grant lines keep their own dashed edge type.
+    out = out.map((e) =>
+      e.type === "accessGrant" ? e : { ...e, type: "routed" },
+    );
     return out;
   }, [allEdges, allNodes, showAccessGrants, showViewers, isViewerNode]);
 

@@ -131,6 +131,13 @@ if [ "$DO_ENV" = "1" ]; then
         'jax[cuda12_pip]==0.4.20' \
         -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html \
         || "$OCTO_PYTHON" -m pip install 'jax==0.4.20' 'jaxlib==0.4.20'  # CPU fallback
+    # jaxlib 0.4.20+cuda12 is built against cuDNN 8.9 (loads libcudnn.so.8), but
+    # jax[cuda12_pip]'s `nvidia-cudnn-cu12>=8.9` lets pip grab cuDNN 9.x (which
+    # only ships libcudnn.so.9). jaxlib then reports "Found cuDNN version 0" and
+    # silently falls back to CPU (jax.default_backend()=='cpu'). Pin the cuDNN
+    # 8.9 wheel so the GPU backend actually initializes. Harmless on CPU-only
+    # boxes (the wheel is simply unused).
+    "$OCTO_PYTHON" -m pip install 'nvidia-cudnn-cu12==8.9.7.29'
     "$OCTO_PYTHON" -m pip install \
         'transforms3d' \
         'mediapy' \
@@ -140,9 +147,39 @@ if [ "$DO_ENV" = "1" ]; then
 
     echo ""
     echo "=== Step 4: Editable install of ManiSkill2_real2sim + SimplerEnv + octo ==="
+    # ruckig (mani_skill2_real2sim dep) ships only sdists past 0.12.x whose
+    # cmake.targets config breaks scikit-build-core>=0.10 — pre-install the last
+    # cp310-wheel version so pip never builds it from source (same fix as
+    # install_ac_simpler.sh). Must precede the ManiSkill editable install.
+    "$OCTO_PYTHON" -m pip install --only-binary :all: 'ruckig==0.12.2'
     "$OCTO_PYTHON" -m pip install -e "$MANISKILL_REPO"
     "$OCTO_PYTHON" -m pip install -e "$SIMPLERENV_REPO"
     "$OCTO_PYTHON" -m pip install -e "$OCTO_REPO"
+
+    # ── Step 4b: Octo runtime deps (requirements.txt subset) ──
+    #
+    # `pip install -e octo` (above) only reads octo's setup.py, which has no
+    # install_requires — so octo's real deps (flax, distrax, tensorflow, ...)
+    # never install and `import flax` / `from octo.model...` fail. octo pins them
+    # in third_party/octo/requirements.txt; we install the inference-path subset
+    # here (dlimp / tf_text / tf_graphics from that file are training/data-only —
+    # the policy_octo nodeset imports fine without them). Three pins the bare
+    # requirements would get WRONG, each cost a debug round on Ubuntu 20.04:
+    #   - scipy==1.10.1     — requirements says `scipy>=1.6.0` unbounded, so pip
+    #     picks 1.15; jax 0.4.20 calls scipy.linalg.tril, removed in scipy 1.13.
+    #   - opencv-python-headless<4.10 — maniskill/simpler drag opencv 5.x, which
+    #     hard-requires numpy>=2 and breaks the numpy<2 pin below.
+    #   - numpy==1.24.4 re-pinned LAST — flax/tensorstore/orbax silently pull
+    #     numpy 2.x, giving `numpy.core.umath failed to import` (1.x/2.x ABI).
+    echo ""
+    echo "=== Step 4b: Octo runtime deps (flax / tensorflow / transformers) ==="
+    "$OCTO_PYTHON" -m pip install \
+        'flax==0.7.5' 'distrax==0.1.5' 'chex==0.1.85' 'optax==0.1.5' \
+        'ml_dtypes==0.2.0' 'ml_collections' 'einops' \
+        'tensorflow==2.15.0' 'tensorflow-probability==0.23.0' \
+        'transformers==4.34.1' \
+        'scipy==1.10.1' 'opencv-python-headless<4.10'
+    "$OCTO_PYTHON" -m pip install 'numpy==1.24.4'
 
     # ── Step 5: AgentCanvas server-mode deps ──
 
@@ -167,7 +204,7 @@ if [ "$DO_ENV" = "1" ]; then
     echo -n "  policy_octo:     "
     PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
         "$OCTO_PYTHON" -c "
-from workspace.nodesets.server.policy_octo import PolicyOctoNodeSet
+from workspace.nodesets.policy.policy_octo import PolicyOctoNodeSet
 ns = PolicyOctoNodeSet()
 print(f'OK — name={ns.name}, tools={[t.node_type for t in ns.get_tools()]}')
 " 2>&1 || echo "FAIL"

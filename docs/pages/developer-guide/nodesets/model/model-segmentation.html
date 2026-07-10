@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Segmentation NodeSet — AgentCanvas</title>
+<meta name="description" content="The Segmentation NodeSet ( SegmentationNodeSet , workspace/nodesets/model/model_segmentation.py ) wraps Mask2Former universal segmentation via transformers . Where SAM answers &quot; where are the…">
+<meta property="og:title" content="Segmentation NodeSet — AgentCanvas">
+<meta property="og:description" content="The Segmentation NodeSet ( SegmentationNodeSet , workspace/nodesets/model/model_segmentation.py ) wraps Mask2Former universal segmentation via transformers . Where SAM answers &quot; where are the…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-segmentation.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-segmentation.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Segmentation NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>Segmentation NodeSet</h1>
+</header>
+
+<p>The <strong>Segmentation NodeSet</strong> (<code>SegmentationNodeSet</code>, <code>workspace/nodesets/model/model_segmentation.py</code>) wraps <a href="https://github.com/facebookresearch/Mask2Former">Mask2Former</a> universal segmentation via <code>transformers</code>. Where <a href="model-sam.html">SAM</a> answers "<em>where</em> are the objects" with class-agnostic masks, Mask2Former answers "<em>what</em> is each pixel": a per-pixel semantic label map, or a panoptic map that also separates instances. Semantic maps for VLN, walkable-vs-obstacle reasoning, and grounding a class name to image regions all build on this.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>transformers</code> <code>Mask2FormerForUniversalSegmentation</code> + <code>AutoImageProcessor</code> · defaults: <code>…-swin-tiny-ade-semantic</code> / <code>…-swin-tiny-coco-panoptic</code> (ungated)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_segmentation__semantic</code></td>
+<td>Per-pixel semantic class-id map → <code>segmentation</code> (JSON envelope of <code>(N, H, W)</code> int32 + <code>id2label</code>).</td>
+</tr>
+<tr>
+<td><code>model_segmentation__panoptic</code></td>
+<td>Instance-aware segment-id map + per-segment class list → <code>segmentation</code> (JSON envelope of <code>(N, H, W)</code> int32 + <code>segments</code>).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-two-primitives"><span class="num">1.</span> Two primitives: semantic vs panoptic</h2>
+<p><code>semantic</code> labels every pixel with a class id (from a semantic checkpoint — ADE20K's 150 classes by default), naming each id via <code>id2label</code>. <code>panoptic</code> goes further: it separates <em>instances</em>, so each pixel carries a <em>segment</em> id, and a <code>segments</code> list gives each segment's class + score (from a panoptic checkpoint — COCO by default). A graph wires whichever fits — a semantic map for "which pixels are floor", panoptic for "how many distinct chairs". They are distinct weights, so each maps to its own engine instance.</p>
+<hr>
+<h2 id="2-images-in"><span class="num">2.</span> Images in — uniform resolution</h2>
+<p>Both tools take the <code>images</code> port — a list of <code>{rgb_base64}</code> dicts (or raw base64 strings). All images in one call must share resolution (the envelope is a single <code>(N, H, W)</code> buffer); mixed sizes degrade to empty with a self-log. Maps are returned at the <strong>original input resolution</strong> — the processor's <code>post_process_*</code> resizes them back.</p>
+<hr>
+<h2 id="3-envelopes"><span class="num">3.</span> Envelopes</h2>
+<p>Each output is a TEXT JSON envelope — the label/segment map as a raw C-contiguous <code>int32</code> buffer, base64-encoded (byte-exact across the server-mode HTTP boundary). Semantic carries <code>id2label</code>; panoptic carries a per-image <code>segments</code> list:</p>
+<pre class="hl">
+<span class="c1"># semantic</span>
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;int32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;id2label&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;0&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;wall&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">…</span><span class="p">}}</span>
+<span class="c1"># panoptic</span>
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;int32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;segments&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="p">[</span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;chair&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.98</span><span class="p">},</span><span class="w"> </span><span class="err">…</span><span class="p">]]}</span>
+</pre>
+<p>In the semantic map each pixel value indexes <code>id2label</code>; in the panoptic map each pixel value is a segment <code>id</code> matched by the <code>segments</code> entries. In an agent loop <code>N</code> is typically 1 (per-frame parse).</p>
+<hr>
+<h2 id="4-canvas-nodes"><span class="num">4.</span> Canvas Nodes</h2>
+<h3 id="model_segmentation__semantic"><code>model_segmentation__semantic</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings, uniform size)</td></tr>
+<tr><td>Outputs</td><td><code>segmentation</code> (TEXT — <code>(N,H,W)</code> int32 + <code>id2label</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — mask2former ADE + Cityscapes semantic)</td></tr>
+<tr><td>Backend call</td><td>processor → <code>model(**pp)</code> → <code>post_process_semantic_segmentation</code></td></tr>
+</tbody>
+</table>
+<h3 id="model_segmentation__panoptic"><code>model_segmentation__panoptic</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — as above)</td></tr>
+<tr><td>Outputs</td><td><code>segmentation</code> (TEXT — <code>(N,H,W)</code> int32 + <code>segments</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — mask2former COCO/Cityscapes/Mapillary panoptic)</td></tr>
+<tr><td>Backend call</td><td>processor → <code>model(**pp)</code> → <code>post_process_panoptic_segmentation</code></td></tr>
+</tbody>
+</table>
+<p>Engines are lazy singletons in a registry keyed by <code>model_id</code> (a semantic and a panoptic checkpoint are distinct weights → distinct engines); GPU inference is single-flight per engine.</p>
+<hr>
+<h2 id="5-server-mode"><span class="num">5.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (a stateless segmenter — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "SEGMENTATION_PYTHON")</code>. Segmentation runs in the <strong>shared <code>ac-fm</code> env</strong> — Mask2Former is native to the transformers stack there. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_segmentation/load?mode=server</code>.</p>
+<hr>
+<h2 id="6-environment-variables"><span class="num">6.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>SEGMENTATION_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>SEGMENTATION_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="7-degraded-mode"><span class="num">7.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, a missing/malformed frame, or mixed input resolutions yields <code>""</code> on the node's output. An empty envelope is a clean "no segmentation this step" signal; consumers keep their own fallback and never receive a fabricated label map.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-two-primitives">1. Two primitives: semantic vs panoptic</a>
+      <a class="toc-h2" href="#2-images-in">2. Images in — uniform resolution</a>
+      <a class="toc-h2" href="#3-envelopes">3. Envelopes</a>
+      <a class="toc-h2" href="#4-canvas-nodes">4. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_segmentation__semantic">model_segmentation__semantic</a>
+      <a class="toc-h3" href="#model_segmentation__panoptic">model_segmentation__panoptic</a>
+      <a class="toc-h2" href="#5-server-mode">5. Server Mode</a>
+      <a class="toc-h2" href="#6-environment-variables">6. Environment Variables</a>
+      <a class="toc-h2" href="#7-degraded-mode">7. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

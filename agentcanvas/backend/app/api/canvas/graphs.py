@@ -296,9 +296,15 @@ async def save_graph(req: GraphSaveRequest) -> dict[str, str]:
 
 @router.post("/layout")
 async def layout_graph_api(request: Request) -> dict[str, Any]:
-    """Apply auto-layout to a graph definition (updates positions only)."""
-    graph = await request.json()
-    return layout_graph(graph, node_heights=build_height_map())
+    """Apply auto-layout to a graph definition (updates positions only).
+
+    Accepts an optional ``dimensions`` field ({node_id: {width, height}}) with
+    the canvas-measured node sizes, so columns are spaced by real width and
+    rows by real height.  Absent → fixed-pitch fallback.
+    """
+    body = await request.json()
+    dims = body.pop("dimensions", None) if isinstance(body, dict) else None
+    return layout_graph(body, node_heights=build_height_map(), node_dims=dims)
 
 
 @router.post("/{graph_id:path}/move")

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigLIP2 NodeSet — AgentCanvas</title>
+<meta name="description" content="The SigLIP2 NodeSet ( Siglip2NodeSet , workspace/nodesets/model/model_siglip2.py ) wraps SigLIP 2 as a language-aligned visual-embedding primitive — the modern successor to CLIP . Like CLIP it lives…">
+<meta property="og:title" content="SigLIP2 NodeSet — AgentCanvas">
+<meta property="og:description" content="The SigLIP2 NodeSet ( Siglip2NodeSet , workspace/nodesets/model/model_siglip2.py ) wraps SigLIP 2 as a language-aligned visual-embedding primitive — the modern successor to CLIP . Like CLIP it lives…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-siglip2.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-siglip2.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">SigLIP2 NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>SigLIP2 NodeSet</h1>
+</header>
+
+<p>The <strong>SigLIP2 NodeSet</strong> (<code>Siglip2NodeSet</code>, <code>workspace/nodesets/model/model_siglip2.py</code>) wraps <a href="https://huggingface.co/google/siglip2-base-patch16-224">SigLIP&nbsp;2</a> as a <strong>language-aligned visual-embedding primitive</strong> — the modern successor to <a href="model-clip.html">CLIP</a>. Like CLIP it lives in a <em>shared image–text space</em>, but it is trained with a <strong>sigmoid pairwise loss</strong> rather than CLIP's softmax contrastive loss. The practical consequence surfaces in <code>classify</code>: each image·label pair is scored on its own, so per-label probabilities are <em>independent</em> and multi-label by construction — "is this a kitchen? is this a hallway?" are answered separately, and both can be high or both low. That is exactly what open-vocabulary mapping and multi-label scene tagging want.</p>
+<p>env: <code>ac-fm</code> · backend: <code>transformers</code> <code>AutoModel</code> + <code>AutoProcessor</code> · default <code>model_id</code>: <code>google/siglip2-base-patch16-224</code> (768-d)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_siglip2__encode_image</code></td>
+<td>L2-normalized image embedding per image: list of <code>{rgb_base64}</code> → <code>embeddings</code> (TEXT — base64-npy JSON envelope of the (N,&nbsp;D) float32 matrix).</td>
+</tr>
+<tr>
+<td><code>model_siglip2__encode_text</code></td>
+<td>L2-normalized text embedding per string → <code>embeddings</code> (same envelope).</td>
+</tr>
+<tr>
+<td><code>model_siglip2__classify</code></td>
+<td>Zero-shot image↔label scoring with the model's own <code>logit_scale</code>/<code>logit_bias</code> and a <strong>sigmoid</strong> → <code>scores</code> (JSON <code>{labels, probs, logits, top}</code>).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-shared-space"><span class="num">1.</span> One shared image–text space</h2>
+<p>Image and text embeddings from the same <code>model_id</code> are <strong>directly comparable</strong> — both are L2-normalized, so cosine similarity is a plain dot product. A graph can wire <code>encode_image</code> + <code>encode_text</code> into its own similarity / retrieval / open-vocab-map logic without touching <code>classify</code>; <code>classify</code> is the convenience path when you just want per-label scores for one set of candidate phrases.</p>
+<p><strong>Labels are used verbatim</strong> — there is no hidden template. SigLIP's own eval uses <code>"This is a photo of a {}."</code>; supply the full prompt yourself if you want a template. Prompt engineering is the caller's decision, kept out of the primitive.</p>
+<hr>
+<h2 id="2-encoders"><span class="num">2.</span> Encoders — projection folded into the towers</h2>
+<p>SigLIP folds the projection <em>into</em> each tower: the per-image / per-text embedding <strong>is</strong> the tower <code>pooler_output</code> — there is no separate <code>visual_projection</code> head as in CLIP. As with CLIP, <code>get_image_features</code> / <code>get_text_features</code> are avoided: in transformers&nbsp;5.x they return the <em>raw</em> tower output object, not the vector. Each encoder therefore reads <code>vision_model</code> / <code>text_model</code> <code>pooler_output</code> directly and L2-normalizes — bit-exact with the model's own normalized <code>image_embeds</code> / <code>text_embeds</code>:</p>
+<pre class="hl">
+# SigLIP folds the projection into the towers: the embedding is the tower
+# pooler_output, so there is no separate visual_projection head.
+# get_image_features returns the raw tower output object in transformers 5.x,
+# so read pooler_output directly, then L2-normalize.
+feats = model.vision_model(pixel_values=pixel_values).pooler_output
+feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
+</pre>
+<p>Text is tokenised in SigLIP's training/eval regime — <code>padding="max_length", max_length=64, truncation=True</code> — so scores match the model's intended behaviour rather than drifting with variable-length padding.</p>
+<p><strong>Sigmoid, not softmax — the key difference from CLIP.</strong> <code>classify</code> runs the full model forward, reads <code>logits_per_image</code> (already scaled by the learned <code>logit_scale</code> and shifted by <code>logit_bias</code>), then applies a <em>sigmoid</em> — not a softmax over the label set:</p>
+<pre class="hl">
+out    = model(**inputs)
+logits = out.logits_per_image      # (N_img, N_label), scaled + biased
+probs  = torch.sigmoid(logits)     # SigLIP: per-pair sigmoid, NOT softmax
+</pre>
+<p>So <code>probs[n]</code> is a vector of <em>independent</em> per-pair probabilities in <code>[0, 1]</code> that does <strong>not</strong> sum to 1 (multi-label by construction). This contrasts with CLIP's <code>classify</code>, whose softmax over the label set makes the labels compete for a single unit of probability mass. <code>top</code> is still the single highest-scoring label per image (<code>argmax</code> over the row).</p>
+<hr>
+<h2 id="3-embedding-envelope"><span class="num">3.</span> Embedding envelope</h2>
+<p>Both encoders output a TEXT JSON envelope carrying the raw C-contiguous float32 buffer base64-encoded (CLIP/DINOv2's sibling format, plus <code>model_id</code> + <code>normalized</code> self-description):</p>
+<pre class="hl">
+{"shape": [N, 768], "dtype": "float32", "b64": "&lt;base64 of the C-contiguous float32 buffer&gt;", "model_id": "google/siglip2-base-patch16-224", "normalized": true}
+</pre>
+<p>Byte-exact across the server-mode HTTP boundary — a plain JSON float list would round-trip every value through decimal text — and ~4× smaller. <code>classify</code> emits a plain JSON object instead: <code>{"labels":[…], "probs":[N][L], "logits":[N][L], "top":[{label,prob}], "model_id":…}</code>.</p>
+<hr>
+<h2 id="4-canvas-nodes"><span class="num">4.</span> Canvas Nodes</h2>
+<h3 id="model_siglip2__encode_image"><code>model_siglip2__encode_image</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings)</td></tr>
+<tr><td>Outputs</td><td><code>embeddings</code> (TEXT — the §3 envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — siglip2 base/large/so400m fixed-res + NaFlex)</td></tr>
+<tr><td>Backend call</td><td>vision tower <code>pooler_output</code> under <code>no_grad</code>, L2-normalized → <code>(N, D)</code> float32, input order preserved</td></tr>
+</tbody>
+</table>
+<h3 id="model_siglip2__encode_text"><code>model_siglip2__encode_text</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>texts</code> (ANY — list of strings, a JSON list, or a single string)</td></tr>
+<tr><td>Outputs</td><td><code>embeddings</code> (TEXT — the §3 envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — siglip2 base/large/so400m fixed-res + NaFlex)</td></tr>
+<tr><td>Backend call</td><td>text tower <code>pooler_output</code> under <code>no_grad</code>, tokenised <code>padding="max_length", max_length=64</code>, L2-normalized → <code>(N, D)</code> float32</td></tr>
+</tbody>
+</table>
+<h3 id="model_siglip2__classify"><code>model_siglip2__classify</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — as above), <code>labels</code> (ANY — candidate text labels: list / JSON / single string)</td></tr>
+<tr><td>Outputs</td><td><code>scores</code> (TEXT — JSON <code>{labels, probs, logits, top, model_id}</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — siglip2 base/large/so400m fixed-res + NaFlex)</td></tr>
+<tr><td>Backend call</td><td>full model forward → <code>logits_per_image</code> (logit_scale-scaled + biased), <strong>sigmoid</strong> per pair → <code>probs</code> (independent, multi-label), <code>argmax</code> per image → <code>top</code></td></tr>
+</tbody>
+</table>
+<p>Engines are lazy singletons in a registry keyed by <code>model_id</code> — two checkpoints coexist in one server without cross-serving embeddings. GPU inference is single-flight per engine (one in-flight forward bounds peak VRAM under concurrent eval workers).</p>
+<hr>
+<h2 id="5-server-mode"><span class="num">5.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless embedding primitives — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "SIGLIP2_PYTHON")</code>. <code>AutoModel</code> resolves to <code>SiglipModel</code> and <code>AutoProcessor</code> to <code>SiglipProcessor</code>, both native to the shared <code>ac-fm</code> env (Python&nbsp;3.11, torch&nbsp;2.8.0+cu126, transformers&nbsp;5.13), so no dedicated env is needed. The nodeset file stays Python-3.8-parseable (an override may point at a py3.8 env). Load: <code>POST /api/components/nodesets/model_siglip2/load?mode=server</code>.</p>
+<p>Verified 2026-07-08: <code>AutoModel</code>/<code>AutoProcessor</code> load as <code>SiglipModel</code>/<code>SiglipProcessor</code>, and an in-process <code>forward()</code> on CPU produced an L2-normalized <code>(N, 768)</code> image matrix, an <code>(N, 768)</code> text matrix, and <code>classify</code> sigmoid probabilities in <code>[0, 1]</code>.</p>
+<hr>
+<h2 id="6-environment-variables"><span class="num">6.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>SIGLIP2_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>SIGLIP2_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="7-degraded-mode"><span class="num">7.</span> Degraded Mode</h2>
+<p>A model/processor load failure latches (<code>_load_failed</code> — no retry storm); that, or an <code>images</code> entry missing its base64, yields <code>""</code> on the respective output. Consumers keep their own fallback — an empty envelope is a clean "no embedding this step" signal, never a fabricated vector.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-shared-space">1. One shared image–text space</a>
+      <a class="toc-h2" href="#2-encoders">2. Encoders — projection folded into the towers</a>
+      <a class="toc-h2" href="#3-embedding-envelope">3. Embedding envelope</a>
+      <a class="toc-h2" href="#4-canvas-nodes">4. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_siglip2__encode_image">model_siglip2__encode_image</a>
+      <a class="toc-h3" href="#model_siglip2__encode_text">model_siglip2__encode_text</a>
+      <a class="toc-h3" href="#model_siglip2__classify">model_siglip2__classify</a>
+      <a class="toc-h2" href="#5-server-mode">5. Server Mode</a>
+      <a class="toc-h2" href="#6-environment-variables">6. Environment Variables</a>
+      <a class="toc-h2" href="#7-degraded-mode">7. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -18,7 +18,7 @@ interface Props {
   onSelectorsChange: (selectors: Record<string, string | number>) => void;
   onEpisodeCountChange: (n: number) => void;
   onStartEpisodeChange: (n: number) => void;
-  onLoadNodeset?: () => void;
+  onLoadNodeset?: () => Promise<void>;
 }
 
 const inputCls =
@@ -189,20 +189,7 @@ export default function EnvInfoPanel({
 
   if (!loaded) {
     return (
-      <div className="flex flex-col gap-2 rounded border border-orange-800 bg-orange-900/20 p-2">
-        <div className="flex items-center gap-1.5 text-xs text-orange-400">
-          <AlertTriangle size={12} />
-          Nodeset <span className="font-mono">{envNodeset}</span> not loaded
-        </div>
-        {onLoadNodeset && (
-          <button
-            onClick={onLoadNodeset}
-            className="rounded bg-orange-700 px-2 py-1 text-xs text-white hover:bg-orange-600"
-          >
-            Load Nodeset
-          </button>
-        )}
-      </div>
+      <LoadNodesetPrompt envNodeset={envNodeset} onLoadNodeset={onLoadNodeset} />
     );
   }
 
@@ -278,6 +265,57 @@ export default function EnvInfoPanel({
       {error && (
         <div className="rounded border border-red-800 bg-red-900/20 px-2 py-1 text-xs text-red-400">
           {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── "Load Nodeset" prompt — server-mode env loads spawn a subprocess and can
+//     take tens of seconds, so show an in-flight state and never fail silently. ──
+
+function LoadNodesetPrompt({
+  envNodeset,
+  onLoadNodeset,
+}: {
+  envNodeset: string;
+  onLoadNodeset?: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleClick = async () => {
+    if (!onLoadNodeset || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onLoadNodeset();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded border border-orange-800 bg-orange-900/20 p-2">
+      <div className="flex items-center gap-1.5 text-xs text-orange-400">
+        <AlertTriangle size={12} />
+        Nodeset <span className="font-mono">{envNodeset}</span> not loaded
+      </div>
+      {onLoadNodeset && (
+        <button
+          onClick={handleClick}
+          disabled={busy}
+          className="flex items-center justify-center gap-1.5 rounded bg-orange-700 px-2 py-1 text-xs text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          {busy ? "Loading… (server may take ~30s)" : "Load Nodeset"}
+        </button>
+      )}
+      {error && (
+        <div className="rounded border border-red-800 bg-red-900/20 px-2 py-1 text-xs break-words text-red-400">
+          Load failed — {error}
         </div>
       )}
     </div>

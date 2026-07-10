@@ -73,6 +73,14 @@ log = logging.getLogger("agentcanvas.model_clip")
 
 _MODEL_ID_DEFAULT = "openai/clip-vit-base-patch32"
 
+# Curated OpenAI CLIP variants; shared by all three nodes.
+_MODEL_OPTIONS = [
+    {"value": "openai/clip-vit-base-patch32", "label": "CLIP ViT-B/32"},
+    {"value": "openai/clip-vit-base-patch16", "label": "CLIP ViT-B/16"},
+    {"value": "openai/clip-vit-large-patch14", "label": "CLIP ViT-L/14"},
+    {"value": "openai/clip-vit-large-patch14-336", "label": "CLIP ViT-L/14 @336"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -296,7 +304,7 @@ class ClipEncodeImageTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="cyan",
         config_fields=[
-            ConfigField("model_id", "text", "HF CLIP model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [
@@ -347,7 +355,7 @@ class ClipEncodeTextTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="cyan",
         config_fields=[
-            ConfigField("model_id", "text", "HF CLIP model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [
@@ -400,7 +408,7 @@ class ClipClassifyTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="cyan",
         config_fields=[
-            ConfigField("model_id", "text", "HF CLIP model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
         ],
     )
     input_ports = [

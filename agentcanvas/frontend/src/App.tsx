@@ -26,7 +26,15 @@ export default function App() {
       <div style={{ height: "calc(100vh - 48px)" }}>
         {appMode === "nav" && <CanvasPage />}
         {appMode === "manager" && <NodeSetManager />}
-        {appMode === "eval" && <EvalPage />}
+        {/* EvalPage stays mounted (just hidden) so its config — selected graph,
+            selectors, episode/step counts — survives navigating away and back
+            instead of resetting. `display: contents` removes this wrapper from
+            layout when active, so the visible result is identical to rendering
+            <EvalPage /> directly. State is still in-memory (lost on full page
+            reload). */}
+        <div style={{ display: appMode === "eval" ? "contents" : "none" }}>
+          <EvalPage />
+        </div>
         {appMode === "logs" && <LogViewerPage />}
         {appMode === "replay" && <ReplayPage />}
         {appMode === "monitor" && <MonitorPage />}

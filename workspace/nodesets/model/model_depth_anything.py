@@ -65,6 +65,25 @@ log = logging.getLogger("agentcanvas.model_depth_anything")
 
 _MODEL_ID_DEFAULT = "depth-anything/Depth-Anything-V2-Small-hf"
 
+# Curated Depth-Anything-V2 transformers (-hf) checkpoints: relative + metric.
+_MODEL_OPTIONS = [
+    {"value": "depth-anything/Depth-Anything-V2-Small-hf", "label": "V2 Small (relative)"},
+    {"value": "depth-anything/Depth-Anything-V2-Base-hf", "label": "V2 Base (relative)"},
+    {"value": "depth-anything/Depth-Anything-V2-Large-hf", "label": "V2 Large (relative)"},
+    {"value": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf", "label": "V2 Metric Indoor Small"},
+    {"value": "depth-anything/Depth-Anything-V2-Metric-Indoor-Base-hf", "label": "V2 Metric Indoor Base"},
+    {"value": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf", "label": "V2 Metric Indoor Large"},
+    {"value": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf", "label": "V2 Metric Outdoor Small"},
+    {"value": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Base-hf", "label": "V2 Metric Outdoor Base"},
+    {"value": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf", "label": "V2 Metric Outdoor Large"},
+]
+# depth_type: blank auto-derives (metric if the id contains "metric", else relative).
+_DEPTH_TYPE_OPTIONS = [
+    {"value": "", "label": "auto (from model id)"},
+    {"value": "relative", "label": "relative"},
+    {"value": "metric", "label": "metric"},
+]
+
 
 def _resolve_device() -> Any:
     import torch
@@ -201,11 +220,10 @@ class DepthAnythingEstimateTool(BaseCanvasNode):
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color="blue",
         config_fields=[
-            ConfigField("model_id", "text", "HF Depth-Anything model repo id", default=_MODEL_ID_DEFAULT),
+            ConfigField("model_id", "select", label="Model", options=list(_MODEL_OPTIONS), default=_MODEL_ID_DEFAULT),
             ConfigField(
-                "depth_type", "text",
-                "Units label carried in the envelope: relative | metric (auto from id if blank)",
-                default="",
+                "depth_type", "select", label="Units label",
+                options=list(_DEPTH_TYPE_OPTIONS), default="",
             ),
         ],
     )

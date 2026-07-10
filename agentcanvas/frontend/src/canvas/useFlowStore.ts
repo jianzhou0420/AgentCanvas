@@ -292,6 +292,10 @@ interface FlowStore {
   showAnnotations: boolean;
   toggleAnnotations: () => void;
 
+  // ── Edge routing mode (curved bezier vs orthogonal waypoint routing) ──
+  routingMode: "curved" | "orthogonal";
+  toggleRoutingMode: () => void;
+
   // ── Graph state ──
   graphState: import("./types").ContainerDef | null;
   graphStatePreview: Record<string, Record<string, unknown>> | null;
@@ -1001,6 +1005,12 @@ export const useFlowStore = create<FlowStore>((set, get) => ({
   showAnnotations: true,
   toggleAnnotations: () =>
     set((s) => ({ showAnnotations: !s.showAnnotations })),
+
+  routingMode: "curved",
+  toggleRoutingMode: () =>
+    set((s) => ({
+      routingMode: s.routingMode === "curved" ? "orthogonal" : "curved",
+    })),
 
   setStepBudget: (n) =>
     set((s) => updateActiveTab(s, () => ({ step_budget: n }))),

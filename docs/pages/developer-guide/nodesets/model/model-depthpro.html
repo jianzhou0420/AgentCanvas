@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DepthPro NodeSet — AgentCanvas</title>
+<meta name="description" content="The DepthPro NodeSet ( DepthProNodeSet , workspace/nodesets/model/model_depthpro.py ) wraps Apple DepthPro for zero-shot metric depth: one RGB frame in, a dense depth map in metres plus the recovered…">
+<meta property="og:title" content="DepthPro NodeSet — AgentCanvas">
+<meta property="og:description" content="The DepthPro NodeSet ( DepthProNodeSet , workspace/nodesets/model/model_depthpro.py ) wraps Apple DepthPro for zero-shot metric depth: one RGB frame in, a dense depth map in metres plus the recovered…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depthpro.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-depthpro.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">DepthPro NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>DepthPro NodeSet</h1>
+</header>
+
+<p>The <strong>DepthPro NodeSet</strong> (<code>DepthProNodeSet</code>, <code>workspace/nodesets/model/model_depthpro.py</code>) wraps <a href="https://github.com/apple/ml-depth-pro">Apple DepthPro</a> for zero-shot <strong>metric</strong> depth: one RGB frame in, a dense depth map <em>in metres</em> plus the recovered field of view out. It is the absolute-scale companion to <a href="model-depth-anything.html">Depth Anything</a> — where Depth Anything gives relative / inverse depth, DepthPro gives distance you can act on in metres, and recovers focal length from a lone RGB frame. Obstacle distance, metric 3D lifting, and sim2real scale all want this.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>transformers</code> <code>AutoModelForDepthEstimation</code> + <code>AutoImageProcessor</code> · default: <code>apple/DepthPro-hf</code> (ungated)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_depthpro__estimate_metric_depth</code></td>
+<td>Per-image metric depth + field of view → <code>depth</code> (JSON envelope of an <code>(N, H, W)</code> metre-scale map + <code>field_of_view</code>).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-primitive"><span class="num">1.</span> One primitive: RGB → metric depth</h2>
+<p>The tool takes a list of same-resolution images and returns, per image, a per-pixel depth in <strong>metres</strong> plus the horizontal field of view in degrees (DepthPro estimates focal length as part of the forward). It shares the <a href="model-depth-anything.html">Depth Anything</a> node's input contract and envelope convention, so the two compose as a relative/metric depth pair — reach for DepthPro when the downstream needs true scale.</p>
+<hr>
+<h2 id="2-images-in"><span class="num">2.</span> Images in — uniform resolution</h2>
+<p>The <code>images</code> port accepts a list of <code>{rgb_base64}</code> dicts (or raw base64 strings). All images in one call must share resolution — the envelope is a single <code>(N, H, W)</code> buffer, so mixed sizes degrade to empty with a self-log. In an agent loop <code>N</code> is typically 1 (per-frame depth).</p>
+<hr>
+<h2 id="3-cost"><span class="num">3.</span> Model &amp; cost</h2>
+<p>The engine loads <code>AutoModelForDepthEstimation</code> + <code>AutoImageProcessor</code> for the configured <code>model_id</code>. Post-processing recovers metric depth and FoV and resizes depth back to the original resolution:</p>
+<pre class="hl">
+<span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">pixel_values</span><span class="o">=</span><span class="n">pixel_values</span><span class="p">)</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">post_process_depth_estimation</span><span class="p">(</span><span class="n">outputs</span><span class="p">,</span> <span class="n">target_sizes</span><span class="o">=</span><span class="n">target_sizes</span><span class="p">)</span>
+<span class="n">depth</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="p">[</span><span class="s2">&quot;predicted_depth&quot;</span><span class="p">]</span>   <span class="c1"># (H, W) metres</span>
+<span class="n">fov</span>   <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="p">[</span><span class="s2">&quot;field_of_view&quot;</span><span class="p">]</span>    <span class="c1"># degrees</span>
+</pre>
+<p><strong>Cost note:</strong> DepthPro runs at a fixed high internal resolution (1536²) regardless of input size, so a single forward is heavier than Depth Anything's — treat it as the "metric when you need it" companion, not a per-step replacement. Each <code>model_id</code> is a lazy singleton, frozen and moved to the device once; inference is single-flight per engine.</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Depth envelope</h2>
+<p>The output is a TEXT JSON envelope — the depth as a raw C-contiguous float32 buffer, base64-encoded (byte-exact across the server-mode HTTP boundary, ~4× smaller than a JSON float list):</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;buffer&gt;&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;model_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;apple/DepthPro-hf&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;depth_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;metric&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;field_of_view&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mf">58.7</span><span class="p">]</span><span class="p">}</span>
+</pre>
+<p>Each pixel is depth in <strong>metres</strong> at the <strong>original input resolution</strong>; <code>depth_type</code> is always <code>"metric"</code> (the whole point of this node vs relative depth), and <code>field_of_view</code> gives the horizontal FoV in degrees per image.</p>
+<hr>
+<h2 id="5-canvas-node"><span class="num">5.</span> Canvas Node</h2>
+<h3 id="model_depthpro__estimate_metric_depth"><code>model_depthpro__estimate_metric_depth</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings, uniform size)</td></tr>
+<tr><td>Outputs</td><td><code>depth</code> (TEXT — the §4 envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (text, default <code>apple/DepthPro-hf</code>)</td></tr>
+<tr><td>Backend call</td><td>processor → <code>model(...)</code> under <code>no_grad</code> → <code>post_process_depth_estimation</code> → <code>(N, H, W)</code> metres + FoV</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (a stateless depth estimator — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "DEPTHPRO_PYTHON")</code>. DepthPro runs in the <strong>shared <code>ac-fm</code> env</strong> — it is native to the transformers stack there. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_depthpro/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>DEPTHPRO_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>DEPTHPRO_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, a missing/malformed frame, or mixed input resolutions yields <code>""</code> on the node's output. An empty envelope is a clean "no depth this step" signal; consumers keep their own fallback and never receive a fabricated depth map.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-primitive">1. One primitive: RGB → metric depth</a>
+      <a class="toc-h2" href="#2-images-in">2. Images in — uniform resolution</a>
+      <a class="toc-h2" href="#3-cost">3. Model &amp; cost</a>
+      <a class="toc-h2" href="#4-envelope">4. Depth envelope</a>
+      <a class="toc-h2" href="#5-canvas-node">5. Canvas Node</a>
+      <a class="toc-h3" href="#model_depthpro__estimate_metric_depth">model_depthpro__estimate_metric_depth</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
