@@ -25,10 +25,16 @@ from app.graph_sdk import (
     DefaultSession,
     EvalResult,
     Graph,
+    GraphValidationError,
     Loop,
     NodeHandle,
+    NodeProxy,
     PortRef,
     RunResult,
+    catalog,
+    describe,
+    generate_node_stubs,
+    nodesets,
 )
 from app.graph_sdk_codegen import graph_to_code
 
@@ -38,10 +44,16 @@ __all__ = [
     "DefaultSession",
     "EvalResult",
     "Graph",
+    "GraphValidationError",
     "Loop",
     "NodeHandle",
+    "NodeProxy",
     "PortRef",
     "RunResult",
     "__version__",
+    "catalog",
+    "describe",
+    "generate_node_stubs",
     "graph_to_code",
+    "nodesets",
 ]

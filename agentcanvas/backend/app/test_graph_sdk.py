@@ -162,3 +162,223 @@ def test_codegen_round_trip_mapgpt():
 
     diffs = _diff(signature(built), signature(gd.to_dict()))
     assert not diffs, f"codegen round-trip mismatch: {diffs}"
+
+
+# ── default-on post-load validation (check=True) ─────────────────────────
+
+
+def _demo_registered():
+    # importing the demo module registers demo_const / demo_add / demo_scale
+    import app.graph_sdk_demo  # noqa: F401
+
+
+def test_check_passes_on_clean_graph():
+    from .graph_sdk import GraphValidationError
+    from .graph_sdk_demo import build as build_demo
+
+    build_demo()._check_resolved()  # must not raise
+
+    with pytest.raises(GraphValidationError):
+        raise GraphValidationError("smoke")  # is a ValueError subclass
+    assert issubclass(GraphValidationError, ValueError)
+
+
+def test_check_catches_unknown_node_type():
+    from .graph_sdk import Graph, GraphValidationError
+
+    _demo_registered()
+    g = Graph(name="t")
+    g.add("demo_addd")  # typo of demo_add
+    with pytest.raises(GraphValidationError) as ei:
+        g._check_resolved()
+    msg = str(ei.value)
+    assert "unknown node type" in msg
+    assert "demo_add" in msg  # did-you-mean suggestion
+
+
+def test_check_catches_bad_port():
+    from .graph_sdk import Graph, GraphValidationError
+
+    _demo_registered()
+    g = Graph(name="t")
+    c = g.add("demo_const", id="c")
+    a = g.add("demo_add", id="a")
+    out = g.graph_out("total")
+    g.connect(c.out("valuee"), a.in_("a"))  # typo: valuee (real port is 'value')
+    g.connect(c.out("value"), a.in_("b"))
+    g.connect(a.out("result"), out.in_("value"))
+    with pytest.raises(GraphValidationError) as ei:
+        g._check_resolved()
+    msg = str(ei.value)
+    assert "not an output port" in msg
+    assert "'value'" in msg  # did-you-mean suggestion
+
+
+def test_check_catches_required_unwired():
+    from .graph_sdk import Graph, GraphValidationError
+
+    _demo_registered()
+    g = Graph(name="t")
+    g.add("demo_add", id="a")  # inputs a, b required and unwired
+    with pytest.raises(GraphValidationError, match="required input"):
+        g._check_resolved()
+
+
+def test_check_skips_generated_loop_ports():
+    from .graph_sdk import Graph, GraphValidationError
+
+    _demo_registered()
+    g = Graph(name="loop")
+    loop = g.loop(init=[("instr", "TEXT")], carry=[("x", "TEXT")])
+    body = g.add("demo_const", id="b")
+    sink = g.add("demo_scale", id="s")
+    loop.feed("x", sink.in_("x"))
+    loop.carry("x", body.out("value"))
+    # iterIn/iterOut ports are synthesised by loop(), not user-typed — the
+    # check must never flag them, or it would false-positive on every loop.
+    try:
+        g._check_resolved()
+    except GraphValidationError as e:
+        assert "iterIn" not in str(e) and "iterOut" not in str(e), str(e)
+
+
+def test_check_can_be_disabled():
+    from .graph_sdk_demo import build as build_demo
+
+    # check=False must not raise even though (here) the graph is clean anyway;
+    # exercised to lock the opt-out param in the public signature.
+    build_demo().run(validate=False, check=False)
+
+
+# ── introspection: catalog / describe / nodesets ─────────────────────────
+
+
+def test_catalog_lists_builtins():
+    from .graph_sdk import catalog
+
+    cat = catalog(refresh=True)
+    assert isinstance(cat, list) and cat == sorted(cat)
+    assert "graphOut" in cat and "graphIn" in cat and "iterIn" in cat
+    # server=False filter still includes builtins
+    assert "graphOut" in catalog(server=False)
+
+
+def test_describe_builtin_shape():
+    from .graph_sdk import describe
+
+    d = describe("graphOut")
+    assert d["node_type"] == "graphOut"
+    assert d["nodeset"] is None
+    assert d["server"] is False and d["env"] is None
+    assert any(p["name"] == "value" for p in d["inputs"])
+    assert isinstance(d["outputs"], list)
+
+
+def test_describe_unknown_raises():
+    from .graph_sdk import describe
+
+    with pytest.raises(KeyError):
+        describe("definitely__not__a__node")
+
+
+def test_describe_local_node():
+    import app.graph_sdk_demo  # noqa: F401 — registers demo_*
+
+    from .graph_sdk import describe
+
+    d = describe("demo_add", refresh=True)
+    assert d["server"] is False
+    assert {p["name"] for p in d["inputs"]} == {"a", "b"}
+    assert [p["name"] for p in d["outputs"]] == ["result"]
+
+
+def test_nodesets_env_metadata_without_spawn():
+    from .graph_sdk import describe, nodesets
+
+    nss = {n["name"]: n for n in nodesets(refresh=True)}
+    # env_habitat is a server nodeset — its metadata must be readable WITHOUT
+    # spawning a subprocess. Guarded so the test is robust if the workspace
+    # nodeset is absent on this checkout.
+    envh = nss.get("env_habitat")
+    if envh is not None:
+        assert envh["server"] is True
+        assert envh["env"] == "ac-vlnce"
+        assert "env_habitat__reset" in envh["node_types"]
+        d = describe("env_habitat__reset")
+        assert d["server"] is True and d["nodeset"] == "env_habitat"
+
+
+# ── typed authoring: g.add(NodeClass) + generated stubs ──────────────────
+
+
+def test_add_accepts_real_node_class():
+    import app.graph_sdk_demo  # noqa: F401 — registers demo_*
+    from app.agent_loop.builtin_nodes import NODE_HANDLERS
+
+    from .graph_sdk import Graph, NodeProxy
+
+    cls = NODE_HANDLERS["demo_add"]
+    g = Graph(name="t")
+    h = g.add(cls)  # pass the class, not the "demo_add" string
+    assert h.type == "demo_add"
+    assert not isinstance(h, NodeProxy)  # real class → plain NodeHandle
+
+
+def test_add_node_proxy_returns_typed_handle():
+    from .graph_sdk import Graph, NodeProxy
+
+    class Foo(NodeProxy):
+        node_type = "graphOut"
+
+    g = Graph(name="t")
+    h = g.add(Foo)
+    assert isinstance(h, Foo)  # typed handle instance, not a bare NodeHandle
+    assert h.type == "graphOut"
+
+
+def test_add_class_without_node_type_raises():
+    from .graph_sdk import Graph
+
+    class Bare:
+        pass
+
+    with pytest.raises(ValueError, match="node_type"):
+        Graph(name="t").add(Bare)
+
+
+def test_emit_nodeset_module_compiles():
+    from .graph_sdk import _emit_nodeset_module
+
+    nodes = [
+        {
+            "node_type": "model_sam__segment_auto",
+            "server": True,
+            "env": "ac-fm",
+            "description": "Segment everything in the image.",
+            "inputs": [{"name": "image_b64"}],
+            "outputs": [{"name": "masks"}],
+        }
+    ]
+    src = _emit_nodeset_module("model_sam", nodes)
+    compile(src, "<gen>", "exec")  # must be valid Python
+    assert "class SegmentAuto(NodeProxy):" in src
+    assert "node_type = 'model_sam__segment_auto'" in src
+    assert "Literal['image_b64']" in src
+    assert "Literal['masks']" in src
+
+
+def test_generate_node_stubs_writes_valid_python(tmp_path):
+    import pathlib
+
+    from .graph_sdk import generate_node_stubs
+
+    written = generate_node_stubs(dst=tmp_path, refresh=True)
+    assert any(p.endswith("__init__.py") for p in written)
+    for p in written:  # every emitted file must be valid Python
+        compile(pathlib.Path(p).read_text(), p, "exec")
+
+    envh = tmp_path / "env_habitat.py"  # guarded: only if the nodeset is present
+    if envh.exists():
+        src = envh.read_text()
+        assert "class Reset(NodeProxy):" in src
+        assert "node_type = 'env_habitat__reset'" in src
