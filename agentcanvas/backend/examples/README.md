@@ -16,13 +16,16 @@ PYTHONPATH=. python examples/01_pure_python.py       # or, after `pip install -e
 | 04 | `04_run_one_episode.py` | **env + GPU + LLM** | Run **one** MapGPT-MP3D episode in-process via `g.run(load_nodesets=True)`. |
 | 05 | `05_batch_eval.py` | **env + GPU + LLM** | Batch-eval N episodes via `g.eval(...)`; print aggregate SR/SPL. |
 | 06 | `06_reverse_codegen.py` | verified JSON | Compile a graph JSON back into a builder script (`g.to_code()`); round-trip. |
+| 07 | `07_habitat_sam.py` | **2 envs + GPU** | One graph across three conda envs: sample Habitat's first frame → SAM auto-segment → save the annotated frame. Shows server nodes (`env_habitat`/`model_sam`) and local glue nodes in one `g.run(load_nodesets="auto")`. |
 
-## ⚠ Examples 04 & 05 are experiments
+## ⚠ Examples 04, 05 & 07 are experiments
 
-They spawn the `env_mp3d` simulator (server-mode, in the `ac-mp3d` conda env),
-use the GPU (MatterSim CUDA-GL renderer) and the LLM (`gpt-5-mini`). They need
-the `ac-mp3d` env, MP3D data on disk, and a `gpt-5-mini` key. A single episode
-or a tiny batch is fine to run directly; a real multi-episode sweep is an
+04 & 05 spawn the `env_mp3d` simulator (server-mode, in the `ac-mp3d` conda
+env), use the GPU (MatterSim CUDA-GL renderer) and the LLM (`gpt-5-mini`); they
+need the `ac-mp3d` env, MP3D data on disk, and a `gpt-5-mini` key. 07 spawns
+`env_habitat` (`ac-vlnce`, Habitat R2R-CE data) **and** `model_sam` (`ac-fm`,
+the `sam_vit_b` checkpoint), both server-mode, on the GPU. A single episode or
+one frame is fine to run directly; a real multi-episode sweep is an
 **experiment** and belongs behind `/experiment:run` (GPU admission, port
 regulation) — not a bare invocation.
 
