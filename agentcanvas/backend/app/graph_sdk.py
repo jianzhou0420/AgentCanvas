@@ -277,6 +277,68 @@ class RunResult:
         )
 
 
+# ── Run events (observability stream) ─────────────────────────────────────
+
+
+@dataclass
+class RunEvent:
+    """One lifecycle event from an in-process :meth:`Graph.run` — delivered to
+    its ``on_event`` callback as it happens. The per-node lifecycle the
+    executor already dispatches to shell hooks, surfaced as a native Python
+    object so a run is observable without tailing logs.
+
+    ``kind`` is one of:
+
+    * ``"graph_start"`` — run began (``graph_name`` / ``node_count``).
+    * ``"node_start"`` — a node is about to fire (``node_id`` / ``node_type`` /
+      ``inputs``).
+    * ``"node_finish"`` — a node fired OK (adds ``outputs`` / ``duration_ms``).
+    * ``"node_error"`` — a node's ``forward`` raised (adds ``error`` /
+      ``duration_ms``); the run then re-raises.
+    * ``"graph_complete"`` — run finished cleanly (``terminated`` / ``metrics``).
+    * ``"graph_error"`` — run crashed (``error``).
+
+    ``inputs`` / ``outputs`` are the **live** engine dicts (not copies) — read
+    them, don't mutate. ``parent_node_id`` is set for dynamic-firelist children.
+    The callback may be sync or async and runs inside the executor's event loop;
+    keep it cheap. To just collect the stream, pass ``on_event=events.append``.
+    """
+
+    kind: str
+    step: int = 0
+    node_id: str | None = None
+    node_type: str | None = None
+    node_label: str | None = None
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    error: str | None = None
+    duration_ms: float | None = None
+    parent_node_id: str | None = None
+    graph_name: str | None = None
+    node_count: int | None = None
+    terminated: bool | None = None
+    metrics: dict[str, Any] | None = None
+
+    @classmethod
+    def _from_dict(cls, d: dict) -> RunEvent:
+        """Build from the executor's raw event dict, ignoring unknown keys."""
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+    def __str__(self) -> str:  # notebook-friendly one-liner
+        bits = [self.kind]
+        if self.node_type:
+            bits.append(self.node_type + (f"#{self.node_id}" if self.node_id else ""))
+        bits.append(f"step={self.step}")
+        if self.duration_ms is not None:
+            bits.append(f"{self.duration_ms:.1f}ms")
+        if self.error:
+            bits.append(f"error={self.error!r}")
+        elif self.outputs:
+            bits.append("out=[" + ", ".join(map(str, self.outputs)) + "]")
+        return "  ".join(bits)
+
+
 # ── Eval result (batch evaluation) ───────────────────────────────────────
 
 
@@ -947,6 +1009,7 @@ class Graph:
         session: Any = None,
         validate: bool = False,
         check: bool = True,
+        on_event: Any = None,
         load_nodesets: bool | str = "auto",
         worker_count: int = 1,
         teardown_nodesets: bool = True,
@@ -964,6 +1027,14 @@ class Graph:
         node type or wired port fails to resolve; it turns the two silent
         typo classes (unknown node type → no-op, misspelled handle → never
         delivered) into a fail-fast. Pass ``check=False`` for a dry run.
+
+        ``on_event`` (optional) is a callback ``(RunEvent) -> None`` fired as the
+        run proceeds — ``graph_start``, per-node ``node_start`` / ``node_finish``
+        / ``node_error``, then ``graph_complete`` (or ``graph_error``). It makes
+        an in-process run observable — which node fired when, with what inputs /
+        outputs — without tailing logs. Sync or async; keep it cheap (it runs in
+        the executor's loop); a raise inside it is logged, never breaks the run.
+        To collect the whole stream, pass ``on_event=events.append``.
 
         ``load_nodesets`` controls whether the workspace registry is scanned
         and the graph's nodesets auto-loaded before the run (mutating the
@@ -991,6 +1062,14 @@ class Graph:
 
         sess = session or DefaultSession()
 
+        # Wrap the user callback: the executor emits raw event dicts; hand the
+        # SDK user a typed RunEvent. None → executor's on_event stays off.
+        _sink = None
+        if on_event is not None:
+
+            def _sink(ev: dict, _cb: Any = on_event) -> Any:
+                return _cb(RunEvent._from_dict(ev))
+
         async def _drive() -> Any:
             reg = None
             started: list[str] = []
@@ -999,7 +1078,7 @@ class Graph:
             try:
                 if check:
                     self._check_resolved()
-                executor = GraphExecutor()
+                executor = GraphExecutor(on_event=_sink)
                 await executor.run(
                     self._def,
                     sess,

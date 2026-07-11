@@ -18,6 +18,7 @@ experiment and runs behind ``/experiment:run``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -382,3 +383,91 @@ def test_generate_node_stubs_writes_valid_python(tmp_path):
         src = envh.read_text()
         assert "class Reset(NodeProxy):" in src
         assert "node_type = 'env_habitat__reset'" in src
+
+
+# ── run observability: on_event stream (RunEvent) ────────────────────────
+
+
+def test_on_event_streams_lifecycle():
+    from .graph_sdk import RunEvent
+    from .graph_sdk_demo import build as build_demo
+
+    events: list[RunEvent] = []
+    result = build_demo().run(on_event=events.append)
+
+    assert result["total"] == 36  # run still returns its RunResult normally
+    assert all(isinstance(e, RunEvent) for e in events)
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "graph_start"
+    assert kinds[-1] == "graph_complete"
+    # every node that fired produced a node_start then a node_finish (5 nodes:
+    # two consts, add, scale, graphOut — a pure DAG, each fires exactly once).
+    assert kinds.count("node_start") == kinds.count("node_finish") == 5
+    # the demo_add fire carries its summed output live on the event
+    add_fin = next(
+        e for e in events if e.kind == "node_finish" and e.node_type == "demo_add"
+    )
+    assert add_fin.outputs["result"] == 12
+    assert add_fin.duration_ms is not None
+
+
+def test_on_event_reports_node_error():
+    import app.graph_sdk_demo  # noqa: F401 — registers demo_const
+    from app.agent_loop.builtin_nodes import register_node
+    from app.components.bases import BaseCanvasNode, PortDef
+
+    from .graph_sdk import Graph, RunEvent
+
+    class BoomNode(BaseCanvasNode):
+        node_type = "demo_boom"
+        input_ports = [PortDef("x", "ANY")]
+        output_ports = [PortDef("y", "ANY")]
+
+        async def forward(self, inputs: dict, ctx) -> dict:
+            raise ValueError("boom")
+
+    register_node(BoomNode)
+
+    g = Graph(name="err")
+    c = g.add("demo_const", value=1)
+    b = g.add("demo_boom")
+    c.out("value") >> b.in_("x")
+
+    events: list[RunEvent] = []
+    # the run may re-raise (node-error conviction) — the event fires either way
+    with contextlib.suppress(Exception):
+        g.run(on_event=events.append)
+
+    errs = [e for e in events if e.kind == "node_error"]
+    assert errs and errs[0].node_type == "demo_boom"
+    assert "boom" in (errs[0].error or "")
+    assert errs[0].duration_ms is not None
+
+
+def test_on_event_accepts_async_callback():
+    from .graph_sdk import RunEvent
+    from .graph_sdk_demo import build as build_demo
+
+    events: list[RunEvent] = []
+
+    async def sink(ev: RunEvent) -> None:  # async callbacks are awaited
+        events.append(ev)
+
+    build_demo().run(on_event=sink)
+    assert any(e.kind == "node_finish" for e in events)
+
+
+def test_run_event_str_is_compact():
+    from .graph_sdk import RunEvent
+
+    s = str(
+        RunEvent(
+            kind="node_finish",
+            node_type="demo_add",
+            node_id="demo_add_0",
+            step=2,
+            duration_ms=1.5,
+            outputs={"result": 12},
+        )
+    )
+    assert "node_finish" in s and "demo_add" in s and "out=[result]" in s
