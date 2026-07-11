@@ -1010,6 +1010,8 @@ class Graph:
         validate: bool = False,
         check: bool = True,
         on_event: Any = None,
+        record: str | Path | None = None,
+        replay: str | Path | None = None,
         load_nodesets: bool | str = "auto",
         worker_count: int = 1,
         teardown_nodesets: bool = True,
@@ -1036,6 +1038,19 @@ class Graph:
         the executor's loop); a raise inside it is logged, never breaks the run.
         To collect the whole stream, pass ``on_event=events.append``.
 
+        ``record`` / ``replay`` (mutually exclusive) make a graph with server
+        (env / model) nodes reproducible offline. ``record="cassette.mpk"`` on a
+        *real* run tees every server-proxy call — ``(node_type, result)`` in
+        order, plus a synthesised manifest — into a msgpack+zlib cassette (its
+        ndarray / torch / PIL results ride the proxy's own lossless codec).
+        ``replay="cassette.mpk"`` then runs the graph with **no nodeset loading
+        and no server**: the proxy classes are rebuilt from the cassette's
+        manifest and each server call returns the next recorded result, while
+        local pure-Python nodes still run for real. A graph that needs a GPU +
+        conda env thus runs in a hermetic unit test; a port / interface drift
+        from the recording fails it loudly (``ReplayExhausted`` /
+        :class:`GraphValidationError`). ``replay`` overrides ``load_nodesets``.
+
         ``load_nodesets`` controls whether the workspace registry is scanned
         and the graph's nodesets auto-loaded before the run (mutating the
         global ``NODE_HANDLERS`` the executor reads):
@@ -1060,6 +1075,9 @@ class Graph:
 
             validate_graph_connectivity(self._def)
 
+        if record is not None and replay is not None:
+            raise ValueError("record= and replay= are mutually exclusive")
+
         sess = session or DefaultSession()
 
         # Wrap the user callback: the executor emits raw event dicts; hand the
@@ -1073,11 +1091,27 @@ class Graph:
         async def _drive() -> Any:
             reg = None
             started: list[str] = []
-            if self._wants_nodesets(load_nodesets):
+            player = None
+            recorder = None
+            success = False
+            # Replay skips nodeset loading entirely (no server subprocess);
+            # otherwise load the graph's nodesets as usual (real servers — and
+            # recording tees their calls).
+            if replay is None and self._wants_nodesets(load_nodesets):
                 reg, started = await self._load_nodesets(worker_count=worker_count, registry=registry)
             try:
+                if replay is not None:
+                    from .graph_sdk_replay import Player, load_cassette
+
+                    player = Player(load_cassette(replay))
+                    player.install()
                 if check:
                     self._check_resolved()
+                if record is not None:
+                    from .graph_sdk_replay import Recorder
+
+                    recorder = Recorder({nd.type for nd in self._def.nodes if "__" in nd.type})
+                    recorder.wrap()
                 executor = GraphExecutor(on_event=_sink)
                 await executor.run(
                     self._def,
@@ -1085,8 +1119,15 @@ class Graph:
                     step_delay_ms=step_delay_ms,
                     step_budget_override=step_budget_override,
                 )
+                success = True
                 return executor
             finally:
+                if recorder is not None:
+                    recorder.unwrap()
+                    if success:  # never write a truncated cassette on a crash
+                        recorder.write(record)
+                if player is not None:
+                    player.uninstall()
                 if reg is not None and teardown_nodesets and started:
                     for ns in started:
                         # best-effort cleanup

@@ -133,10 +133,23 @@ def build() -> Graph:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--record",
+        metavar="CASSETTE",
+        default=None,
+        help="tee the server-node calls (env_habitat__*, model_sam__*) into a "
+        "cassette so this graph can later be replayed offline in a unit test "
+        "(g.run(replay=...)). Regenerates tests/cassettes/habitat_sam_first_frame.mpk.",
+    )
+    args = ap.parse_args()
+
     g = build()
     print("Habitat → SAM, one frame, in-process (load_nodesets='auto') — "
           "spawning ac-vlnce + ac-fm servers…")
-    r = g.run(load_nodesets="auto", validate=True)
+    r = g.run(load_nodesets="auto", validate=True, record=args.record)
 
     frame = r.outputs.get("annotated")
     n = r.outputs.get("num_masks")
@@ -147,4 +160,7 @@ if __name__ == "__main__":
     dst.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(np.asarray(frame, dtype=np.uint8), "RGB").save(dst)
     print(f"SAM found {n} masks — annotated frame saved to {dst}")
+    if args.record:
+        sz = Path(args.record).stat().st_size if Path(args.record).exists() else 0
+        print(f"cassette written to {args.record} ({sz / 1024:.0f} KiB)")
     sys.exit(0)
