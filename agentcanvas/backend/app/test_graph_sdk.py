@@ -569,6 +569,32 @@ def test_record_replay_mutually_exclusive(tmp_path):
         _echo_graph().run(record=tmp_path / "a.mpk", replay=tmp_path / "b.mpk")
 
 
+def test_replay_under_consumption_warns(tmp_path, caplog):
+    """The under-consumption side of drift: a graph that fires FEWER server
+    calls than the cassette holds cannot raise from any forward — the leftover
+    is surfaced as a warning at the end of a clean run (Player.leftover)."""
+    import logging
+
+    _register_fake_server_node()
+    cassette = tmp_path / "two.mpk"
+
+    # Record a graph with TWO fake__echo firings.
+    g = Graph(name="rr2")
+    c = g.add("demo_const", value=7)
+    e1, e2 = g.add("fake__echo"), g.add("fake__echo")
+    out = g.graph_out("v")
+    c.out("value") >> e1.in_("x")
+    e1.out("y") >> e2.in_("x")
+    e2.out("y") >> out.in_("value")
+    assert g.run(record=cassette, load_nodesets=False)["v"] == 7
+
+    # Replay the ONE-firing graph against it: run passes, warning names the drift.
+    with caplog.at_level(logging.WARNING, logger="app.graph_sdk"):
+        r = _echo_graph().run(replay=cassette, load_nodesets=False)
+    assert r["v"] == 7
+    assert any("under-consumed" in rec.message for rec in caplog.records)
+
+
 def _cassette_path():
     from pathlib import Path
 
