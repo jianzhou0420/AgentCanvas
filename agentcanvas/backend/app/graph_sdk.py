@@ -47,9 +47,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import keyword
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from .graph_def import AccessGrantDef, ContainerDef, EdgeDef, GraphDefinition, NodeDef
 
@@ -131,6 +133,25 @@ class NodeHandle:
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"NodeHandle(id={self._def.id!r}, type={self._def.type!r})"
+
+
+class NodeProxy(NodeHandle):
+    """Base for the GENERATED typed node handles under ``agentcanvas/nodes/``
+    (emitted by :func:`generate_node_stubs`). A generated subclass declares its
+    ``node_type`` and — for the IDE — ``Literal``-typed ``out`` / ``in_``
+    overrides, so a human gets port autocomplete and an agent gets a real
+    symbol to reference. At runtime it *is* a :class:`NodeHandle`; pass the
+    subclass to :meth:`Graph.add` to get a typed handle::
+
+        from agentcanvas.nodes import env_habitat
+        reset = g.add(env_habitat.Reset)     # typed handle
+        reset.out("episode_id")              # autocompletes; typo → red squiggle
+    """
+
+    node_type: str = ""
+
+
+_NP = TypeVar("_NP", bound=NodeProxy)
 
 
 # ── Loop (iterIn / iterOut episode loop) ─────────────────────────────────
@@ -256,6 +277,68 @@ class RunResult:
         )
 
 
+# ── Run events (observability stream) ─────────────────────────────────────
+
+
+@dataclass
+class RunEvent:
+    """One lifecycle event from an in-process :meth:`Graph.run` — delivered to
+    its ``on_event`` callback as it happens. The per-node lifecycle the
+    executor already dispatches to shell hooks, surfaced as a native Python
+    object so a run is observable without tailing logs.
+
+    ``kind`` is one of:
+
+    * ``"graph_start"`` — run began (``graph_name`` / ``node_count``).
+    * ``"node_start"`` — a node is about to fire (``node_id`` / ``node_type`` /
+      ``inputs``).
+    * ``"node_finish"`` — a node fired OK (adds ``outputs`` / ``duration_ms``).
+    * ``"node_error"`` — a node's ``forward`` raised (adds ``error`` /
+      ``duration_ms``); the run then re-raises.
+    * ``"graph_complete"`` — run finished cleanly (``terminated`` / ``metrics``).
+    * ``"graph_error"`` — run crashed (``error``).
+
+    ``inputs`` / ``outputs`` are the **live** engine dicts (not copies) — read
+    them, don't mutate. ``parent_node_id`` is set for dynamic-firelist children.
+    The callback may be sync or async and runs inside the executor's event loop;
+    keep it cheap. To just collect the stream, pass ``on_event=events.append``.
+    """
+
+    kind: str
+    step: int = 0
+    node_id: str | None = None
+    node_type: str | None = None
+    node_label: str | None = None
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    error: str | None = None
+    duration_ms: float | None = None
+    parent_node_id: str | None = None
+    graph_name: str | None = None
+    node_count: int | None = None
+    terminated: bool | None = None
+    metrics: dict[str, Any] | None = None
+
+    @classmethod
+    def _from_dict(cls, d: dict) -> RunEvent:
+        """Build from the executor's raw event dict, ignoring unknown keys."""
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+    def __str__(self) -> str:  # notebook-friendly one-liner
+        bits = [self.kind]
+        if self.node_type:
+            bits.append(self.node_type + (f"#{self.node_id}" if self.node_id else ""))
+        bits.append(f"step={self.step}")
+        if self.duration_ms is not None:
+            bits.append(f"{self.duration_ms:.1f}ms")
+        if self.error:
+            bits.append(f"error={self.error!r}")
+        elif self.outputs:
+            bits.append("out=[" + ", ".join(map(str, self.outputs)) + "]")
+        return "  ".join(bits)
+
+
 # ── Eval result (batch evaluation) ───────────────────────────────────────
 
 
@@ -303,6 +386,303 @@ class EvalResult:
         return f"EvalResult(episodes={len(self.episodes)}, completed={done}, metrics={self.metrics})"
 
 
+# ── Validation ────────────────────────────────────────────────────────────
+
+
+class GraphValidationError(ValueError):
+    """Raised by :meth:`Graph.run` / :meth:`Graph.eval` (with ``check=True``,
+    the default) when the graph references a node type or port that does not
+    resolve — the class of typo that otherwise fails silently (an unknown
+    node type no-ops; a misspelled port handle never delivers). Subclasses
+    ``ValueError`` so existing ``except ValueError`` handlers still catch it.
+    """
+
+
+def _node_ports(cls: Any, config: dict) -> tuple[list, list]:
+    """Resolve a handler's (input_ports, output_ports) for a given config —
+    honouring a dynamic ``_resolve_ports(config)`` classmethod when present
+    (graphIn/graphOut/iterIn/…), else the class-level port lists. Falls back
+    to the class lists if the resolver raises."""
+    resolver = getattr(cls, "_resolve_ports", None)
+    if callable(resolver):
+        try:
+            ins, outs = resolver(config or {})
+            return list(ins), list(outs)
+        except Exception:
+            pass
+    return list(getattr(cls, "input_ports", [])), list(getattr(cls, "output_ports", []))
+
+
+# ── Introspection: the node catalog ───────────────────────────────────────
+#
+# "What node types exist, and what are their ports?" — answered from a one-off
+# workspace scan, WITHOUT spawning any env server. ``scan_all`` reads each
+# nodeset's ``get_tools()`` (static node classes), so server nodesets
+# (env_habitat / model_sam / …) contribute their metadata too. The result is
+# cached; pass ``refresh=True`` after adding a nodeset. This is the programmatic
+# surface that both a human (in a REPL / notebook) and a coding agent use to
+# discover node types + ports instead of grepping the nodeset files.
+
+_CATALOG: tuple | None = None  # (registry, index, ns_by_type) — lazily scanned once
+
+
+def _env_name_from_python(python: str | None) -> str | None:
+    """Best-effort conda env name from a ``.../envs/<name>/bin/python`` path."""
+    if not python:
+        return None
+    parts = Path(python).parts
+    if "envs" in parts:
+        i = parts.index("envs")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return None
+
+
+def _build_catalog(refresh: bool = False) -> tuple:
+    global _CATALOG
+    if _CATALOG is not None and not refresh:
+        return _CATALOG
+    from .agent_loop.builtin_nodes import NODE_HANDLERS
+    from .components.registry import WorkspaceComponentRegistry
+    from .config import get_settings
+
+    # Builtins (+ any node registered in-process) first; nodeset scan overlays.
+    index: dict[str, tuple] = {nt: (None, cls) for nt, cls in NODE_HANDLERS.items()}
+    ns_by_type: dict[str, Any] = {}
+
+    s = get_settings()
+    reg = WorkspaceComponentRegistry(s.workspace_dir, active_dir=s.active_workspace_dir or None)
+    reg.scan_all()  # discovery reads get_tools() per nodeset — no env server spawned
+    for name, inst in reg._discovered_nodesets.items():
+        try:
+            tools = inst.get_tools()
+        except Exception:
+            tools = []
+        for t in tools:
+            nt = getattr(t, "node_type", None) or getattr(t, "name", None)
+            if not nt:
+                continue
+            index[nt] = (name, t if isinstance(t, type) else type(t))
+            ns_by_type[nt] = inst
+    _CATALOG = (reg, index, ns_by_type)
+    return _CATALOG
+
+
+def _is_server_ns(ns: Any) -> bool:
+    return ns is not None and getattr(type(ns), "server_python", None) is not None
+
+
+def catalog(
+    *,
+    nodeset: str | None = None,
+    server: bool | None = None,
+    kind: str | None = None,
+    builtins: bool = True,
+    refresh: bool = False,
+) -> list[str]:
+    """Sorted node-type keys available to the SDK, from a one-off workspace scan
+    (metadata only — no env server is spawned). Filters: ``nodeset`` name;
+    ``server`` (``True`` runs in a subprocess, ``False`` in-process); ``kind``
+    (``block`` / ``control`` / ``composite``); ``builtins`` (include the
+    graphIn / graphOut / iterIn / llmCall / … builtins). ``refresh=True``
+    re-scans after a nodeset was added."""
+    _, index, ns_by_type = _build_catalog(refresh=refresh)
+    out = []
+    for nt, (nsname, cls) in index.items():
+        if nsname is None and not builtins:
+            continue
+        if nodeset is not None and nsname != nodeset:
+            continue
+        if server is not None and _is_server_ns(ns_by_type.get(nt)) != server:
+            continue
+        if kind is not None and getattr(cls, "kind", "block") != kind:
+            continue
+        out.append(nt)
+    return sorted(out)
+
+
+def _port_dict(p: Any) -> dict:
+    return {
+        "name": getattr(p, "name", ""),
+        "type": getattr(p, "wire_type", "ANY"),
+        "optional": bool(getattr(p, "optional", False)),
+        "description": getattr(p, "description", ""),
+    }
+
+
+def describe(node_type: str, *, refresh: bool = False) -> dict:
+    """Structured metadata for one node type — where it runs and its shape::
+
+        {node_type, nodeset, server, env, kind, category, description,
+         inputs:  [{name, type, optional, description}, ...],
+         outputs: [{name, type, optional, description}, ...],
+         config:  [{name, type, label, default}, ...]}
+
+    Raises ``KeyError`` (with a did-you-mean hint) on an unknown type. Reads
+    static class metadata only — no env server is spawned."""
+    import difflib
+
+    _, index, ns_by_type = _build_catalog(refresh=refresh)
+    if node_type not in index:
+        hint = difflib.get_close_matches(node_type, sorted(index), n=3)
+        raise KeyError(
+            f"unknown node type {node_type!r}" + (f"; did you mean {hint}?" if hint else "")
+        )
+    nsname, cls = index[node_type]
+    ins, outs = _node_ports(cls, {})
+    ns = ns_by_type.get(node_type)
+    server_python = getattr(type(ns), "server_python", None) if ns is not None else None
+    ui = getattr(cls, "ui_config", None)
+    cfg_fields = getattr(ui, "config_fields", []) if ui is not None else []
+    return {
+        "node_type": node_type,
+        "nodeset": nsname,
+        "server": server_python is not None,
+        "env": _env_name_from_python(server_python),
+        "kind": getattr(cls, "kind", "block"),
+        "category": getattr(cls, "category", ""),
+        "description": getattr(cls, "description", "") or getattr(cls, "display_name", ""),
+        "inputs": [_port_dict(p) for p in ins],
+        "outputs": [_port_dict(p) for p in outs],
+        "config": [
+            {
+                "name": getattr(f, "name", ""),
+                "type": getattr(f, "field_type", ""),
+                "label": getattr(f, "label", ""),
+                "default": getattr(f, "default", None),
+            }
+            for f in cfg_fields
+        ],
+    }
+
+
+def nodesets(*, refresh: bool = False) -> list[dict]:
+    """List discovered nodesets as ``[{name, server, env, node_types}, ...]``
+    (metadata only — no env server is spawned)."""
+    reg, index, _ = _build_catalog(refresh=refresh)
+    out = []
+    for name, inst in reg._discovered_nodesets.items():
+        sp = getattr(type(inst), "server_python", None)
+        out.append(
+            {
+                "name": name,
+                "server": sp is not None,
+                "env": _env_name_from_python(sp),
+                "node_types": sorted(nt for nt, (nn, _) in index.items() if nn == name),
+            }
+        )
+    return sorted(out, key=lambda d: d["name"])
+
+
+# ── Typed stub generation ─────────────────────────────────────────────────
+#
+# Turn the introspection catalog into real, importable, IDE-typed symbols:
+# one module per nodeset under ``agentcanvas/nodes/``, each node a NodeProxy
+# subclass with its ``node_type`` baked in and ``Literal``-typed ports. This
+# is the "no strings" surface — ``g.add(env_habitat.Reset)`` instead of
+# ``g.add("env_habitat__reset")`` — and it imports nothing heavy (the stub
+# only depends on ``agentcanvas``, never habitat/torch). Generated files are
+# regeneratable; treat them as build output (gitignored), not source.
+
+
+def _one_line(s: str, limit: int = 160) -> str:
+    s = " ".join(str(s).split()).replace("\\", "\\\\").replace('"', "'")
+    return (s[: limit - 1] + "…") if len(s) > limit else s
+
+
+def _stub_class_name(node_type: str) -> str:
+    suffix = node_type.split("__", 1)[1] if "__" in node_type else node_type
+    parts = [p for p in suffix.replace("-", "_").split("_") if p]
+    name = "".join(w[:1].upper() + w[1:] for w in parts) or "Node"
+    if name[0].isdigit():
+        name = "N" + name
+    if keyword.iskeyword(name):
+        name += "_"
+    return name
+
+
+def _emit_nodeset_module(nodeset_name: str, nodes: list[dict]) -> str:
+    """Return the source of one generated stub module (pure — no I/O)."""
+    out = [
+        "# GENERATED by agentcanvas.generate_node_stubs — do not edit.",
+        f"# nodeset: {nodeset_name}. Regenerate after nodeset changes.",
+        "from __future__ import annotations",
+        "",
+        "from typing import Literal",
+        "",
+        "from agentcanvas import NodeProxy, PortRef",
+        "",
+    ]
+    seen: set[str] = set()
+    names: list[str] = []
+    for nd in nodes:
+        cname = _stub_class_name(nd["node_type"])
+        base, k = cname, 2
+        while cname in seen:
+            cname, k = f"{base}{k}", k + 1
+        seen.add(cname)
+        names.append(cname)
+        where = ("server · " + (nd.get("env") or "?")) if nd.get("server") else "local"
+        out += [
+            "",
+            f"class {cname}(NodeProxy):",
+            f'    """{nd["node_type"]} — {_one_line(nd.get("description") or nd["node_type"])}  [{where}]"""',
+            f"    node_type = {nd['node_type']!r}",
+        ]
+        outs = [p["name"] for p in nd.get("outputs", [])]
+        ins = [p["name"] for p in nd.get("inputs", [])]
+        if outs:
+            out += [
+                f"    def out(self, port: Literal[{', '.join(map(repr, outs))}]) -> PortRef:",
+                "        return super().out(port)",
+            ]
+        if ins:
+            out += [
+                f"    def in_(self, port: Literal[{', '.join(map(repr, ins))}]) -> PortRef:",
+                "        return super().in_(port)",
+            ]
+    out += ["", "", f"__all__ = {names!r}", ""]
+    return "\n".join(out)
+
+
+def generate_node_stubs(dst: str | Path | None = None, *, refresh: bool = False) -> list[str]:
+    """Emit typed node stubs — one module per nodeset — so
+    ``from agentcanvas.nodes import env_habitat`` then ``g.add(env_habitat.Reset)``
+    gives IDE autocomplete on node types *and* ports. ``dst`` defaults to the
+    installed ``agentcanvas`` package's ``nodes/`` dir. Regenerate after nodeset
+    changes. Returns the written file paths (sorted)."""
+    if dst is None:
+        import importlib.util
+
+        spec = importlib.util.find_spec("agentcanvas")
+        locs = list(spec.submodule_search_locations) if spec and spec.submodule_search_locations else []
+        if not locs:
+            raise RuntimeError("cannot locate the 'agentcanvas' package — pass dst= explicitly")
+        dst = Path(locs[0]) / "nodes"
+    dst = Path(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+
+    written: list[str] = []
+    modules: list[str] = []
+    for ns in nodesets(refresh=refresh):
+        types = ns.get("node_types") or []
+        modname = re.sub(r"\W", "_", ns["name"])
+        if not types or not modname or modname[0].isdigit() or keyword.iskeyword(modname):
+            continue
+        src = _emit_nodeset_module(ns["name"], [describe(t) for t in types])
+        (dst / f"{modname}.py").write_text(src)
+        written.append(str(dst / f"{modname}.py"))
+        modules.append(modname)
+
+    modules.sort()
+    init = ["# GENERATED by agentcanvas.generate_node_stubs — do not edit.", ""]
+    init += [f"from . import {m}" for m in modules]
+    init += ["", f"__all__ = {modules!r}", ""]
+    (dst / "__init__.py").write_text("\n".join(init))
+    written.append(str(dst / "__init__.py"))
+    return sorted(written)
+
+
 # ── The builder ──────────────────────────────────────────────────────────
 
 
@@ -334,12 +714,37 @@ class Graph:
 
     # -- construction -------------------------------------------------------
 
-    def add(self, node_type: str, id: str | None = None, **config: Any) -> NodeHandle:
-        """Add a node of ``node_type`` (a registered ``node_type`` key).
+    @overload
+    def add(self, node_type: type[_NP], id: str | None = ..., **config: Any) -> _NP: ...
+    @overload
+    def add(self, node_type: str | type, id: str | None = ..., **config: Any) -> NodeHandle: ...
 
-        ``id`` auto-generates as ``"<type>_<n>"`` when omitted.  Extra kwargs
+    def add(self, node_type: Any, id: str | None = None, **config: Any) -> NodeHandle:
+        """Add a node by ``node_type`` — a registered type key *or* a node class.
+
+        ``node_type`` may be:
+
+        * a ``str`` — the registered ``node_type`` key (e.g. ``"env_habitat__reset"``);
+        * a **node class** — any class carrying a ``node_type`` attribute: a
+          ``BaseCanvasNode`` subclass you defined, or a generated
+          :class:`NodeProxy` (``from agentcanvas.nodes import env_habitat``).
+          Passing a class gives a real symbol (autocomplete / go-to-def / typo
+          = error); a ``NodeProxy`` subclass additionally returns a typed
+          handle whose ``out`` / ``in_`` autocomplete the port names.
+
+        ``id`` auto-generates as ``"<type>_<n>"`` when omitted; extra kwargs
         become the node's ``config``.
         """
+        proxy_cls: type[NodeProxy] | None = None
+        if isinstance(node_type, type):
+            if issubclass(node_type, NodeProxy):
+                proxy_cls = node_type
+            nt = getattr(node_type, "node_type", "") or ""
+            if not nt:
+                raise ValueError(
+                    f"{node_type.__name__} has no 'node_type' attribute — cannot add it"
+                )
+            node_type = nt
         if id is None:
             n = self._type_counts.get(node_type, 0)
             self._type_counts[node_type] = n + 1
@@ -348,7 +753,7 @@ class Graph:
             raise ValueError(f"duplicate node id: {id!r}")
         node_def = NodeDef(id=id, type=node_type, label=id, config=dict(config))
         self._def.nodes.append(node_def)
-        return NodeHandle(self, node_def)
+        return proxy_cls(self, node_def) if proxy_cls is not None else NodeHandle(self, node_def)
 
     def graph_in(self, port_name: str, id: str | None = None, wire_type: str = "ANY") -> NodeHandle:
         """Add a ``graphIn`` boundary node exposing ``port_name``."""
@@ -519,11 +924,94 @@ class Graph:
         _synthesize_iterin_ports(self._def)
         validate_graph_connectivity(self._def)
 
+    def _check_resolved(self) -> None:
+        """Post-load structural check (default-on via ``run`` / ``eval``'s
+        ``check``): every node type resolves to a registered handler, every
+        wired port exists on its node, and every required input is fed. Runs
+        *after* nodesets are loaded, so it covers server-proxy node types too.
+        Aggregates every problem into one :class:`GraphValidationError` with
+        did-you-mean hints. Conservative — a node whose ports can't be
+        resolved, a composite (expanded later at run), and the machine-wired
+        ``iterIn`` / ``iterOut`` are skipped for the port checks, so it never
+        false-positives on a well-formed graph.
+        """
+        import difflib
+
+        from .agent_loop.builtin_nodes import NODE_HANDLERS
+
+        errors: list[str] = []
+        known = sorted(NODE_HANDLERS)
+        nodes_by_id = {n.id: n for n in self._def.nodes}
+        _generated = {"iterIn", "iterOut"}  # ports synthesised by loop(), not user-typed
+
+        incoming: dict[str, set[str]] = {}
+        for e in self._def.edges:
+            incoming.setdefault(e.target, set()).add(e.targetHandle or "")
+
+        ins_of: dict[str, list] = {}
+        outs_of: dict[str, list] = {}
+        for n in self._def.nodes:
+            cls = NODE_HANDLERS.get(n.type)
+            if cls is None:
+                if getattr(n, "subgraph", None):
+                    continue  # composite — its internals are validated when flattened
+                hint = difflib.get_close_matches(n.type, known, n=1)
+                tip = f" — did you mean {hint[0]!r}?" if hint else ""
+                errors.append(f"node {n.id!r}: unknown node type {n.type!r}{tip}")
+                continue
+            if n.type in _generated:
+                continue
+            ins_of[n.id], outs_of[n.id] = _node_ports(cls, n.config or {})
+
+        for e in self._def.edges:
+            src = nodes_by_id.get(e.source)
+            outs = outs_of.get(e.source)
+            if src is not None and outs and e.sourceHandle:
+                names = {p.name for p in outs}
+                if e.sourceHandle not in names:
+                    hint = difflib.get_close_matches(e.sourceHandle, sorted(names), n=1)
+                    tip = f" — did you mean {hint[0]!r}?" if hint else ""
+                    errors.append(
+                        f"edge {e.id!r}: {src.type}.{e.sourceHandle!r} is not an output "
+                        f"port (outputs: {sorted(names)}){tip}"
+                    )
+            dst = nodes_by_id.get(e.target)
+            ins = ins_of.get(e.target)
+            if dst is not None and ins and e.targetHandle:
+                names = {p.name for p in ins}
+                if e.targetHandle not in names:
+                    hint = difflib.get_close_matches(e.targetHandle, sorted(names), n=1)
+                    tip = f" — did you mean {hint[0]!r}?" if hint else ""
+                    errors.append(
+                        f"edge {e.id!r}: {dst.type}.{e.targetHandle!r} is not an input "
+                        f"port (inputs: {sorted(names)}){tip}"
+                    )
+
+        for nid, ins in ins_of.items():
+            required = {p.name for p in ins if not getattr(p, "optional", True)}
+            missing = sorted(required - incoming.get(nid, set()))
+            if missing:
+                errors.append(
+                    f"node {nid!r} (type={nodes_by_id[nid].type}): required input "
+                    f"port(s) {missing} have no incoming edge"
+                )
+
+        if errors:
+            raise GraphValidationError(
+                "graph validation failed ({} issue{}):\n  - {}".format(
+                    len(errors), "" if len(errors) == 1 else "s", "\n  - ".join(errors)
+                )
+            )
+
     def run(
         self,
         *,
         session: Any = None,
         validate: bool = False,
+        check: bool = True,
+        on_event: Any = None,
+        record: str | Path | None = None,
+        replay: str | Path | None = None,
         load_nodesets: bool | str = "auto",
         worker_count: int = 1,
         teardown_nodesets: bool = True,
@@ -535,7 +1023,33 @@ class Graph:
 
         Drives ``GraphExecutor.run()`` directly — no FastAPI, no scheduler, no
         GPU-admission gate (that lives in ``JobScheduler``, not the executor).
-        Set ``validate=True`` to fail fast on connectivity/wire errors.
+        Set ``validate=True`` to fail fast on connectivity/wire errors before
+        loading. ``check`` (default ``True``) runs *after* nodesets load and
+        raises :class:`GraphValidationError` — with a did-you-mean hint — if any
+        node type or wired port fails to resolve; it turns the two silent
+        typo classes (unknown node type → no-op, misspelled handle → never
+        delivered) into a fail-fast. Pass ``check=False`` for a dry run.
+
+        ``on_event`` (optional) is a callback ``(RunEvent) -> None`` fired as the
+        run proceeds — ``graph_start``, per-node ``node_start`` / ``node_finish``
+        / ``node_error``, then ``graph_complete`` (or ``graph_error``). It makes
+        an in-process run observable — which node fired when, with what inputs /
+        outputs — without tailing logs. Sync or async; keep it cheap (it runs in
+        the executor's loop); a raise inside it is logged, never breaks the run.
+        To collect the whole stream, pass ``on_event=events.append``.
+
+        ``record`` / ``replay`` (mutually exclusive) make a graph with server
+        (env / model) nodes reproducible offline. ``record="cassette.mpk"`` on a
+        *real* run tees every server-proxy call — ``(node_type, result)`` in
+        order, plus a synthesised manifest — into a msgpack+zlib cassette (its
+        ndarray / torch / PIL results ride the proxy's own lossless codec).
+        ``replay="cassette.mpk"`` then runs the graph with **no nodeset loading
+        and no server**: the proxy classes are rebuilt from the cassette's
+        manifest and each server call returns the next recorded result, while
+        local pure-Python nodes still run for real. A graph that needs a GPU +
+        conda env thus runs in a hermetic unit test; a port / interface drift
+        from the recording fails it loudly (``ReplayExhausted`` /
+        :class:`GraphValidationError`). ``replay`` overrides ``load_nodesets``.
 
         ``load_nodesets`` controls whether the workspace registry is scanned
         and the graph's nodesets auto-loaded before the run (mutating the
@@ -561,23 +1075,59 @@ class Graph:
 
             validate_graph_connectivity(self._def)
 
+        if record is not None and replay is not None:
+            raise ValueError("record= and replay= are mutually exclusive")
+
         sess = session or DefaultSession()
+
+        # Wrap the user callback: the executor emits raw event dicts; hand the
+        # SDK user a typed RunEvent. None → executor's on_event stays off.
+        _sink = None
+        if on_event is not None:
+
+            def _sink(ev: dict, _cb: Any = on_event) -> Any:
+                return _cb(RunEvent._from_dict(ev))
 
         async def _drive() -> Any:
             reg = None
             started: list[str] = []
-            if self._wants_nodesets(load_nodesets):
+            player = None
+            recorder = None
+            success = False
+            # Replay skips nodeset loading entirely (no server subprocess);
+            # otherwise load the graph's nodesets as usual (real servers — and
+            # recording tees their calls).
+            if replay is None and self._wants_nodesets(load_nodesets):
                 reg, started = await self._load_nodesets(worker_count=worker_count, registry=registry)
             try:
-                executor = GraphExecutor()
+                if replay is not None:
+                    from .graph_sdk_replay import Player, load_cassette
+
+                    player = Player(load_cassette(replay))
+                    player.install()
+                if check:
+                    self._check_resolved()
+                if record is not None:
+                    from .graph_sdk_replay import Recorder
+
+                    recorder = Recorder({nd.type for nd in self._def.nodes if "__" in nd.type})
+                    recorder.wrap()
+                executor = GraphExecutor(on_event=_sink)
                 await executor.run(
                     self._def,
                     sess,
                     step_delay_ms=step_delay_ms,
                     step_budget_override=step_budget_override,
                 )
+                success = True
                 return executor
             finally:
+                if recorder is not None:
+                    recorder.unwrap()
+                    if success:  # never write a truncated cassette on a crash
+                        recorder.write(record)
+                if player is not None:
+                    player.uninstall()
                 if reg is not None and teardown_nodesets and started:
                     for ns in started:
                         # best-effort cleanup
@@ -654,6 +1204,7 @@ class Graph:
         load_nodesets: bool | str = "auto",
         teardown_nodesets: bool = True,
         registry: Any = None,
+        check: bool = True,
     ) -> EvalResult:
         """Batch-evaluate this (``eval_graph=True``) graph over N episodes.
 
@@ -680,6 +1231,8 @@ class Graph:
             if self._wants_nodesets(load_nodesets):
                 reg, started = await self._load_nodesets(worker_count=worker_count, registry=registry)
             try:
+                if check:
+                    self._check_resolved()
                 from .agent_loop.eval_batch import (
                     BatchEvalRunner,
                     EvalConfig,
