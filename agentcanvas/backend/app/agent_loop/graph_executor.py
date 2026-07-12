@@ -23,10 +23,9 @@ from typing import Any
 from ..components.bases import FireList
 from ..errors import get_bus
 from ..graph_def import GraphDefinition
-from ..llm.call import _current_node_usage
-from ..server.serialization import _current_node_transport
 from ..standard.actions import ACTION_NAMES
 from ..standard.node_io import get_required_inputs
+from ..standard.telemetry import _current_node_transport, _current_node_usage
 from ..standard.wire_types import is_list_type
 from ..state import broadcast
 
@@ -1272,7 +1271,7 @@ class GraphExecutor:
         exec_error: Exception | None = None
         # Per-node LLM usage bucket — populated by every llm_complete /
         # vlm_complete call reached during this execute(). See
-        # ``app.llm.call._current_node_usage``. The ContextVar is set
+        # ``app.standard.telemetry``. The ContextVar is set
         # for ALL node firings (cheap), so any future node that calls
         # the LLM helpers automatically gets accounting without code
         # changes.

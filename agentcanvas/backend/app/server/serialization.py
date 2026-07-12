@@ -41,9 +41,14 @@ except ImportError:  # pragma: no cover - env without msgpack falls back to JSON
 # Per-node-firing bucket, set by GraphExecutor around each forward() and read
 # back into the node's log entry. The proxy forward() accumulates one entry per
 # server round-trip. ContextVar so concurrent firings don't cross-contaminate.
-_current_node_transport: ContextVar["dict | None"] = ContextVar(
-    "_current_node_transport", default=None
-)
+# Canonically defined in app.standard.telemetry (so the executor can import it
+# without pulling numpy); the fallback keeps this module standalone-loadable.
+try:
+    from ..standard.telemetry import _current_node_transport
+except ImportError:  # pragma: no cover - standalone use outside the app package
+    _current_node_transport: ContextVar["dict | None"] = ContextVar(
+        "_current_node_transport", default=None
+    )
 
 
 def accumulate_transport(

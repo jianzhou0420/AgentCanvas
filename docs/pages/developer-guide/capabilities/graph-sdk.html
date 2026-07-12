@@ -58,7 +58,7 @@
     <span class="sep">/</span>
     <span class="here">10Graph SDK</span>
   </div>
-  <div class="last-updated">2026-07-09</div>
+  <div class="last-updated">2026-07-12</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">10</span>Graph SDK</h1>
@@ -71,7 +71,7 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 </div>
 
 <p>Every graph on the platform is a <code>GraphDefinition</code> — a pure dataclass the canvas emits, the JSON stores, and the <code>GraphExecutor</code> runs (<a href="graph-expressible-agents.html">Graph-Expressible Agents</a>). The Graph SDK adds a third way to produce and drive that same object: <strong>write it in Python</strong>, imported like LangGraph / LangChain rather than authored as JSON or wired on the canvas. Same nodes, same executor, same eval — just a builder in front and a runner behind. Because it is the same <code>GraphDefinition</code>, code ⇄ JSON ⇄ canvas stay fully reversible.</p>
-<p><em>Design docs: <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · builds on <a href="graph-expressible-agents.html">Graph-Expressible Agents</a>, <a href="nested-graph-system.html">Nested Graph System</a>, <a href="hook-system.html">Hook System</a>, <a href="batch-evaluation-job-queue.html">Batch Evaluation</a></em></p>
+<p><em>Design docs: <a href="../design-docs/surfaces/graph-sdk-builder.html">SDK Builder Contract</a> · <a href="../design-docs/surfaces/graph-sdk-dependency-boundary.html">SDK Dependency Boundary</a> · <a href="../design-docs/surfaces/graph-sdk-record-replay.html">Graph SDK Record / Replay</a> · <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · builds on <a href="graph-expressible-agents.html">Graph-Expressible Agents</a>, <a href="nested-graph-system.html">Nested Graph System</a>, <a href="hook-system.html">Hook System</a>, <a href="batch-evaluation-job-queue.html">Batch Evaluation</a></em></p>
 <hr>
 <h2 id="1-three-ways"><span class="num">1.</span> Three ways to the same graph</h2>
 <table>
@@ -102,7 +102,7 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 </table>
 <p>The Graph SDK surface is a thin, ergonomic wrapper over the existing dataclass model (<code>app/graph_def.py</code>) and the in-process engine (<code>app/agent_loop/graph_executor.py</code>). It adds no new execution machinery — every method assembles the same <code>NodeDef</code> / <code>EdgeDef</code> / <code>ContainerDef</code> the canvas emits.</p>
 <h2 id="2-build"><span class="num">2.</span> Build a graph in code</h2>
-<p>Three moves build any graph: <code>add</code> a node, <code>connect</code> two ports, mark the boundary with <code>graph_out</code> — then <code>run</code>. Node types you write yourself are <code>BaseCanvasNode</code> subclasses you <code>register_node()</code>; the platform ships no arithmetic builtins, so this hermetic hello-world defines its own. Extra kwargs to <code>add</code> become the node's <code>config</code>; the <code>graphOut</code>'s <code>portName</code> becomes the run's output key. (A graph that spans real GPU nodesets — Habitat, SAM — is <a href="#3-run">§3</a>.)</p>
+<p>Three moves build any graph: <code>add</code> a node, <code>connect</code> two ports, mark the boundary with <code>graph_out</code> — then <code>run</code>. Node types you write yourself are <code>BaseCanvasNode</code> subclasses you <code>register_node()</code>; the platform ships no arithmetic builtins, so this hermetic hello-world defines its own. Extra kwargs to <code>add</code> become the node's <code>config</code>; the <code>graphOut</code>'s <code>portName</code> becomes the run's output key. (A graph that spans real GPU nodesets — Habitat, SAM — is <a href="#4-run">§4</a>.)</p>
 <pre class="hl">
 <span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">agent_loop</span><span class="nn">.</span><span class="nn">builtin_nodes</span><span class="w"> </span><span class="kn">import</span> <span class="n">register_node</span>
@@ -135,7 +135,17 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <span class="nb">print</span><span class="p">(</span><span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="p">)</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">total</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>   <span class="c1"># -&gt; 12, in-process, no backend</span>
 </pre>
 <p>Shared state is first-class too: <code>g.container(id, states=…)</code> declares a blackboard and <code>g.grant(node, container_id)</code> gives a node read/write access — the same containers + access grants the canvas draws.</p>
-<h2 id="3-run"><span class="num">3.</span> Run it in-process</h2>
+<h2 id="3-catalog"><span class="num">3.</span> Catalog, typed authoring &amp; validation</h2>
+<p>Answer "what can I add?" without spawning anything: <code>catalog()</code> / <code>describe(node_type)</code> / <code>nodesets()</code> read every node type — ports, config schema, owning nodeset, server/env routing — from a spawn-free workspace scan. For IDE support, <code>agentcanvas.nodes</code> ships generated typed stubs (regenerate with <code>generate_node_stubs()</code>): <code>g.add(EnvHabitat.reset)</code> gets completion and port checking, and stays fully interchangeable with the string form <code>g.add("env_habitat__reset")</code>. Validation is default-on: every <code>run()</code> first checks the graph resolves — unknown node types, required input ports with no incoming edge — and a failure raises <code>GraphValidationError</code> listing <em>every</em> issue at once, before anything executes; <code>validate=True</code> adds the deeper connectivity pass.</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">catalog</span><span class="p">,</span> <span class="n">describe</span><span class="p">,</span> <span class="n">nodesets</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="nn">.</span><span class="nn">nodes</span><span class="w"> </span><span class="kn">import</span> <span class="n">EnvHabitat</span><span class="p">,</span> <span class="n">ModelSam</span>        <span class="c1"># generated typed stubs</span>
+
+<span class="n">catalog</span><span class="p">(</span><span class="p">)</span>                          <span class="c1"># every node type, from a spawn-free workspace scan</span>
+<span class="n">describe</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">model_sam__segment_auto</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># ports, config schema, nodeset, server/env</span>
+<span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">EnvHabitat</span><span class="o">.</span><span class="n">reset</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">reset</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># typed authoring — IDE completion, checked ports</span>
+</pre>
+<h2 id="4-run"><span class="num">4.</span> Run it in-process</h2>
 <p><code>g.run()</code> drives <code>GraphExecutor.run()</code> directly — the same engine as the canvas Play button — with no FastAPI, no scheduler, and no GPU-admission gate (that lives in <code>JobScheduler</code>, not the executor). Pure-Python graphs run untouched (<a href="#2-build">§2</a>). <strong>Nodeset graphs run too</strong> — and a real one usually spans more than one conda env. Here is the whole story in a single graph: <em>sample Habitat's first frame, segment it with SAM, save the annotated frame.</em></p>
 <p>Two of the node types run in foreign conda envs this process must never import — <code>env_habitat__*</code> (habitat-sim, <code>ac-vlnce</code>) and <code>model_sam__*</code> (SAM, <code>ac-fm</code>). The two glue nodes (<code>RgbToPng</code>, <code>OverlayMasks</code>) are the other kind: tiny <code>BaseCanvasNode</code> subclasses defined and <code>register_node()</code>'d right here, running in-process. One <code>build()</code> wires all five:</p>
 <pre class="hl">
@@ -204,7 +214,22 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
   RunResult.outputs["annotated"]                        → teardown: both env servers unloaded
 </code></pre></div>
 <div class="highlight"><p><strong>A real env run is an experiment.</strong> Spawning habitat-sim and SAM uses the GPU, so this belongs behind <code>/experiment:run</code> (GPU admission, port regulation), not a bare call in a busy session. The code path is identical either way — only admission control differs. Full runnable file: <code>agentcanvas/backend/examples/07_habitat_sam.py</code>.</p></div>
-<h2 id="4-batch-eval"><span class="num">4.</span> Batch evaluation</h2>
+<h2 id="5-observe"><span class="num">5.</span> Watch a run: <code>on_event</code></h2>
+<p><code>g.run(on_event=cb)</code> surfaces the executor's per-node lifecycle as typed <code>RunEvent</code> objects, delivered as they happen — the same events the <a href="hook-system.html">Hook System</a> dispatches to shell hooks, now consumable in Python without tailing logs. Six kinds: <code>graph_start</code>, <code>node_start</code> (node + live inputs), <code>node_finish</code> (outputs + <code>duration_ms</code>), <code>node_error</code>, <code>graph_complete</code> (terminated + metrics), <code>graph_error</code>. The callback may be sync or async, runs inside the executor's event loop (keep it cheap), and a callback exception is logged, never fatal to the run.</p>
+<pre class="hl">
+<span class="n">events</span> <span class="o">=</span> <span class="p">[</span><span class="p">]</span>
+<span class="n">r</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">on_event</span><span class="o">=</span><span class="n">events</span><span class="o">.</span><span class="n">append</span><span class="p">)</span>          <span class="c1"># sync or async callback, called in-loop</span>
+
+<span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">events</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>                <span class="c1"># node_start / node_finish / node_error / graph_complete …</span>
+</pre>
+<h2 id="6-replay"><span class="num">6.</span> Record &amp; replay: GPU graphs as hermetic tests</h2>
+<p>One real run records; every later run replays offline. <code>g.run(record="run.mpk")</code> tees every server-node result of a real run into a cassette (msgpack + zlib — ndarray / tensor / PIL results survive byte-exact); <code>g.run(replay="run.mpk")</code> reruns the graph with <strong>no servers, no conda envs, no GPU</strong> — server calls answered from the recording while local nodes run for real, so a topology or port drift from the recording fails loudly instead of silently passing. The shipped Habitat→SAM cassette replays a two-conda-env GPU graph as an ordinary unit test in CI. Mechanism, cassette format, and the honest limits (order-based matching, not input matching): <a href="../design-docs/surfaces/graph-sdk-record-replay.html">design doc — Graph SDK Record / Replay</a>.</p>
+<pre class="hl">
+<span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">record</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">run.mpk</span><span class="s2">&quot;</span><span class="p">)</span>                 <span class="c1"># real run — tee every server-node result</span>
+<span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">replay</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">run.mpk</span><span class="s2">&quot;</span><span class="p">)</span>                 <span class="c1"># offline — no servers, local nodes still real</span>
+</pre>
+<h2 id="7-batch-eval"><span class="num">7.</span> Batch evaluation</h2>
 <p><code>g.eval(episodes=N, dataset=…, split=…)</code> is the Graph SDK entry to <a href="batch-evaluation-job-queue.html">Batch Evaluation</a>. It constructs the very same <code>BatchEvalRunner</code> the backend eval API uses (<code>app/agent_loop/eval_batch.py</code>) — one <code>GraphExecutor</code> run per episode, episode placement pushed through the env panel, per-episode metrics harvested from the graph's <code>metrics</code> <code>graphOut</code>, and the aggregate computed as the mean over <em>completed</em> episodes. The returned <code>EvalResult</code> carries <code>.metrics</code> (aggregate), <code>.episodes</code> (per-episode), and <code>.by_task</code>. "Correct" here is structural: <code>g.eval</code> does not re-implement evaluation, it reuses the audited runner.</p>
 <pre class="hl">
 <span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">mapgpt_mp3d_sdk</span><span class="w"> </span><span class="kn">import</span> <span class="n">build</span>
@@ -214,7 +239,7 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <span class="nb">print</span><span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">metrics</span><span class="p">)</span>         <span class="c1"># aggregate over completed episodes: {&#x27;success&#x27;: ..., &#x27;spl&#x27;: ...}</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">episodes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="p">)</span>     <span class="c1"># per-episode breakdown</span>
 </pre>
-<h2 id="5-sugar"><span class="num">5.</span> Authoring sugar: loop / hook / composite</h2>
+<h2 id="8-sugar"><span class="num">8.</span> Authoring sugar: loop / hook / composite</h2>
 <p>The fiddly parts of a graph get intent-named helpers. <code>g.loop(init=…, carry=…)</code> declares a two-sided iterIn/iterOut episode loop (<a href="graph-expressible-agents.html">Graph-Expressible Agents §3</a>) with the correct <code>persist</code> flags set automatically — init-only ports persist across steps, carried ports do not persist on the init side (the iterOut carry supersedes) — so the loop can't accidentally starve on iteration 1. Wire it through the returned handle:</p>
 <pre class="hl">
 <span class="n">loop</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">loop</span><span class="p">(</span>
@@ -228,7 +253,7 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <span class="n">loop</span><span class="o">.</span><span class="n">stop</span><span class="p">(</span><span class="n">budget</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">done</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>                          <span class="c1"># termination signal</span>
 </pre>
 <p>Two more: <code>g.hook(event, command, …)</code> attaches a lifecycle shell hook (<a href="hook-system.html">Hook System</a>) — <code>GraphStart</code>, <code>PreNodeExecute</code>, <code>PostNodeExecute</code>, <code>GraphComplete</code>, <code>GraphError</code>. <code>g.composite(id, subgraph)</code> wraps a nested graph as a composite node (<a href="nested-graph-system.html">Nested Graph System</a>); <code>flatten_graph()</code> expands it before execution, so composites run in-process like everything else.</p>
-<h2 id="6-reverse"><span class="num">6.</span> Reverse — graph → code</h2>
+<h2 id="9-reverse"><span class="num">9.</span> Reverse — graph → code</h2>
 <p>The inverse direction (roadmap <strong>F4</strong>): compile <em>any</em> <code>GraphDefinition</code> — canvas-authored, loaded from JSON, or code-built — back into a self-contained builder script via <code>graph_to_code(gd)</code> (or <code>Graph.to_code()</code>). The emitted script rebuilds the same topology through this very API; the round-trip is semantically exact (node types + configs, wire multiset, containers, grants, hooks), verified against the reference MapGPT-MP3D graph.</p>
 <pre class="hl">
 <span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
@@ -239,9 +264,19 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <span class="nb">print</span><span class="p">(</span><span class="n">graph_to_code</span><span class="p">(</span><span class="n">gd</span><span class="p">)</span><span class="p">)</span>            <span class="c1"># a standalone, runnable builder script</span>
 <span class="c1"># ...or on a live Graph:  Graph.from_definition(gd).to_code()</span>
 </pre>
-<h2 id="7-packaging"><span class="num">7.</span> Packaging &amp; install</h2>
-<p>The SDK ships as an installable package: <code>pyproject.toml</code> at <code>agentcanvas/backend/</code> plus a top-level <code>agentcanvas</code> namespace that re-exports the surface, so <code>pip install -e .</code> makes <code>from agentcanvas import Graph</code> work with no <code>PYTHONPATH</code>. The SDK core is stdlib-only; the heavy runtime dependencies a real nodeset run needs (FastAPI, torch, simulators) stay in <code>requirements.txt</code> / the conda env, kept out of <code>pyproject.toml</code> so the import stays light. Runnable examples live under <code>agentcanvas/backend/examples/</code>.</p>
-<h2 id="8-key-files"><span class="num">8.</span> Key Files</h2>
+<h2 id="10-packaging"><span class="num">10.</span> Packaging &amp; install</h2>
+<p><code>pyproject.toml</code> lives at the <strong>repo root</strong>: a fresh clone installs with a plain <code>pip install -e .</code>, and <code>from agentcanvas import Graph</code> works from any directory with no <code>PYTHONPATH</code>. The editable install resolves through the source tree, so the <code>workspace/</code> registry — graphs, nodesets, cassettes — is discovered with zero configuration. The core install depends only on <code>pydantic-settings</code>; heavier capability is opt-in <strong>extras</strong> — the code always ships whole, extras just power more of it on:</p>
+<table>
+<thead><tr><th>Install</th><th>Adds</th><th>Powers on</th></tr></thead>
+<tbody>
+<tr><td><code>pip install -e .</code></td><td><code>pydantic-settings</code></td><td>build / validate / run pure-local graphs, <code>to_code</code>, catalog</td></tr>
+<tr><td><code>… ".[server]"</code></td><td>httpx · msgpack · numpy</td><td>server-node proxy + cassette record / replay</td></tr>
+<tr><td><code>… ".[llm]"</code></td><td>litellm · pyyaml</td><td>the <code>llmCall</code> builtin node</td></tr>
+<tr><td><code>… ".[backend]"</code></td><td>FastAPI stack</td><td>the full canvas backend</td></tr>
+</tbody>
+</table>
+<p>A non-editable install (<code>pip install "agentcanvas[server] @ git+https://github.com/jianzhou0420/AgentCanvas.git"</code>) carries the engine but not the workspace — build graphs, run local nodes, replay cassettes; full nodeset runs still want the clone plus the conda envs (torch, simulators — provisioned by <code>requirements.txt</code> / server mode as before). PyPI publication is deliberately deferred until the top-level <code>app</code> package is renamed. The tier contract is CI-enforced (<code>app/test_dependency_boundary.py</code>) and specified in the <a href="../design-docs/surfaces/graph-sdk-dependency-boundary.html">dependency-boundary design doc</a>. Runnable examples live under <code>agentcanvas/backend/examples/</code>.</p>
+<h2 id="11-key-files"><span class="num">11.</span> Key Files</h2>
 <table>
 <thead>
 <tr>
@@ -257,6 +292,10 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <tr>
 <td><code>agentcanvas/backend/app/graph_sdk_codegen.py</code></td>
 <td><code>graph_to_code()</code> — the reverse compiler (graph → standalone builder script)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_sdk_replay.py</code></td>
+<td><code>Recorder</code> / <code>Player</code> / cassette persistence — <code>record=</code> / <code>replay=</code> (<a href="../design-docs/surfaces/graph-sdk-record-replay.html">design doc</a>)</td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/graph_def.py</code></td>
@@ -275,12 +314,12 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <td><code>ensure_nodesets_for_graph()</code> — nodeset load + env-server spawn on <code>load_nodesets</code></td>
 </tr>
 <tr>
-<td><code>agentcanvas/backend/agentcanvas/</code> + <code>pyproject.toml</code></td>
-<td>Pip-installable <code>agentcanvas</code> namespace (re-exports the surface)</td>
+<td><code>agentcanvas/backend/agentcanvas/</code> + root <code>pyproject.toml</code></td>
+<td>Pip-installable <code>agentcanvas</code> namespace + typed node stubs (<code>agentcanvas.nodes</code>); repo-root <code>pyproject</code> with the <code>server</code>/<code>llm</code>/<code>backend</code> extras</td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/test_graph_sdk.py</code> · <code>examples/</code></td>
-<td>Hermetic tests (8) + runnable examples (build / run / eval / codegen)</td>
+<td>Hermetic tests + runnable examples (build / run / eval / codegen / record-replay)</td>
 </tr>
 </tbody>
 </table>
@@ -326,9 +365,29 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
 <td>Round-trip semantically exact against the verified MapGPT-MP3D graph</td>
 </tr>
 <tr>
+<td>Catalog + typed authoring (<code>catalog</code> / <code>describe</code> / <code>nodesets</code>, <code>agentcanvas.nodes</code> stubs)</td>
+<td>Done</td>
+<td>Spawn-free workspace scan; string and typed <code>g.add</code> forms interchangeable</td>
+</tr>
+<tr>
+<td>Default-on validation (<code>check</code>, <code>validate</code>)</td>
+<td>Done</td>
+<td><code>GraphValidationError</code> lists every issue at once, before anything executes</td>
+</tr>
+<tr>
+<td>Run events (<code>on_event</code> / <code>RunEvent</code>)</td>
+<td>Done</td>
+<td>Six lifecycle kinds; sync or async callback; callback exceptions never fatal</td>
+</tr>
+<tr>
+<td>Record / replay (<code>record=</code> / <code>replay=</code>)</td>
+<td>Done</td>
+<td>Habitat→SAM cassette replays a two-env GPU graph offline in CI — <a href="../design-docs/surfaces/graph-sdk-record-replay.html">design doc</a></td>
+</tr>
+<tr>
 <td>Packaging (<code>pip install</code> → <code>import agentcanvas</code>)</td>
 <td>Done</td>
-<td><code>pyproject.toml</code> + <code>agentcanvas</code> shim; verified importable with no <code>PYTHONPATH</code> in an isolated venv</td>
+<td>Repo-root <code>pyproject</code>; <code>pip install -e .</code> + extras (<code>server</code>/<code>llm</code>/<code>backend</code>); verified in a clean venv: import, local run, zero-config workspace discovery, cassette replay</td>
 </tr>
 <tr>
 <td>Single-run metric channel</td>
@@ -358,12 +417,15 @@ This is a highly structured SDK — hand it to a coding agent like Claude Code o
     <nav class="toc-list">
       <a class="toc-h2" href="#1-three-ways">1. Three ways to the same graph</a>
       <a class="toc-h2" href="#2-build">2. Build a graph in code</a>
-      <a class="toc-h2" href="#3-run">3. Run it in-process</a>
-      <a class="toc-h2" href="#4-batch-eval">4. Batch evaluation</a>
-      <a class="toc-h2" href="#5-sugar">5. Authoring sugar: loop / hook / composite</a>
-      <a class="toc-h2" href="#6-reverse">6. Reverse — graph → code</a>
-      <a class="toc-h2" href="#7-packaging">7. Packaging &amp; install</a>
-      <a class="toc-h2" href="#8-key-files">8. Key Files</a>
+      <a class="toc-h2" href="#3-catalog">3. Catalog, typed authoring &amp; validation</a>
+      <a class="toc-h2" href="#4-run">4. Run it in-process</a>
+      <a class="toc-h2" href="#5-observe">5. Watch a run: on_event</a>
+      <a class="toc-h2" href="#6-replay">6. Record &amp; replay: GPU graphs as hermetic tests</a>
+      <a class="toc-h2" href="#7-batch-eval">7. Batch evaluation</a>
+      <a class="toc-h2" href="#8-sugar">8. Authoring sugar: loop / hook / composite</a>
+      <a class="toc-h2" href="#9-reverse">9. Reverse — graph → code</a>
+      <a class="toc-h2" href="#10-packaging">10. Packaging &amp; install</a>
+      <a class="toc-h2" href="#11-key-files">11. Key Files</a>
       <a class="toc-h2" href="#status">Status</a>
     </nav>
   </div>

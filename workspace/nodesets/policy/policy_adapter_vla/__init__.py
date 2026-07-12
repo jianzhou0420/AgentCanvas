@@ -893,12 +893,19 @@ class PolicyAdapterVlaNodeSet(BaseNodeSet):
     #     libstdc++.so.6 (CXXABI_1.3.15, from libstdcxx-ng>=12) is preferred
     #     over Ubuntu 20.04's system libstdc++ 6.0.28 which lacks it. TF /
     #     tf-agents extensions fail to load without this on stock 20.04.
-    _vla_env_lib = str(Path(server_python).parent.parent / "lib")
+    #     Set only when the env resolved: server_python is None wherever
+    #     ac-vla-policy is absent, and the conda_env_python contract is that
+    #     None must leave this class importable (scan-time degrade to local
+    #     mode), not crash the workspace scan.
     server_env = {
         "TF_USE_LEGACY_KERAS": "1",
         "TF_FORCE_GPU_ALLOW_GROWTH": "true",
-        "LD_LIBRARY_PATH": f"{_vla_env_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}",
     }
+    if server_python:
+        server_env["LD_LIBRARY_PATH"] = (
+            f"{Path(server_python).parent.parent / 'lib'}"
+            f":{os.environ.get('LD_LIBRARY_PATH', '')}"
+        )
     # No env panel — config is distributed across the 2 config-owning nodes
     # (canonical_to_model / predict; the model→canonical node has no config;
     # the env-side robot select lives on env_adapter's nodes). Env panels in
