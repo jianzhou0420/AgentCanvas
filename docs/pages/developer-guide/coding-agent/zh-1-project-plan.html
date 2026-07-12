@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAN：Coding Agent as Navigator — 项目计划（讨论稿） — AgentCanvas</title>
+<meta name="description" content="把「coding agent 能导航」从一个 Claude Code 轶事，变成开源框架 + 开源小模型上的可复现科学 —— 目标 ICLR 2027。">
+<meta property="og:title" content="CAN：Coding Agent as Navigator — 项目计划（讨论稿） — AgentCanvas">
+<meta property="og:description" content="把「coding agent 能导航」从一个 Claude Code 轶事，变成开源框架 + 开源小模型上的可复现科学 —— 目标 ICLR 2027。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/zh-1-project-plan.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="中文 · CAN 项目计划">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/zh-1-project-plan.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    Coding Agent
+    <span class="sep">/</span>
+    <span class="here">中文 · CAN 项目计划</span>
+  </div>
+  <div class="last-updated">2026-07-11</div>
+</div>
+  <header class="page-header coding-agent">
+    <h1>CAN：Coding Agent as Navigator — 项目计划（讨论稿）</h1>
+    <p class="tagline">把「coding agent 能导航」从一个 Claude Code 轶事，变成开源框架 + 开源小模型上的可复现科学 —— 目标 ICLR 2027。</p>
+  </header>
+
+  <p class="lede">现状：本仓库的 <a href="../beta/zh-2-beta-agent.html">beta-coding-agent</a> 用 <strong>Claude Code（世界上最强的闭源 agent 框架）</strong>证明了 vanilla coding agent 能做 zero-shot R2R-CE——这是存在性证明，但闭源、昂贵、不可消融。本计划把同一命题搬到<strong>开源可控的整套栈</strong>上：<a href="https://github.com/SWE-agent/mini-swe-agent">SWE-agent 系框架</a>做 harness、<strong>Qwen3.5-9B 级开源小模型</strong>做大脑、AgentCanvas 做环境与评测底座，系统性回答「coding agent 的哪些器官能迁移到具身导航、在多小的模型上还成立」。本文整合了 <code>../NavHarness/docs</code> 的全部遗产（旧路线的方法论保留、定位翻新，见 <a href="#4-navharness">§4</a>），按 <strong>Motivation（§2）→ Method（§6）→ Plan（§8）</strong>组织，<a href="#10-decisions">§10</a> 是待你裁决的决策点。<strong>本目录已加入 .gitignore（本地可见、永不发布）</strong>——未投稿的想法不上公网。</p>
+
+  <div class="callout note"><p><strong>工作代号 CAN</strong>（<strong>C</strong>oding <strong>A</strong>gent as <strong>N</strong>avigator）。取双关：论文可以直接问 <em>"Can coding agents navigate?"</em>——与 2026 年的 <a href="https://arxiv.org/abs/2604.13107">Can Coding Agents be General Agents?</a> (26.04) 形成文献对话（他们在 ERP 上给出否定证据，我们在具身导航上给出工程化的正面回答）。命名候选见 <a href="#10-decisions">§10</a>。</p></div>
+
+  <h2 id="1-tldr"><span class="num">1.</span> TL;DR：一句话与一张图</h2>
+  <p><strong>一句话</strong>：不要给导航造第 N 个 bespoke harness——把导航 episode <strong>装进 coding agent 的原生世界</strong>（一个文件系统 + 一个 CLI），让标准开源 coding-agent 框架原样开工；然后用开源小模型阶梯（Qwen3.5-2B/4B/9B → 35B-A3B）做三件闭源 agent 做不了的事：<strong>逐器官消融</strong>（文件记忆 / code-as-action / 验证门 / 自主度）、<strong>规模曲线</strong>（harness 增益 vs 模型大小）、<strong>零成本复现</strong>（全栈本地、$0 API）。</p>
+  <pre><code>          闭源天花板（参照系，不是贡献）
+          Claude Code + beta-coding-agent ── rand100 上的 reference 行
+                         │
+   ┌─────────────────────┼──────────────────────────┐
+   │                     ▼                          │
+   │   CAN = mini-swe-agent(改) × NavWorkspace      │
+   │         × Qwen3.5-{2B,4B,9B,35B-A3B}           │
+   │                     │                          │
+   │   同 backbone 三臂对照（AgentCanvas 独有）：     │
+   │   ① smartway_ce / threestepnav_ce / aoplanner  │
+   │      （prompt-era 图式基线，profile 换模型即可） │
+   │   ② AgenticNav 类 bespoke 工具 harness（引用）   │
+   │   ③ CAN（本文）                                 │
+   └────────────────────────────────────────────────┘
+   主战场：R2R-CE val_unseen rand100（OpenNav/SmartWay/AgenticNav 同协议）</code></pre>
+
+  <h2 id="2-motivation"><span class="num">2.</span> Motivation：四层动机</h2>
+
+  <h3 id="21-existence"><span class="num">2.1</span> 存在性已证明，科学还不存在</h3>
+  <p>2026 上半年，「harness 决定 zero-shot VLN 表现」被至少四个互相独立的系统反复证实——但每一个都是<strong>不可比、不可归因的 artifact</strong>：</p>
+  <table>
+    <thead><tr><th>系统</th><th>形态</th><th>成绩（R2R-CE val_unseen）</th><th>问题</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://arxiv.org/abs/2606.10577">AgenticNav</a> (26.06, SJTU+华为)</td><td>bespoke 四工具 harness（query_depth / recall / move_to / stop）</td><td>GPT-5.5：<strong>55 SR / 48.4 SPL</strong>（100 集，zero-shot SOTA）；但开源 Qwen3.6-27B 骤降到 <strong>35 SR</strong></td><td>不是 coding agent（无文件系统、无代码执行）；memory 机制交代不清（见 §6.5）；小模型崩</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2606.08992">SpaceVLN</a> (26.06)</td><td>bespoke 空间认知记忆 harness</td><td>zero-shot（数字待复核）</td><td>又一个不可比 artifact</td></tr>
+      <tr><td>组内 beta-coding-agent（<a href="../beta/zh-2-beta-agent.html">zh-2</a>）</td><td><strong>真 coding agent</strong>：Claude Agent SDK + MCP 三工具 + skills</td><td>rand100 协议就绪，10 集校准数据见 <a href="../beta/coding-agent-monitor.html">monitor §5</a></td><td>闭源模型 + 闭源 harness：不可消融、不可复现、订阅计费、无法回答「为什么 work」</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2606.18112">qwen-robotnav</a> (26.06, 阿里)</td><td>训练的 nav FM + 配套 harness（robotclaw）</td><td>R2R 72.1 / RxR 76.5（trained，非 zero-shot）</td><td>15.6M 样本、数千 GPU 时——另一条赛道</td></tr>
+    </tbody>
+  </table>
+  <p>缺的东西非常具体：<strong>一个开源、可控、便宜的 coding-agent 导航栈，加上一套「哪个器官贡献几分」的归因实验</strong>。没有它，「coding agent 能导航」永远是轶事；有了它，师兄的 Claude 结果、AgenticNav 的 55 分、qwen-robotclaw 的产品设计，全都获得一个可以解释的机制坐标。</p>
+
+  <h3 id="22-theory"><span class="num">2.2</span> 理论张力：coding agent 的护城河在导航正好缺一半</h3>
+  <p>我们在 <a href="../beta/zh-4-agent-vs-coding-agent.html">zh-4（概念篇）</a>里论证过：coding agent 的强大来自两点——<strong>开放行动空间</strong>（运行时自写工具）与<strong>密集客观反馈</strong>（编译器/测试/栈回溯）。搬到 VLN，NavHarness 时期总结的「三大扭曲」恰好各打一半：</p>
+  <table>
+    <thead><tr><th>VLN 扭曲（NavHarness 7/08 讨论）</th><th>对 coding agent 意味着什么</th><th>CAN 的机制回应</th></tr></thead>
+    <tbody>
+      <tr><td>① 没有 live verification（走错了环境不报错，直到 STOP 后才算分）</td><td>反馈护城河<strong>失效</strong>——这正是 <a href="https://arxiv.org/abs/2604.13107">ERP 论文</a>说的「反馈不对称」领域，coding agent 会退化 + 过度自信</td><td>验证工程（§6.7）：确定性 guards + STOP 门 + agent 自写 checks——把「写测试」的本能移植过来</td></tr>
+      <tr><td>② 观测是图像，上下文爆炸比代码狠得多</td><td>coding agent 的上下文管理组件（压缩/外置/检索）<strong>正好是解药</strong></td><td>文件系统当记忆（§6.5）：观测自动落盘，逐出上下文是无损的（磁盘上还在，按路径可取回）</td></tr>
+      <tr><td>③ STOP 是胜负手</td><td>等价于 coding agent 的「什么时候敢说完成」——已知其最大失败模式（自报成功）</td><td>pre-stop 强制核对 hook（§6.7）——直接检验 NavHarness 预注册的 H4（verifying-stop 假说，+1~6pp）</td></tr>
+    </tbody>
+  </table>
+  <p>所以科学问题不是「coding agent 能不能导航」（beta 已证明能），而是：<strong>coding-agent 配方的哪些器官在反馈稀疏的具身域仍然做功、哪些必须重新工程化、在多小的模型上这套配方还成立</strong>。这是一个「迁移解剖学」问题——恰好只有开源栈能回答。</p>
+
+  <h3 id="23-small"><span class="num">2.3</span> 为什么是开源小模型：科学性 + 一个可赢的数字</h3>
+  <ul>
+    <li><strong>可复现性碾压</strong>：Claude/GPT 结果依赖闭源模型的当月版本；Qwen3.5 权重冻结在 HF 上，全栈本地跑，<strong>$0 API、单卡 5090 复现</strong>。这比 NavHarness 时期设想的「$100 可复现」还激进一档，是审稿硬通货。</li>
+      <li><strong>时机刚好</strong>：<a href="https://artificialanalysis.ai/articles/qwen3-5-small-models">Qwen3.5 小模型系</a>（2026-02）是<strong>原生多模态</strong>（早期融合，图像+视频），262K 上下文全系标配，9B 的 MMMU-Pro 69.2 反超 Qwen3-VL-8B（56.6）——「一个 9B 模型同时当眼睛和大脑跑 agent 循环」在半年前还不成立。另有 <a href="https://qwen.ai/blog?id=qwen3.5-35b-a3b">Qwen3.5/3.6-35B-A3B</a>（MoE，3B 激活）做阶梯上端，量化后单卡可跑。</li>
+    <li><strong>有明确的锚点可打</strong>：AgenticNav 的 backbone 消融给了开源模型在 bespoke harness 里的水位——<strong>Qwen3.6-27B = 35 SR</strong>。CAN 的可赢主张之一：<em>9B 模型 + coding-agent 工作区 ≥ 27B 模型 + bespoke 工具 harness</em>。若成立，这是「harness 补偿模型规模」迄今最锋利的具身证据；若不成立，规模曲线本身就是发现（§3 H6）。</li>
+    <li><strong>小模型是 harness 科学的显微镜</strong>：大模型把 harness 缺陷「脑补」掉了；小模型对接口设计极端敏感（SWE-agent 的 ACI 论题、NavHarness 的「小模型往 workflow 挪」判断）。效应量在小模型上更大、更可测。</li>
+  </ul>
+
+  <h3 id="24-whyus"><span class="num">2.4</span> Why now / why us：资产盘点</h3>
+  <table>
+    <thead><tr><th>需要什么</th><th>我们已有什么</th><th>别人要从零建多久</th></tr></thead>
+    <tbody>
+      <tr><td>真实跑通的 R2R-CE 评测栈</td><td>AgentCanvas <code>env_habitat</code> auto_host + driver + <code>env_habitat__evaluate</code>（beta 在用，<strong>非 mock</strong>）</td><td>2–4 周</td></tr>
+      <tr><td>可比协议</td><td><code>rand100</code>：OpenNav/SmartWay 同款 100 集 val_unseen 子集（beta README 钉死）；AgenticNav 也是 100 集协议</td><td>—</td></tr>
+      <tr><td>同 backbone 的 prompt-era 基线</td><td><code>workspace/graphs/vln/verified/</code> 里现成三张图：<code>smartway_ce</code> / <code>threestepnav_ce</code> / <code>aoplanner_ce</code>，profile 换模型即可</td><td>3–6 周（AgenticNav 只能引用别人数字）</td></tr>
+      <tr><td>闭源天花板参照行</td><td>beta-coding-agent（Claude）同协议同评测——直接进主表当 reference</td><td>没有这个条件</td></tr>
+      <tr><td>监控/可视化</td><td>Coding Agent monitor tab + 每集 trajectory JSONL（beta 现成）</td><td>1–2 周</td></tr>
+      <tr><td>方法论纪律</td><td>NavHarness 遗产：预注册假设、失败归因 taxonomy + κ≥0.6 协议、成本校准报告、token 预算一等公民（§4）</td><td>—</td></tr>
+      <tr><td>开源 harness 底座</td><td><a href="https://github.com/SWE-agent/mini-swe-agent">mini-swe-agent</a>：~100 行、纯 bash、<strong>不依赖 function-calling</strong>（小模型友好）、LiteLLM 任意后端</td><td>—（公共品，但没人往具身搬）</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><p><strong>与 NavHarness 最大的差别在这一行字：那边 exp01/exp02 的所有数字至今是 mock dry-run（7/09 组会红线），这边的栈是真的在跑。</strong>换底座 = 把项目最大的死亡风险（11 周内 mock→real 接不通）直接删除。</p></div>
+
+  <h2 id="3-rq"><span class="num">3.</span> 研究问题与预注册假设</h2>
+  <p><strong>RQ1（headline）</strong>：标准开源 coding-agent harness 能否让开源小模型成为有竞争力的 zero-shot 导航员？<br>
+  <strong>RQ2（解剖）</strong>：coding-agent 配方的哪些器官（文件记忆 / code-as-action / 验证门 / 自主循环）各贡献几分？哪些在具身域失灵？<br>
+  <strong>RQ3（规模）</strong>：harness 增益如何随模型大小变化？自主度上限如何随模型大小移动？<br>
+  <strong>RQ4（机制）</strong>：文件系统式记忆（内容寻址：grep 自己的笔记）是否优于 AgenticNav 式索引召回（位置寻址）？——把 NavHarness 7/08 的机制批判变成实验。</p>
+  <p>预注册假设（继承 NavHarness 的预注册文化，证伪条件先写死）：</p>
+  <table>
+    <thead><tr><th>#</th><th>假设</th><th>证伪条件</th></tr></thead>
+    <tbody>
+      <tr><td><strong>H1</strong></td><td>同 backbone（Qwen3.5-9B）下，CAN 最优档 ≥ 最强 prompt-era 图基线（smartway_ce 等）<strong>+5 SR</strong>（rand100）</td><td>Δ&lt;5 或反向</td></tr>
+      <tr><td><strong>H2</strong></td><td>记忆消融单调：无记忆 &lt; 纯上下文 &lt; 文件+grep；且内容寻址 &gt; 位置寻址召回（≥+3 SR）</td><td>文件记忆不增益</td></tr>
+      <tr><td><strong>H3</strong></td><td>code-as-action（允许自写脚本/宏）相对固定 CLI：SR 不降且 <strong>LLM calls/ep 显著下降</strong>（CodeAct 效应迁移）</td><td>calls 不降或 SR 大跌</td></tr>
+      <tr><td><strong>H4</strong></td><td>pre-stop 验证门在所有模型档位同向增益 +1~6 SR（NavHarness H4 原样移植，首次真实检验）</td><td>≈0 或异向</td></tr>
+      <tr><td><strong>H5</strong></td><td>自主度×规模交互：2B/4B 峰值在 L1（分相 workflow），9B 在 L2（引导 ReAct），只有 ≥27B/Claude 在 L3（自由 bash）不崩——「自主度旋钮必须随模型缩小」</td><td>小模型在 L3 不差</td></tr>
+      <tr><td><strong>H6</strong></td><td>elicitation 曲线：CAN-vs-图基线 的增益随模型增大而收窄但不归零（结构洞存在）；Claude 行是右端锚点</td><td>增益归零或增大（均为可发表发现）</td></tr>
+      <tr><td><strong>H7</strong></td><td>成本前沿：CAN-9B（本地 $0）达到 AgenticNav-Qwen3.6-27B（35 SR）同档成绩，cost-per-success 低一个数量级</td><td>达不到 35 SR 档</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="4-navharness"><span class="num">4.</span> 与 NavHarness 旧想法的关系：继承、丢弃、变形</h2>
+  <p>NavHarness（<code>../NavHarness/docs</code>，5/14–7/09）把「nav harness 的科学」推演得很完整——六组件形式化 H_nav、三范式互反实例化、backbone-agnostic 解耦测量、「大厂造赛车我们建风洞」。你现在判断它过时，我同意，但要说清<strong>过时的是定位，不是方法论</strong>：</p>
+  <table>
+    <thead><tr><th></th><th>内容</th><th>去向</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="7"><strong>KEEP<br>（直接继承）</strong></td><td>预注册假设 + 证伪条件文化（story v2.2 §5.1）</td><td>§3 的 H1–H7 就是按它写的</td></tr>
+      <tr><td>六类失败 taxonomy（false_stop / stuck_loop / subgoal_drift / cross_step_forget / recognition_fail / model_other）+ 双标注 κ≥0.6 协议</td><td>§7.4 失败归因原样移植</td></tr>
+      <tr><td>成本校准报告（tokens/ep、calls/ep、CPS 与 SR 并列）</td><td>§7.3 指标列</td></tr>
+      <tr><td>「token 预算是一等公民」（exp01 的 22k→1.3k 纪律）</td><td>§6.4 ANI 设计的硬约束</td></tr>
+      <tr><td>「小模型往 workflow 挪、收窄自由度」判断</td><td>升格为研究对象：§6.8 自主度旋钮 + H5</td></tr>
+      <tr><td>verifying-stop 是单点最值 hook 的假说（H4）</td><td>§6.7 STOP 门，首次真实检验</td></tr>
+      <tr><td>AgenticNav memory 批判（位置寻址 vs 内容寻址的 type mismatch，7/08 文档 §9.8）</td><td>升格为机制实验：RQ4 / H2 的对照臂</td></tr>
+      <tr><td rowspan="4"><strong>DROP<br>（明确丢弃）</strong></td><td>「风洞/测量学」定位（只测量、不造东西、搜索留给别人）</td><td>换成「系统 + 机制 + 归因」——ICLR 更认带机制主张的工作系统；且测量纪律并没有丢，只是不再是唯一卖点</td></tr>
+      <tr><td>VLNVerse-on-Isaac 主战场</td><td>换 R2R-CE rand100：三篇同协议可比（OpenNav/SmartWay/AgenticNav），评审零解释成本；Isaac 栈一行不用</td></tr>
+      <tr><td>自建三范式沙盒（exp01/exp02/exp03）作为系统交付物</td><td>harness 换成标准件（mini-swe-agent）——「不造第 N 个 bespoke harness」本身就是方法论主张（§6.1）</td></tr>
+      <tr><td>HARNESSCARD-nav / H_nav 形式化作为头号贡献</td><td>降级为论文里的描述性词汇（харness 解剖仍按 E/T/C/S/L/V 讲，不 claim 形式化贡献）</td></tr>
+      <tr><td rowspan="3"><strong>TRANSFORM<br>（变形保留）</strong></td><td>「harness 的科学」</td><td>收窄成一个更锋利的问题：「<strong>coding-agent harness 的迁移科学</strong>」——从测量任意 harness，变为解剖一个已被证明最强的 harness 家族</td></tr>
+      <tr><td>四赛道主表（specialist / nav-FM / prompt-era / ours）</td><td>§7.1 主表：监督专才（引）/ bespoke 工具 harness（引）/ prompt-era 图（同 backbone 复跑）/ CAN（ours）+ Claude 参照行</td></tr>
+      <tr><td>7/07 的 Habitat worker 计划（3–4 天 + MP3D 许可阻塞）</td><td><strong>不需要了</strong>——AgentCanvas 的 Habitat 栈现成且真实在跑；这条计划作废本身就是换底座的最好论据</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note"><p><strong>给老板的一句话版本</strong>：NavHarness 的方法论（预注册、归因、成本报告）全部带走，定位从「给别人的 harness 建风洞」升级为「把已被 Claude 证明的最强 harness 家族开源化、小模型化、逐器官解剖」——故事从测量学变成机制科学，主战场从自建基准换到三篇可比的 R2R-CE，mock 风险清零。</p></div>
+
+  <h2 id="5-related"><span class="num">5.</span> 相关工作与定位（每行一句差异）</h2>
+  <table>
+    <thead><tr><th>工作</th><th>它是什么</th><th>我们的差异</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://arxiv.org/abs/2606.10577">AgenticNav</a> (26.06)</td><td>bespoke 四工具 harness + 前沿闭源 VLM，R2R-CE zero-shot SOTA</td><td>它是固定工具面（无文件系统、无代码执行、无自写工具）；我们是完整 coding-agent 配方 + 开源小模型 + 器官级消融；其 recall 的位置寻址是我们 H2 的对照臂</td></tr>
+      <tr><td>组内 beta-coding-agent（Claude）</td><td>存在性证明 + 闭源天花板</td><td>CAN 是它的「开源科学化」：同协议同评测，Claude 行进主表当参照；分工叙事见 §10-4</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2606.18112">qwen-robotnav</a>+robotclaw</td><td>训练 nav-FM + 产品 harness</td><td>不同赛道（trained vs zero-shot）；它是「模型+harness 缺一不可」论题的大厂背书</td></tr>
+      <tr><td>NavGPT / MapGPT / SmartWay / Open-Nav</td><td>prompt-era 零样本管线（固定流程 + 固定 prompt）</td><td>主表第③臂：同 backbone 下被 CAN 对照——「agentic 循环 vs 固定管线」的干净差值</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2510.21902">SE agents for embodied controller generation</a> (25.10)</td><td>用 SE agent <strong>离线生成</strong> Minigrid 控制器代码</td><td>我们是<strong>在线</strong>导航（agent 在 episode 内感知-行动），且在照片级连续环境；novelty check 最近邻，边界清晰</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2402.01030">CodeAct</a> / HF smolagents</td><td>code-as-action 在工具使用基准上占优</td><td>H3 = 该效应在具身域的首次检验</td></tr>
+      <tr><td>Voyager / Reflexion</td><td>skill library / 自我反思（Minecraft、文本域）</td><td>文件系统记忆与它们同源；跨集技能积累刻意<strong>不做主轴</strong>（组内边界，§10-4）</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2604.13107">Can Coding Agents be General Agents?</a> (26.04)</td><td>ERP 域的否定证据：反馈稀疏 → coding agent 退化 + specification gaming</td><td>我们在另一个反馈稀疏域给出<strong>工程化回应</strong>（验证门/自写 checks），且量化了「退化多少、什么救得回来」</td></tr>
+      <tr><td><a href="https://github.com/SWE-agent/mini-swe-agent">SWE-agent / mini-swe-agent</a></td><td>ACI 论题 + 100 行 bash-only 开源 harness</td><td>我们的仪器而非对手；「ACI → ANI（agent-navigation interface）」是概念迁移</td></tr>
+      <tr><td>NavHarness（冻结的前身）</td><td>harness 测量学框架（未发表，mock 阶段）</td><td>§4：方法论继承、定位替换；论文致谢/脚注即可，不背历史包袱</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="6-method"><span class="num">6.</span> Method：CAN 系统设计</h2>
+
+  <h3 id="61-principle"><span class="num">6.1</span> 设计原则：把环境搬给 agent，而不是把 agent 搬给环境</h3>
+  <p>AgenticNav、qwen-robotclaw、SpaceVLN、NavHarness exp01/02——所有前人路线都在<strong>为导航造专用 harness</strong>。CAN 的第一性主张反着来：coding agent 已经拥有地球上被打磨得最狠的 harness（循环、上下文管理、文件记忆、工具校验、子进程），它唯一的要求是世界长得像「文件系统 + shell」。<strong>那就把 episode 渲染成一个文件系统 + 一个 CLI。</strong>做到这一点，整个 coding-agent 生态（任何 SWE-agent 系框架、任何 LM、未来的任何改进）对导航<strong>零改造可用</strong>——这是比任何单点技巧都值钱的接口主张。</p>
+
+  <h3 id="62-arch"><span class="num">6.2</span> 架构：三进程，两处新代码</h3>
+  <pre><code>┌─ 进程 A（conda: ac-vlnce, Py3.8）── 与 beta 完全同一套 ──────┐
+│  auto_host :9200 → env_habitat nodeset → Habitat-Sim         │
+└───────────────▲──────────── HTTP /call/{fn} ─────────────────┘
+                │
+┌─ 进程 B（conda: agentcanvas）────────────────────────────────┐
+│  can/run_episodes.py —— driver（继承 beta/run_episodes.py    │
+│  骨架：rand100 选集、评测、JSONL 记录、monitor 产物）。每集：  │
+│    1. /env-panel/* 放置 episode                              │
+│    2. 生成干净 NavWorkspace/（§6.3）                         │
+│    3. 起一个 mini-swe-agent 会话（cwd=workspace, bash-only， │
+│       LiteLLM → 本地 vLLM）＋图像注入补丁（§6.4）             │
+│    4. 会后 env_habitat__evaluate 打分 → summary.json         │
+└───────────────▲──────────────────────────────────────────────┘
+                │ OpenAI-compatible /v1
+┌─ 进程 C ──────┴──────────────────────────────────────────────┐
+│  vLLM :8001 —— Qwen3.5-{2B,4B,9B} / 35B-A3B（单卡 5090）      │
+└──────────────────────────────────────────────────────────────┘</code></pre>
+  <p>两处新代码：<strong>(a)</strong> <code>can/workspace_bridge.py</code>——生成工作区、实现 <code>nav</code> CLI（转发 auto_host）、观测落盘；<strong>(b)</strong> mini-swe-agent 的最小 fork——图像注入 + 上下文逐出策略（各 ~百行级）。其余全部复用：环境、评测、选集、监控、三张基线图、Claude 参照行。</p>
+
+  <h3 id="63-workspace"><span class="num">6.3</span> NavWorkspace：episode 即 repo</h3>
+  <pre><code>workspace_ep0421/
+├─ INSTRUCTION.txt      # 指令原文（只读）
+├─ README.md            # 给 agent 的世界说明：你在一栋房子里，nav 是你唯一的身体
+├─ nav                  # 可执行 CLI —— 唯一的世界接口（转发 auto_host）
+├─ obs/                 # 每次观察自动落盘（只读，append-only）
+│   └─ step_0042/
+│       ├─ rgb.png          # 第一人称 RGB
+│       └─ state.json       # clearance_m（左/中/右净空）、步数、剩余预算
+├─ notes.md / map.md / plan.md   # agent 自由读写 —— 记忆 = 文件
+├─ scripts/             # agent 自写的宏与工具（code-as-action，L2+ 档开放）
+└─ checks.md            # agent 自写的预测与核对（验证工程，§6.7）</code></pre>
+  <table>
+    <thead><tr><th><code>nav</code> 动词</th><th>语义</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td><code>nav observe</code></td><td>拍一帧 → 写 <code>obs/step_N/</code>，stdout 打印 state 摘要 + 图片路径</td><td>只读，不推进模拟；对应 beta 的 <code>observe</code></td></tr>
+      <tr><td><code>nav step 1 1 2 ...</code></td><td>批量离散动作（0=STOP, 1=前进0.25m, 2=左转15°, 3=右转15°），单次 ≤50</td><td>对应 beta 的 <code>step</code>；返回执行数/剩余预算/episode_over</td></tr>
+      <tr><td><code>nav look</code></td><td>前/右/后/左四视图落盘，恢复朝向（耗 24 步转向预算）</td><td>对应 beta 的 <code>look_around</code></td></tr>
+      <tr><td><code>nav stop</code></td><td>发起 STOP —— 在 A3+ 配置下要过验证门（§6.7）</td><td>成功判定要求 3m 内主动 STOP，driver 永不强停（beta 纪律不变）</td></tr>
+      <tr><td><code>nav status</code></td><td>步数、预算、动作史尾部</td><td>纯读</td></tr>
+      <tr><td><code>nav recall --step N</code></td><td>按索引取回历史观测（<strong>只在 H2 对照臂开启</strong>）</td><td>复刻 AgenticNav 的位置寻址接口，与 grep 内容寻址对打</td></tr>
+    </tbody>
+  </table>
+  <p>关键性质：<strong>观测历史天然全量持久、天然内容可检索</strong>（agent 对自己写的 notes.md 用 grep，就是内容寻址记忆），<strong>上下文逐出天然无损</strong>（把旧观测从上下文里换成一行路径指针，需要时 agent 自己 <code>cat</code> 回来）——NavHarness exp01 最担心的「有损压缩把关键细节压没」在这个基座上是个结构性非问题。</p>
+
+  <h3 id="64-ani"><span class="num">6.4</span> ANI：agent-navigation interface（SWE-agent ACI 论题的迁移）</h3>
+  <p>SWE-agent 的核心发现是「接口要为模型设计」（换工具格式，SWE-bench 6.7%→68.3%，出自 harness 综述精读笔记）。导航侧对应三个设计轴，全部进消融：</p>
+  <table>
+    <thead><tr><th>轴</th><th>选项</th><th>默认（v1 赌注）</th></tr></thead>
+    <tbody>
+      <tr><td><strong>感知渲染</strong></td><td>(a) 图像直入上下文（Qwen3.5 原生多模态）；(b) 文本化——<code>nav describe</code> 用同一模型的 captioning 子调用把帧压成文字（模型当自己的眼睛，harness 决定何时看）；(c) 混合：当前帧图像 + 历史帧文字</td><td>(a) 图像直入 + 历史帧降级为路径指针——Qwen3.5 选型就是为了这个；(b)(c) 做 A5 消融臂</td></tr>
+      <tr><td><strong>动作批量</strong></td><td>单步 vs 批量（≤50）；批量省 calls 但盲走风险↑</td><td>批量默认、系统提示约束「转弯后必须重新观察」</td></tr>
+      <tr><td><strong>上下文预算</strong></td><td>每步进上下文的 token 上限；旧观测 TTL（保留最近 K=2 帧图像，更早的换路径指针）；notes.md 摘要注入</td><td>预算 6k tok/轮（9B 的 262K 上下文富余，但成本/延迟仍要报告——继承 exp01 纪律）</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="65-memory"><span class="num">6.5</span> 记忆 = 文件系统：把 AgenticNav 批判变成实验</h3>
+  <p>NavHarness 7/08 文档对 AgenticNav memory 的批判（§9.8）值得原样引用：模型推理在<strong>语义空间</strong>（「我要再看看刚才那个路牌」），而它的 <code>recall(p,k)</code> 接口要求输出<strong>离散索引</strong>（步号/视图号）——中间缺「内容→索引」的映射，是接口层 type mismatch；消融里 recall 只值 4 分可能正因如此。CAN 的文件系统记忆给出结构性修复：</p>
+  <ul>
+    <li>agent <strong>写笔记时自己完成了语义标注</strong>（"step 42: 厨房入口，左侧有红色冰箱" 写进 notes.md）；</li>
+    <li>检索时 <code>grep -i "厨房" notes.md</code> ——<strong>内容寻址，零新机制</strong>，就是 coding agent 的日常动作；</li>
+    <li>H2 对照臂：同一系统只把 grep 换成 <code>nav recall --step N</code> 位置寻址 → 差值就是「寻址方式」的因果贡献。这是「我们的坐标系能产生别人产不出的实验」的现场兑现（组会调整②里许过的愿）。</li>
+  </ul>
+
+  <h3 id="66-codeaction"><span class="num">6.6</span> Code-as-action：coding agent 的定义性能力</h3>
+  <p>L2+ 档位允许 agent 往 <code>scripts/</code> 写并执行代码（沙箱内、只许 import 白名单 + 调 <code>nav</code>）。预期用法：<code>scan.sh</code>（look + 批量重命名视图）、<code>corridor.py</code>（循环「前进→读 clearance→低于阈值停」）、<code>turn_to.py</code>（角度→动作序列换算）。CodeAct 在工具基准上的结论（占优 + 轮次 −20%）预测 H3：<strong>calls/ep 显著下降</strong>——对小模型这直接等于「把控制流从脆弱的逐 token 决策卸载到确定性程序」。这是「coding agent as navigator」里 <em>coding</em> 两个字的实义所在：beta 版被剥掉的能力（<code>tools=[]</code>），CAN 把它还回来并单独计价。</p>
+
+  <h3 id="67-verify"><span class="num">6.7</span> 验证工程：给反馈稀疏域造反馈</h3>
+  <table>
+    <thead><tr><th>层</th><th>机制</th><th>性质</th></tr></thead>
+    <tbody>
+      <tr><td>V0 确定性 guards</td><td>碰撞连击告警（clearance+动作史，driver 侧注入 stdout）；打转检测（位姿窗口内位移≈0 → 提醒）</td><td>model-free、零成本，全档默认开</td></tr>
+      <tr><td>V1 STOP 门</td><td><code>nav stop</code> 第一次被扣下：强制 <code>nav look</code> + 打印指令终点子句 + 要求 agent 对照四视图逐条核对后再次确认</td><td>beta 已有雏形（STOP 确认门）；升级为结构化 checklist；<strong>H4 的检验点</strong></td></tr>
+      <tr><td>V2 自写 checks</td><td>系统提示要求 agent 在 <code>checks.md</code> 写「可证伪预测」（"直行 3 步后应看到走廊；若见床=转错"），下次观察后自评</td><td>结构化 self-consistency——把「写测试」的肌肉记忆移植到没有测试的世界</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note"><p><strong>立场声明（相对 NavHarness 的转变）</strong>：NavHarness 7/08 主张代理信号尽量 open-loop（只记录不干预），因为它想测「裸模型」。CAN 的研究对象<strong>就是 scaffold 本身</strong>——所以验证信号光明正大地闭环，但每一层单独消融、单独披露。两个立场服务于不同的问题，论文里一句话说清即可。</p></div>
+
+  <h3 id="68-autonomy"><span class="num">6.8</span> 自主度旋钮 × 模型阶梯</h3>
+  <table>
+    <thead><tr><th>档</th><th>循环形态</th><th>给谁</th></tr></thead>
+    <tbody>
+      <tr><td><strong>L1 分相 workflow</strong></td><td>driver 按固定相位轮询（OBSERVE→UPDATE-NOTES→DECIDE→ACT），每相模板化 prompt、限定合法动作，必要时 vLLM structured output 约束解码</td><td>2B/4B 保底档——NavHarness「小模型往 workflow 挪」的实现</td></tr>
+      <tr><td><strong>L2 引导 ReAct</strong></td><td>自由 bash 循环 + 纪律性系统提示（先看后动 / 每 K 步必写 notes / 预算提醒）+ V0-V2</td><td>9B 主力档（v1 默认）</td></tr>
+      <tr><td><strong>L3 自由 bash</strong></td><td>mini-swe-agent 原样，只给 README.md，其余全靠 agent 自己发现</td><td>上限档：35B-A3B / Claude 参照——也是「vanilla 迁移」的哲学纯度档</td></tr>
+    </tbody>
+  </table>
+  <p>H5 的交互预测：每个模型档在<strong>不同的 L 档见峰</strong>。主图（论文 Figure 1 候选）：x=自主度 L1→L3，y=SR，线=模型大小，Claude 参照线封顶——一张图讲完「自主度必须随规模缩放、harness 结构在哪个规模救得了谁」。</p>
+  <p><strong>基座选型</strong>：mini-swe-agent 而非 full SWE-agent——① ~100 行核心，改造与审计成本最低；② <strong>纯 bash、不依赖模型的 function-calling 能力</strong>（小模型的工具调用格式错误是著名死因，bash-only 直接绕开）；③ LiteLLM 后端任意换。full SWE-agent 的 ACI 工具箱（文件编辑器等）作为 L2 档的参考设计来源。</p>
+
+  <h2 id="7-experiments"><span class="num">7.</span> 实验设计</h2>
+
+  <h3 id="71-main"><span class="num">7.1</span> 主表：一个协议，四个臂</h3>
+  <p>基准：<strong>R2R-CE val_unseen，rand100</strong>（OpenNav/SmartWay 同款、AgenticNav 同规模协议；beta README 已钉死）。若后期吞吐允许，追加 full val_unseen（1839 集）单行做终版 headline。</p>
+  <table>
+    <thead><tr><th>臂</th><th>行</th><th>数字来源</th></tr></thead>
+    <tbody>
+      <tr><td>① 监督专才（坐标系）</td><td>ETPNav、BEVBert、NaVid…</td><td>引用（⚠ 成文前逐一复核原文数字）</td></tr>
+      <tr><td>② bespoke 工具 harness</td><td>AgenticNav：GPT-5.5 55 / Qwen3.6-27B 35；SmartWay-GPT 44</td><td>引用其论文（数字现取自 NavHarness 精读笔记，⚠ 复核）；可选：小预算复现一行</td></tr>
+      <tr><td>③ prompt-era 图（同 backbone）</td><td><code>smartway_ce</code> / <code>threestepnav_ce</code> / <code>aoplanner_ce</code> × Qwen3.5-9B</td><td><strong>我们复跑</strong>——AgentCanvas profile 换模型即可，这一臂只有我们能做</td></tr>
+      <tr><td>④ CAN（ours）</td><td>Qwen3.5-{4B, 9B} × 最优档；阶梯扩展 2B / 35B-A3B</td><td>我们</td></tr>
+      <tr><td>参照行</td><td>beta-coding-agent（Claude, L3 类比档）</td><td>组内现成/同协议重跑</td></tr>
+    </tbody>
+  </table>
+  <p><strong>读表顺序 = 讲故事顺序</strong>（继承 NavHarness 主表叙事学）：③→④ 同 backbone 差值 = H1（headline）；④ 内部阶梯 = H5/H6；④ vs ② 的 27B 行 = H7（9B 打 27B）；④ vs 参照行 = elicitation 天花板的诚实测量。<strong>不 claim 打赢 ①。</strong></p>
+
+  <h3 id="72-ablation"><span class="num">7.2</span> 消融矩阵：coding agent 的器官解剖</h3>
+  <table>
+    <thead><tr><th>#</th><th>轴</th><th>臂</th><th>检验</th></tr></thead>
+    <tbody>
+      <tr><td>A1</td><td>记忆</td><td>无工作区（纯上下文）/ 文件只写不检索 / 文件+grep / <code>recall</code> 位置寻址</td><td>H2 / RQ4</td></tr>
+      <tr><td>A2</td><td>code-as-action</td><td>固定 CLI only / +scripts</td><td>H3</td></tr>
+      <tr><td>A3</td><td>验证</td><td>无 / V0 / V0+V1 / V0+V1+V2</td><td>H4</td></tr>
+      <tr><td>A4</td><td>自主度</td><td>L1 / L2 / L3 × 模型阶梯</td><td>H5（交互图）</td></tr>
+      <tr><td>A5</td><td>感知渲染</td><td>图像直入 / 文本化 describe / 混合</td><td>ANI 敏感度（小模型预期最敏感）</td></tr>
+      <tr><td>A6</td><td>skills（固定手写导航策略 prompt，beta 的 3 个 SKILL.md 移植）</td><td>无 / 有</td><td>⚠ 仅此为止——agent 自写/自进化 skills 不做（组内边界，§10-4）</td></tr>
+    </tbody>
+  </table>
+  <p>规模纪律：消融跑 rand100 或固定 50 集子集（吞吐决定）；每格 1 seed 起步、headline 格 3 seeds 报方差。</p>
+
+  <h3 id="73-metrics"><span class="num">7.3</span> 指标与协议纪律</h3>
+  <ul>
+    <li><strong>导航指标</strong>：SR / SPL / OSR / nDTW / NE（<code>env_habitat__evaluate</code>，与图方法完全同尺——beta 的既有承诺）。</li>
+    <li><strong>harness 指标</strong>（差异化报告轴，继承 NavHarness）：LLM calls/ep、tokens/ep、wall-clock/ep、$/ep（本地=电费≈0，Claude/GPT 行如实计）、cost-per-success。</li>
+    <li><strong>协议纪律（防自欺三条）</strong>：① 迭代调参只用独立的 <strong>dev-30</strong> 子集（val_unseen 内、与 rand100 不相交、episode id 入库）；② rand100 冻结只读，任何配置只报一次；③ 所有 run 的 workspace/、trajectory JSONL、config 完整归档（monitor 现成管道）——trace 即证据。</li>
+  </ul>
+
+  <h3 id="74-failure"><span class="num">7.4</span> 失败归因（NavHarness 协议原样移植）</h3>
+  <p>六类 taxonomy：<code>false_stop / stuck_loop / subgoal_drift / cross_step_forget / recognition_fail / model_other</code>；100 个失败集双标注、自动 tagger 对人工 <strong>κ≥0.6</strong> 才可上规模。CAN 额外多一层免费证据：<strong>agent 的 notes.md 和 checks.md 本身就是失败时的第一人称口供</strong>——归因不用全靠回放猜（这是文件系统记忆送的分析红利）。beta monitor §5 的 Claude 失败类型学做跨模型对照：小模型的失败分布 vs Claude 的失败分布，差异本身是 RQ3 的证据。</p>
+
+  <h2 id="8-plan"><span class="num">8.</span> Plan：10.5 周到 ICLR</h2>
+  <p>ICLR 2027 官网未官宣；按 <a href="https://iclr.cc/Conferences/2026/CallForPapers">2026 模式</a>（摘要 9/19、全文 9/24 AoE）规划，官宣后校准。今天 7/11。</p>
+  <table>
+    <thead><tr><th>窗口</th><th>交付</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td><strong>W0 · 7/11–7/15</strong></td><td>本文档定稿（§10 决策点裁决）；vLLM+Qwen3.5-9B 起服务；mini-swe-agent fork + workspace_bridge v0 + 图像注入补丁；<strong>1 集端到端 smoke（L2）</strong></td><td><strong>G0</strong>：一个 episode 完整走完（无 harness 崩溃、评测出分）</td></tr>
+      <tr><td><strong>W1–2 · 7/16–7/29</strong></td><td>ANI 迭代（只在 dev-30 上）；L1/L2/L3 三档实现；三张基线图 × Qwen3.5-9B 冒烟；Claude 参照行确认（已有则免跑）</td><td><strong>G1（7/29）</strong>：dev-30 上最优档 9B ≥ ~20 SR → 绿灯；10–20 → 继续调 ANI 一周；&lt;10 → 触发 §8.1 风险预案</td></tr>
+      <tr><td><strong>W3–4 · 7/30–8/12</strong></td><td>冻结 v1 配置；主表全臂跑 rand100（CAN 4B/9B + 三基线 + 参照行）</td><td><strong>G2（8/12）</strong>：headline 分叉——H1 成立走「配方迁移成功」主叙事；不成立走「解剖+边界」主叙事（§8.1）</td></tr>
+      <tr><td><strong>W5–6 · 8/13–8/26</strong></td><td>消融矩阵 A1–A6；阶梯扩展（2B、35B-A3B）；失败标注（κ 协议）</td><td>—</td></tr>
+      <tr><td><strong>W7–8 · 8/27–9/9</strong></td><td>分析与图（自主度×规模主图、elicitation 曲线、消融森林图、失败分布对照）；全文初稿</td><td>初稿给老板/师兄内审</td></tr>
+      <tr><td><strong>W9–10.5 · 9/10–9/24+</strong></td><td>修改、复核所有引用数字（②臂 ⚠ 项）、摘要注册、提交</td><td>兜底：CVPR 2027（11 月）/ CoRL 2027</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="81-risks"><span class="num">8.1</span> 风险登记表</h3>
+  <table>
+    <thead><tr><th>风险</th><th>严重度</th><th>缓解 / 预案</th></tr></thead>
+    <tbody>
+      <tr><td><strong>9B 撑不住循环、SR 地板化</strong>（AgenticNav 里 27B 才 35 分，更自由的循环可能更糟）</td><td>高（头号）</td><td>三重缓解：自主度降档（L1 是为此设计的）、批量动作+确定性 guards 卸载控制流、A5 文本化感知降低视觉负担。<strong>预案</strong>：若最优配置 9B 仍 &lt;15 SR，论文主叙事切换为「迁移解剖 + 失败边界」——反馈不对称在具身域的首次系统定量（H4/H2/H5 仍然成立可报），headline 图换成自主度×规模 frontier。弱一档但仍可投。</td></tr>
+      <tr><td>图像进 mini-swe-agent 的管道不顺（它原生纯文本）</td><td>中</td><td>W0 第一件事就做（fork 补丁：工具输出含 <code>obs/*.png</code> 路径 → 下一条 user 消息附 base64）；备选：full SWE-agent 的多模态路径；再备选：A5 文本化臂当主臂</td></tr>
+      <tr><td>吞吐不够（串行 episode，~3–6 min/集）</td><td>中</td><td>估算：rand100 ≈ 5–10 h/配置，主表+消融 ~25–30 个配置 ≈ 200–300 机时 → 单机 6 周夜跑可容纳；不够则消融降到 50 集子集 + 多 auto_host 端口并行 2–3 路</td></tr>
+      <tr><td>被人抢发（"SWE-agent 进具身"是显眼坑位）</td><td>中</td><td>每两周 arXiv 扫描；我们的护城河是同 backbone 三臂对照 + 器官消融 + 小模型阶梯（抢发者大概率只有单点 demo）；W3 出首批数字后可挂 arXiv 占坑（与老板商定）</td></tr>
+      <tr><td>与师兄工作边界</td><td>中</td><td>§10-4 的分工提案，W0 内当面碰一次；A6 上限已自我设限</td></tr>
+      <tr><td>ICLR 日期未官宣</td><td>低</td><td>按 9/24 规划，官宣后只会松不会紧（历史区间 9/19–10/1）</td></tr>
+      <tr><td>引用数字失真（②臂全部来自精读笔记）</td><td>低</td><td>成文前逐条对照原 PDF（NavHarness 红线纪律 #4 原样继承）</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="82-compute"><span class="num">8.2</span> 算力与成本</h3>
+  <ul>
+    <li><strong>硬件</strong>：单卡 5090（32GB）——vLLM 9B bf16 ≈ 20GB 富余；35B-A3B 走 4bit 量化；Habitat（进程 A）CPU+轻 GPU，与 vLLM 同机可行，紧张则 Habitat 走 CPU 渲染。</li>
+    <li><strong>API 支出</strong>：$0 主线；可选项——Claude 参照行重跑（订阅额度）、AgenticNav-GPT 复现行（~$100–300，仅在评审需要时）。</li>
+    <li><strong>对比</strong>：NavHarness 计划书估的是 350 GPU·h + $1500 API；CAN 的等效预算 ≈ 250 机时 + $0——这就是「开源小模型做 harness 科学」的成本论据本身，写进论文。</li>
+  </ul>
+
+  <h2 id="9-paper"><span class="num">9.</span> 论文骨架速写</h2>
+  <p><strong>标题候选</strong>：</p>
+  <ul class="numbered-list">
+    <li><em>Can Coding Agents Navigate? Anatomy of Harness Transfer from Software to Embodied Worlds</em>（问题式，与 ERP 论文对话，<strong>推荐</strong>）</li>
+    <li><em>The House Is a Repo: Off-the-Shelf Coding Agents as Zero-Shot Navigators</em>（机制式，最锋利也最险）</li>
+    <li><em>CAN: What Transfers When a Coding Agent Becomes a Navigator — an Open-Model Study</em>（稳）</li>
+  </ul>
+  <p><strong>四拍故事</strong>：① coding agent 已被闭源系统证明能导航，但轶事不是科学；② 我们不造第 N 个 bespoke harness，而把 episode 装进 coding agent 的原生世界（NavWorkspace），标准开源框架零改造开工；③ 开源小模型阶梯上逐器官消融：文件记忆（内容寻址实验）、code-as-action、验证门、自主度旋钮——每个器官一个因果数字；④ 结论：哪些配方迁移、哪些必须重造、自主度如何随规模缩放——附全栈 $0 复现包。</p>
+  <p><strong>审稿攻防精选</strong>（完整版继承 NavHarness §6.2 的攻防表文化，写作期再扩）：</p>
+  <table>
+    <thead><tr><th>攻击</th><th>回应</th></tr></thead>
+    <tbody>
+      <tr><td>「又一个 nav harness」</td><td>正相反——我们是<strong>反-bespoke</strong>主张：标准件零改造 + 接口层最小新代码；贡献是迁移科学不是新 harness</td></tr>
+      <tr><td>「小模型分数低，结论没意义」</td><td>低分不是缺陷是显微镜：效应量、交互、失败分布全在小模型区间最清晰；且有 27B/Claude 锚点封顶；H6 曲线把「意义」定量化</td></tr>
+      <tr><td>「scaffold 注入，测的不是模型」</td><td>研究对象声明：我们测的就是 scaffold（每层单独消融+披露）；「裸模型」问题由③臂图基线和 L3 档覆盖</td></tr>
+      <tr><td>「只有 100 集」</td><td>三篇已发表工作同协议（OpenNav/SmartWay/AgenticNav）；终版附 full val_unseen 行；全部 trace 公开</td></tr>
+      <tr><td>「与组内 Claude 工作何异」</td><td>互补分工：那是存在性+天花板（参照行进我们主表）；本文是开源化+器官归因+规模科学；互引</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="10-decisions"><span class="num">10.</span> 待讨论决策点（每项带推荐）</h2>
+  <table>
+    <thead><tr><th>#</th><th>决策</th><th>选项</th><th>推荐</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>项目/系统命名</td><td>CAN / SWE-Nav / NavWorkspace / 延用 NavHarness</td><td><strong>CAN</strong> 当项目代号（论文标题可另定）；NavHarness 名字冻结随旧仓库</td></tr>
+      <tr><td>2</td><td>harness 基座</td><td>mini-swe-agent fork / full SWE-agent / 自写极简循环</td><td><strong>mini fork</strong>（bash-only 对小模型是决定性优势；100 行可审计；「标准件」叙事成立）。<strong>07-11 更新：建议改判 full-first</strong>——精读 full 源码发现 8B 刚需三件（多模态管线 / last_n_observations / 格式纠错 requery）full 全有、mini 全无，给 mini 补齐 ≈ 300–500 行自研 harness；证据与论证见 <a href="zh-2-swe-agent-anatomy.html">zh-2 · SWE-agent 剖析</a> §7</td></tr>
+      <tr><td>3</td><td>模型阶梯上端</td><td>9B 封顶 / +35B-A3B / +Qwen3.6-35B-A3B</td><td><strong>加 35B-A3B</strong>——没有 ~30B 档就接不上 AgenticNav 的 27B=35 锚点，H7 讲不了</td></tr>
+      <tr><td>4</td><td>与师兄的边界（关键，W0 内碰头）</td><td>A6 只做固定手写 skills？agent 自写 skills 完全不碰？联名方式？</td><td>提案：CAN 不做任何 skill 自进化/自写积累（那是他的贡献形容词）；他的 Claude 行进我们主表当参照、我们的归因给他的蒸馏当仪表；Related Work 互引，作者位当面谈</td></tr>
+      <tr><td>5</td><td>NavHarness 仓库处置</td><td>冻结存档 / 继续双线 / 迁移有用代码</td><td><strong>冻结</strong>+一篇 log 记录 pivot 理由；exp01/02 沙盒不迁移（CAN 用不上）；docs 精读笔记按需引用</td></tr>
+      <tr><td>6</td><td>感知主赌注</td><td>图像直入 vs 文本化 describe</td><td><strong>图像直入</strong>（Qwen3.5 原生多模态是选型理由），文本化做消融臂——若 W1 撞墙则对调</td></tr>
+      <tr><td>7</td><td>arXiv 占坑时机</td><td>W3 首批数字后 / 投稿同时 / 不占</td><td>G2 过了就挂（撞车风险实在），与老板确认</td></tr>
+      <tr><td>8</td><td>本目录公开策略</td><td>永久私有 / 投稿后转公开系列</td><td>投稿前私有（已 gitignore）；录用后把方法部分改写成公开 doc-site 页</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="11-refs"><span class="num">11.</span> 参考</h2>
+  <ul>
+    <li>内部：<a href="zh-2-swe-agent-anatomy.html">zh-2 · SWE-agent 剖析（本计划的工程续篇）</a> · <a href="../beta/zh-2-beta-agent.html">beta zh-2 跑 Beta Coding Agent</a> · <a href="../beta/zh-4-agent-vs-coding-agent.html">beta zh-4 普通 Agent vs Coding Agent</a> · <a href="../beta/coding-agent-monitor.html">Coding-Agent Monitor</a> · <code>beta-coding-agent/README.md</code>（rand100 协议）· <code>workspace/graphs/vln/verified/</code>（三张基线图）</li>
+    <li>NavHarness 遗产（<code>../NavHarness/docs</code>）：<code>paper/2026-07-05-iclr-story-skeleton.md</code>（v2.2，预注册/攻防/主表叙事学）· <code>meetings/2026-07-09-group-meeting.md</code>（AgenticNav 撞车裁决 + 组内分工）· <code>idea/agent_vln_harness_讨论总结.md</code>（VLN 三扭曲 + AgenticNav memory 批判）· <code>plan/2026-07-07-plan-vlnce-habitat-r2rce-rxrce.md</code>（被本计划作废的 Habitat worker 方案）</li>
+    <li><a href="https://arxiv.org/abs/2606.10577">AgenticNav</a> (26.06) · <a href="https://arxiv.org/abs/2606.18112">qwen-robotnav</a> (26.06) · <a href="https://arxiv.org/abs/2606.08992">SpaceVLN</a> (26.06) · <a href="https://arxiv.org/abs/2604.13107">Can Coding Agents be General Agents?</a> (26.04) · <a href="https://arxiv.org/abs/2510.21902">SE Agents for Embodied Controller Generation</a> (25.10) · <a href="https://arxiv.org/abs/2402.01030">CodeAct</a> (24.02)</li>
+    <li><a href="https://github.com/SWE-agent/mini-swe-agent">mini-swe-agent</a>（100 行 bash-only，&gt;74% SWE-bench Verified）· <a href="https://swe-agent.com/latest/config/environments/">SWE-agent environments 文档</a></li>
+    <li><a href="https://artificialanalysis.ai/articles/qwen3-5-small-models">Qwen3.5 small models 分析</a> · <a href="https://trilogyai.substack.com/p/deep-dive-qwen-35-brings-native-multimodality">Qwen3.5 原生多模态 deep dive</a> · <a href="https://qwen.ai/blog?id=qwen3.5-35b-a3b">Qwen3.6-35B-A3B 官方博客</a> · <a href="https://venturebeat.com/technology/alibabas-small-open-source-qwen3-5-9b-beats-openais-gpt-oss-120b-and-can-run">VentureBeat：Qwen3.5-9B</a></li>
+    <li><a href="https://iclr.cc/Conferences/2026/CallForPapers">ICLR 2026 CfP</a>（2027 日期未官宣，按此模式规划）</li>
+  </ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-tldr">1. TL;DR：一句话与一张图</a>
+      <a class="toc-h2" href="#2-motivation">2. Motivation：四层动机</a>
+      <a class="toc-h3" href="#21-existence">2.1 存在性已证明，科学还不存在</a>
+      <a class="toc-h3" href="#22-theory">2.2 理论张力：coding agent 的护城河在导航正好缺一半</a>
+      <a class="toc-h3" href="#23-small">2.3 为什么是开源小模型：科学性 + 一个可赢的数字</a>
+      <a class="toc-h3" href="#24-whyus">2.4 Why now / why us：资产盘点</a>
+      <a class="toc-h2" href="#3-rq">3. 研究问题与预注册假设</a>
+      <a class="toc-h2" href="#4-navharness">4. 与 NavHarness 旧想法的关系：继承、丢弃、变形</a>
+      <a class="toc-h2" href="#5-related">5. 相关工作与定位（每行一句差异）</a>
+      <a class="toc-h2" href="#6-method">6. Method：CAN 系统设计</a>
+      <a class="toc-h3" href="#61-principle">6.1 设计原则：把环境搬给 agent，而不是把 agent 搬给环境</a>
+      <a class="toc-h3" href="#62-arch">6.2 架构：三进程，两处新代码</a>
+      <a class="toc-h3" href="#63-workspace">6.3 NavWorkspace：episode 即 repo</a>
+      <a class="toc-h3" href="#64-ani">6.4 ANI：agent-navigation interface（SWE-agent ACI 论题的迁移）</a>
+      <a class="toc-h3" href="#65-memory">6.5 记忆 = 文件系统：把 AgenticNav 批判变成实验</a>
+      <a class="toc-h3" href="#66-codeaction">6.6 Code-as-action：coding agent 的定义性能力</a>
+      <a class="toc-h3" href="#67-verify">6.7 验证工程：给反馈稀疏域造反馈</a>
+      <a class="toc-h3" href="#68-autonomy">6.8 自主度旋钮 × 模型阶梯</a>
+      <a class="toc-h2" href="#7-experiments">7. 实验设计</a>
+      <a class="toc-h3" href="#71-main">7.1 主表：一个协议，四个臂</a>
+      <a class="toc-h3" href="#72-ablation">7.2 消融矩阵：coding agent 的器官解剖</a>
+      <a class="toc-h3" href="#73-metrics">7.3 指标与协议纪律</a>
+      <a class="toc-h3" href="#74-failure">7.4 失败归因（NavHarness 协议原样移植）</a>
+      <a class="toc-h2" href="#8-plan">8. Plan：10.5 周到 ICLR</a>
+      <a class="toc-h3" href="#81-risks">8.1 风险登记表</a>
+      <a class="toc-h3" href="#82-compute">8.2 算力与成本</a>
+      <a class="toc-h2" href="#9-paper">9. 论文骨架速写</a>
+      <a class="toc-h2" href="#10-decisions">10. 待讨论决策点（每项带推荐）</a>
+      <a class="toc-h2" href="#11-refs">11. 参考</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>新环境从零跑通 Beta Coding Agent（中文） — AgentCanvas</title>
+<meta name="description" content="全新机器 → 第一集出分的完整清单，以及 Claude Opus 驱动 VLN-CE 时到底发生了什么。">
+<meta property="og:title" content="新环境从零跑通 Beta Coding Agent（中文） — AgentCanvas">
+<meta property="og:description" content="全新机器 → 第一集出分的完整清单，以及 Claude Opus 驱动 VLN-CE 时到底发生了什么。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/beta/zh-4-fresh-run.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="中文 · 从零跑通">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/beta/zh-4-fresh-run.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body beta">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    Beta
+    <span class="sep">/</span>
+    <span class="here">中文 · 从零跑通</span>
+  </div>
+</div>
+  <header class="page-header beta">
+    <h1>新环境从零跑通 Beta Coding Agent（中文）</h1>
+    <p class="tagline">全新机器 → 第一集出分的完整清单，以及 Claude Opus 驱动 VLN-CE 时到底发生了什么。</p>
+  </header>
+
+  <p class="lede">本页假设你拿到一台<strong>全新的 Linux 机器</strong>（有 NVIDIA GPU），目标是跑通 <code>beta-coding-agent/</code>：让订阅计划自带的 Claude 模型（如 <code>claude-opus-4-8</code>）通过 MCP 驱动 Habitat 完成 R2R-CE 导航并出分。§2 是照抄可用的准备清单（每一步都在真机上验证过）；§3 拆解跑一集时的完整调用链；§4 把 Claude Code 这个闭源 harness 分成"外部可见"和"只能推测"两半，讲清楚我们知道什么、不知道什么。系列前篇：<a href="zh-1-overview.html">仓库概览</a> · <a href="zh-2-beta-agent.html">Beta Agent 运行手册</a>。</p>
+
+  <h2 id="1-parts"><span class="num">1.</span> 要凑齐的五样东西</h2>
+  <table>
+    <thead><tr><th>组件</th><th>作用</th><th>来源</th></tr></thead>
+    <tbody>
+      <tr><td>conda 环境 <code>agentcanvas</code>（Py 3.10+）</td><td>跑 driver（<code>run_episodes.py</code>）和平台后端</td><td><code>docs-md/INSTALL.md</code></td></tr>
+      <tr><td>conda 环境 <code>ac-vlnce</code>（Py 3.8）</td><td>跑 Habitat-Sim 0.1.7 模拟器（只能活在 3.8）</td><td><code>scripts/install/install_ac_vlnce.sh</code></td></tr>
+      <tr><td><code>claude</code> CLI + 订阅登录</td><td>agent 本体；SDK 底层拉起它的无头会话</td><td>claude.com/claude-code 安装，登录一次</td></tr>
+      <tr><td>Python 包 <code>claude-agent-sdk</code></td><td>driver 与 claude CLI 之间的编程接口</td><td>pip，装进 <code>agentcanvas</code> 环境</td></tr>
+      <tr><td>数据：MP3D 场景 + R2R-CE episodes + rand100</td><td>模拟器渲染的房子、导航任务、论文口径的 100 集子集</td><td>§2 第 4–5 步</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="2-checklist"><span class="num">2.</span> 从零清单（照抄可用）</h2>
+
+  <h3 id="2-1"><span class="num">2.1</span> 平台与模拟器环境</h3>
+  <pre><code># 前置：NVIDIA 驱动、conda（miniconda/miniforge 均可）、Node.js 18+
+git clone https://github.com/jianzhou0420/AgentCanvas &amp;&amp; cd AgentCanvas
+
+# 主环境（后端 + driver）：按 docs-md/INSTALL.md 建 agentcanvas 环境
+# 模拟器环境（Habitat，Py3.8）：
+bash scripts/install/install_ac_vlnce.sh
+# 结束时的 Step 6 verify 应显示 PyTorch / habitat-sim / habitat / vlnce_baselines 全 OK</code></pre>
+
+  <h3 id="2-2"><span class="num">2.2</span> Claude 侧</h3>
+  <pre><code># claude CLI 装好后登录一次（订阅认证，之后无头会话共用这份凭据）
+claude   # 首次进入会走 OAuth 登录
+
+# SDK 装进 agentcanvas 环境
+"$(conda info --base)/envs/agentcanvas/bin/pip" install claude-agent-sdk</code></pre>
+  <div class="callout warn"><p><strong>计费大坑</strong> 无头模式下只要环境里有 <code>ANTHROPIC_API_KEY</code>，计费就会悄悄从订阅切到 API。driver 会自动剥掉它，但习惯上所有启动命令都带 <code>env -u ANTHROPIC_API_KEY</code> 双保险。</p></div>
+
+  <h3 id="2-3"><span class="num">2.3</span> 数据下载与归位</h3>
+  <pre><code>bash scripts/data/fetch_data_vlnce.sh --r2r    # R2R-CE episodes（约 250MB）
+bash scripts/data/fetch_data_vlnce.sh --mp3d   # MP3D 场景（约 21GB）
+# beta agent 不需要 --ddppo / --checkpoints（那是图方法/policy 用的）
+
+# 确认落点是 data/habitat/（老版本脚本有路径 bug 会落到 scripts/data/habitat/，
+# 遇到就整体 mv 过去）：
+ls data/habitat/   # 应有 datasets/ scene_datasets/
+
+# 补软链（install 脚本在数据缺失时会跳过这步）：
+cd third_party/VLN-CE/data
+ln -s ../../../data/habitat/datasets datasets
+ln -s ../../../data/habitat/scene_datasets scene_datasets
+cd -</code></pre>
+
+  <h3 id="2-4"><span class="num">2.4</span> 重建 rand100 分割</h3>
+  <p>论文口径的 100 集子集 <code>rand100</code><strong>不在</strong>标准 VLN-CE 数据包里。它与 Open-Nav（ICRA 2025，<a href="https://github.com/YanyuanQiao/Open-Nav">YanyuanQiao/Open-Nav</a>）/ SmartWay 的官方评测子集完全一致，做法是拿 Open-Nav 发布的 episode 列表过滤本地 v1-3 val_unseen：</p>
+  <pre><code># 1) 下 Open-Nav 官方 100 集文件（Google Drive ID 来自其 README；文件虽名 .gz 实为纯 JSON）
+"$(conda info --base)/envs/ac-vlnce/bin/python" -m gdown \
+    1SfrPWqCIiivwduCYPMe-Za1wOt4eU6G9 -O /tmp/opennav_100.json
+
+# 2) 过滤生成 rand100/{rand100.json.gz, rand100_gt.json.gz}
+"$(conda info --base)/envs/agentcanvas/bin/python" - &lt;&lt;'EOF'
+import gzip, json, os
+ids = {ep['episode_id'] for ep in json.load(open('/tmp/opennav_100.json'))['episodes']}
+base = 'data/habitat/datasets/R2R_VLNCE_v1-3_preprocessed'
+vu = json.load(gzip.open(f'{base}/val_unseen/val_unseen.json.gz'))
+sub = [ep for ep in vu['episodes'] if ep['episode_id'] in ids]
+gt = json.load(gzip.open(f'{base}/val_unseen/val_unseen_gt.json.gz'))
+gtsub = {k: v for k, v in gt.items() if int(k) in ids}
+assert len(sub) == 100 and len(gtsub) == 100
+os.makedirs(f'{base}/rand100', exist_ok=True)
+json.dump({'episodes': sub, 'instruction_vocab': vu['instruction_vocab']},
+          gzip.open(f'{base}/rand100/rand100.json.gz', 'wt'))
+json.dump(gtsub, gzip.open(f'{base}/rand100/rand100_gt.json.gz', 'wt'))
+EOF</code></pre>
+
+  <h3 id="2-5"><span class="num">2.5</span> 起模拟器、跑第一集</h3>
+  <pre><code># 终端 A：Habitat auto_host（长驻；health 秒回，场景在首次 play 时才冷加载）
+REPO=$(git rev-parse --show-toplevel)
+cd "$REPO/agentcanvas/backend"
+PYTHONPATH="$REPO/agentcanvas/backend:$REPO" \
+  "$(conda info --base)/envs/ac-vlnce/bin/python" -m app.server.auto_host \
+  --file "$REPO/workspace/nodesets/env/env_habitat.py" \
+  --class EnvHabitatNodeSet --port 9200
+curl http://127.0.0.1:9200/health   # {"status":"ok",...}
+
+# 终端 B：跑一集（用订阅自带的 Opus）
+cd "$REPO"
+env -u ANTHROPIC_API_KEY "$(conda info --base)/envs/agentcanvas/bin/python" \
+  beta-coding-agent/run_episodes.py \
+  --episodes 0 --split rand100 --model claude-opus-4-8</code></pre>
+  <p>推荐节奏：单集冒烟 → <code>--episodes 0-9</code> 十集校准（估 token/时长/订阅额度消耗）→ rand100 全量。产物在 <code>outputs/beta-coding-agent/{run}/</code>（轨迹 JSONL、旁观帧、<code>summary.json</code> 聚合分），前端 <code>:5173</code> 的 <strong>Coding Agent</strong> tab 可实时/事后浏览。</p>
+
+  <h2 id="3-flow"><span class="num">3.</span> 用 Opus 跑一集：完整调用链</h2>
+  <pre><code>run_episodes.py（driver，agentcanvas 环境）
+ │ ① POST /env-panel/field/{dataset,split,episode_index}     ┐
+ │ ② POST /env-panel/action/play（首次触发 MP3D 场景冷加载）  │ auto_host :9200
+ │ ③ POST /call/env_habitat__reset → 拿到本集自然语言指令     │ （ac-vlnce 环境）
+ │                                                           ┘
+ │ ④ 组 system prompt（导航简报 + 指令 + 步数预算 [+ skill]）
+ │ ⑤ ClaudeSDKClient 起会话
+ │     └─ SDK 拉起无头 claude CLI（--model claude-opus-4-8）
+ │         └─ CLI 拉起 mcp_bridge.py 子进程（stdio MCP）
+ │              ├─ mcp__env__observe      → GET 第一人称 RGB（+净空读数）
+ │              ├─ mcp__env__step([...])  → 执行 0/1/2/3 动作串
+ │              └─ mcp__env__look_around  → 四向环视（非 bare 模式）
+ │     Opus 循环：observe → 思考（adaptive thinking）→ step → …… → step([0]) STOP
+ │ ⑥ 会话结束（STOP / 回合耗尽 / 超时）
+ │ ⑦ POST /call/env_habitat__evaluate → SR / SPL / nDTW / dist-to-goal
+ └ ⑧ 写 episode_{i}.jsonl + raw dump + summary.json，进入下一集</code></pre>
+  <p>要点：<strong>每集一个全新会话</strong>（无跨集记忆），episode 选择与打分全在 driver 侧，Opus 只见得到指令文本和 RGB 图，见不到位姿/地图/分数；<code>0=STOP，1=前进0.25m，2=左转15°，3=右转15°</code>，成功要求在目标 3 m 内自己发 STOP。<code>claude-opus-4-8</code> 属 4.6+ 系，driver 自动给它配 adaptive thinking（返回的思考内容是<strong>摘要</strong>，不是原始链）。订阅额度按会话消耗——rand100 全量跑之前先用十集校准估计消耗。</p>
+
+  <h2 id="4-harness"><span class="num">4.</span> Claude Code harness：可见的与闭源的</h2>
+  <p>agent 本体是 Claude Code 的无头模式，harness 闭源。但"闭源"不等于黑箱——下面按证据强度分两层。</p>
+
+  <h3 id="4-1"><span class="num">4.1</span> 外部可直接观察的组件</h3>
+  <table>
+    <thead><tr><th>组件</th><th>怎么看到</th></tr></thead>
+    <tbody>
+      <tr><td><code>claude-agent-sdk</code>（Python，开源）</td><td>pip 装的包，源码可读：<code>ClaudeSDKClient</code> / <code>ClaudeAgentOptions</code>、消息类型（<code>AssistantMessage</code>、<code>ToolUseBlock</code>、<code>ThinkingBlock</code>、<code>ResultMessage</code>…）。它本质是 claude CLI 的进程包装器 + JSON 流解析器。</td></tr>
+      <tr><td>CLI 无头协议</td><td>SDK 以 stream-JSON 与 CLI 通信；<code>raw/episode_{i}.jsonl</code>（driver 默认开）记录了每一条：会话 init（session_id、工具清单、模型、权限模式）、每轮 assistant 消息、<strong>逐轮 token 用量</strong>（input/output/cache_read/cache_creation）、末尾 ResultMessage（总用量、总时长、回合数）。</td></tr>
+      <tr><td>MCP（开放标准）</td><td>stdio 上的 JSON-RPC：<code>tools/list</code>、<code>tools/call</code>；工具名按 <code>mcp__{server}__{tool}</code> 规则拼出。bridge 是本仓库代码，两边报文都能 log。</td></tr>
+      <tr><td>我们传入的全部旋钮</td><td><code>ClaudeAgentOptions</code> 里明码写着：<code>model</code>、<code>system_prompt</code>（本实验<strong>整体替换</strong>了 Claude Code 默认 preset；opus-lab 的 <code>--builtin-system-prompt</code> 可切回 preset+首条消息模式）、<code>tools=[]</code>（禁用全部内置工具）、<code>allowed_tools</code>（白名单三个 MCP 工具）、<code>permission_mode="bypassPermissions"</code>、<code>strict_mcp_config</code>、<code>max_turns</code>、thinking 配置、beta 头。</td></tr>
+      <tr><td>认证与计费面</td><td>订阅 OAuth 凭据在 <code>~/.claude/</code>；有 <code>ANTHROPIC_API_KEY</code> 时切 API 计费（可观察到的行为差异）。</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="4-2"><span class="num">4.2</span> 闭源部分可能包括什么（标注：合理推测）</h3>
+  <table>
+    <thead><tr><th>推测的内部机制</th><th>依据</th></tr></thead>
+    <tbody>
+      <tr><td>CLI 自带的 system prompt preset（工具使用纪律、agent 循环规范、输出风格）——被本实验替换掉的那份</td><td>官方文档承认 preset 存在且可替换/追加；具体文本不公开</td></tr>
+      <tr><td>长会话的上下文管理：自动压缩/摘要（compaction）、工具结果截断策略</td><td>长会话不会无限膨胀、CLI 有 /compact 概念；阈值与摘要算法不可见</td></tr>
+      <tr><td>Prompt caching 的断点安排（system prompt / 工具 schema 处打 cache 点）</td><td>raw 日志里每轮可见大量 <code>cache_read_input_tokens</code>，但断点策略是 CLI 内部行为</td></tr>
+      <tr><td>思考摘要化：原始 thinking 在服务端/CLI 被压成摘要再吐给 SDK</td><td>4.6+/5 系只返回 summarized thinking，这是可观察的输出约束，实现不可见</td></tr>
+      <tr><td>重试/限流/断线恢复、采样参数（temperature 等未暴露）、图片预处理（分辨率压缩）</td><td>SDK 不暴露这些旋钮；行为上偶见自动重试的时间特征</td></tr>
+      <tr><td>权限系统内部实现、遥测上报、会话持久化格式</td><td><code>permission_mode</code> 只是开关；~/.claude/ 下有会话文件但格式无文档</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note"><p><strong>对实验的意义</strong> "vanilla coding agent" 的分数里其实叠着这些闭源 scaffolding 的贡献（上下文压缩、工具循环纪律、缓存带来的长会话可行性）。所以对照组才重要：<code>--bare</code> 剥环境侧机制、<code>--builtin-system-prompt</code> 切换提示词来源、<code>--skill</code> 只动策略层——环境和 harness 不变，动一层测一层。</p></div>
+
+  <h2 id="5-trouble"><span class="num">5.</span> 常见故障速查</h2>
+  <table>
+    <thead><tr><th>症状</th><th>原因 / 处理</th></tr></thead>
+    <tbody>
+      <tr><td>UI 点 Run 报 "Server did not become healthy within 1800s"</td><td>数据没就位（habitat 加载不了 episodes/场景）。按 §2.3–2.4 补数据</td></tr>
+      <tr><td>driver 报找不到 rand100</td><td><code>rand100/</code> 没建。按 §2.4 重建，或先用 <code>--split val_unseen</code></td></tr>
+      <tr><td>import claude_agent_sdk 失败</td><td>SDK 装错环境。装进 <code>agentcanvas</code>（driver 用的解释器）</td></tr>
+      <tr><td>跑着跑着扣 API 账单</td><td>环境里有 <code>ANTHROPIC_API_KEY</code>。<code>env -u ANTHROPIC_API_KEY</code> 重跑</td></tr>
+      <tr><td>GL::Context / EGL 报错</td><td>conda 的 GL 库和系统 NVIDIA 驱动打架；install 脚本 Step 3 会删 conda GL 库，重跑安装或手动 <code>conda remove libgl libglvnd libglx libegl --force</code></td></tr>
+      <tr><td>agent 一直不 STOP，分数按 dist-to-goal 结算</td><td>预期行为（driver 永不强停）。这正是 vanilla 基线要测的东西之一</td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-parts">1. 要凑齐的五样东西</a>
+      <a class="toc-h2" href="#2-checklist">2. 从零清单（照抄可用）</a>
+      <a class="toc-h3" href="#2-1">2.1 平台与模拟器环境</a>
+      <a class="toc-h3" href="#2-2">2.2 Claude 侧</a>
+      <a class="toc-h3" href="#2-3">2.3 数据下载与归位</a>
+      <a class="toc-h3" href="#2-4">2.4 重建 rand100 分割</a>
+      <a class="toc-h3" href="#2-5">2.5 起模拟器、跑第一集</a>
+      <a class="toc-h2" href="#3-flow">3. 用 Opus 跑一集：完整调用链</a>
+      <a class="toc-h2" href="#4-harness">4. Claude Code harness：可见的与闭源的</a>
+      <a class="toc-h3" href="#4-1">4.1 外部可直接观察的组件</a>
+      <a class="toc-h3" href="#4-2">4.2 闭源部分可能包括什么（标注：合理推测）</a>
+      <a class="toc-h2" href="#5-trouble">5. 常见故障速查</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

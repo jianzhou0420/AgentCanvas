@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SWE-agent 全解剖：搭导航 Agent 要写什么、不用写什么 — AgentCanvas</title>
+<meta name="description" content="逐文件读完 ../SWE-agent （commit 1132b3e8，2026-07-07）后的工程结论：不需要 MCP、没有 skill 概念、上下文压缩是两行配置、记忆机制本来就是我们的实验对象——你真正要写的只有一个 nav CLI 和一份 YAML。">
+<meta property="og:title" content="SWE-agent 全解剖：搭导航 Agent 要写什么、不用写什么 — AgentCanvas">
+<meta property="og:description" content="逐文件读完 ../SWE-agent （commit 1132b3e8，2026-07-07）后的工程结论：不需要 MCP、没有 skill 概念、上下文压缩是两行配置、记忆机制本来就是我们的实验对象——你真正要写的只有一个 nav CLI 和一份 YAML。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/zh-2-swe-agent-anatomy.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="中文 · SWE-agent 剖析">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/zh-2-swe-agent-anatomy.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    Coding Agent
+    <span class="sep">/</span>
+    <span class="here">中文 · SWE-agent 剖析</span>
+  </div>
+  <div class="last-updated">2026-07-11</div>
+</div>
+  <header class="page-header coding-agent">
+    <h1>SWE-agent 全解剖：搭导航 Agent 要写什么、不用写什么</h1>
+    <p class="tagline">逐文件读完 <code>../SWE-agent</code>（commit 1132b3e8，2026-07-07）后的工程结论：不需要 MCP、没有 skill 概念、上下文压缩是两行配置、记忆机制本来就是我们的实验对象——你真正要写的只有一个 <code>nav</code> CLI 和一份 YAML。</p>
+  </header>
+
+  <p class="lede">这是 <a href="zh-1-project-plan.html">CAN 项目计划</a>的工程续篇。zh-1 回答「研究什么、为什么」，本文回答「具体怎么搭」：§1 直接回答你的五个问题（MCP / skill / system prompt / 上下文压缩 / 记忆）；§2–3 把 SWE-agent 仓库解剖到源码行号级；§4 与本仓库 <a href="../beta/zh-2-beta-agent.html">beta-coding-agent</a> 逐部件对照——两个世界里「你写的东西」正好角色对调；§5 是 Qwen3.5 小模型接入的全部开关；§6 是七步落地路线；§7 基于源码新证据，对 zh-1 决策点 #2（mini vs 全量）给出<strong>修订建议</strong>。所有断言标注了源码出处（<a href="#9-refs">§9</a>）。</p>
+
+  <h2 id="1-tldr"><span class="num">1.</span> TL;DR：五问五答</h2>
+  <table>
+    <thead><tr><th>你的问题</th><th>答案</th><th>一句话依据</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>要不要像 beta-agent 那样写 MCP？</strong></td>
+        <td><strong>不要。</strong>SWE-agent 的世界里不存在 MCP。</td>
+        <td>MCP 是「给闭源大脑喂工具」的协议；SWE-agent 的工具就是<strong>环境 PATH 上的可执行文件</strong> + 一段 YAML 声明（<code>tools.py:292</code> 装工具的方式是 <code>export PATH=…/bin:$PATH</code>）。<code>mcp_bridge.py</code> 的 <code>observe</code>/<code>step</code> 在这里变成 <code>nav observe</code>/<code>nav step</code> 两条 shell 命令——转发逻辑同构，协议层整个消失。</td>
+      </tr>
+      <tr>
+        <td><strong>要不要定义 skill？</strong></td>
+        <td><strong>没有 skill 这个概念。</strong>三个等价物按需取用。</td>
+        <td>① 工具 docstring 自动拼进 prompt（<code>{{command_docs}}</code>）；② demonstrations——把一条好轨迹当 few-shot 示范（<code>TemplateConfig.demonstrations</code>）；③ <strong>workspace 里的文件</strong>（把「怎么导航」写进 episode 目录的 README）——这恰是 CAN 的 L1/L2/L3 自主度实验变量，不是待造的基础设施。</td>
+      </tr>
+      <tr>
+        <td><strong>system prompt 要不要写？</strong></td>
+        <td><strong>要，但形态是 YAML 里的 Jinja2 模板</strong>，且官方默认 system prompt 只有一句话。</td>
+        <td>四件套：<code>system_template</code>（默认整个仓库就一句 "You are a helpful assistant that can interact with a computer to solve tasks."）、<code>instance_template</code>（<strong>真正的功夫全在这</strong>）、<code>next_step_template</code>、<code>format_error_template</code>。见 <a href="#43-prompt">§4.3</a> 的导航版草稿。</td>
+      </tr>
+      <tr>
+        <td><strong>上下文压缩要不要自己实现？</strong></td>
+        <td><strong>不用实现，要配置。</strong>两行 YAML。</td>
+        <td><code>history_processors</code> 提供 7 种现成处理器；<code>last_n_observations: n=5</code> 就是 SWE-agent 原论文的「只留最近 5 条观察」。注意它只有<strong>删除式</strong>，没有 Claude Code 那种摘要式 compaction——而 CAN 的文件系统记忆恰好让删除变得无损（<a href="#62-nav">§6 题眼</a>）。</td>
+      </tr>
+      <tr>
+        <td><strong>记忆机制要不要实现？</strong></td>
+        <td><strong>不要为它写 harness。</strong>它是实验对象，不是基础设施。</td>
+        <td>框架内置的 <code>registry</code> 只是工具间共享变量，不是认知记忆；跨步记忆 = agent 自己写 <code>notes.md</code> 再 grep（这正是 zh-1 的 H2：content-addressed vs location-addressed）。跨 episode 记忆 v1 明确不做。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout note"><p><strong>那到底要写什么？</strong>一个 <code>nav</code> CLI（~200 行 Python，把 <code>:9200</code> 的 habitat 会话变成文件系统里的命令）+ 一个 ~40 行的工具 bundle 声明 + 一份 ~80 行主 YAML + episode 装配脚本（~100 行）+ 评测 hook（~80 行）。<strong>框架源码 0 修改</strong>。全部自定义代码 &lt; 500 行，其中一半还是从 <code>beta-coding-agent/</code> 平移。</p></div>
+
+  <h2 id="2-what"><span class="num">2.</span> SWE-agent 是什么</h2>
+
+  <h3 id="21-position"><span class="num">2.1</span> 定位：ACI 论文长成的通用 agent 脚手架</h3>
+  <p>SWE-agent 是 Princeton/Stanford 的开源项目，<a href="https://arxiv.org/abs/2405.15793">SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering</a> (24.05, NeurIPS 2024) 的参考实现。论文的核心论点是 <strong>ACI（Agent-Computer Interface）</strong>：LM agent 的表现不止取决于模型，还取决于你给它设计的「电脑界面」——给 LM 用的文件查看器、编辑器、搜索命令，和给人用的 IDE 是两种设计问题。这个立场对 CAN 直接可引：我们做的事就是给导航任务设计 ACI（更准确说，把导航任务装进<strong>已被验证的</strong>coding ACI）。</p>
+  <p>今天的仓库已经从「论文代码」长成通用脚手架：<strong>一份 YAML 定义整个 agent</strong>（模型、prompt 模板、工具、上下文策略、执行环境），命令行 <code>sweagent run</code> 跑单任务、<code>sweagent run-batch</code> 跑基准。Python 包 <code>sweagent/</code> 共约 11.4k 行，六个核心文件读完即可掌握全貌（<a href="#3-anatomy">§3</a>）。</p>
+
+  <h3 id="22-family"><span class="num">2.2</span> 家族三件套</h3>
+  <table>
+    <thead><tr><th>项目</th><th>是什么</th><th>与我们的关系</th></tr></thead>
+    <tbody>
+      <tr><td><strong>SWE-agent</strong>（本仓库）</td><td>全功能框架：YAML 配置驱动，含解析器 ×11、上下文处理器 ×7、工具 bundle ×15、批跑/轨迹/inspector 全家桶</td><td>候选 harness 载体（§7 建议 full-first）</td></tr>
+      <tr><td><a href="https://github.com/SWE-agent/SWE-ReX">SWE-ReX</a></td><td>被拆出去的执行层：「在哪跑命令」的抽象——local / docker / modal / fargate 四种 deployment，统一成持久 bash 会话接口</td><td>随 SWE-agent 一起装，不用单独关心；决定我们用不用容器（§6 Step 4）</td></tr>
+      <tr><td><a href="https://github.com/SWE-agent/mini-swe-agent">mini-swe-agent</a></td><td>官方接班人：~100 行核心，纯 bash、无函数调用、无工具系统、每条命令独立 <code>subprocess</code>（无持久 shell 状态）；README 里程碑 65% SWE-bench Verified（随模型更新更高）</td><td>zh-1 原推荐；读完 full 源码后建议改判，见 <a href="#7-choice">§7</a></td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="23-warning"><span class="num">2.3</span> 必须知道的红头警告</h3>
+  <p>README 顶部原文：「Most of our current development effort is on mini-swe-agent, which has superseded SWE-agent. It matches the performance of SWE-agent, while being much simpler. Our general recommendation is to use mini-SWE-agent instead of SWE-agent going forward.」——官方开发重心已迁移，全量版处于<strong>维护态</strong>（不是死亡态：2026-07-07 还在修多模态管线的 Content-Type bug，正是我们要用的那条管线）。这条警告是 zh-1 推荐 mini 的重要论据；但「维护态的全量版」对我们意味着什么，要看它到底有哪些 mini 没有的器官——这正是 §3 的目的和 §7 改判的依据。</p>
+
+  <h2 id="3-anatomy"><span class="num">3.</span> 仓库解剖：一步的旅程与六大器官</h2>
+  <p>先看一次 <code>step</code> 从头到尾穿过哪些文件——这张图就是「coding agent 必要 harness」的实体清单：</p>
+  <pre><code>sweagent run-batch --config nav.yaml
+        │  instances: file → SimpleBatchInstance × N（filter / slice / shuffle；已跑默认跳过）
+        ▼
+DefaultAgent.run()                                    agents.py:1265
+  └─ while not done: step()                           agents.py:1235
+       ├─ messages = history_processors(history)      ← 上下文策略在这里生效（§3.5）
+       ├─ forward_with_handling(messages)             agents.py:1062 ← 错误分诊台（§3.1）
+       │    └─ forward():
+       │         model.query() ──→ parser ──→ handle_action()
+       │              │               │            │
+       ▼              ▼               ▼            ▼
+   .traj 轨迹     models.py:578   parsing.py    SWEEnv.communicate()   swe_env.py:197
+   (inspector     LiteLLM 任意     文本 或        └─ SWE-ReX 持久 bash 会话
+    可视化)       后端(§3.2)      函数调用(§3.4)      (docker / local / modal…)(§3.6)</code></pre>
+
+  <h3 id="31-loop"><span class="num">3.1</span> 主循环与错误分诊（agents.py，1294 行）</h3>
+  <p>循环本体只有四行（<code>while not step_output.done: step()</code>）；真正值钱的是 <code>forward_with_handling</code> 这张<strong>错误分诊表</strong>——你在 <a href="../beta/zh-4-agent-vs-coding-agent.html">zh-4</a> 里读到的「harness 工程」在这里全部有开源实体：</p>
+  <table>
+    <thead><tr><th>异常</th><th>处置</th><th>对小模型的意义</th></tr></thead>
+    <tbody>
+      <tr><td><code>FormatError</code>（解析不出动作）</td><td>用 <code>format_error_template</code> 把错误喂回去<strong>重问</strong>，最多 <code>max_requeries=3</code> 次</td><td rowspan="3"><strong>requery 组是 8B 模型的生命线</strong>：格式错误不是死刑而是教学机会。requery 率本身就是 CAN 的测量项（zh-1 H5）</td></tr>
+      <tr><td>命令在 blocklist（vim/less/交互式 python…）</td><td>拦下 + 模板重问</td></tr>
+      <tr><td>bash 语法错误</td><td>执行前先过 <code>bash -n</code> 预检，错了用 <code>shell_check_error_template</code> 重问</td></tr>
+      <tr><td>context window 超限 / cost 超限 / 调用次数超限 / 总时长超 1800s / 连续 3 次命令超时 / 环境崩溃</td><td>全部走 <code>attempt_autosubmission_after_error</code>：兜底交卷（保留已有成果），记录 <code>exit_status</code>（<code>exit_context</code>/<code>exit_cost</code>/…）</td><td>失败也有干净的归因标签——我们的六类失败标注可以直接叠在 <code>exit_status</code> 上</td></tr>
+    </tbody>
+  </table>
+  <p>另有两个进阶器官备用：<code>RetryAgent</code>（同一实例多次尝试 + reviewer 模型评审挑最优，<code>reviewer.py</code> 664 行）和 <code>action_sampler</code>（best-of-n 采样）——都是将来消融臂的现成材料，v1 不碰。</p>
+
+  <h3 id="32-model"><span class="num">3.2</span> 模型层（models.py，903 行）：LiteLLM 一层抽象</h3>
+  <p><code>LiteLLMModel</code>（<code>models.py:578</code>）把「哪家模型」压缩成一个字符串：任何 <a href="https://docs.litellm.ai/docs/providers">litellm 认识的后端</a>——包括本地 vLLM / Ollama——换 <code>name</code> + <code>api_base</code> 即可。对我们重要的配置字段：</p>
+  <table>
+    <thead><tr><th>字段</th><th>作用</th><th>本地小模型怎么设</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code> / <code>api_base</code></td><td>litellm 路由</td><td><code>hosted_vllm/…</code> 或 <code>openai/…</code> + vLLM 端点，见 §5.3</td></tr>
+      <tr><td><code>per_instance_cost_limit</code> / <code>total_cost_limit</code></td><td>钱闸（默认 $3/实例）</td><td><strong>必须双双置 0</strong>：litellm 对不认识的模型算不出成本，此时若限额 &gt; 0 直接抛 <code>ModelConfigurationError</code>——源码里的报错信息原话就是让你置 0（models.py 的 cost 异常分支）</td></tr>
+      <tr><td><code>per_instance_call_limit</code></td><td>步数闸</td><td>用它替代钱闸：50 步预算 + 余量 → 60</td></tr>
+      <tr><td><code>max_input_tokens</code></td><td>超限则抛 <code>ContextWindowExceededError</code>（触发兜底交卷）</td><td>手动设：litellm 查不到本地模型的窗口，不设只 warning 不设防</td></tr>
+      <tr><td><code>litellm_model_registry</code></td><td>自定义计价 JSON</td><td>可选彩蛋：给 Qwen3.5 填一个名义单价，就能画 zh-1 §7.3 的成本校准曲线而不用关钱闸</td></tr>
+      <tr><td><code>retry</code> / <code>fallbacks</code> / <code>temperature</code> / <code>stop</code> / <code>completion_kwargs</code></td><td>重试、备胎模型、采样、透传参数</td><td><code>temperature: 0</code> 起步（复现性优先）</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="33-tools"><span class="num">3.3</span> 工具系统（tools/，15 个 bundle）：工具 = PATH 上的可执行文件</h3>
+  <p>一个 bundle 就是一个目录：<code>config.yaml</code>（每个命令的 <code>signature</code>/<code>docstring</code>/<code>arguments</code>）+ <code>bin/</code>（可执行文件）+ 可选 <code>install.sh</code>。安装过程（<code>tools.py:292</code>）朴素到令人安心：上传目录 → <code>chmod +x</code> → <code>export PATH=…/bin:$PATH</code>。同一份声明有两种消费方式：走 <code>function_calling</code> 解析器时变成 JSON schema 工具表；走文本解析器时拼成 <code>{{command_docs}}</code> 塞进你的模板——<strong>换解析器不用改工具</strong>。</p>
+  <p>三个值得偷师的机制：</p>
+  <ul>
+    <li><strong><code>state_command</code></strong>：每步动作后框架执行它，它把状态写进 <code>/root/state.json</code>，解析后的 dict 成为<strong>模板变量</strong>（<code>tools.py:337</code>）。经典用法是 <code>windowed</code> bundle 把当前打开的文件名注入 prompt；我们用它把<strong>剩余步数预算</strong>每步自动写进对话（§6 Step 3）。</li>
+    <li><strong><code>registry</code></strong>：工具之间共享的 json 变量池（环境文件），比如 <code>USE_FILEMAP</code> 开关。是工具层的共享状态，<strong>不是</strong>认知层的记忆。</li>
+    <li><strong>blocklist</strong>（<code>tools.py:29</code>）：默认拦 <code>vim</code>/<code>less</code>/<code>nano</code>/裸 <code>python</code> REPL 等交互式命令——小模型最爱掉的坑之一，框架已经替你焊死。</li>
+  </ul>
+  <p>现成 bundle 里与我们相关的：<code>image_tools</code>（§3.7 主角）、<code>windowed</code>（ACI 经典文件查看器，L2 臂可选装）、<code>forfeit</code>（主动认输命令——失败归因的干净信号）、<code>web_browser</code>/<code>search</code>/<code>edit_*</code>（暂用不上）。</p>
+
+  <h3 id="34-parser"><span class="num">3.4</span> 动作解析器（parsing.py，11 种）：小模型的第一开关</h3>
+  <table>
+    <thead><tr><th>解析器</th><th>期望的模型输出</th><th>适用</th></tr></thead>
+    <tbody>
+      <tr><td><code>function_calling</code>（默认）</td><td>原生工具调用（OpenAI tools 协议）</td><td>前沿模型；vLLM 上的 Qwen 需要 <code>--enable-auto-tool-choice --tool-call-parser hermes</code>，8B 档可靠性存疑，<strong>不赌</strong></td></tr>
+      <tr><td><code>thought_action</code></td><td>自由讨论 + 最后一个 <code>```…```</code> 代码块当动作（SWE-agent 原论文格式）</td><td><strong>我们的默认</strong>：纯文本、容错好、思考轨迹白送</td></tr>
+      <tr><td><code>single_bash_code_block</code></td><td>恰好一个 bash 代码块</td><td>降级备胎：若 9B 的 thought_action 格式失败率 &gt; 10%（W0 测量项）</td></tr>
+      <tr><td><code>xml_thought_action</code></td><td><code>&lt;command&gt;…&lt;/command&gt;</code> 标签</td><td>有些模型对 XML 更服帖，第二备胎</td></tr>
+      <tr><td><code>action_only</code> / <code>identity</code> / 其余</td><td>裸命令 / 原样透传等</td><td>特殊消融用</td></tr>
+    </tbody>
+  </table>
+  <p>每种解析器自带 <code>format_error_message</code>；解析失败 → <code>FormatError</code> → §3.1 的 requery 通道自动纠错。<strong>解析器选择 + 纠错循环，就是「开源框架对小模型友好」的全部技术含义</strong>——mini-swe-agent 靠天生只有 bash 达成同一目标，full 靠可换解析器达成，且多送三次改错机会。</p>
+
+  <h3 id="35-history"><span class="num">3.5</span> 上下文管理（history_processors.py，7 种）：删除式，没有摘要式</h3>
+  <table>
+    <thead><tr><th>处理器</th><th>干什么</th><th>我们用吗</th></tr></thead>
+    <tbody>
+      <tr><td><code>last_n_observations</code></td><td><strong>原论文经典款</strong>：只留最近 n 条观察，旧观察替换成一行 <code>"Old environment output: (k lines omitted)"</code>（有图时附 <code>(m images omitted)</code>）；永不删第一条（instance 模板）；<code>tags</code> 白名单可钉住关键观察；<code>polling</code> 参数缓解 KV-cache 失效</td><td><strong>用，n=5</strong>——50 步 × 每步一帧 RGB 的场景就是为它生的</td></tr>
+      <tr><td><code>image_parsing</code></td><td>把观察文本里的 <code>![…](data:image/png;base64,…)</code> 正则抓出来，转成真正的多模态 <code>image_url</code> 消息段</td><td><strong>用</strong>，多模态管线的另一半（§3.7）</td></tr>
+      <tr><td><code>cache_control</code></td><td>Anthropic 提示缓存打点</td><td>不用（本地模型）</td></tr>
+      <tr><td><code>closed_window</code> / <code>remove_regex</code> / <code>tag_tool_call_observations</code> / <code>default</code></td><td>旧文件窗口折叠 / 正则删内容 / 给特定工具的观察打标签 / 恒等</td><td>暂不用；<code>tag_tool_call_observations</code> 可以将来把「地图输出」钉在上下文里，备着</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note"><p><strong>两个重要的「没有」</strong>：① 没有摘要式压缩——Claude Code 的 auto-compact（用 LLM 把旧历史总结成一段）在 SWE-agent 里不存在，只有删除式 elide。② 没有跨 episode 记忆。原因很简单：SWE-bench 单实例几十步就完，用不上。对导航这恰好不是缺陷而是<strong>设计机会</strong>：被 elide 的帧永远躺在 <code>obs/step_N/rgb.png</code>，agent 一条 <code>view_image</code> 就能找回——<strong>删除式压缩 + 文件系统持久化 = 事实上的无损压缩</strong>，而「agent 是否学会主动找回」正是 zh-1 H2 要测的行为。</p></div>
+
+  <h3 id="36-env"><span class="num">3.6</span> 环境层（swe_env.py，276 行 + SWE-ReX）</h3>
+  <p><code>SWEEnv</code> 是持久 bash 会话的薄壳：<code>communicate(cmd, timeout, check)</code> 执行命令、<code>read_file</code>/<code>write_file</code>、<code>set_env_variables</code>，加上 repo 装载和 <code>post_startup_commands</code>。「会话跑在哪」由 SWE-ReX deployment 决定：<code>docker</code>（主流，支持 <code>docker_args</code> 透传）、<code>local</code>（直接跑在宿主机，零容器但零隔离）、<code>modal</code>/<code>fargate</code>（云上并发，我们用不着）。workspace 的三种装法：<code>PreExistingRepoConfig</code>（环境里已有）、<code>GithubRepoConfig</code>、<code>LocalRepoConfig</code>（把宿主机目录上传到环境的 <code>/{repo_name}</code>，<code>repo.py:109</code>）。与 mini 的本质区别：mini 每条命令是独立 <code>subprocess</code>，<code>cd</code>/<code>export</code>/后台进程都不延续；full 是真正的持久 shell。</p>
+
+  <h3 id="37-mm"><span class="num">3.7</span> 多模态管线：全仓库对我们最值钱的 60 行</h3>
+  <p>SWE-agent 支持图像的方式非常「Unix」：<strong>观察通道永远是文本流，图像是后处理</strong>。两个零件：</p>
+  <ul>
+    <li><code>tools/image_tools/bin/view_image</code>（30 行 Python）：读图 → base64 → 往 stdout 打一行 markdown 图片 <code>![path](data:image/png;base64,…)</code>；</li>
+    <li><code>image_parsing</code> history processor（§3.5）：把观察里的这类 markdown 转成多模态消息段，随对话发给模型。</li>
+  </ul>
+  <p>推论：<strong>任何能打印 base64 markdown 的命令都能「发图」</strong>——我们的 <code>nav observe</code> 天生兼容，不需要任何框架改动（§6 Step 2）。配套抄作业（<code>config/default_mm_with_images.yaml</code>）：<code>max_observation_length</code> 提到 <code>10_000_000</code>（默认 100k 字符会把 base64 拦腰斩断，见 §8 坑 ①）、<code>execution_timeout: 300</code>。这条管线 2026-07-07 还在修 bug（normalize Content-Type），是仓库里活跃维护的部分。zh-1 里「给 mini-swe-agent 写图像注入补丁」的计划项，在 full 里是<strong>已经存在且被维护的功能</strong>——这是 §7 改判的第一证据。</p>
+
+  <h3 id="38-batch"><span class="num">3.8</span> 批跑、轨迹与观测（run/）</h3>
+  <p><code>run-batch</code>：<code>--num_workers N</code> 并发；实例源 5 种（<code>file</code> / <code>expert_file</code> / <code>huggingface</code> / <code>swe_bench</code> / <code>swesmith</code>），全部支持 <code>filter</code>（按 instance_id 正则）/ <code>slice</code>（python 切片语法）/ <code>shuffle</code>（定种子）；<code>redo_existing=False</code> 默认跳过已跑实例 = 免费断点续跑。每实例产出 <code>.traj</code>（完整轨迹：query/thought/action/observation/state/exit_status），自带两个查看器（web 版 <code>inspector</code>、终端版 <code>inspector_cli</code>）+ <code>run_replay</code> 重放。挂自定义逻辑的口子是 <code>RunHook</code>：<code>on_instance_start(index, instance)</code> / <code>on_instance_completed(result)</code>——我们的 episode 装配与评测闭环正好各挂一个（§6 Step 7）。</p>
+
+  <h2 id="4-mapping"><span class="num">4.</span> 对照 beta-coding-agent：两个世界的部件映射</h2>
+  <p>你的直觉参照系是本仓库的 <code>beta-coding-agent/</code>（Claude Agent SDK）。下表把每个部件在两个世界里的实现并排放好——读完会发现<strong>角色正好对调</strong>：Claude 世界里 harness 是黑盒、你写桥（MCP）；SWE-agent 世界里 harness 是白盒、你写配置。</p>
+  <table>
+    <thead><tr><th>部件</th><th>beta-coding-agent（Claude Code 世界）</th><th>SWE-agent 世界</th><th>你要写的量</th></tr></thead>
+    <tbody>
+      <tr><td>工具接入</td><td><code>mcp_bridge.py</code>：stdio MCP server，<code>@mcp.tool</code> 挂 <code>observe</code>/<code>step</code>，进程随会话起停</td><td>PATH 上的可执行文件 + bundle 声明；无协议层</td><td><code>nav</code> CLI ~200 行——转发逻辑与 <code>mcp_bridge.py</code> 同构（同样 <code>POST /call/{fn}</code> 打 <code>:9200</code>），可以大段平移</td></tr>
+      <tr><td>图像进大脑</td><td>SDK 原生 image content block</td><td>stdout 打 base64 markdown + <code>image_parsing</code>（§3.7）</td><td>0（observe 顺手打印即可）</td></tr>
+      <tr><td>skill</td><td><code>skills/{mapgpt,ledger,opus}-nav/SKILL.md</code>（已写好 3 个，供后续臂）</td><td>无此机制；等价物 = <code>{{command_docs}}</code> / demonstrations / workspace 文件</td><td>把 SKILL.md 的策略文本改写进 <code>instance_template</code> 或 episode 内 <code>README</code>——正好变成 L1/L2/L3 实验的操纵变量</td></tr>
+      <tr><td>system prompt</td><td>驱动脚本按 episode 组装 prompt 传给 SDK 会话</td><td>YAML 四模板（Jinja2），见 §4.3</td><td>~40 行 YAML</td></tr>
+      <tr><td>上下文压缩</td><td>Claude Code 内置 auto-compact（摘要式，闭源不可控）</td><td><code>history_processors</code>（删除式，开源可测）</td><td>2 行配置</td></tr>
+      <tr><td>记忆</td><td>SDK 生态的 CLAUDE.md / memory 文件（beta v1 <code>tools=[]</code> 未启用）</td><td>无内置；文件系统即记忆</td><td>0 行 harness；prompt 里教 agent 用 <code>notes.md</code></td></tr>
+      <tr><td>循环 / 重试 / 预算闸</td><td>SDK 全包（闭源，不可消融）</td><td><code>forward_with_handling</code> + 三闸（§3.1–3.2），全开源</td><td>0</td></tr>
+      <tr><td>终止语义</td><td>agent 调 <code>step(0)</code>，driver 永不强停</td><td><code>submit_command</code> 机制：输出含提交标记即 <code>done</code></td><td><code>nav stop</code> 里打标记，~10 行（§6 Step 2）</td></tr>
+      <tr><td>轨迹与可视化</td><td>自写 JSONL + latest.png 土法观测</td><td><code>.traj</code> + inspector + replay 全家桶</td><td>0</td></tr>
+      <tr><td>模型</td><td>锁 Claude（订阅计费）</td><td>LiteLLM 任意后端</td><td>vLLM 一条命令（§5.2）</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="43-prompt"><span class="num">4.3</span> 导航版模板草稿（唯一真正的 prompt 工程）</h3>
+  <p>官方哲学值得学：system prompt 一句话，任务细节全在 instance 模板。导航版初稿（英文——R2R 指令是英文，小模型混语种切换是无谓风险；这份草稿本身是 W0 要迭代的对象）：</p>
+  <pre><code>agent:
+  templates:
+    system_template: |-
+      You are an autonomous agent operating a robot from a Linux workspace.
+      Always respond with a short DISCUSSION followed by exactly one command
+      in a triple-backtick block.
+
+    instance_template: |-
+      The workspace {{working_dir}} contains an indoor navigation episode.
+
+      NAVIGATION INSTRUCTION (also saved in INSTRUCTION.txt):
+      {{problem_statement}}
+
+      You control the robot only through the `nav` CLI:
+      {{command_docs}}
+
+      Rules:
+      - Start with `nav observe`. Every frame is also saved under obs/.
+      - Move with `nav step "1 1 2"` (0=STOP 1=forward 0.25m 2=left 15deg 3=right 15deg).
+      - You have {{step_budget}} low-level steps in total; `nav status` shows the rest.
+      - Keep landmarks and decisions in notes.md as you go; grep it when unsure.
+      - Old frames leave the conversation, but you can always re-view one with
+        `view_image obs/step_12/rgb.png`.
+      - When you believe you are within 3 meters of the goal, run `nav stop`.
+        Stopping at the right spot IS the task; a wrong stop cannot be undone.
+
+    next_step_template: |-
+      OBSERVATION:
+      {{observation}}</code></pre>
+  <p>两个模板变量的来路提醒：<code>{{command_docs}}</code> 由 bundle 声明自动生成；<code>{{step_budget}}</code> 来自实例文件的 <code>extra_fields</code>（<code>batch_instances.py:106</code> 明说 extra_fields 可在模板里用）——每集预算不同也不用改模板。</p>
+
+  <h2 id="5-qwen"><span class="num">5.</span> Qwen3.5（你说的 8B 档）怎么接</h2>
+
+  <h3 id="51-size"><span class="num">5.1</span> 尺寸澄清与能力底线</h3>
+  <p>Qwen3.5 没有 8B SKU——该档位是 <strong>Qwen3.5-9B</strong>（zh-1 阶梯 {2B, 4B, 9B, 35B-A3B} 的主力档）。关键能力核对：<strong>原生多模态</strong>（vision 不是外挂，MMMU-Pro 69.2 超过前代 VL 专线）、262K 上下文、单卡 5090 本地 vLLM 可跑。也就是说「一个小模型同时看图和写命令」成立，不需要视觉/语言双模型拼接。</p>
+
+  <h3 id="52-vllm"><span class="num">5.2</span> vLLM 侧：一条命令 + 两个坑位参数</h3>
+  <pre><code># conda env: 任意 Py3.10+（与 ac-vlnce 的 Py3.8 无关——通过 HTTP 隔离）
+vllm serve Qwen/Qwen3.5-9B-Instruct \
+    --port 8001 \
+    --limit-mm-per-prompt '{"image": 8}'      # 默认每 prompt 只许 1 张图！
+                                              # n=5 帧在窗 + 余量 → 8
+# （HF 仓库名以实际发布为准；flag 语法随 vLLM 版本，老版本写 image=8）
+# 若坚持 function_calling 解析器才需要：
+#   --enable-auto-tool-choice --tool-call-parser hermes</code></pre>
+
+  <h3 id="53-swea"><span class="num">5.3</span> SWE-agent 侧：模型配置四件事</h3>
+  <pre><code>agent:
+  model:
+    name: hosted_vllm/Qwen/Qwen3.5-9B-Instruct   # litellm 的 vLLM 路由
+    # 或老 litellm：name: openai/Qwen/Qwen3.5-9B-Instruct + api_key: EMPTY
+    api_base: http://127.0.0.1:8001/v1
+    per_instance_cost_limit: 0    # ① 钱闸必须双双置 0：litellm 算不出本地模型
+    total_cost_limit: 0           #    成本，限额>0 会直接 ModelConfigurationError
+    per_instance_call_limit: 60   # ② 用步数闸替代钱闸（50 步预算 + requery 余量）
+    max_input_tokens: 65536       # ③ 手动设窗口：litellm 查不到就不设防
+    temperature: 0.0              # ④ 复现性优先
+    # 可选：litellm_model_registry: qwen_prices.json  ← 填名义单价，
+    #       就能画 zh-1 §7.3 的成本曲线而不用关钱闸</code></pre>
+
+  <h3 id="54-tokens"><span class="num">5.4</span> 图像 token 账：为什么留 5 帧</h3>
+  <p>量级估算（Qwen 系 ViT ~28px/patch）：448×448 一帧 ≈ 256 token；<code>n=5</code> 帧 ≈ 1.3k token；50 步的思考+命令+文本观察 ≈ 20–40k。<strong>262K 窗口完全放得下全部 50 帧</strong>——所以留 5 帧的动机不是防爆窗，而是：① 9B 的有效注意力被 50 帧稀释是真实风险；② 每步全量重算 50 帧的 prefill 延迟；③ 更重要的是科学动机——「上下文里只有近 5 帧 + 磁盘上有全部帧」正是把 <em>记忆外置</em> 变成可测行为的实验设置（H2）。</p>
+
+  <h3 id="55-format"><span class="num">5.5</span> W0 头号测量项：格式遵从率</h3>
+  <p>接通后先别跑分，跑 20 集 dev 集数出三个数：<code>thought_action</code> 解析失败率（&gt;10% 就换 <code>single_bash_code_block</code>）、requery 挽救率（失败里有多少被 3 次重问救回）、每步平均 token。这三个数决定解析器选型，也直接是论文 H5（自主度 × 规模）的第一批证据——<strong>测量即开发，开发即测量</strong>。</p>
+
+  <h2 id="6-steps"><span class="num">6.</span> 动手路线：七步到第一集</h2>
+  <table>
+    <thead><tr><th>步</th><th>做什么</th><th>产物</th><th>预估</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>起两个服务：vLLM（§5.2）+ habitat auto_host <code>:9200</code>（命令照抄 <code>beta-coding-agent/README.md</code>）</td><td>两个常驻进程</td><td>0.5 天（含下权重）</td></tr>
+      <tr><td>1</td><td><strong>episode 装配器</strong>：rand100 第 i 集 → NavWorkspace 目录（<code>INSTRUCTION.txt</code>、空 <code>notes.md</code>、<code>obs/</code>、<code>.nav/config.json</code> 记 episode_id 与端口）——布局按 zh-1 §6.3</td><td><code>make_workspace.py</code> ~100 行</td><td>0.5 天</td></tr>
+      <tr><td>2</td><td><strong><code>nav</code> CLI</strong>：见下方设计要点</td><td><code>bin/nav</code> ~200 行</td><td>1 天</td></tr>
+      <tr><td>3</td><td><strong>bundle 声明</strong> + state_command：见下方</td><td><code>tools/nav_tools/</code> ~40 行</td><td>0.5 天内含</td></tr>
+      <tr><td>4</td><td><strong>主 YAML</strong>：§4.3 模板 + §5.3 模型 + 下方胶水</td><td><code>config/nav.yaml</code> ~80 行</td><td>0.5 天内含</td></tr>
+      <tr><td>5</td><td><strong>实例文件</strong>：rand100 → 100 条 <code>SimpleBatchInstance</code></td><td><code>episodes/rand100.yaml</code>（生成）</td><td>Step 1 顺带</td></tr>
+      <tr><td>6</td><td>冒烟：<code>sweagent run</code> 单集 → inspector 逐步看轨迹 → 修模板</td><td>第一条 <code>.traj</code></td><td>0.5 天</td></tr>
+      <tr><td>7</td><td><strong>评测闭环</strong>：两个 RunHook——<code>on_instance_start</code> 向 <code>/env-panel/*</code> 放置该集（平移 <code>run_episodes.py</code> 的驱动逻辑），<code>on_instance_completed</code> 调 <code>env_habitat__evaluate</code>，SR/SPL 写 <code>summary.json</code>（沿用 beta 的 outputs 格式，两套结果直接同表可比）</td><td><code>can_hooks.py</code> ~80 行</td><td>0.5 天</td></tr>
+    </tbody>
+  </table>
+  <p>合计 <strong>~3 天到 dev-30 首跑</strong>（不含 vLLM 装机排障），全部自定义代码 &lt; 500 行、框架源码 0 修改。</p>
+
+  <h3 id="62-nav"><span class="num">6.2</span> <code>nav</code> CLI 设计要点（Step 2 的灵魂）</h3>
+  <ul>
+    <li><code>nav observe</code>：<code>POST :9200/call/env_habitat__observe</code> → RGB 存 <code>obs/step_{N}/rgb.png</code> → <strong>stdout 打一行 base64 markdown</strong>（格式抄 <code>view_image</code>）。一条命令三个效果：模型立刻看到图（<code>image_parsing</code> 接手）、帧永久落盘（记忆外置）、驱动侧免费获得逐帧存档（对齐 beta 的 latest.png 观测法）。</li>
+    <li><code>nav step "1 1 2"</code>：转发动作串（≤50 批），回执打印「已执行 k 步 / 剩余预算 m」；顺手把同样的数字写进 state 文件。</li>
+    <li><code>nav status</code> / <code>nav look</code>：读本地 state / 12 视角环视（是否给 look 是消融开关，v1 先不给，对齐 beta 的 vanilla 设定）。</li>
+    <li><code>nav stop</code>：调 env 执行 STOP → <strong>打印 SWE-agent 提交标记</strong>（字符串以 <code>tools/submit/bin/submit</code> 为准），配置里 <code>submit_command: "nav stop"</code>——于是「在正确位置停下」在框架语义里就是「提交」，<code>done=True</code>、<code>exit_status=submitted</code>，兜底交卷等机制全部自然复用。</li>
+    <li>端口从 <code>.nav/config.json</code> 读（不是环境变量）——将来并发跑多个 auto_host 时，装配器按 worker 分配端口即可，CLI 不用改。</li>
+  </ul>
+  <div class="callout note"><p><strong>本文题眼</strong>：<code>last_n_observations</code> 把旧帧从对话里删掉（省注意力），<code>nav observe</code> 把每帧写进磁盘（不丢信息），prompt 里一句「可以随时 <code>view_image obs/step_N/rgb.png</code>」把找回的<strong>决定权交给 agent</strong>。上下文压缩、记忆机制这两个「coding agent 必要 harness」，在 episode-as-repo 的设计下坍缩成同一个东西：<strong>文件系统</strong>。这就是为什么它们都不需要你去「实现」。</p></div>
+
+  <h3 id="63-glue"><span class="num">6.3</span> 剩余的胶水配置（Step 3–5 代码块）</h3>
+  <pre><code># tools/nav_tools/config.yaml —— 唯一要写的 bundle
+tools:
+  nav:
+    signature: "nav &lt;observe|step|look|status|stop&gt; [args]"
+    docstring: &gt;
+      Control the robot. observe: capture egocentric RGB (saved to
+      obs/step_N/rgb.png and shown inline). step "1 1 2": run up to 50
+      low-level actions (0=STOP 1=fwd0.25m 2=left15 3=right15).
+      status: budget left. stop: end the episode HERE (irreversible).
+    arguments:
+      - name: subcommand
+        type: string
+        required: true
+        description: "one of observe / step / look / status / stop"
+      - name: args
+        type: string
+        required: false
+        description: "for step: action string like \"1 1 2\""
+state_command: "_nav_state"        # 每步后把剩余预算写进 /root/state.json
+
+# config/nav.yaml 里除模板(§4.3)、模型(§5.3)外的胶水
+agent:
+  tools:
+    bundles:
+      - path: tools/registry       # 官方 registry（state 机制依赖）
+      - path: tools/image_tools    # 白送 view_image（回看旧帧）
+      - path: tools/nav_tools      # 我们的
+    enable_bash_tool: true         # L2/L3 臂开；L1 纯工作流臂可关
+    parse_function: {type: thought_action}
+    submit_command: "nav stop"
+    execution_timeout: 60
+  templates:
+    max_observation_length: 10_000_000   # ★ 必设，见 §8 坑①
+  history_processors:
+    - {type: image_parsing}
+    - {type: last_n_observations, n: 5}
+instances:
+  type: file
+  path: episodes/rand100.yaml
+  slice: ":30"                     # dev-30 纪律（zh-1 §7.3）
+  deployment:
+    type: docker
+    image: navws:latest            # 薄镜像：python + requests 即可
+    docker_args: ["--network", "host"]   # 容器内 curl 127.0.0.1:9200
+
+# episodes/rand100.yaml —— 装配器生成，每集一条
+- instance_id: r2rce_vu_ep0042
+  image_name: navws:latest
+  repo_name: /abs/path/to/navws/ep0042   # 含斜杠 → LocalRepoConfig，
+                                         # 整目录上传进容器 /ep0042
+  problem_statement: "Walk past the couch, then stop at the kitchen doorway."
+  extra_fields: {episode_id: 42, step_budget: 50}</code></pre>
+
+  <h2 id="7-choice"><span class="num">7.</span> 选型再校准：full 还是 mini（对 zh-1 决策点 #2 的修订建议）</h2>
+  <p>zh-1 推荐 fork mini-swe-agent，核心理由是「100 行可控 + bash-only 天生适配小模型」。<strong>读完 full 的源码后，证据结构变了</strong>：</p>
+  <table>
+    <thead><tr><th>维度</th><th>全量 SWE-agent</th><th>mini-swe-agent</th><th>对 8B + 视觉导航</th></tr></thead>
+    <tbody>
+      <tr><td>多模态</td><td><code>view_image</code> + <code>image_parsing</code> 原生管线，上周还在修 bug</td><td>无，需自研补丁</td><td><strong>刚需</strong>，full 白送</td></tr>
+      <tr><td>上下文管理</td><td>7 种 processor，<code>last_n_observations</code> 论文验证过</td><td>无（靠步数上限硬扛）</td><td><strong>刚需</strong>（50 帧图像必须裁），full 白送</td></tr>
+      <tr><td>格式容错</td><td>可换解析器 + format requery ×3 + bash -n 预检</td><td>天生 bash-only（等价于固定一种解析器），无 requery</td><td><strong>刚需</strong>，full 更厚</td></tr>
+      <tr><td>预算/兜底/轨迹/批跑</td><td>三闸 + autosubmit + .traj + inspector + 断点续跑</td><td>基本靠自己</td><td>强需求，full 白送</td></tr>
+      <tr><td>依赖与心智负担</td><td>11.4k 行 + swe-rex + （可选）docker</td><td>~100 行核心，近零依赖</td><td>mini 胜——但见下</td></tr>
+      <tr><td>论文叙事</td><td>「<strong>unmodified</strong> SWE-agent（NeurIPS'24），config-only」</td><td>「forked mini + 自研图像/上下文/纠错三补丁」</td><td>反转了：给 mini 补齐三件刚需 ≈ 300–500 行<strong>自研 harness</strong>，补完就不 mini 了，且每一行都是审稿人可攻击的自制部件</td></tr>
+      <tr><td>官方状态</td><td>维护态（README 明示重心已移）</td><td>活跃开发</td><td>mini 胜，但我们锁 commit 复现，维护态够用</td></tr>
+    </tbody>
+  </table>
+  <p><strong>修订建议：full-first。</strong>W0–W2 用全量 SWE-agent 出第一批端到端数字（所有刚需件配置即得，路径最短）；mini fork 降级为可选的「极简复现」附录臂——若后期有余力，用它证明结论不依赖框架重量。科学设计（四臂、H1–H7、消融矩阵）完全不动，只换 harness 载体；且「unmodified framework, config-only」的可复现叙事反而更硬。<em>此为对 zh-1 §10 决策点 #2 的改判建议，待你拍板。</em>另一个受影响的决策点：#6（图像 vs 文本化感知）——图像直入的边际成本已降到 0，图像臂应为默认。</p>
+
+  <h2 id="8-pitfalls"><span class="num">8.</span> 坑清单（按踩中概率排序）</h2>
+  <table>
+    <thead><tr><th>#</th><th>坑</th><th>处置</th></tr></thead>
+    <tbody>
+      <tr><td>①</td><td><strong>观察截断吃掉图像</strong>：一帧 448² PNG 的 base64 是几十万字符，默认 <code>max_observation_length=100_000</code> 会拦腰斩断 → 模型收到烂图但<strong>不报错</strong>（静默失败，表现为「看图瞎说」）</td><td><code>max_observation_length: 10_000_000</code>（官方 mm 配置同款）；W0 用 inspector 肉眼核对第一帧真的完整进了消息</td></tr>
+      <tr><td>②</td><td><strong>vLLM 默认每 prompt 只收 1 张图</strong>：第 2 帧直接 400</td><td><code>--limit-mm-per-prompt '{"image": 8}'</code>（§5.2）</td></tr>
+      <tr><td>③</td><td><strong>钱闸秒杀</strong>：不置 0 的话，litellm 对本地模型算不出成本，直接 <code>ModelConfigurationError</code></td><td>§5.3 的 ①②③ 三件套一次配齐</td></tr>
+      <tr><td>④</td><td><strong><code>:9200</code> 单会话 vs <code>--num_workers &gt; 1</code></strong>：auto_host 一次只服务一个 episode，并发会互相踩</td><td>v1 一律 <code>--num_workers 1</code>（rand100 串行一夜可跑完）；将来要并发就起 auto_host 池（9200+i），装配器把端口写进各集 <code>.nav/config.json</code></td></tr>
+      <tr><td>⑤</td><td><strong>容器打不到宿主机 <code>:9200</code></strong></td><td>Linux 用 <code>docker_args: ["--network","host"]</code>；不行再 <code>--add-host host.docker.internal:host-gateway</code> + CLI 里换域名</td></tr>
+      <tr><td>⑥</td><td><strong>litellm 版本路由</strong>：老版本没有 <code>hosted_vllm/</code> 前缀</td><td>回退 <code>openai/</code> 前缀 + <code>api_key: EMPTY</code></td></tr>
+      <tr><td>⑦</td><td><strong>Qwen 图像消息格式</strong>：litellm → OpenAI 兼容 <code>image_url</code>（data URI）→ vLLM chat template，理论直通</td><td>W0 冒烟第一件事验证；出问题优先查 vLLM 端 chat template 而不是 SWE-agent 端</td></tr>
+      <tr><td>⑧</td><td><strong>重跑不生效</strong>：<code>redo_existing=False</code> 默认跳过已有结果</td><td>改配置后重跑要换 output 目录或加 <code>--redo_existing</code></td></tr>
+      <tr><td>⑨</td><td><strong>LocalDeployment 的诱惑</strong>：零容器很省事，但 workspace 会被放到宿主机根目录 <code>/{repo_name}</code>，且 agent 的 bash 直接跑在你机器上</td><td>L1/L2（nav-only 工具臂）勉强可用；<strong>L3 free-bash 臂必须 docker</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="9-refs"><span class="num">9.</span> 参考</h2>
+  <p><strong>本文断言的源码出处</strong>（<code>../SWE-agent</code> @ 1132b3e8）：</p>
+  <ul>
+    <li>主循环与错误分诊：<code>sweagent/agent/agents.py:1062</code>（forward_with_handling）、<code>:1235</code>（step）、<code>:1265</code>（run）；模板配置 <code>:60</code>（TemplateConfig）</li>
+    <li>模型层：<code>sweagent/agent/models.py:66</code>（GenericAPIModelConfig 全字段）、<code>:578</code>（LiteLLMModel）、cost 异常分支约 <code>:744</code>（「local models… set to 0」原话）</li>
+    <li>工具系统：<code>sweagent/tools/tools.py:29</code>（blocklist）、<code>:292</code>（安装即 PATH）、<code>:337</code>（state 机制）；bundle 实例 <code>tools/windowed/config.yaml</code>、<code>tools/image_tools/bin/view_image</code></li>
+    <li>解析器：<code>sweagent/tools/parsing.py:109</code>（ThoughtActionParser 及 11 种全家）</li>
+    <li>上下文：<code>sweagent/agent/history_processors.py:85</code>（LastNObservations）、<code>:340</code>（ImageParsingHistoryProcessor）</li>
+    <li>环境：<code>sweagent/environment/swe_env.py:197</code>（communicate）、<code>sweagent/environment/repo.py:109</code>（LocalRepo 上传到 /{repo_name}）</li>
+    <li>批跑：<code>sweagent/run/batch_instances.py:87</code>（SimpleBatchInstance 与 extra_fields 进模板）、<code>sweagent/run/run_batch.py:83</code>（redo_existing）、hooks 接口 <code>sweagent/run/hooks/abstract.py</code></li>
+    <li>多模态抄作业：<code>config/default_mm_with_images.yaml</code>；本地模型官方说法：<code>docs/config/models.md</code>、<code>docs/installation/keys.md</code></li>
+  </ul>
+  <p><strong>外部</strong>：<a href="https://arxiv.org/abs/2405.15793">SWE-agent 论文</a> (24.05) · <a href="https://swe-agent.com/latest/">SWE-agent docs</a> · <a href="https://github.com/SWE-agent/mini-swe-agent">mini-swe-agent</a> · <a href="https://github.com/SWE-agent/SWE-ReX">SWE-ReX</a> · <a href="https://docs.litellm.ai/docs/providers">LiteLLM providers</a> · <a href="https://docs.vllm.ai/">vLLM docs</a>（multimodal inputs / tool calling）</p>
+  <p><strong>系列</strong>：<a href="zh-1-project-plan.html">zh-1 · CAN 项目计划</a>（研究什么、为什么）→ 本文（怎么搭）；概念背景见 <a href="../beta/zh-4-agent-vs-coding-agent.html">beta zh-4 · Agent vs Coding Agent</a>；参照实现见 <code>beta-coding-agent/README.md</code>。</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-tldr">1. TL;DR：五问五答</a>
+      <a class="toc-h2" href="#2-what">2. SWE-agent 是什么</a>
+      <a class="toc-h3" href="#21-position">2.1 定位：ACI 论文长成的通用 agent 脚手架</a>
+      <a class="toc-h3" href="#22-family">2.2 家族三件套</a>
+      <a class="toc-h3" href="#23-warning">2.3 必须知道的红头警告</a>
+      <a class="toc-h2" href="#3-anatomy">3. 仓库解剖：一步的旅程与六大器官</a>
+      <a class="toc-h3" href="#31-loop">3.1 主循环与错误分诊（agents.py，1294 行）</a>
+      <a class="toc-h3" href="#32-model">3.2 模型层（models.py，903 行）：LiteLLM 一层抽象</a>
+      <a class="toc-h3" href="#33-tools">3.3 工具系统（tools/，15 个 bundle）：工具 = PATH 上的可执行文件</a>
+      <a class="toc-h3" href="#34-parser">3.4 动作解析器（parsing.py，11 种）：小模型的第一开关</a>
+      <a class="toc-h3" href="#35-history">3.5 上下文管理（history_processors.py，7 种）：删除式，没有摘要式</a>
+      <a class="toc-h3" href="#36-env">3.6 环境层（swe_env.py，276 行 + SWE-ReX）</a>
+      <a class="toc-h3" href="#37-mm">3.7 多模态管线：全仓库对我们最值钱的 60 行</a>
+      <a class="toc-h3" href="#38-batch">3.8 批跑、轨迹与观测（run/）</a>
+      <a class="toc-h2" href="#4-mapping">4. 对照 beta-coding-agent：两个世界的部件映射</a>
+      <a class="toc-h3" href="#43-prompt">4.3 导航版模板草稿（唯一真正的 prompt 工程）</a>
+      <a class="toc-h2" href="#5-qwen">5. Qwen3.5（你说的 8B 档）怎么接</a>
+      <a class="toc-h3" href="#51-size">5.1 尺寸澄清与能力底线</a>
+      <a class="toc-h3" href="#52-vllm">5.2 vLLM 侧：一条命令 + 两个坑位参数</a>
+      <a class="toc-h3" href="#53-swea">5.3 SWE-agent 侧：模型配置四件事</a>
+      <a class="toc-h3" href="#54-tokens">5.4 图像 token 账：为什么留 5 帧</a>
+      <a class="toc-h3" href="#55-format">5.5 W0 头号测量项：格式遵从率</a>
+      <a class="toc-h2" href="#6-steps">6. 动手路线：七步到第一集</a>
+      <a class="toc-h3" href="#62-nav">6.2 nav CLI 设计要点（Step 2 的灵魂）</a>
+      <a class="toc-h3" href="#63-glue">6.3 剩余的胶水配置（Step 3–5 代码块）</a>
+      <a class="toc-h2" href="#7-choice">7. 选型再校准：full 还是 mini（对 zh-1 决策点 #2 的修订建议）</a>
+      <a class="toc-h2" href="#8-pitfalls">8. 坑清单（按踩中概率排序）</a>
+      <a class="toc-h2" href="#9-refs">9. 参考</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

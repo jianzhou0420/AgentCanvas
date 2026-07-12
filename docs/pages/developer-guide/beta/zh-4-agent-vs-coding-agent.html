@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>普通 Agent vs Coding Agent：差在哪里 — AgentCanvas</title>
+<meta name="description" content="同是 LLM + 工具 + 循环，为什么 coding agent 跑得更远 —— 行动空间、反馈回路、harness 与失败模式的完整对比。">
+<meta property="og:title" content="普通 Agent vs Coding Agent：差在哪里 — AgentCanvas">
+<meta property="og:description" content="同是 LLM + 工具 + 循环，为什么 coding agent 跑得更远 —— 行动空间、反馈回路、harness 与失败模式的完整对比。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/beta/zh-4-agent-vs-coding-agent.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="中文 · Agent vs Coding Agent">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/beta/zh-4-agent-vs-coding-agent.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body beta">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    Beta
+    <span class="sep">/</span>
+    <span class="here">中文 · Agent vs Coding Agent</span>
+  </div>
+</div>
+  <header class="page-header beta">
+    <h1>普通 Agent vs Coding Agent：差在哪里</h1>
+    <p class="tagline">同是 LLM + 工具 + 循环，为什么 coding agent 跑得更远 —— 行动空间、反馈回路、harness 与失败模式的完整对比。</p>
+  </header>
+
+  <p class="lede">这是系列里的<strong>概念篇</strong>：把"普通 agent"（固定工具集 / 预定义流程的 LLM agent，比如本仓库的图式 MapGPT）和 "coding agent"（Claude Code 这类在 repo + 终端里长循环工作的 agent）放在一起，从定义、行动空间、反馈回路、harness、失败模式五个维度拆开对比，最后回到本仓库的两条实验路线 —— 它们恰好是这场辩论的两个立场。系列文档：<a href="zh-1-overview.html">仓库概览</a> · <a href="zh-2-beta-agent.html">跑 Beta Agent</a> · <a href="zh-3-mapgpt.html">MapGPT 流程</a> · 本篇。</p>
+
+  <h2 id="1-define"><span class="num">1.</span> 先把词定准</h2>
+  <p>Anthropic 在 <a href="https://www.anthropic.com/research/building-effective-agents">Building Effective AI Agents</a> 里给了一个被业界广泛采用的二分：</p>
+  <ul>
+    <li><strong>Workflow</strong>：LLM 和工具沿<strong>预定义的代码路径</strong>被编排 —— 走哪条分支、调哪个工具，是开发者写死的。</li>
+    <li><strong>Agent</strong>：LLM <strong>动态决定自己的流程和工具用法</strong>，自己掌控怎么完成任务。其运行时本质是一句话："LLM 在循环里根据环境反馈使用工具"。</li>
+  </ul>
+  <p>日常说的"普通 agent"其实横跨这两类：(a) 固定流水线的 workflow agent —— RAG 问答、客服 bot、MapGPT 这类 prompting pipeline；(b) 通用任务 agent —— research agent、computer-use agent、具身 agent —— 它们有循环，但工具集是设计者<strong>预先圈定的 N 个 API</strong>。</p>
+  <p><strong>Coding agent</strong> 是 agent 的一个特化：环境换成 repo / 终端 / IDE / 沙盒，工具换成"读写文件 + 执行命令 + 跑测试"。骨架仍是 ReAct 循环（推理 → 行动 → 观察 → 再推理），但两样东西完全不在一个量级上：<strong>行动空间</strong>和<strong>反馈密度</strong>。</p>
+  <div class="callout note"><p><strong>核心论点先亮出来。</strong>普通 agent 和 coding agent 的区别不在"会不会写代码"，而在两点：① 行动空间是封闭的（预定义工具清单）还是开放的（运行时自己造工具）；② 环境给不给<strong>客观、即时、机器可读</strong>的反馈。后面所有差异都是这两点的推论。</p></div>
+
+  <h2 id="2-table"><span class="num">2.</span> 一张表看核心区别</h2>
+  <table>
+    <thead><tr><th>维度</th><th>普通 agent</th><th>Coding agent</th></tr></thead>
+    <tbody>
+      <tr><td><strong>行动空间</strong></td><td>预定义 N 个工具；能力上限 = 工具设计时的预想</td><td>"写并执行代码"是元工具；运行时可造新工具，行动空间图灵完备</td></tr>
+      <tr><td><strong>世界状态</strong></td><td>散在对话上下文和外部 API 里，易失、不可检查</td><td>文件系统：持久、可 diff、可回滚（git）、可随时检查</td></tr>
+      <tr><td><strong>反馈信号</strong></td><td>稀疏、常为主观（搜索结果相关吗？邮件写得好吗？）</td><td>密集、客观、机器可读：编译错误、测试红绿、类型检查、栈回溯</td></tr>
+      <tr><td><strong>验证方式</strong></td><td>LLM 自评或人工审核</td><td>环境本身就是验证器：跑测试 / 构建 / linter 即验证</td></tr>
+      <tr><td><strong>循环长度</strong></td><td>短（几步到几十步），漂移难纠正</td><td>长（数百次工具调用），错误被环境即时纠偏</td></tr>
+      <tr><td><strong>Harness</strong></td><td>通常只有 prompt 模板 + 工具 schema + 步数上限</td><td>六大组件：repo 上下文、缓存分层、工具校验、上下文压缩、会话记忆、子 agent（<a href="#5-harness">§5</a>）</td></tr>
+      <tr><td><strong>典型失败</strong></td><td>幻觉不被环境揭穿、计划漂移、工具误用</td><td>代码层错误必被揭穿；业务层错误反馈稀疏 → 过度自信（<a href="#6-failure">§6</a>）</td></tr>
+      <tr><td><strong>代表</strong></td><td>客服 bot、research agent、computer-use、图式 VLN agent</td><td>Claude Code、Codex、Cursor / Devin 一类</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="3-action-space"><span class="num">3.</span> 行动空间：固定工具集 vs 图灵完备</h2>
+  <p>普通 agent 的能力被工具清单封顶：工具设计者没预想到的动作，它做不了；每进一个新领域，就得给它配一套新工具、造一个新 agent 变体 —— 于是有了 research agent、finance agent、marketing agent 这种"一域一 agent"的格局。</p>
+  <p>Coding agent 只需要一个<strong>元工具</strong>："写代码并执行"。<a href="https://arxiv.org/abs/2604.13107">Can Coding Agents be General Agents?</a> (26.04) 把这一点作为定义性特征：coding agent <em>不局限于预定义工具集，而是在运行时编写、执行、调试自己的脚本</em>。缺一个 CSV 解析器？现写一个。API 没有封装好的 SDK？直接 <code>curl</code> + 解析。这让行动空间在理论上图灵完备 —— 能力上限从"工具清单"变成"模型智力 + 环境权限"。</p>
+  <p>这也是 Anthropic 近来力推 "code execution as the core integration mechanism" 的逻辑（见 <a href="https://cobusgreyling.substack.com/p/anthropic-says-coding-agents-are">Cobus Greyling 的综述</a>）：领域需求从"永久的专用 agent 变体"退化成"一段临时代码"—— 用完即弃，不留维护负担。MCP 生态同样在往"用代码执行包装工具调用"的方向收敛。</p>
+
+  <h2 id="4-feedback"><span class="num">4.</span> 反馈回路：coding agent 真正的护城河</h2>
+  <p>Anthropic 那篇指南里最重要的一句话是：agent 执行期间，<strong>每一步都要能从环境获得 ground truth</strong>（工具返回值、代码执行结果）来评估进度 —— 循环没有真实反馈就只是在自说自话。</p>
+  <p>编码环境是数字世界里罕见的<strong>高密度客观反馈</strong>环境：</p>
+  <ul>
+    <li><strong>即时</strong>：写完就能跑，错误秒级返回；</li>
+    <li><strong>免费</strong>：跑测试 / 编译不需要人参与；</li>
+    <li><strong>机器可读且可定位</strong>：栈回溯带文件名和行号，测试红绿是二值信号；</li>
+    <li><strong>可回滚</strong>：git 让任何失败的尝试都可以无损撤销。</li>
+  </ul>
+  <p>ReAct 循环因此获得了<strong>自愈能力</strong>：写 → 跑 → 读错误 → 修，每一圈都在收敛。而普通 agent 的环境大多没有"错误信号"这种东西 —— 搜索结果不会报异常，发出去的邮件不会抛栈 —— 动作的后果延迟且主观，循环越长漂移越远。这解释了行业时间线：为什么第一个真正落地的自主 agent 品类是 coding agent，为什么 SWE-bench 式的数小时长任务最先在编码领域被攻克 —— 不是因为编码简单，而是因为编码环境替 agent 承担了验证工作（tests、linters、type checkers、runtime traces 全是免费的批评家）。</p>
+
+  <h2 id="5-harness"><span class="num">5.</span> Harness：coding agent 不只是"模型 + prompt"</h2>
+  <p>Sebastian Raschka 在 <a href="https://magazine.sebastianraschka.com/p/components-of-a-coding-agent">Components of a Coding Agent</a> 里把一个现代 coding agent（Claude Code / Codex 类）拆成六个工程组件 —— 每一个都是普通 agent 框架里通常没有的：</p>
+  <table>
+    <thead><tr><th>组件</th><th>做什么</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1. Live repo context</strong></td><td>开工先摄取 git status、分支、项目文档（CLAUDE.md 等），而不是每个 prompt 从零开始。</td></tr>
+      <tr><td><strong>2. Prompt 分层与缓存</strong></td><td>稳定段（系统指令、工具描述、workspace 摘要）与易变段（转录、当前请求）分离，最大化 KV cache 复用。</td></tr>
+      <tr><td><strong>3. 工具校验层</strong></td><td>模型输出结构化工具调用 → 参数校验 → 权限门 → 执行 → 结果回灌；不是让模型在散文里"建议命令"。</td></tr>
+      <tr><td><strong>4. 上下文缩减</strong></td><td>裁剪冗长日志、去重旧的文件读取、压缩转录 —— 主动管理上下文而非被动堆长。</td></tr>
+      <tr><td><strong>5. 双层会话记忆</strong></td><td>working memory（当前状态蒸馏）+ 完整 transcript（可恢复的历史），支持断点续作。</td></tr>
+      <tr><td><strong>6. 有界子 agent</strong></td><td>把子任务委派给上下文受限的 child agent，防止重复劳动和递归失控。</td></tr>
+    </tbody>
+  </table>
+  <p>Raschka 的点睛之句：<em>好的 coding harness 能让同一个模型显得比聊天框里强得多</em> —— 实际能力来自"模型 × 系统"，而不只是模型。相比之下，普通 agent 框架的 harness 往往只有 prompt 模板、工具 schema 和一个步数上限。</p>
+
+  <h2 id="6-failure"><span class="num">6.</span> 失败模式：两边各有各的坑</h2>
+  <p>普通 agent 的经典failure：幻觉难以被环境证伪（编造的"事实"没有编译器来揭穿）、长循环计划漂移、工具误用只能靠盲目重试。</p>
+  <p>Coding agent 的失败面更微妙。<a href="https://arxiv.org/abs/2604.13107">Can Coding Agents be General Agents?</a> (26.04) 把 Claude Sonnet 4.5 和 GPT-5 放进 Odoo ERP 里跑 20 个业务场景，归纳出四种失败模式：</p>
+  <ul class="numbered-list">
+    <li><strong>偷懒的代码启发式</strong>：理解了政策，实现却走捷径 —— 比如按供应商名字而不是国家码过滤。</li>
+    <li><strong>业务层幻觉</strong>：先臆想出系统里不存在的功能，再基于臆想写出<em>能正常运行</em>的代码。</li>
+    <li><strong>约束丢失</strong>：多步推理途中悄悄丢掉规则手册里的显式约束。</li>
+    <li><strong>过度自信 / specification gaming</strong>：无论实际对错，一律报告成功 —— 优化的是"代码跑通"这个可测信号，而非业务正确性。</li>
+  </ul>
+  <p>论文对根因的诊断值得背下来：<strong>反馈不对称</strong>（asymmetry in the feedback profile）。代码层错误有具体信号（异常、报错载荷），业务层错误几乎没有信号 —— ERP 校验格式但不校验政策合规。环境长期只惩罚前者，就等于在教 agent"执行成功 = 任务成功"。</p>
+  <div class="callout warn"><p><strong>推论。</strong>Coding agent 的强来自反馈回路，不来自它自己。把它放进反馈稀疏的领域，它就退化成普通 agent —— 而且还带着编码环境养成的过度自信。</p></div>
+
+  <h2 id="7-general"><span class="num">7.</span> "Coding agent 会吃掉普通 agent 吗"</h2>
+  <p><strong>正方</strong>（Anthropic 及其生态的叙事）：代码是通用接口 —— Claude Code 已被大量用于读文档、分析指标、写报告等非编码任务；与其为每个领域维护一个专用 agent，不如让 coding agent 现场写代码解决。专用 agent 变体 → 临时代码实现，"universal everything agent"。</p>
+  <p><strong>反方</strong>（同一篇论文的实验数据）：10 个简单 ERP 场景里 Sonnet 4.5 稳定拿 80% 以上；但一旦场景需要 5+ 个决策、5+ 条约束，两个前沿模型都显著崩坏。业务—代码之间的翻译鸿沟（理解模糊需求 → 领域规划 → 政策合规）目前没有被行动空间的开放性解决。</p>
+  <p><strong>折中判断</strong>：coding agent 是目前最好的<strong>通用 agent 底座</strong> —— 开放行动空间 + 最成熟的 harness 工程；但它的通用性上限取决于目标领域<strong>能否提供可验证反馈</strong>。能"写个单测"的领域会最先被吃掉；反馈稀疏的领域（复杂业务决策、具身导航）短期内仍需要领域结构来补反馈 —— 也就是普通 agent / workflow 擅长的事。</p>
+
+  <h2 id="8-repo"><span class="num">8.</span> 对照本仓库：两条路线就是这场辩论的两个立场</h2>
+  <table>
+    <thead><tr><th></th><th><a href="zh-3-mapgpt.html">MapGPT 图</a>（正统玩法）</th><th><a href="zh-2-beta-agent.html">beta-coding-agent</a>（对照实验）</th></tr></thead>
+    <tbody>
+      <tr><td><strong>立场</strong></td><td>普通 agent / workflow：方法逻辑固化成类型化的图</td><td>coding agent 当通用 agent 用：零具身特化的 Claude SDK 会话</td></tr>
+      <tr><td><strong>行动空间</strong></td><td>预定义节点 + 连线；LLM 只是图里一个 <code>llmCall</code> 节点</td><td>ReAct 循环自主决策，但工具被锁成 <code>observe</code> / <code>step</code> / <code>look_around</code> 三个</td></tr>
+      <tr><td><strong>领域知识来源</strong></td><td>图结构本身（地图提示、动作解析全在节点里）</td><td>skills（纯 prompt 的导航策略）+ 模型先验</td></tr>
+      <tr><td><strong>可复现性</strong></td><td>one JSON = one agent，profile 换模型即可复跑</td><td>每集一个干净会话，靠 driver 侧统一评测对齐</td></tr>
+    </tbody>
+  </table>
+  <p>两个值得点破的细节：</p>
+  <ul>
+    <li><strong>beta agent 其实是"剥掉了代码工具的 coding agent"。</strong>它 <code>tools=[]</code>（没有 Bash、没有文件系统），继承的是 coding agent 的 <em>harness 与长循环能力</em> —— SDK 的上下文管理、结构化工具调用、skills 机制 —— 而不是"写代码"本身。用 <a href="#1-define">§1</a> 的语言说：它保留了开放的<em>决策</em>空间，但行动空间被刻意封死成 3 个工具。</li>
+    <li><strong>R2R-CE 恰好是 <a href="#6-failure">§6</a> 说的"反馈稀疏"象限。</strong>Agent 只有第一人称 RGB，没有分数、位姿、地图反馈；成功要靠自己在目标 3 m 内主动 STOP —— 环境不会告诉它"你走错了"。这正是 coding agent 护城河（密集客观反馈）完全失效的领域，所以 skills 和 STOP 确认门这类 <em>harness 层</em>设计才对得分影响巨大。这个 beta 实验有意思的地方就在于：它把"coding agent 能当通用 agent"的论断放到最不利的领域去检验。</li>
+  </ul>
+
+  <h2 id="9-refs"><span class="num">9.</span> 参考</h2>
+  <ul>
+    <li><a href="https://www.anthropic.com/research/building-effective-agents">Anthropic — Building Effective AI Agents</a>（workflow vs agent 的原始定义）</li>
+    <li><a href="https://magazine.sebastianraschka.com/p/components-of-a-coding-agent">Sebastian Raschka — Components of a Coding Agent</a>（harness 六组件）</li>
+    <li><a href="https://arxiv.org/abs/2604.13107">Can Coding Agents be General Agents?</a> (26.04)（Odoo ERP 实验、四种失败模式、反馈不对称）</li>
+    <li><a href="https://cobusgreyling.substack.com/p/anthropic-says-coding-agents-are">Cobus Greyling — Coding Agents Are Becoming the Universal Everything Agent</a>（code as universal interface 叙事）</li>
+    <li><a href="https://www.mindstudio.ai/blog/what-is-an-agentic-loop-ai-coding-agents">MindStudio — What Is an Agentic Loop?</a>（ReAct 循环与反馈）</li>
+    <li><a href="https://dev.to/monuminu/inside-the-agentic-loop-a-deep-technical-dive-into-ai-coding-agents-claude-code-and-the-4pnf">Inside the Agentic Loop — Claude Code 架构拆解</a></li>
+    <li><a href="https://toloka.ai/blog/ai-coding-agents-what-they-are-how-they-work-and-how-to-build-one/">Toloka — AI coding agents: what they are and how they work</a></li>
+    <li><a href="https://cloud.google.com/discover/what-is-agentic-coding">Google Cloud — What is agentic coding?</a></li>
+  </ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-define">1. 先把词定准</a>
+      <a class="toc-h2" href="#2-table">2. 一张表看核心区别</a>
+      <a class="toc-h2" href="#3-action-space">3. 行动空间：固定工具集 vs 图灵完备</a>
+      <a class="toc-h2" href="#4-feedback">4. 反馈回路：coding agent 真正的护城河</a>
+      <a class="toc-h2" href="#5-harness">5. Harness：coding agent 不只是"模型 + prompt"</a>
+      <a class="toc-h2" href="#6-failure">6. 失败模式：两边各有各的坑</a>
+      <a class="toc-h2" href="#7-general">7. "Coding agent 会吃掉普通 agent 吗"</a>
+      <a class="toc-h2" href="#8-repo">8. 对照本仓库：两条路线就是这场辩论的两个立场</a>
+      <a class="toc-h2" href="#9-refs">9. 参考</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>
