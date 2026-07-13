@@ -92,12 +92,19 @@ _t0 = time.time()
 _start_pos: list[float] | None = None
 
 
-def _live_frame(png: bytes) -> None:
+def _live_frame(png: bytes, *, suffix: str = "", latest: bool = True) -> None:
+    """Write one spectator frame. ``suffix`` distinguishes the paired depth frame
+    (``_depth``) from its RGB frame under the SAME obs index — the backend sorts
+    ``obs_*.png`` lexically, and '.' < '_' keeps the RGB tile before its depth
+    tile and both before the next obs. ``latest`` only the RGB updates the live
+    ``latest.png`` thumbnail."""
     if LIVE_DIR is None:
         return
     LIVE_DIR.mkdir(parents=True, exist_ok=True)
-    (LIVE_DIR / f"obs_{_obs_count:04d}_step{_steps_taken:03d}.png").write_bytes(png)
-    (LIVE_DIR / "latest.png").write_bytes(png)
+    fname = f"obs_{_obs_count:04d}_step{_steps_taken:03d}{suffix}.png"
+    (LIVE_DIR / fname).write_bytes(png)
+    if latest:
+        (LIVE_DIR / "latest.png").write_bytes(png)
 
 
 def _live_log(entry: dict[str, Any]) -> None:
@@ -239,7 +246,12 @@ def observe() -> list:
     _live_frame(ego["rgb_png"])
     content: list = [Image(data=ego["rgb_png"], format="png")]
     if ego["depth_m"] is not None:
-        content.append(Image(data=_depth_png(ego["depth_m"]), format="png"))
+        depth_png = _depth_png(ego["depth_m"])
+        # second spectator frame so the Monitor shows depth inline and the frame
+        # count matches the two image blocks (else the depth tile reads "frame
+        # pending" and the cursor desyncs for every later observe).
+        _live_frame(depth_png, suffix="_depth", latest=False)
+        content.append(Image(data=depth_png, format="png"))
     content.append(_spatial_text(ego))
     return content
 
