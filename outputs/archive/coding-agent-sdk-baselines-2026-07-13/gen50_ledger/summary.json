@@ -1,0 +1,2994 @@
+{
+  "run_name": "gen50_ledger",
+  "config": {
+    "server_url": "http://127.0.0.1:9200",
+    "server_urls": "http://127.0.0.1:9200,http://127.0.0.1:9201,http://127.0.0.1:9202,http://127.0.0.1:9203,http://127.0.0.1:9204,http://127.0.0.1:9205,http://127.0.0.1:9206,http://127.0.0.1:9207,http://127.0.0.1:9208,http://127.0.0.1:9209",
+    "dataset": "R2R-CE",
+    "split": "rand100",
+    "episodes": "0-49",
+    "max_turns": 80,
+    "step_budget": 500,
+    "episode_timeout": 2400,
+    "model": "claude-sonnet-5",
+    "run_name": "gen50_ledger",
+    "rgb_resolution": 512,
+    "skill": "ledger-nav",
+    "skill_text": "# LedgerNav \u2014 navigate like you code\n\nYou have two tools: `observe()` (egocentric RGB) and `step(actions)` (0=STOP,\n1=forward **0.25 m**, 2=left **15\u00b0**, 3=right **15\u00b0**). Three facts make you\ndifferent from every prior VLN prompting method, and this algorithm is built\non all three:\n\n1. **Your actions are metric.** You can compute your own position by\n   arithmetic. Do it \u2014 you are good at arithmetic.\n2. **Every frame you ever observed is still in your context.** You never need\n   to describe-and-store what you saw; you need an INDEX that lets you find\n   and re-look at the right frame later.\n3. **You can verify.** Treat navigation like code: every move is a change,\n   every observation is a test run, and STOP is a release \u2014 releases require\n   passing tests.\n\n## The Ledger (update after EVERY tool call, keep in every reply)\n\n```\nPose: x=+2.50 y=-1.25 \u03b8=90\u00b0   steps_used=68/500  decisions_used=9/~35\nFrames:\n  #0  t0  (0.0,0.0,0\u00b0)    start: pool ahead              LANDMARK \"pool\"\n  #3  t4  (2.5,0.0,0\u00b0)    bar room entrance, junction    JUNCTION J1\n  #5  t6  (2.5,-1.0,90\u00b0)  counter left, chairs right     LANDMARK \"bar\",\"chairs\"\n  #7  t9  (4.0,-1.0,90\u00b0)  counter END visible ~2m        GOAL-CANDIDATE \u26050.8\nJunctions:\n  J1 @(2.5,0.0): exits 0\u00b0(taken) \u00b7 90\u00b0(taken) \u00b7 270\u00b0 dark hallway (UNTRIED)\nBest-stop: frame #7, pose (4.0,-1.0), score 0.8 \u2014 \"corner where counter ends\"\nPlan: advance 1.5m along counter, EXPECT counter edge fills left frame\nProgress: \"past the pool\" \u2713 \u00b7 \"between bar and chairs\" \u2713 \u00b7 \"corner\" DOING\n```\n\n**Pose arithmetic** (do it silently, exactly): left(2) adds 15\u00b0 to \u03b8,\nright(3) subtracts 15\u00b0; forward(1) adds (0.25\u00b7cos\u03b8, 0.25\u00b7sin\u03b8) with \u03b8=0\u00b0\npointing along your initial facing. Round to centimeters. The simulator\nslides along obstacles \u2014 if a view barely changes after forward steps,\nmark `[BLOCKED]`, trust the pose less, and re-anchor: match the current\nview against a ledger frame and reset your confidence from there.\n\n**Frames** get one line each: id, turn, pose, \u22646-word gist, plus flags \u2014\n`LANDMARK` when it shows something the instruction names, `JUNCTION` when\nmultiple ways forward exist, `GOAL-CANDIDATE \u2605score` when it could be the\nfinal stopping place. The gist is a retrieval key, not a description: when\nyou need detail, scroll up and RE-READ the actual image. Never re-observe\nwhat you can re-look at.\n\n**Junctions** list untried exits with bearings. With pose coordinates you can\nalways compute the turn-and-walk sequence back to any junction \u2014 backtracking\nis arithmetic, not luck.\n\n**Best-stop** is the single most important register. The moment any frame\nlooks like the instruction's endpoint, score it (0-1) and record it. You are\nnever lost while this register is full: the worst case is \"return and stop\".\n\n## The loop: predict \u2192 execute \u2192 verify\n\nOne decision per turn, always in this shape:\n\n1. **Predict**: pick ONE leg (advance to X / turn to bearing \u03b2 and cross to\n   J2 / return to best-stop) and write the expectation:\n   `EXPECT: after step([...]) I see <specific thing>`.\n2. **Execute in one batch**: full legs, not twitches \u2014 face the bearing\n   (n\u00d715\u00b0), walk it (m\u00d70.25 m, usually 8-16 forwards), then `observe()`.\n   A 15\u00b0-turn-then-look turn is a wasted decision; you have ~35, spend them\n   on legs.\n3. **Verify**: grade your own expectation \u2713/\u2717 against the new frame, update\n   Ledger + Progress. **Two consecutive \u2717 = navigation error**: stop\n   predicting forward progress, pick the best UNTRIED junction exit (or\n   best-stop if score \u22650.6), compute the return leg from poses, execute it.\n\nScan policy: corridors get zero scans \u2014 just look ahead. At a JUNCTION, a\nroom entry, or whenever the right way forward is not obvious, call\n`look_around()`: ONE tool call returning four labeled views (ahead / right\n+90\u00b0 / behind +180\u00b0 / left +270\u00b0) with your heading restored automatically\n(\u03b8 unchanged; costs ~24 low-level turn steps, which you can afford). Log\nevery exit it reveals as a Junction entry. Never burn tool calls turning\n15\u00b0 at a time to scan \u2014 that is the single most common way to waste your\nbudget.\n\n## Stopping \u2014 approach first, then a release checklist\n\n**SEEING IS NOT ARRIVING.** When you first recognize the goal object/place it\nis usually 4-8 m away; stopping there scores exactly zero, the same as never\nfinding it. You do not have to guess the distance: every observation and\nevery step result reports `clearance_m` \u2014 the REAL distance in meters to the\nnearest obstacle in the left/center/right thirds of the view (10.0 = open,\n\u226510 m). Between \"spotted\" and \"stop\" there is ALWAYS an approach phase:\n\n1. Turn until the goal sits in the CENTER third of the frame. Now\n   `clearance_m.center` IS your distance to it \u2014 trust the number over your\n   eyes.\n2. Declare `GOAL APPROACH: <center clearance> m` and walk most of it in one\n   leg: 4\u00d7(clearance \u2212 1.5) forward steps (0.25 m each), then re-observe.\n3. Close the rest in short legs (2-4 steps + observe), re-centering the goal\n   whenever it drifts off-center, until the CLOSE-ENOUGH test passes.\n\n**CLOSE-ENOUGH test \u2014 metric, on the CURRENT observation, never from memory:**\n- goal is an object/furniture: it is in the center third and\n  `clearance_m.center \u2264 2.0`;\n- goal is a room / doorway / open area: you have already crossed its\n  threshold \u2014 you stand one or two steps INSIDE with the described\n  surroundings around you (clearance may legitimately read large here);\n- sanity check: if `clearance_m.center > 3.0` toward your believed goal\n  object, you are NOT close enough, no matter how big it looks.\n\n**Placing the final stop \u2014 close-enough means the NEIGHBORHOOD, not the\npoint.** Success is measured to one exact spot; a plausible stop 4 m from\nthe right spot scores the same zero as never arriving. When the test passes\nand `tool_calls_remaining > 15`, spend two of them on placement before\nstopping:\n\n1. `look_around()` once, and re-read the instruction's FINAL clause word by\n   word. Ask: within 2-3 m of me, is there a spot that matches that wording\n   better \u2014 the other corner, the doorway itself, right beside the named\n   furniture?\n2. Endpoint disambiguation rules, in order:\n   - Instructions describe a path; when several similar spots qualify (two\n     corners of the same bar, either side of a table), the endpoint is the\n     one FARTHER ALONG your direction of travel \u2014 the far corner you reach\n     last, not the near one you meet first.\n   - \"All the way\" / \"to the end\" wording means keep going until\n     `clearance_m.center < 1.5` in that corridor or room \u2014 the end is where\n     you physically cannot continue, not where the view got repetitive.\n   - Endpoints named \"door / doorway / entrance\" mean stand AT the opening\n     (clearance jumps open right through it), not in the room beyond and\n     not meters in front.\n3. Walk the 1-3 steps to the better spot if one exists, then `step([0])`.\n\nThe environment enforces this: while budget is rich, your first `step([0])`\nis WITHHELD and echoes this checklist back. That is not an error \u2014 do the\ncheck honestly (a rushed re-confirm just converts a fixable near-miss into\na zero), then `step([0])` again to execute.\n\nOnly when Progress is fully \u2713 AND the test passes (plus placement check if\nbudget allows): `step([0])`. Two symmetric ways to lose: stopping on sight\n(too far \u2014 the most common failure) and drifting past the goal \"to be sure\"\n(overshoot). The approach protocol prevents the first; stopping once\nplacement is checked prevents the second.\n\n**Termination is guaranteed by budget law.** The environment reports your\nreal budget in every `step()` result: `tool_calls_remaining` counts down to\nthe moment the session is killed. Obey it mechanically:\n\n- `tool_calls_remaining \u2264 20` (or a `BUDGET_WARNING` appears): exploration is\n  OVER. Commit to Best-stop, start the approach.\n- `BUDGET_WARNING` says CRITICAL: execute the terminal protocol THIS turn \u2014\n  navigate to Best-stop by dead reckoning (or stay, if the current spot scores\n  higher) and `step([0])`. No further observe calls, no second thoughts.\n\nEnding an episode without your own STOP is a bug, never an outcome \u2014 it\nscores zero even if you are standing on the goal. If Best-stop is empty\n(rare), stop at the most instruction-consistent place you can reach in two\nlegs.\n\n## Micro-example\n\n> \"Walk past the pool. Walk between the bar and chairs. Stop at the corner\n> of the bar.\"\n\nt1: observe \u2192 pool ahead \u2192 frame #0, LANDMARK. Predict: 12 forwards, EXPECT\nroom entrance. Execute `step([1\u00d712])`, observe.\nt2: entrance = #3 JUNCTION J1 (dark hallway at 270\u00b0 logged UNTRIED). Predict:\nturn to 90\u00b0, 8 forwards, EXPECT counter on left, chairs right. Execute, \u2713.\nt3: #5 confirms both LANDMARKs; counter END visible ahead, centered, and the\nstep result says `clearance_m: {center: 4.1}` \u2192 #7 GOAL-CANDIDATE \u26050.8,\nBest-stop set. `GOAL APPROACH: 4.1 m` \u2192 4\u00d7(4.1\u22121.5) \u2248 10 forwards, re-observe.\nt4: corner centered, `clearance_m.center = 1.6` \u2264 2.0 \u2014 CLOSE-ENOUGH passes,\nProgress all \u2713 \u2192 `step([0])`. Total: 5 decisions, ~30 env steps, one junction\nbanked untried and never needed."
+  },
+  "servers": [
+    "http://127.0.0.1:9200",
+    "http://127.0.0.1:9201",
+    "http://127.0.0.1:9202",
+    "http://127.0.0.1:9203",
+    "http://127.0.0.1:9204",
+    "http://127.0.0.1:9205",
+    "http://127.0.0.1:9206",
+    "http://127.0.0.1:9207",
+    "http://127.0.0.1:9208",
+    "http://127.0.0.1:9209"
+  ],
+  "aggregate": {
+    "episode_count": 50,
+    "distance_to_goal": 5.7299,
+    "success": 0.44,
+    "spl": 0.2951,
+    "ndtw": 0.4577,
+    "path_length": 15.9802,
+    "oracle_success": 0.54,
+    "steps_taken": 327.92,
+    "env_steps": 327.92,
+    "stop_rate": 1.0
+  },
+  "episodes": [
+    {
+      "index": 0,
+      "episode_id": "7",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait. ",
+      "metrics": {
+        "distance_to_goal": 3.959904193878174,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.7852575292833688,
+        "path_length": 6.500000417232513,
+        "oracle_success": 0.0,
+        "steps_taken": 113.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 7,
+          "step": 8
+        },
+        "env_steps": 113,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 19,
+        "duration_ms": 111810,
+        "usage": {
+          "input_tokens": 38,
+          "cache_creation_input_tokens": 10426,
+          "cache_read_input_tokens": 351451,
+          "output_tokens": 3818,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 10426,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 187,
+              "cache_read_input_tokens": 24427,
+              "cache_creation_input_tokens": 247,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 247
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.3762045,
+        "is_error": false
+      },
+      "wall_sec": 114.0
+    },
+    {
+      "index": 1,
+      "episode_id": "11",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk across the floor and wait the archway. ",
+      "metrics": {
+        "distance_to_goal": 5.269970893859863,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.5783914765426862,
+        "path_length": 4.943357914686203,
+        "oracle_success": 0.0,
+        "steps_taken": 117.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 6,
+          "step": 7
+        },
+        "env_steps": 117,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 17,
+        "duration_ms": 120285,
+        "usage": {
+          "input_tokens": 34,
+          "cache_creation_input_tokens": 10108,
+          "cache_read_input_tokens": 310236,
+          "output_tokens": 3471,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 10108,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 102,
+              "cache_read_input_tokens": 23534,
+              "cache_creation_input_tokens": 301,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 301
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.34372199999999997,
+        "is_error": false
+      },
+      "wall_sec": 122.3
+    },
+    {
+      "index": 2,
+      "episode_id": "13",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk passed the dining table and continue towards the kitchen. Walk through the kitchen passed the counters and stove and stop near the sink. ",
+      "metrics": {
+        "distance_to_goal": 4.7084574699401855,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.5941315588445367,
+        "path_length": 8.817029892466962,
+        "oracle_success": 0.0,
+        "steps_taken": 189.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 14,
+          "step": 15
+        },
+        "env_steps": 189,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 34,
+        "duration_ms": 163407,
+        "usage": {
+          "input_tokens": 68,
+          "cache_creation_input_tokens": 16959,
+          "cache_read_input_tokens": 743691,
+          "output_tokens": 4819,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 16959,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 119,
+              "cache_read_input_tokens": 30402,
+              "cache_creation_input_tokens": 315,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 315
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.6628295000000001,
+        "is_error": false
+      },
+      "wall_sec": 165.6
+    },
+    {
+      "index": 3,
+      "episode_id": "40",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk into the kitchen area. Walk by the sink and oven. Walk straight into the hallway. turn right into the little room. Turn left and walk into the bedroom. Stop by the corner of the bed. ",
+      "metrics": {
+        "distance_to_goal": 4.705508232116699,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.599497205087763,
+        "path_length": 27.786223106086254,
+        "oracle_success": 1.0,
+        "steps_taken": 355.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 30,
+          "step": 31
+        },
+        "env_steps": 355,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 67,
+        "duration_ms": 409744,
+        "usage": {
+          "input_tokens": 134,
+          "cache_creation_input_tokens": 33044,
+          "cache_read_input_tokens": 2009771,
+          "output_tokens": 10359,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 33044,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 105,
+              "cache_read_input_tokens": 46550,
+              "cache_creation_input_tokens": 274,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 274
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.5955495000000006,
+        "is_error": false
+      },
+      "wall_sec": 411.8
+    },
+    {
+      "index": 4,
+      "episode_id": "42",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk towards the kitchen area. Keep walking along the kitchen area towards the doorway. Turn right and exit the kitchen area walking across the small living room area and into the bedroom to you left. ",
+      "metrics": {
+        "distance_to_goal": 0.8348453640937805,
+        "success": 1.0,
+        "spl": 0.6262205739160355,
+        "ndtw": 0.7111642362055555,
+        "path_length": 23.893203638494015,
+        "oracle_success": 1.0,
+        "steps_taken": 407.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 26,
+          "step": 28
+        },
+        "env_steps": 407,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 62,
+        "duration_ms": 402585,
+        "usage": {
+          "input_tokens": 124,
+          "cache_creation_input_tokens": 34325,
+          "cache_read_input_tokens": 1955535,
+          "output_tokens": 11945,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 34325,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 70,
+              "cache_read_input_tokens": 47855,
+              "cache_creation_input_tokens": 246,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 246
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.6208365000000002,
+        "is_error": false
+      },
+      "wall_sec": 404.7
+    },
+    {
+      "index": 5,
+      "episode_id": "52",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Take a right at the large clock and travel straight through the kitchen, when you see the thermostat on the wall you are right next to the washroom. ",
+      "metrics": {
+        "distance_to_goal": 11.017924308776855,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.1745034647107516,
+        "path_length": 27.117411435116082,
+        "oracle_success": 0.0,
+        "steps_taken": 495.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 25,
+          "step": 29
+        },
+        "env_steps": 495,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 66,
+        "duration_ms": 456456,
+        "usage": {
+          "input_tokens": 132,
+          "cache_creation_input_tokens": 39206,
+          "cache_read_input_tokens": 2128803,
+          "output_tokens": 13169,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 39206,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 99,
+              "cache_read_input_tokens": 53112,
+              "cache_creation_input_tokens": 339,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 339
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.7869305,
+        "is_error": false
+      },
+      "wall_sec": 458.2
+    },
+    {
+      "index": 6,
+      "episode_id": "70",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Go through living room, through the door on the to the right, through the den, through the dining to, to the outdoor foyer. Stop before going outside. ",
+      "metrics": {
+        "distance_to_goal": 10.395837783813477,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.30510365787167765,
+        "path_length": 12.195683095604181,
+        "oracle_success": 0.0,
+        "steps_taken": 423.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 31,
+          "step": 35
+        },
+        "env_steps": 423,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 76,
+        "duration_ms": 530921,
+        "usage": {
+          "input_tokens": 152,
+          "cache_creation_input_tokens": 40814,
+          "cache_read_input_tokens": 2655310,
+          "output_tokens": 12819,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 40814,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 148,
+              "cache_read_input_tokens": 54581,
+              "cache_creation_input_tokens": 478,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 478
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.0576190000000008,
+        "is_error": false
+      },
+      "wall_sec": 533.1
+    },
+    {
+      "index": 7,
+      "episode_id": "94",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Walk forward, take a left around the corner and walk all the way to the end of the hallway, and stop at the door before the bedroom. ",
+      "metrics": {
+        "distance_to_goal": 14.481249809265137,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.12367999919149389,
+        "path_length": 4.698524221777916,
+        "oracle_success": 0.0,
+        "steps_taken": 139.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 12,
+          "step": 14
+        },
+        "env_steps": 139,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 30,
+        "duration_ms": 174767,
+        "usage": {
+          "input_tokens": 60,
+          "cache_creation_input_tokens": 15426,
+          "cache_read_input_tokens": 621788,
+          "output_tokens": 5360,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 15426,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 121,
+              "cache_read_input_tokens": 28937,
+              "cache_creation_input_tokens": 243,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 243
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.6000230000000001,
+        "is_error": false
+      },
+      "wall_sec": 176.9
+    },
+    {
+      "index": 8,
+      "episode_id": "116",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "you are in a closet, walk forward, turn right to walk out of closet into a bed room. turn right and see bath room, walk into bathroom and wait near the tub and sink. ",
+      "metrics": {
+        "distance_to_goal": 0.1308666467666626,
+        "success": 1.0,
+        "spl": 0.47136289066518783,
+        "ndtw": 0.7775465317330381,
+        "path_length": 11.934587493538857,
+        "oracle_success": 1.0,
+        "steps_taken": 346.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 24,
+          "step": 25
+        },
+        "env_steps": 346,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 58,
+        "duration_ms": 392974,
+        "usage": {
+          "input_tokens": 116,
+          "cache_creation_input_tokens": 32305,
+          "cache_read_input_tokens": 1706548,
+          "output_tokens": 10327,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 32305,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 141,
+              "cache_read_input_tokens": 45812,
+              "cache_creation_input_tokens": 261,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 261
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.4356579999999999,
+        "is_error": false
+      },
+      "wall_sec": 395.1
+    },
+    {
+      "index": 9,
+      "episode_id": "140",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk through the doorway to the right of the dining room table then go through the doorway by the flower pot.  Take the doorway directly left of the staircase and wait there. ",
+      "metrics": {
+        "distance_to_goal": 2.3873283863067627,
+        "success": 1.0,
+        "spl": 0.7909500074318395,
+        "ndtw": 0.7001092981494651,
+        "path_length": 16.901715522108134,
+        "oracle_success": 1.0,
+        "steps_taken": 406.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 30,
+          "step": 30
+        },
+        "env_steps": 406,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 69,
+        "duration_ms": 499906,
+        "usage": {
+          "input_tokens": 138,
+          "cache_creation_input_tokens": 41307,
+          "cache_read_input_tokens": 2332718,
+          "output_tokens": 16036,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 41307,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 127,
+              "cache_read_input_tokens": 55251,
+              "cache_creation_input_tokens": 309,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 309
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.9815980000000004,
+        "is_error": false
+      },
+      "wall_sec": 502.1
+    },
+    {
+      "index": 10,
+      "episode_id": "150",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Turn around and walk to the end of the bed. At the end of the bed turn right and walk to the hallway. Once at the entrance way, walk through the hallway to the next room. ",
+      "metrics": {
+        "distance_to_goal": 16.313379287719727,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.022933157904163205,
+        "path_length": 29.875840038061142,
+        "oracle_success": 1.0,
+        "steps_taken": 428.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 31,
+          "step": 34
+        },
+        "env_steps": 428,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 74,
+        "duration_ms": 490038,
+        "usage": {
+          "input_tokens": 148,
+          "cache_creation_input_tokens": 54349,
+          "cache_read_input_tokens": 2617060,
+          "output_tokens": 14682,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 54349,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 210,
+              "cache_read_input_tokens": 55204,
+              "cache_creation_input_tokens": 234,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 234
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.220389,
+        "is_error": false
+      },
+      "wall_sec": 492.2
+    },
+    {
+      "index": 11,
+      "episode_id": "156",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Leave the bathroom.  Go through the door straight across the hall walk straight through the kitchen.  Turn left at the end of the bar turn left again and go in the room to the right stand in between the closet and the sink. ",
+      "metrics": {
+        "distance_to_goal": 0.6742842793464661,
+        "success": 1.0,
+        "spl": 0.5227822899620483,
+        "ndtw": 0.7027737302175668,
+        "path_length": 22.910151027143,
+        "oracle_success": 1.0,
+        "steps_taken": 483.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 23,
+          "step": 26
+        },
+        "env_steps": 483,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 61,
+        "duration_ms": 460406,
+        "usage": {
+          "input_tokens": 122,
+          "cache_creation_input_tokens": 56220,
+          "cache_read_input_tokens": 2337450,
+          "output_tokens": 18588,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 56220,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 119,
+              "cache_read_input_tokens": 57044,
+              "cache_creation_input_tokens": 265,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 265
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.1968190000000005,
+        "is_error": false
+      },
+      "wall_sec": 462.4
+    },
+    {
+      "index": 12,
+      "episode_id": "166",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Go forward by the windows, and then stop by the lamp. ",
+      "metrics": {
+        "distance_to_goal": 1.0773975849151611,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.9117769115188645,
+        "path_length": 5.207803770899773,
+        "oracle_success": 1.0,
+        "steps_taken": 115.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 13,
+          "step": 15
+        },
+        "env_steps": 115,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 31,
+        "duration_ms": 175900,
+        "usage": {
+          "input_tokens": 62,
+          "cache_creation_input_tokens": 26589,
+          "cache_read_input_tokens": 623593,
+          "output_tokens": 4388,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 26589,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 131,
+              "cache_read_input_tokens": 27460,
+              "cache_creation_input_tokens": 218,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 218
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.6882755,
+        "is_error": false
+      },
+      "wall_sec": 178.0
+    },
+    {
+      "index": 13,
+      "episode_id": "171",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Head across the room towards the front door then turn left. Go up the stairs and turn right. Enter the bedroom then wait. ",
+      "metrics": {
+        "distance_to_goal": 0.4868761897087097,
+        "success": 1.0,
+        "spl": 0.7339854336919296,
+        "ndtw": 0.8663045288550592,
+        "path_length": 15.269559118896723,
+        "oracle_success": 1.0,
+        "steps_taken": 322.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 31,
+          "step": 32
+        },
+        "env_steps": 322,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 70,
+        "duration_ms": 450318,
+        "usage": {
+          "input_tokens": 140,
+          "cache_creation_input_tokens": 47620,
+          "cache_read_input_tokens": 2189119,
+          "output_tokens": 10727,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 47620,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 269,
+              "cache_read_input_tokens": 48349,
+              "cache_creation_input_tokens": 360,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 360
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.8402184999999998,
+        "is_error": false
+      },
+      "wall_sec": 452.5
+    },
+    {
+      "index": 14,
+      "episode_id": "176",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Go straight and then turn to the right and go to the bathroom door.  Go through the doorway and walk through the bathroom to the other door.  You will then be in a gym.  Stop when you get into this room and wait. ",
+      "metrics": {
+        "distance_to_goal": 13.206679344177246,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.0002351018713273898,
+        "path_length": 30.711752131581306,
+        "oracle_success": 0.0,
+        "steps_taken": 471.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 32,
+          "step": 35
+        },
+        "env_steps": 471,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 77,
+        "duration_ms": 672997,
+        "usage": {
+          "input_tokens": 154,
+          "cache_creation_input_tokens": 61678,
+          "cache_read_input_tokens": 2995823,
+          "output_tokens": 20006,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 61678,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 148,
+              "cache_read_input_tokens": 62480,
+              "cache_creation_input_tokens": 287,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 287
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.616190500000001,
+        "is_error": false
+      },
+      "wall_sec": 675.1
+    },
+    {
+      "index": 15,
+      "episode_id": "181",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Walk up stairs. At top of stairs turn right. Walk straight to bedroom. Turn left and walk to bed lamp.Turn left and enter closet. Stop at rug. ",
+      "metrics": {
+        "distance_to_goal": 0.9486178755760193,
+        "success": 1.0,
+        "spl": 0.52058246378076,
+        "ndtw": 0.7571100474443642,
+        "path_length": 17.305556628853083,
+        "oracle_success": 1.0,
+        "steps_taken": 346.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 34,
+          "step": 36
+        },
+        "env_steps": 346,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 77,
+        "duration_ms": 500043,
+        "usage": {
+          "input_tokens": 154,
+          "cache_creation_input_tokens": 53431,
+          "cache_read_input_tokens": 2647688,
+          "output_tokens": 13936,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 53431,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 148,
+              "cache_read_input_tokens": 54161,
+              "cache_creation_input_tokens": 359,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 359
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.207908,
+        "is_error": false
+      },
+      "wall_sec": 502.1
+    },
+    {
+      "index": 16,
+      "episode_id": "187",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Go down the hall past some plants towards a doorway to the hot tub and some lounge chairs.  Stop in front of the large tub. ",
+      "metrics": {
+        "distance_to_goal": 1.2597405910491943,
+        "success": 1.0,
+        "spl": 0.3613431544140926,
+        "ndtw": 0.09464251322477127,
+        "path_length": 24.34412571042776,
+        "oracle_success": 1.0,
+        "steps_taken": 318.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 28,
+          "step": 32
+        },
+        "env_steps": 318,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 66,
+        "duration_ms": 365538,
+        "usage": {
+          "input_tokens": 132,
+          "cache_creation_input_tokens": 42766,
+          "cache_read_input_tokens": 1884932,
+          "output_tokens": 8331,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 42766,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 123,
+              "cache_read_input_tokens": 43555,
+              "cache_creation_input_tokens": 300,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 300
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.57964,
+        "is_error": false
+      },
+      "wall_sec": 367.7
+    },
+    {
+      "index": 17,
+      "episode_id": "190",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Walk past the kitchen and go behind the couch and take a right into the fitness room. Stop next to the treadmill. ",
+      "metrics": {
+        "distance_to_goal": 7.20701789855957,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.1436657116495787,
+        "path_length": 26.530567752197385,
+        "oracle_success": 0.0,
+        "steps_taken": 456.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 34,
+          "step": 34
+        },
+        "env_steps": 456,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 76,
+        "duration_ms": 534809,
+        "usage": {
+          "input_tokens": 152,
+          "cache_creation_input_tokens": 55239,
+          "cache_read_input_tokens": 2632937,
+          "output_tokens": 14985,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 55239,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 105,
+              "cache_read_input_tokens": 56018,
+              "cache_creation_input_tokens": 310,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 310
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.2448224999999993,
+        "is_error": false
+      },
+      "wall_sec": 536.9
+    },
+    {
+      "index": 18,
+      "episode_id": "191",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Leave sitting room to living room, turn right around couch, turn left and follow couch turn slight right into exercise room and stop by treadmill. ",
+      "metrics": {
+        "distance_to_goal": 1.074305772781372,
+        "success": 1.0,
+        "spl": 0.9354811880929662,
+        "ndtw": 0.898246394655747,
+        "path_length": 10.855011731386185,
+        "oracle_success": 1.0,
+        "steps_taken": 241.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 12,
+          "step": 13
+        },
+        "env_steps": 241,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 32,
+        "duration_ms": 228897,
+        "usage": {
+          "input_tokens": 64,
+          "cache_creation_input_tokens": 32182,
+          "cache_read_input_tokens": 742066,
+          "output_tokens": 6268,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 32182,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 57,
+              "cache_read_input_tokens": 33033,
+              "cache_creation_input_tokens": 238,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 238
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.8504619999999999,
+        "is_error": false
+      },
+      "wall_sec": 231.0
+    },
+    {
+      "index": 19,
+      "episode_id": "207",
+      "scene_id": "data/scene_datasets/mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Walk out of the room keeping the fireplace on your left. Walk down the long corridor and stop once you reach the next set of doors. ",
+      "metrics": {
+        "distance_to_goal": 10.949115753173828,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.00039990458215941917,
+        "path_length": 24.773253839462996,
+        "oracle_success": 0.0,
+        "steps_taken": 324.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 34,
+          "step": 35
+        },
+        "env_steps": 324,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 74,
+        "duration_ms": 554132,
+        "usage": {
+          "input_tokens": 148,
+          "cache_creation_input_tokens": 53253,
+          "cache_read_input_tokens": 2601239,
+          "output_tokens": 16373,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 53253,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 214,
+              "cache_read_input_tokens": 54040,
+              "cache_creation_input_tokens": 302,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 302
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.2437985,
+        "is_error": false
+      },
+      "wall_sec": 556.1
+    },
+    {
+      "index": 20,
+      "episode_id": "218",
+      "scene_id": "data/scene_datasets/mp3d/X7HyMhZNoso/X7HyMhZNoso.glb",
+      "instruction": "Leave the bedroom and take a left in the hallway. Go straight and go into the room that is the second on the left. Stop in the doorway to the room. ",
+      "metrics": {
+        "distance_to_goal": 0.6161158680915833,
+        "success": 1.0,
+        "spl": 0.38215959336979255,
+        "ndtw": 0.5135791551164656,
+        "path_length": 18.892615005373955,
+        "oracle_success": 1.0,
+        "steps_taken": 412.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 26,
+          "step": 28
+        },
+        "env_steps": 412,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 65,
+        "duration_ms": 549745,
+        "usage": {
+          "input_tokens": 130,
+          "cache_creation_input_tokens": 58718,
+          "cache_read_input_tokens": 2510012,
+          "output_tokens": 20303,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 58718,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 112,
+              "cache_read_input_tokens": 59303,
+              "cache_creation_input_tokens": 504,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 504
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.350990000000001,
+        "is_error": false
+      },
+      "wall_sec": 552.0
+    },
+    {
+      "index": 21,
+      "episode_id": "226",
+      "scene_id": "data/scene_datasets/mp3d/X7HyMhZNoso/X7HyMhZNoso.glb",
+      "instruction": "Leave the bedroom and take a right in the hall, and walk straight. Take a left into the third entry way on your left and enter the bedroom. Stop in the doorway to the bedroom. ",
+      "metrics": {
+        "distance_to_goal": 0.3706004321575165,
+        "success": 1.0,
+        "spl": 0.5299579778328034,
+        "ndtw": 0.760351789946004,
+        "path_length": 14.389110121876001,
+        "oracle_success": 1.0,
+        "steps_taken": 474.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 33,
+          "step": 33
+        },
+        "env_steps": 474,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 77,
+        "duration_ms": 640736,
+        "usage": {
+          "input_tokens": 154,
+          "cache_creation_input_tokens": 69819,
+          "cache_read_input_tokens": 3435989,
+          "output_tokens": 26794,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 69819,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 119,
+              "cache_read_input_tokens": 70581,
+              "cache_creation_input_tokens": 327,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 327
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 3.087383500000001,
+        "is_error": false
+      },
+      "wall_sec": 642.9
+    },
+    {
+      "index": 22,
+      "episode_id": "232",
+      "scene_id": "data/scene_datasets/mp3d/oLBMNvg9in8/oLBMNvg9in8.glb",
+      "instruction": "Exit the bathroom, go up the stairs, turn right, walk down the hall, enter the room at the end of the hall, wait at the sculpture. ",
+      "metrics": {
+        "distance_to_goal": 5.556053161621094,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.6869214461443601,
+        "path_length": 7.133281543850899,
+        "oracle_success": 0.0,
+        "steps_taken": 109.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 7,
+          "step": 9
+        },
+        "env_steps": 109,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 20,
+        "duration_ms": 105320,
+        "usage": {
+          "input_tokens": 40,
+          "cache_creation_input_tokens": 22460,
+          "cache_read_input_tokens": 352772,
+          "output_tokens": 2633,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 22460,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 238,
+              "cache_read_input_tokens": 23264,
+              "cache_creation_input_tokens": 285,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 285
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.4675949999999999,
+        "is_error": false
+      },
+      "wall_sec": 107.1
+    },
+    {
+      "index": 23,
+      "episode_id": "244",
+      "scene_id": "data/scene_datasets/mp3d/X7HyMhZNoso/X7HyMhZNoso.glb",
+      "instruction": "Go through the door and turn left. Go to the left of the stairs. Stop in the doorway to the left of the white double doors. ",
+      "metrics": {
+        "distance_to_goal": 2.2164385318756104,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.8803004476037232,
+        "path_length": 5.499997526407242,
+        "oracle_success": 1.0,
+        "steps_taken": 183.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 9,
+          "step": 11
+        },
+        "env_steps": 183,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 26,
+        "duration_ms": 208572,
+        "usage": {
+          "input_tokens": 52,
+          "cache_creation_input_tokens": 31404,
+          "cache_read_input_tokens": 575213,
+          "output_tokens": 8272,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 31404,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 177,
+              "cache_read_input_tokens": 32238,
+              "cache_creation_input_tokens": 255,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 255
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.8092905000000001,
+        "is_error": false
+      },
+      "wall_sec": 210.7
+    },
+    {
+      "index": 24,
+      "episode_id": "247",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "walk straight to hallway on right. turn right and follow hallway, at the end of hallway turn slight left and enter living room. Stop at couch. ",
+      "metrics": {
+        "distance_to_goal": 8.68930435180664,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.4350547730352028,
+        "path_length": 10.789645440876484,
+        "oracle_success": 0.0,
+        "steps_taken": 247.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 26,
+          "step": 28
+        },
+        "env_steps": 247,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 60,
+        "duration_ms": 317819,
+        "usage": {
+          "input_tokens": 120,
+          "cache_creation_input_tokens": 41863,
+          "cache_read_input_tokens": 1746851,
+          "output_tokens": 9159,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 41863,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 133,
+              "cache_read_input_tokens": 42761,
+              "cache_creation_input_tokens": 191,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 191
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.5222094999999998,
+        "is_error": false
+      },
+      "wall_sec": 319.9
+    },
+    {
+      "index": 25,
+      "episode_id": "259",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Exit the bathroom, wait at the white rug in the hallway. ",
+      "metrics": {
+        "distance_to_goal": 0.6260132789611816,
+        "success": 1.0,
+        "spl": 0.5728574086961894,
+        "ndtw": 0.7234527120861972,
+        "path_length": 10.071900799870491,
+        "oracle_success": 1.0,
+        "steps_taken": 255.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 17,
+          "step": 25
+        },
+        "env_steps": 255,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 47,
+        "duration_ms": 338674,
+        "usage": {
+          "input_tokens": 94,
+          "cache_creation_input_tokens": 38165,
+          "cache_read_input_tokens": 1257521,
+          "output_tokens": 10932,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 38165,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 149,
+              "cache_read_input_tokens": 38990,
+              "cache_creation_input_tokens": 264,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 264
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.2847644999999999,
+        "is_error": false
+      },
+      "wall_sec": 340.8
+    },
+    {
+      "index": 26,
+      "episode_id": "265",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk towards oven and turn right through doorway. Go down hallway and turn left  and wait at bathroom. ",
+      "metrics": {
+        "distance_to_goal": 5.32257080078125,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.10001663165578153,
+        "path_length": 26.653374671936035,
+        "oracle_success": 1.0,
+        "steps_taken": 386.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 30,
+          "step": 34
+        },
+        "env_steps": 386,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 71,
+        "duration_ms": 517002,
+        "usage": {
+          "input_tokens": 142,
+          "cache_creation_input_tokens": 52498,
+          "cache_read_input_tokens": 2383694,
+          "output_tokens": 15578,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 52498,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 105,
+              "cache_read_input_tokens": 53298,
+              "cache_creation_input_tokens": 289,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 289
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.107566,
+        "is_error": false
+      },
+      "wall_sec": 518.7
+    },
+    {
+      "index": 27,
+      "episode_id": "275",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Walk past hall table. Walk into bedroom. Make left at table clock. Wait at bathroom door threshold. ",
+      "metrics": {
+        "distance_to_goal": 12.209542274475098,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.13296188360022504,
+        "path_length": 17.14276878349483,
+        "oracle_success": 0.0,
+        "steps_taken": 395.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 33,
+          "step": 35
+        },
+        "env_steps": 395,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 76,
+        "duration_ms": 548738,
+        "usage": {
+          "input_tokens": 152,
+          "cache_creation_input_tokens": 54347,
+          "cache_read_input_tokens": 2686299,
+          "output_tokens": 14463,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 54347,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 158,
+              "cache_read_input_tokens": 55103,
+              "cache_creation_input_tokens": 333,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 333
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.2495335000000005,
+        "is_error": false
+      },
+      "wall_sec": 550.9
+    },
+    {
+      "index": 28,
+      "episode_id": "308",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Leave the bathroom and go into the bedroom. Leave the bedroom and go into the hallway. Stop at the edge of the table under the mirror in the hall. ",
+      "metrics": {
+        "distance_to_goal": 5.971872329711914,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.29860871295073865,
+        "path_length": 27.347427662461996,
+        "oracle_success": 0.0,
+        "steps_taken": 453.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 33,
+          "step": 38
+        },
+        "env_steps": 453,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 77,
+        "duration_ms": 574799,
+        "usage": {
+          "input_tokens": 154,
+          "cache_creation_input_tokens": 56289,
+          "cache_read_input_tokens": 2619668,
+          "output_tokens": 18222,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 56289,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 286,
+              "cache_read_input_tokens": 57080,
+              "cache_creation_input_tokens": 298,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 298
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.329613,
+        "is_error": false
+      },
+      "wall_sec": 576.9
+    },
+    {
+      "index": 29,
+      "episode_id": "312",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Leave the sauna and enter the pool room. Stand on the platform at the end of the pool near the lounge chairs. ",
+      "metrics": {
+        "distance_to_goal": 1.743896722793579,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.9145801483747742,
+        "path_length": 5.172716185450554,
+        "oracle_success": 1.0,
+        "steps_taken": 133.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 8,
+          "step": 9
+        },
+        "env_steps": 133,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 22,
+        "duration_ms": 134632,
+        "usage": {
+          "input_tokens": 44,
+          "cache_creation_input_tokens": 25116,
+          "cache_read_input_tokens": 406573,
+          "output_tokens": 3628,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 25116,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 79,
+              "cache_read_input_tokens": 25561,
+              "cache_creation_input_tokens": 644,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 644
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.5459505,
+        "is_error": false
+      },
+      "wall_sec": 136.7
+    },
+    {
+      "index": 30,
+      "episode_id": "321",
+      "scene_id": "data/scene_datasets/mp3d/EU6Fwq7SyZv/EU6Fwq7SyZv.glb",
+      "instruction": "GO straight, take a left once you enter the bedroom. Stop in the bathroom. ",
+      "metrics": {
+        "distance_to_goal": 1.494327425956726,
+        "success": 1.0,
+        "spl": 0.37086451794731695,
+        "ndtw": 0.12224037221049076,
+        "path_length": 12.83300944417715,
+        "oracle_success": 1.0,
+        "steps_taken": 332.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 14,
+          "step": 16
+        },
+        "env_steps": 332,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 40,
+        "duration_ms": 311362,
+        "usage": {
+          "input_tokens": 80,
+          "cache_creation_input_tokens": 39265,
+          "cache_read_input_tokens": 1076038,
+          "output_tokens": 9022,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 39265,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 149,
+              "cache_read_input_tokens": 40139,
+              "cache_creation_input_tokens": 215,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 215
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.1571980000000002,
+        "is_error": false
+      },
+      "wall_sec": 313.7
+    },
+    {
+      "index": 31,
+      "episode_id": "330",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk down the flight of stairs to the lower level. Walk into the room ahead with the tile mosaic on the floor. Walk around the corner through the open arched door to the right with rug on the ground. ",
+      "metrics": {
+        "distance_to_goal": 6.569369792938232,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.3553883156321128,
+        "path_length": 19.637220733307373,
+        "oracle_success": 1.0,
+        "steps_taken": 371.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 31,
+          "step": 32
+        },
+        "env_steps": 371,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 72,
+        "duration_ms": 577445,
+        "usage": {
+          "input_tokens": 144,
+          "cache_creation_input_tokens": 60136,
+          "cache_read_input_tokens": 2737527,
+          "output_tokens": 20722,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 60136,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 85,
+              "cache_read_input_tokens": 60944,
+              "cache_creation_input_tokens": 281,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 281
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.4894724999999998,
+        "is_error": false
+      },
+      "wall_sec": 579.3
+    },
+    {
+      "index": 32,
+      "episode_id": "338",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Walk into the bedroom on the right of the stairs. Take a left before you reach the bed and wlk straight into the bathroom. Stop outside of the little room with the toilet. ",
+      "metrics": {
+        "distance_to_goal": 13.036840438842773,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.01725908110219866,
+        "path_length": 17.686804238706827,
+        "oracle_success": 0.0,
+        "steps_taken": 437.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 27,
+          "step": 29
+        },
+        "env_steps": 437,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 66,
+        "duration_ms": 516524,
+        "usage": {
+          "input_tokens": 132,
+          "cache_creation_input_tokens": 56994,
+          "cache_read_input_tokens": 2391833,
+          "output_tokens": 19161,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 56994,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 289,
+              "cache_read_input_tokens": 57616,
+              "cache_creation_input_tokens": 467,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 467
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.246120500000001,
+        "is_error": false
+      },
+      "wall_sec": 518.6
+    },
+    {
+      "index": 33,
+      "episode_id": "348",
+      "scene_id": "data/scene_datasets/mp3d/EU6Fwq7SyZv/EU6Fwq7SyZv.glb",
+      "instruction": "Go up the stairs and take a left. Walk towards the couch and chairs in the sitting area. Walk through the sitting area and stop in front of the first door to the balcony on your left. ",
+      "metrics": {
+        "distance_to_goal": 9.50796890258789,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.3796466021203079,
+        "path_length": 11.154725455213338,
+        "oracle_success": 0.0,
+        "steps_taken": 273.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 20,
+          "step": 21
+        },
+        "env_steps": 273,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 49,
+        "duration_ms": 450648,
+        "usage": {
+          "input_tokens": 98,
+          "cache_creation_input_tokens": 47795,
+          "cache_read_input_tokens": 1334315,
+          "output_tokens": 16505,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 47795,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 191,
+              "cache_read_input_tokens": 48681,
+              "cache_creation_input_tokens": 203,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 203
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.5588014999999995,
+        "is_error": false
+      },
+      "wall_sec": 452.7
+    },
+    {
+      "index": 34,
+      "episode_id": "362",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk through kitchen. Make left after spider plant. Wait at open door on left. ",
+      "metrics": {
+        "distance_to_goal": 2.583103895187378,
+        "success": 1.0,
+        "spl": 0.3502597149675104,
+        "ndtw": 0.22634498580212875,
+        "path_length": 25.89211267232895,
+        "oracle_success": 1.0,
+        "steps_taken": 413.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 32,
+          "step": 34
+        },
+        "env_steps": 413,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 74,
+        "duration_ms": 655556,
+        "usage": {
+          "input_tokens": 148,
+          "cache_creation_input_tokens": 63625,
+          "cache_read_input_tokens": 2844077,
+          "output_tokens": 24465,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 63625,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 116,
+              "cache_read_input_tokens": 64410,
+              "cache_creation_input_tokens": 304,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 304
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.6712325000000003,
+        "is_error": false
+      },
+      "wall_sec": 657.7
+    },
+    {
+      "index": 35,
+      "episode_id": "371",
+      "scene_id": "data/scene_datasets/mp3d/X7HyMhZNoso/X7HyMhZNoso.glb",
+      "instruction": "Walk through the dining room and kitchen air to the short flight of stairs. Walk up the short flight of stairs. Wait by the door at the top of the stairs. ",
+      "metrics": {
+        "distance_to_goal": 0.3054087460041046,
+        "success": 1.0,
+        "spl": 0.801336127910747,
+        "ndtw": 0.789850425537849,
+        "path_length": 11.61019890755415,
+        "oracle_success": 1.0,
+        "steps_taken": 305.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 27,
+          "step": 30
+        },
+        "env_steps": 305,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 63,
+        "duration_ms": 321660,
+        "usage": {
+          "input_tokens": 126,
+          "cache_creation_input_tokens": 42747,
+          "cache_read_input_tokens": 1780463,
+          "output_tokens": 9130,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 42747,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 77,
+              "cache_read_input_tokens": 43555,
+              "cache_creation_input_tokens": 281,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 281
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.5471604999999995,
+        "is_error": false
+      },
+      "wall_sec": 323.8
+    },
+    {
+      "index": 36,
+      "episode_id": "377",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Leave the bathroom and take a right. Walk down the hallway into the entry way and stop next to the console table on the right, and the banister to the stairs on the right. ",
+      "metrics": {
+        "distance_to_goal": 0.5125114917755127,
+        "success": 1.0,
+        "spl": 0.5549944283534795,
+        "ndtw": 0.7927499523749717,
+        "path_length": 13.793637020513415,
+        "oracle_success": 1.0,
+        "steps_taken": 432.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 24,
+          "step": 27
+        },
+        "env_steps": 432,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 62,
+        "duration_ms": 530567,
+        "usage": {
+          "input_tokens": 124,
+          "cache_creation_input_tokens": 53688,
+          "cache_read_input_tokens": 2048618,
+          "output_tokens": 16497,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 53688,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 90,
+              "cache_read_input_tokens": 54324,
+              "cache_creation_input_tokens": 453,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 453
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.9748130000000006,
+        "is_error": false
+      },
+      "wall_sec": 532.6
+    },
+    {
+      "index": 37,
+      "episode_id": "387",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Turn to the right and go out the bathroom door.  Turn to the right a little more.  Go through the galley kitchen.  Walk between the stove and the island.  When you get past the island, stop, and wait. ",
+      "metrics": {
+        "distance_to_goal": 1.1746774911880493,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.9199901718846576,
+        "path_length": 10.138602271676064,
+        "oracle_success": 1.0,
+        "steps_taken": 157.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 9,
+          "step": 10
+        },
+        "env_steps": 157,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 24,
+        "duration_ms": 139830,
+        "usage": {
+          "input_tokens": 48,
+          "cache_creation_input_tokens": 26433,
+          "cache_read_input_tokens": 456474,
+          "output_tokens": 4359,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 26433,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 90,
+              "cache_read_input_tokens": 27250,
+              "cache_creation_input_tokens": 272,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 272
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 0.602361,
+        "is_error": false
+      },
+      "wall_sec": 141.9
+    },
+    {
+      "index": 38,
+      "episode_id": "403",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Turn right to walk through the right doorway. Walk through the left doorway. Stop at the entrance to the dining room. ",
+      "metrics": {
+        "distance_to_goal": 1.1761521100997925,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.9079563165537012,
+        "path_length": 8.250004321336746,
+        "oracle_success": 1.0,
+        "steps_taken": 197.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 15,
+          "step": 16
+        },
+        "env_steps": 197,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 37,
+        "duration_ms": 248038,
+        "usage": {
+          "input_tokens": 74,
+          "cache_creation_input_tokens": 35632,
+          "cache_read_input_tokens": 947332,
+          "output_tokens": 9202,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 35632,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 117,
+              "cache_read_input_tokens": 36388,
+              "cache_creation_input_tokens": 333,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 333
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.060985,
+        "is_error": false
+      },
+      "wall_sec": 250.3
+    },
+    {
+      "index": 39,
+      "episode_id": "411",
+      "scene_id": "data/scene_datasets/mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Walk to the living room on the far side of the counter. Stop next to the end table next to the couch with the bookshelf on your right. ",
+      "metrics": {
+        "distance_to_goal": 3.2660508155822754,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.10837392970995219,
+        "path_length": 10.25420820247382,
+        "oracle_success": 1.0,
+        "steps_taken": 300.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 32,
+          "step": 34
+        },
+        "env_steps": 300,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 72,
+        "duration_ms": 506615,
+        "usage": {
+          "input_tokens": 144,
+          "cache_creation_input_tokens": 49702,
+          "cache_read_input_tokens": 2292736,
+          "output_tokens": 12940,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 49702,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 181,
+              "cache_read_input_tokens": 50536,
+              "cache_creation_input_tokens": 255,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 255
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.9681869999999997,
+        "is_error": false
+      },
+      "wall_sec": 508.7
+    },
+    {
+      "index": 40,
+      "episode_id": "423",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Turn left and walk across the hallway. Turn left again and walk across this hallway and wait by the bathtub. ",
+      "metrics": {
+        "distance_to_goal": 20.086854934692383,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.013234536373813936,
+        "path_length": 15.785467736423016,
+        "oracle_success": 0.0,
+        "steps_taken": 494.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 20,
+          "step": 21
+        },
+        "env_steps": 494,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 55,
+        "duration_ms": 506969,
+        "usage": {
+          "input_tokens": 110,
+          "cache_creation_input_tokens": 56837,
+          "cache_read_input_tokens": 1887683,
+          "output_tokens": 19074,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 56837,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 124,
+              "cache_read_input_tokens": 57596,
+              "cache_creation_input_tokens": 330,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 330
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.9901905,
+        "is_error": false
+      },
+      "wall_sec": 508.6
+    },
+    {
+      "index": 41,
+      "episode_id": "432",
+      "scene_id": "data/scene_datasets/mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Walk out through the door. Follow the red carpet to the right of the table. Stop in the next doorway. ",
+      "metrics": {
+        "distance_to_goal": 9.635228157043457,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.40470891418181393,
+        "path_length": 10.101457133889198,
+        "oracle_success": 0.0,
+        "steps_taken": 273.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 15,
+          "step": 16
+        },
+        "env_steps": 273,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 39,
+        "duration_ms": 285512,
+        "usage": {
+          "input_tokens": 78,
+          "cache_creation_input_tokens": 37412,
+          "cache_read_input_tokens": 975684,
+          "output_tokens": 8997,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 37412,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 285,
+              "cache_read_input_tokens": 38285,
+              "cache_creation_input_tokens": 216,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 216
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.0878559999999997,
+        "is_error": false
+      },
+      "wall_sec": 287.6
+    },
+    {
+      "index": 42,
+      "episode_id": "439",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Turn around and walk through the door into the hallway. Turn left and go forward and stop next to the bed. Then turn left and go into the bathroom. ",
+      "metrics": {
+        "distance_to_goal": 5.788935661315918,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.3340614301443724,
+        "path_length": 15.77350639551878,
+        "oracle_success": 0.0,
+        "steps_taken": 425.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 34,
+          "step": 34
+        },
+        "env_steps": 425,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 77,
+        "duration_ms": 494477,
+        "usage": {
+          "input_tokens": 154,
+          "cache_creation_input_tokens": 56953,
+          "cache_read_input_tokens": 2674413,
+          "output_tokens": 15661,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 56953,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 254,
+              "cache_read_input_tokens": 57677,
+              "cache_creation_input_tokens": 365,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 365
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.2996154999999994,
+        "is_error": false
+      },
+      "wall_sec": 496.7
+    },
+    {
+      "index": 43,
+      "episode_id": "447",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Go down the walkway between the bar and the floor cabinets. Make a left at the door leading to the bedroom. ",
+      "metrics": {
+        "distance_to_goal": 15.297430992126465,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.10921360821015191,
+        "path_length": 20.655459716916084,
+        "oracle_success": 0.0,
+        "steps_taken": 400.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 29,
+          "step": 31
+        },
+        "env_steps": 400,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 68,
+        "duration_ms": 573045,
+        "usage": {
+          "input_tokens": 136,
+          "cache_creation_input_tokens": 59419,
+          "cache_read_input_tokens": 2506851,
+          "output_tokens": 22423,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 59419,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 109,
+              "cache_read_input_tokens": 60248,
+              "cache_creation_input_tokens": 260,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 260
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.4094594999999996,
+        "is_error": false
+      },
+      "wall_sec": 575.2
+    },
+    {
+      "index": 44,
+      "episode_id": "454",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Take a left and take a right at the doll hutch. Walk into the bedroom and take a left. Walk into the bathroom and wait in front of the sink. ",
+      "metrics": {
+        "distance_to_goal": 0.2219240814447403,
+        "success": 1.0,
+        "spl": 0.5504259881272088,
+        "ndtw": 0.806888643233239,
+        "path_length": 17.042805591598153,
+        "oracle_success": 1.0,
+        "steps_taken": 384.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 31,
+          "step": 33
+        },
+        "env_steps": 384,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 72,
+        "duration_ms": 418734,
+        "usage": {
+          "input_tokens": 144,
+          "cache_creation_input_tokens": 50751,
+          "cache_read_input_tokens": 2397444,
+          "output_tokens": 12284,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 50751,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 70,
+              "cache_read_input_tokens": 51587,
+              "cache_creation_input_tokens": 253,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 253
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.0146360000000003,
+        "is_error": false
+      },
+      "wall_sec": 420.8
+    },
+    {
+      "index": 45,
+      "episode_id": "461",
+      "scene_id": "data/scene_datasets/mp3d/EU6Fwq7SyZv/EU6Fwq7SyZv.glb",
+      "instruction": "Turn around and walk past a wooden cabinet on the right.  Then turn to the right and walk in the bedroom.  Turn to the right again, and there will be a bathroom.  Stop right inside the doorway.  Wait there. ",
+      "metrics": {
+        "distance_to_goal": 3.1204864978790283,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.4006656180787616,
+        "path_length": 4.016525968909264,
+        "oracle_success": 0.0,
+        "steps_taken": 151.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 20,
+          "step": 22
+        },
+        "env_steps": 151,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 46,
+        "duration_ms": 344126,
+        "usage": {
+          "input_tokens": 92,
+          "cache_creation_input_tokens": 38633,
+          "cache_read_input_tokens": 1296854,
+          "output_tokens": 11407,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 38633,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 142,
+              "cache_read_input_tokens": 39390,
+              "cache_creation_input_tokens": 332,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 332
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.320971,
+        "is_error": false
+      },
+      "wall_sec": 346.2
+    },
+    {
+      "index": 46,
+      "episode_id": "469",
+      "scene_id": "data/scene_datasets/mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Turn right and walk along the red carpet to your right. Walk past the doorway wait by the glass info panes. ",
+      "metrics": {
+        "distance_to_goal": 16.05122184753418,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.02853947320095214,
+        "path_length": 19.866844192147255,
+        "oracle_success": 0.0,
+        "steps_taken": 275.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 19,
+          "step": 21
+        },
+        "env_steps": 275,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 46,
+        "duration_ms": 338014,
+        "usage": {
+          "input_tokens": 92,
+          "cache_creation_input_tokens": 40626,
+          "cache_read_input_tokens": 1354978,
+          "output_tokens": 11809,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 40626,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 87,
+              "cache_read_input_tokens": 41498,
+              "cache_creation_input_tokens": 217,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 217
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.3800129999999997,
+        "is_error": false
+      },
+      "wall_sec": 340.3
+    },
+    {
+      "index": 47,
+      "episode_id": "479",
+      "scene_id": "data/scene_datasets/mp3d/oLBMNvg9in8/oLBMNvg9in8.glb",
+      "instruction": "Walk along the carpet. Turn left and enter the rightmost doorway. Wait on the first few steps of the stairs. ",
+      "metrics": {
+        "distance_to_goal": 0.9423072338104248,
+        "success": 1.0,
+        "spl": 0.6801468403776577,
+        "ndtw": 0.7497220274291402,
+        "path_length": 10.778131142258644,
+        "oracle_success": 1.0,
+        "steps_taken": 299.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 30,
+          "step": 33
+        },
+        "env_steps": 299,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 69,
+        "duration_ms": 465840,
+        "usage": {
+          "input_tokens": 138,
+          "cache_creation_input_tokens": 48741,
+          "cache_read_input_tokens": 2156275,
+          "output_tokens": 13208,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 48741,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 155,
+              "cache_read_input_tokens": 49406,
+              "cache_creation_input_tokens": 424,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 424
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.8970214999999993,
+        "is_error": false
+      },
+      "wall_sec": 468.0
+    },
+    {
+      "index": 48,
+      "episode_id": "513",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Go into the living area with the fireplace. Stop in the area between the two white sofas, next to the entrance to the dining room. ",
+      "metrics": {
+        "distance_to_goal": 14.802626609802246,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 5.8475864050457306e-08,
+        "path_length": 26.914104926632717,
+        "oracle_success": 0.0,
+        "steps_taken": 446.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 25,
+          "step": 28
+        },
+        "env_steps": 446,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 62,
+        "duration_ms": 448286,
+        "usage": {
+          "input_tokens": 124,
+          "cache_creation_input_tokens": 48854,
+          "cache_read_input_tokens": 1884664,
+          "output_tokens": 13336,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 48854,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 209,
+              "cache_read_input_tokens": 49570,
+              "cache_creation_input_tokens": 373,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 373
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 1.7654710000000005,
+        "is_error": false
+      },
+      "wall_sec": 450.4
+    },
+    {
+      "index": 49,
+      "episode_id": "516",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk past the sink, and through the open door. Make a hard left at the closed brown and frosted glass french doors, and then a hard right.. Walk past the kitchen, and wait near the sofa end table. ",
+      "metrics": {
+        "distance_to_goal": 6.508278846740723,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.2245457673964473,
+        "path_length": 21.15964338602498,
+        "oracle_success": 0.0,
+        "steps_taken": 491.0
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 28,
+          "step": 28
+        },
+        "env_steps": 491,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 68,
+        "duration_ms": 527795,
+        "usage": {
+          "input_tokens": 136,
+          "cache_creation_input_tokens": 56742,
+          "cache_read_input_tokens": 2468517,
+          "output_tokens": 16286,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 56742,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 152,
+              "cache_read_input_tokens": 57500,
+              "cache_creation_input_tokens": 331,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 331
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "total_cost_usd": 2.2100825,
+        "is_error": false
+      },
+      "wall_sec": 529.9
+    }
+  ]
+}

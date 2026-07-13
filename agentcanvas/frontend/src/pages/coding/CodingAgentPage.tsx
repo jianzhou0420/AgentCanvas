@@ -74,6 +74,17 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
       const texts = (line.texts as string[] | undefined) ?? [];
       return { icon: "↩", text: texts.join(" ").slice(0, 300), dim: true };
     }
+    // mini-swe-agent event kinds (beta-react-harness runs)
+    case "user_text":
+      return { icon: "👤", text: String(line.text ?? ""), dim: true };
+    case "exit":
+      return {
+        icon: "🚪",
+        text: `exit · ${String(line.exit_status ?? "?")} ${String(line.content ?? "").slice(0, 200)}`,
+        dim: false,
+      };
+    case "driver_error":
+      return { icon: "⚠", text: String(line.error ?? ""), dim: false };
     default:
       return { icon: "·", text: JSON.stringify(line), dim: true };
   }
@@ -96,6 +107,9 @@ export default function CodingAgentPage() {
 
   // log browser (any run under outputs/beta-coding-agent/, CLI-launched included)
   const [mode, setMode] = useState<"live" | "browse">("live");
+  // which harness's runs to browse: Agent SDK (beta-coding-agent) vs
+  // mini-swe-agent (beta-react-harness). Live mode is SDK-runner-only.
+  const [harness, setHarness] = useState<"claude-sdk" | "mini-swe">("claude-sdk");
   const [runsList, setRunsList] = useState<RunInfo[]>([]);
   const [browseRun, setBrowseRun] = useState<string | null>(null);
   const [browseEpisodes, setBrowseEpisodes] = useState<EpisodeSummary[]>([]);
@@ -161,11 +175,12 @@ export default function CodingAgentPage() {
           setZoomFrame(null);
         }
 
+        const src = mode === "browse" ? harness : "claude-sdk";
         const [logRes, framesRes] = await Promise.all([
           fetch(
-            `/api/coding-agent/runs/${run}/episode/${ep}/textlog?offset=${offsetRef.current}`,
+            `/api/coding-agent/runs/${run}/episode/${ep}/textlog?offset=${offsetRef.current}&source=${src}`,
           ),
-          fetch(`/api/coding-agent/runs/${run}/episode/${ep}/frames`),
+          fetch(`/api/coding-agent/runs/${run}/episode/${ep}/frames?source=${src}`),
         ]);
         const logData = await logRes.json();
         const framesData = await framesRes.json();
@@ -187,11 +202,12 @@ export default function CodingAgentPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [viewEpisode, mode, browseRun, browseStarted]);
+  }, [viewEpisode, mode, browseRun, browseStarted, harness]);
 
-  const loadRuns = async () => {
+  const loadRuns = async (source?: "claude-sdk" | "mini-swe") => {
     try {
-      const data = await (await fetch("/api/coding-agent/runs")).json();
+      const src = source ?? harness;
+      const data = await (await fetch(`/api/coding-agent/runs?source=${src}`)).json();
       setRunsList(data.runs ?? []);
       if (data.runs?.length) setBrowseRun((r) => r ?? data.runs[0].name);
     } catch {
@@ -206,7 +222,7 @@ export default function CodingAgentPage() {
     (async () => {
       try {
         const d = await (
-          await fetch(`/api/coding-agent/runs/${browseRun}/summary`)
+          await fetch(`/api/coding-agent/runs/${browseRun}/summary?source=${harness}`)
         ).json();
         if (cancelled) return;
         setBrowseEpisodes(d.episodes ?? []);
@@ -218,7 +234,7 @@ export default function CodingAgentPage() {
     return () => {
       cancelled = true;
     };
-  }, [mode, browseRun]);
+  }, [mode, browseRun, harness]);
 
   // stick to bottom unless the user scrolled up
   useEffect(() => {
@@ -255,7 +271,9 @@ export default function CodingAgentPage() {
 
   const run = mode === "browse" ? browseRun : status?.run_name;
   const frameUrl = (name: string) =>
-    `/api/coding-agent/runs/${run}/episode/${shownEpisode}/frame/${name}`;
+    `/api/coding-agent/runs/${run}/episode/${shownEpisode}/frame/${name}?source=${
+      mode === "browse" ? harness : "claude-sdk"
+    }`;
   const epList = mode === "browse" ? browseEpisodes : (status?.episodes ?? []);
   const epSummary = (i: number) => epList.find((e) => e.index === i);
   const selEpisodes = mode === "browse" ? browseStarted : (status?.started_episodes ?? []);
@@ -452,6 +470,36 @@ export default function CodingAgentPage() {
           </button>
         </div>
         {mode === "browse" && (
+          <div className="flex overflow-hidden rounded border border-gray-700">
+            {(
+              [
+                ["claude-sdk", "Claude SDK"],
+                ["mini-swe", "mini-swe-agent"],
+              ] as const
+            ).map(([h, label]) => (
+              <button
+                key={h}
+                onClick={() => {
+                  if (harness === h) return;
+                  setHarness(h);
+                  setRunsList([]);
+                  setBrowseRun(null);
+                  setViewEpisode(null);
+                  loadRuns(h);
+                }}
+                className={clsx(
+                  "px-2 py-0.5",
+                  harness === h
+                    ? "bg-purple-600/30 text-purple-300"
+                    : "bg-gray-800 text-gray-400 hover:text-gray-200",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {mode === "browse" && (
           <>
             <span className="text-gray-500">run:</span>
             <select
@@ -479,7 +527,7 @@ export default function CodingAgentPage() {
               </span>
             )}
             <button
-              onClick={loadRuns}
+              onClick={() => loadRuns()}
               title="refresh run list"
               className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-gray-400 hover:text-gray-200"
             >
@@ -551,13 +599,17 @@ export default function CodingAgentPage() {
             <div className="p-4 text-gray-600">no events yet</div>
           )}
           {(() => {
-            // Frame pairing is data-driven — no per-tool frame counts pinned in
-            // the UI. Every frame-producing tool result carries its images as
-            // blocks the driver elides to "<image elided>" text; the count of
-            // those IS the frame count, and the non-JSON text entries alongside
-            // them are the per-view labels. So observe → 1 unlabeled frame, a
-            // 4-way look_around → 4 labels, an 8-way one → 8 — all inferred,
-            // nothing tied to a tool name or a fixed number.
+            // Frame pairing is data-driven and keyed on the frames ACTUALLY on
+            // disk, not on the transcript's image-block count. Frames are named
+            // obs_<NNNN>_step<SSS>[ _depth ].png; grouping by the obs index gives
+            // one group per viewpoint — an observe writes one group (RGB, plus a
+            // paired _depth frame on post-fix runs), a look_around writes eight
+            // (one RGB each). The cursor walks GROUPS, so it advances by the
+            // viewpoints a tool produced, which equals the groups that tool wrote
+            // in BOTH old runs (RGB only) and new runs (RGB+depth). That stops an
+            // old observe — whose result carried two image blocks but only ever
+            // wrote one frame — from pulling the NEXT observe's RGB into its depth
+            // slot and starving every later step of an image.
             const IMG = "<image elided>";
             const resultByToolUse: Record<string, string[]> = {};
             for (const l of lines) {
@@ -566,26 +618,52 @@ export default function CodingAgentPage() {
                   (l.texts as string[] | undefined) ?? [];
               }
             }
-            let frameCursor = 0;
+            const groups: { rgb: string | null; depth: string | null }[] = [];
+            const groupAt: Record<string, number> = {};
+            for (const f of frames) {
+              const m = f.match(/^obs_(\d+)_/);
+              const key = m ? m[1] : f;
+              if (!(key in groupAt)) {
+                groupAt[key] = groups.length;
+                groups.push({ rgb: null, depth: null });
+              }
+              if (f.includes("_depth")) groups[groupAt[key]].depth = f;
+              else groups[groupAt[key]].rgb = f;
+            }
+            let groupCursor = 0;
             return lines.map((line, i) => {
-              // Frames a tool_use produced = image blocks in its paired result.
-              // No result yet (pending) → 0 for now; a pending tool_use is
-              // always the latest event, so earlier lines never desync and the
-              // frames fill in on the next poll.
-              let nFrames = 0;
-              let frameLabels: string[] = [];
+              // A tool_use's viewpoints = image blocks in its paired result NOT
+              // immediately preceded by another image block. observe's depth
+              // block sits right after its RGB block → same viewpoint; each
+              // look_around view is preceded by its text label → a new viewpoint.
+              // Each viewpoint consumes one on-disk obs group, rendered as its
+              // RGB tile plus a depth tile when that frame exists. A pending
+              // tool_use (no result yet) is always the latest line, so earlier
+              // lines never desync and tiles fill in on the next poll.
+              const tiles: { url: string | null; label: string | null }[] = [];
+              let nViews = 0;
               if (line.kind === "tool_use") {
                 const res = resultByToolUse[String(line.id ?? "")];
                 if (res) {
-                  nFrames = res.filter((t) => t === IMG).length;
-                  frameLabels = res.filter(
-                    (t) => t !== IMG && !t.trim().startsWith("{"),
-                  );
+                  const labels: string[] = [];
+                  for (let j = 0; j < res.length; j++) {
+                    if (res[j] !== IMG || res[j - 1] === IMG) continue;
+                    const prev = j > 0 ? res[j - 1] : undefined;
+                    labels.push(
+                      prev != null && prev !== IMG && !prev.trim().startsWith("{")
+                        ? prev
+                        : "",
+                    );
+                  }
+                  nViews = labels.length;
+                  for (let v = 0; v < nViews; v++) {
+                    const g = groups[groupCursor + v];
+                    tiles.push({ url: g?.rgb ?? null, label: labels[v] || null });
+                    if (g?.depth) tiles.push({ url: g.depth, label: "depth" });
+                  }
+                  groupCursor += nViews;
                 }
               }
-              const lineFrames =
-                nFrames > 0 ? frames.slice(frameCursor, frameCursor + nFrames) : [];
-              frameCursor += nFrames;
               // Thinking content is withheld upstream (signature-only blocks,
               // always 0 chars) — rendering them is pure noise.
               if (line.kind === "thinking" && !line.chars) return null;
@@ -630,13 +708,23 @@ export default function CodingAgentPage() {
                           </pre>
                         </>
                       )}
-                      {opts != null && (
-                        <>
-                          <div className="mb-0.5 text-gray-500">options</div>
-                          <pre className="whitespace-pre-wrap break-words text-gray-400">
-                            {JSON.stringify(opts, null, 2)}
-                          </pre>
-                        </>
+                      {(
+                        [
+                          ["options", opts],
+                          ["agent config", line.agent_config],
+                          ["model config", line.model_config],
+                          ["environment config", line.environment_config],
+                        ] as const
+                      ).map(
+                        ([label, val]) =>
+                          val != null && (
+                            <div key={label}>
+                              <div className="mb-0.5 text-gray-500">{label}</div>
+                              <pre className="mb-2 whitespace-pre-wrap break-words text-gray-400">
+                                {JSON.stringify(val, null, 2)}
+                              </pre>
+                            </div>
+                          ),
                       )}
                     </div>
                   </details>
@@ -709,7 +797,7 @@ export default function CodingAgentPage() {
               }
               const { icon, text, dim } = lineText(line);
               const showFrames =
-                nFrames > 0 && run != null && shownEpisode != null;
+                tiles.length > 0 && run != null && shownEpisode != null;
               return (
                 <div
                   key={i}
@@ -722,14 +810,17 @@ export default function CodingAgentPage() {
                   <span className="mr-1">{icon}</span>
                   {text}
                   {showFrames && (
-                    // one frame → a single native-res tile (observe); many →
-                    // smaller labeled tiles (a look_around panorama). Both the
-                    // count and the labels come from the tool result above.
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {Array.from({ length: nFrames }).map((_, k) => {
-                        const frame = lineFrames[k] ?? null;
-                        const sizeCls = nFrames === 1 ? "h-56 w-56" : "h-32 w-32";
-                        const label = frameLabels[k] ?? null;
+                    // one viewpoint → native-res tiles (observe: RGB + depth);
+                    // many → smaller labeled tiles (a look_around panorama). The
+                    // tiles, their order, and their labels all come from the
+                    // on-disk obs groups paired to the tool result above.
+                    // items-end so a captioned tile (depth) and an uncaptioned
+                    // one (RGB) still line up their images along the bottom edge.
+                    <div className="mt-1 flex flex-wrap items-end gap-1">
+                      {tiles.map((tile, k) => {
+                        const frame = tile.url;
+                        const sizeCls = nViews <= 1 ? "h-56 w-56" : "h-32 w-32";
+                        const label = tile.label;
                         return (
                           <div key={k} className="flex flex-col items-center">
                             {label && (

@@ -20,6 +20,15 @@ from ...state import get_services
 
 router = APIRouter()
 
+# Log sources the read endpoints can browse. Both drivers write the same
+# artifact layout (episode_{i}.jsonl + live_{i}/ + summary.json), so the same
+# monitor surface serves both; only the root differs. The control endpoints
+# (start/stop/status) stay claude-sdk-only — mini runs are CLI-launched.
+SOURCE_ROOTS = {
+    "claude-sdk": OUTPUT_ROOT,                                # beta-coding-agent (Agent SDK)
+    "mini-swe": OUTPUT_ROOT.parent / "beta-react-harness",    # mini-swe-agent harness
+}
+
 
 class StartRequest(BaseModel):
     episodes: str = "0-9"
@@ -35,14 +44,24 @@ def _runner():
     return runner
 
 
-def _episode_paths(run_name: str, index: int):
-    runner = _runner()
-    try:
-        run_dir = runner.run_dir(run_name)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    if run_dir is None or not run_dir.exists():
+def _source_root(source: str):
+    root = SOURCE_ROOTS.get(source)
+    if root is None:
+        raise HTTPException(400, f"unknown source: {source!r}")
+    return root
+
+
+def _run_dir(source: str, run_name: str):
+    if not run_name or not all(c.isalnum() or c in "_-" for c in run_name):
+        raise HTTPException(400, f"bad run name: {run_name!r}")
+    run_dir = _source_root(source) / run_name
+    if not run_dir.exists():
         raise HTTPException(404, f"unknown run: {run_name}")
+    return run_dir
+
+
+def _episode_paths(run_name: str, index: int, source: str = "claude-sdk"):
+    run_dir = _run_dir(source, run_name)
     return run_dir / f"episode_{index}.jsonl", run_dir / f"live_{index}"
 
 
@@ -73,12 +92,13 @@ async def status() -> dict:
 
 
 @router.get("/runs")
-async def list_runs() -> dict:
-    """All run dirs under outputs/beta-coding-agent/ (UI- and CLI-launched alike)."""
-    if not OUTPUT_ROOT.exists():
+async def list_runs(source: str = "claude-sdk") -> dict:
+    """All run dirs under the source's output root (UI- and CLI-launched alike)."""
+    root = _source_root(source)
+    if not root.exists():
         return {"runs": []}
     runs = []
-    for d in OUTPUT_ROOT.iterdir():
+    for d in root.iterdir():
         if not d.is_dir():
             continue
         eps = sorted(int(p.stem.split("_")[1]) for p in d.glob("episode_*.jsonl")
@@ -106,15 +126,9 @@ async def list_runs() -> dict:
 
 
 @router.get("/runs/{run_name}/summary")
-async def run_summary(run_name: str) -> dict:
+async def run_summary(run_name: str, source: str = "claude-sdk") -> dict:
     """Per-episode outcomes for one run — same shape the live status uses."""
-    runner = _runner()
-    try:
-        run_dir = runner.run_dir(run_name)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    if run_dir is None or not run_dir.exists():
-        raise HTTPException(404, f"unknown run: {run_name}")
+    run_dir = _run_dir(source, run_name)
 
     started = sorted(int(p.stem.split("_")[1]) for p in run_dir.glob("episode_*.jsonl")
                      if p.stem.split("_")[1].isdigit())
@@ -154,8 +168,8 @@ async def run_summary(run_name: str) -> dict:
 
 
 @router.get("/runs/{run_name}/episode/{index}/textlog")
-async def textlog(run_name: str, index: int, offset: int = 0) -> dict:
-    jsonl_path, _ = _episode_paths(run_name, index)
+async def textlog(run_name: str, index: int, offset: int = 0, source: str = "claude-sdk") -> dict:
+    jsonl_path, _ = _episode_paths(run_name, index, source)
     if not jsonl_path.exists():
         return {"lines": [], "next_offset": offset}
     raw = jsonl_path.read_text().splitlines()
@@ -169,8 +183,8 @@ async def textlog(run_name: str, index: int, offset: int = 0) -> dict:
 
 
 @router.get("/runs/{run_name}/episode/{index}/frames")
-async def frames(run_name: str, index: int) -> dict:
-    _, live_dir = _episode_paths(run_name, index)
+async def frames(run_name: str, index: int, source: str = "claude-sdk") -> dict:
+    _, live_dir = _episode_paths(run_name, index, source)
     if not live_dir.exists():
         return {"frames": []}
     names = sorted(p.name for p in live_dir.glob("obs_*.png"))
@@ -178,10 +192,10 @@ async def frames(run_name: str, index: int) -> dict:
 
 
 @router.get("/runs/{run_name}/episode/{index}/frame/{name}")
-async def frame(run_name: str, index: int, name: str):
+async def frame(run_name: str, index: int, name: str, source: str = "claude-sdk"):
     if "/" in name or ".." in name or not name.endswith(".png"):
         raise HTTPException(400, "bad frame name")
-    _, live_dir = _episode_paths(run_name, index)
+    _, live_dir = _episode_paths(run_name, index, source)
     path = live_dir / name
     if not path.exists():
         raise HTTPException(404, "frame not found")
