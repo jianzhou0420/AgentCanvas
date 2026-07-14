@@ -27,6 +27,7 @@ router = APIRouter()
 SOURCE_ROOTS = {
     "claude-sdk": OUTPUT_ROOT,                                # beta-coding-agent (Agent SDK)
     "mini-swe": OUTPUT_ROOT.parent / "beta-react-harness",    # mini-swe-agent harness
+    "codex": OUTPUT_ROOT.parent / "beta-codex-agent",         # OpenAI Codex CLI harness
 }
 
 
