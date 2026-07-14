@@ -159,6 +159,7 @@ export interface SavedGraph {
   nodes: unknown[];
   edges: unknown[];
   step_budget: number | null;
+  eval_graph?: boolean;
   kind?: "graph" | "node";
   group?: string;
   folder?: string; // POSIX subdirectory under the kind root ("" = root)

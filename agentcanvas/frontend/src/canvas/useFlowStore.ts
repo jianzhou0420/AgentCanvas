@@ -113,6 +113,9 @@ export interface TabState {
   graphStatePreview: Record<string, Record<string, unknown>> | null;
   /** Per-episode iteration cap for the graph executor (editable from toolbar). */
   step_budget: number;
+  /** Whether the graph is an eval graph (must declare a graphOut); graphs
+   *  that don't produce metrics opt out with eval_graph: false. */
+  eval_graph: boolean;
 }
 
 function createTabState(
@@ -140,6 +143,7 @@ function createTabState(
     graphState: null,
     graphStatePreview: null,
     step_budget: 500,
+    eval_graph: true,
   };
 }
 
@@ -490,6 +494,7 @@ export const useFlowStore = create<FlowStore>((set, get) => ({
     );
     tab.graphState = gsContainer;
     tab.step_budget = graph.step_budget ?? 500;
+    tab.eval_graph = graph.eval_graph ?? true;
     set({
       tabs: { ...s.tabs, [id]: tab },
       tabOrder: [...s.tabOrder, id],
@@ -821,6 +826,7 @@ export const useFlowStore = create<FlowStore>((set, get) => ({
         graphState: gsContainer,
         graphStatePreview: null,
         step_budget: graph.step_budget ?? 500,
+        eval_graph: graph.eval_graph ?? true,
         dirty: false,
       })),
     );
@@ -859,6 +865,7 @@ export const useFlowStore = create<FlowStore>((set, get) => ({
       containers,
       access_grants: fromFlowAccessGrants(grantEdges),
       step_budget: tab?.step_budget ?? 500,
+      eval_graph: tab?.eval_graph ?? true,
     };
   },
 

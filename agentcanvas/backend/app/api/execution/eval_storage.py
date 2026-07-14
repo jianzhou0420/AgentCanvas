@@ -132,6 +132,10 @@ def list_runs() -> list[dict]:
             # Return summary without full episodes list
             summary = {k: v for k, v in data.items() if k != "episodes"}
             summary["episode_count_saved"] = len(data.get("episodes", []))
+            # Subprocess-path summaries carry graph_name only inside config;
+            # promote it so list consumers (RunHistory rows) see a name.
+            if not summary.get("graph_name"):
+                summary["graph_name"] = (data.get("config") or {}).get("graph_name", "")
             results.append(summary)
         except Exception as exc:
             log.warning("Failed to read eval run %s: %s", path, exc)

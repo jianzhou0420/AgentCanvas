@@ -473,6 +473,7 @@ export const api = {
     containers?: unknown[];
     access_grants?: unknown[];
     step_budget?: number | null;
+    eval_graph?: boolean;
     kind?: "graph" | "node";
     group?: string;
     folder?: string;
@@ -488,6 +489,7 @@ export const api = {
       containers?: unknown[];
       access_grants?: unknown[];
       step_budget?: number | null;
+      eval_graph?: boolean;
     },
   ) =>
     putJ<{ id: string; path: string }>(

@@ -233,6 +233,7 @@ export default function CanvasPage() {
         containers: containers as unknown[],
         access_grants: (flat.access_grants || []) as unknown[],
         step_budget: flat.step_budget,
+        eval_graph: tab.eval_graph,
       });
       state.updateTabMeta(tab.id, { dirty: false });
       // The Explorer sidebar caches `allGraphs` from a single mount-time

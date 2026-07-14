@@ -294,9 +294,22 @@ export default function EvalPage() {
   function handleSelectRun(selectedRun: EvalRunSummary) {
     setRun(selectedRun);
     setStatus(selectedRun.status);
+    // GET /runs/{id} — /episodes only reflects the currently-active run, so a
+    // historical selection needs the full persisted summary for its episodes.
     evalApi
-      .getEpisodes()
-      .then(({ episodes: eps }) => setEpisodes(eps))
+      .getRun(selectedRun.run_id)
+      .then((full) => {
+        const eps =
+          (full as unknown as { episodes?: EvalEpisodeResult[] }).episodes ??
+          [];
+        setRun({
+          ...selectedRun,
+          ...full,
+          completed_count: eps.filter((e) => e.status === "completed").length,
+          error_count: eps.filter((e) => e.status === "error").length,
+        });
+        setEpisodes(eps);
+      })
       .catch(() => {});
   }
 
