@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph SDK Record / Replay — AgentCanvas</title>
+<meta name="description" content="Recorder · Player · the cassette ( .mpk ) · the server-proxy seam · per-node-type FIFO replay">
+<meta property="og:title" content="Graph SDK Record / Replay — AgentCanvas">
+<meta property="og:description" content="Recorder · Player · the cassette ( .mpk ) · the server-proxy seam · per-node-type FIFO replay">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/surfaces/graph-sdk-record-replay.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="SDK Record / Replay">
+<style id="rr-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:880px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:10.5px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent-t { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#rra); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/surfaces/graph-sdk-record-replay.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Surfaces</a>
+    <span class="sep">/</span>
+    <span class="here">SDK Record / Replay</span>
+  </div>
+  <div class="last-updated">2026-07-12</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Graph SDK Record / Replay</h1>
+  <p class="tagline"><code>Recorder</code> · <code>Player</code> · the cassette (<code>.mpk</code>) · the server-proxy seam · per-node-type FIFO replay</p>
+</header>
+
+<p class="lede">A graph whose env / model nodes are server-mode normally needs a GPU, one conda env per nodeset, and downloaded weights. Record / replay removes all of that from the <em>test</em>: <code>g.run(record=…)</code> tees every server-node result of one real run into a cassette file; <code>g.run(replay=…)</code> then runs the same graph offline, answering each server call from the recording while local pure-Python nodes run for real. The hard promise is directional: <strong>a drift in the graph's topology or port interfaces away from what was recorded fails loudly</strong> (<code>ReplayExhausted</code> / <code>GraphValidationError</code>) — but replay does <em>not</em> re-verify the model outputs themselves (§6). Feature-level overview: <a href="../../capabilities/graph-sdk.html">Graph SDK capability page</a>; the proxy seam being wrapped: <a href="../operations/server-mode.html">server-mode</a>.</p>
+
+<svg class="rxsvg" viewBox="0 0 880 470" role="img" aria-label="Two lanes. Record: GraphExecutor fires proxy forwards, which call an auto_host server subprocess over HTTP; a Recorder tee appended around each proxy forward collects (node_type, result) pairs, and on a clean run dump_cassette writes version+manifests+calls through pack_body and zlib into a .mpk file. Replay: Graph.run(replay=…) skips nodeset loading, load_cassette version-checks the file, Player.install rebuilds proxy classes from the saved manifests via generate_proxy_nodes and register_node, and overrides each replayed node type's forward to pop the next recorded result from a per-node-type FIFO deque; local nodes are untouched and run for real.">
+  <defs>
+    <marker id="rra" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  </defs>
+
+  <text x="30" y="34" class="accent-t">RECORD — one real run (GPU + conda envs)</text>
+  <rect class="box" x="30" y="56" width="170" height="52" rx="8"/>
+  <text x="115" y="78" text-anchor="middle">GraphExecutor</text>
+  <text x="115" y="96" text-anchor="middle" class="mono">graph_executor.py · _fire_node</text>
+
+  <rect class="accent" x="280" y="56" width="220" height="52" rx="8"/>
+  <text x="390" y="78" text-anchor="middle">proxy forward + Recorder tee</text>
+  <text x="390" y="96" text-anchor="middle" class="mono">proxy.py · _make_forward / Recorder.wrap</text>
+
+  <rect class="ghost" x="640" y="56" width="210" height="52" rx="8"/>
+  <text x="745" y="78" text-anchor="middle">auto_host server subprocess</text>
+  <text x="745" y="96" text-anchor="middle" class="dim">nodeset's conda env · GPU</text>
+
+  <path class="edge" d="M200,82 L280,82"/>
+  <path class="edge" d="M500,74 L640,74"/>
+  <path class="edge" d="M640,92 L500,92"/>
+  <text x="570" y="66" text-anchor="middle" class="dim">HTTP /call · msgpack</text>
+
+  <path class="edge" d="M390,108 L390,166"/>
+  <text x="402" y="140" class="dim">append {node_type, result} per call, in order</text>
+
+  <rect class="accent" x="250" y="170" width="380" height="58" rx="8"/>
+  <text x="440" y="192" text-anchor="middle">cassette <tspan class="mono">.mpk</tspan> — {version, manifests, calls}</text>
+  <text x="440" y="210" text-anchor="middle" class="mono">graph_sdk_replay.py · dump_cassette = pack_body → zlib</text>
+  <text x="640" y="160" class="dim">written on a clean run only</text>
+  <text x="640" y="174" class="dim">manifests read off the proxy classes</text>
+  <text x="640" y="188" class="mono">_synthesize_manifests</text>
+
+  <text x="30" y="286" class="accent-t">REPLAY — offline (no servers, no GPU, no conda envs)</text>
+
+  <rect class="box" x="30" y="308" width="170" height="52" rx="8"/>
+  <text x="115" y="330" text-anchor="middle">Graph.run(replay=…)</text>
+  <text x="115" y="348" text-anchor="middle" class="mono">graph_sdk.py · _drive</text>
+  <text x="115" y="376" class="dim" text-anchor="middle">skips nodeset loading entirely</text>
+
+  <path class="edge" d="M440,228 L440,262 L400,262 L400,302"/>
+  <text x="452" y="252" class="dim">load_cassette — version check</text>
+
+  <rect class="accent" x="280" y="308" width="240" height="52" rx="8"/>
+  <text x="400" y="330" text-anchor="middle">Player.install — rebuild proxies</text>
+  <text x="400" y="348" text-anchor="middle" class="mono">generate_proxy_nodes("http://replay.invalid")</text>
+
+  <rect class="box" x="590" y="308" width="200" height="52" rx="8"/>
+  <text x="690" y="330" text-anchor="middle">forward = queue.popleft()</text>
+  <text x="690" y="348" text-anchor="middle" class="mono">per-node_type FIFO deque</text>
+
+  <path class="edge" d="M200,334 L280,334"/>
+  <path class="edge" d="M520,334 L590,334"/>
+
+  <rect class="ghost" x="280" y="396" width="240" height="46" rx="8"/>
+  <text x="400" y="415" text-anchor="middle">local (non-<tspan class="mono">__</tspan>) nodes untouched</text>
+  <text x="400" y="432" text-anchor="middle" class="dim">run for real — wiring + ports exercised</text>
+
+  <path class="edge" d="M690,360 L690,392"/>
+  <text x="690" y="412" text-anchor="middle" class="dim">empty queue → <tspan class="mono">ReplayExhausted</tspan></text>
+</svg>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>Every server-mode node call in a graph passes through one seam: the proxy class's <code>forward()</code>, generated by <code>proxy.py · _make_forward</code>, which POSTs to the nodeset's server subprocess and returns the decoded result. Record / replay treats that seam as the recording surface. During a real run, <code>Recorder</code> replaces each server-node class's <code>forward</code> with a tee that appends <code>{node_type, result}</code> to a list, in call order. On a clean finish, the list is written to a <strong>cassette</strong> together with a manifest of every recorded node type's ports and config schema. On replay, <code>Player</code> rebuilds those proxy classes from the saved manifests — no server, the base URL is the deliberately unresolvable <code>http://replay.invalid</code> — and replaces their <code>forward</code> with "pop the next recorded result for this node type". Everything else is the ordinary engine: the same <code>GraphExecutor</code>, and every local node's real <code>forward</code>.</p>
+<p>The point is not to fake the graph — it is to run the <em>real</em> wiring, port interfaces, and local-node code against pinned server outputs. What the simulator and the model said once, they now say forever; what the graph does with it is re-executed every time.</p>
+
+<h2 id="2-smallest"><span class="num">2.</span> The smallest replay</h2>
+<p>Three lines, runnable on a machine with none of the graph's environments (this is <code>examples/07_habitat_sam.py</code>'s graph — Habitat in <code>ac-vlnce</code>, SAM in <code>ac-fm</code>, two GPUs' worth of servers in the real run):</p>
+<pre class="hl">
+<span class="n">g</span> <span class="o">=</span> <span class="n">build</span><span class="p">(</span><span class="p">)</span>                                    <span class="c1"># the same builder the real run used</span>
+<span class="n">r</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">replay</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">tests/cassettes/habitat_sam_first_frame.mpk</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="k">assert</span> <span class="n">r</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">num_masks</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">35</span>                    <span class="c1"># no GPU, no conda envs, no servers</span>
+</pre>
+<p>The cassette is produced once, on a machine that <em>does</em> have the environments (this is a real GPU run):</p>
+<pre class="hl">
+<span class="c1"># one-time, on a machine with the real envs (a real GPU run):</span>
+python<span class="w"> </span>examples/07_habitat_sam.py<span class="w"> </span>--record<span class="w"> </span>tests/cassettes/habitat_sam_first_frame.mpk
+</pre>
+
+<h2 id="3-cassette"><span class="num">3.</span> The cassette</h2>
+<p>A cassette is one file: a msgpack-encoded dict, zlib-compressed (level 9). The codec is <code>serialization.pack_body</code> — the same lossless encoding the proxy uses on the wire — so ndarray / torch / PIL results survive the round trip byte-exact (<code>graph_sdk_replay.py · dump_cassette / load_cassette</code>).</p>
+<table>
+<thead><tr><th>Key</th><th>Content</th><th>Used for</th></tr></thead>
+<tbody>
+<tr><td><code>version</code></td><td><code>CASSETTE_VERSION = 1</code></td><td><code>load_cassette</code> hard-rejects any other value ("regenerate it")</td></tr>
+<tr><td><code>manifests</code></td><td>one <code>ServerManifest</code> dict per recorded nodeset — every node type's input/output ports + config schema, read off the live proxy classes by <code>_synthesize_manifests</code></td><td>rebuilding the proxy classes offline, so replay needs no workspace scan and no server</td></tr>
+<tr><td><code>calls</code></td><td><code>[{node_type, result}, …]</code> in call order</td><td>the per-node-type FIFO queues the replayed <code>forward</code>s pop from</td></tr>
+</tbody>
+</table>
+<p>The shipped Habitat→SAM cassette (<code>tests/cassettes/habitat_sam_first_frame.mpk</code>) is 525&nbsp;KiB compressed — four server calls, one of them a 35-mask SAM envelope.</p>
+
+<h2 id="4-record"><span class="num">4.</span> Record path</h2>
+<p><strong>Record wraps only server-node classes, only for the duration of the run, and writes only on success.</strong> <code>Graph.run(record=…)</code> collects the graph's server node types — every <code>NodeDef.type</code> containing <code>"__"</code> (<code>graph_sdk.py · _drive</code>) — and <code>Recorder.wrap</code> swaps each class's <code>forward</code> in the global <code>NODE_HANDLERS</code> for a tee that awaits the original and appends the result. The run itself is a completely ordinary real run: nodesets load, servers spawn, GPU admission applies. In the <code>finally</code> block the order is fixed: <code>unwrap()</code> first (restore the original <code>forward</code>s, so manifests are synthesised off un-mutated classes), then <code>write()</code> — and only if the run reached success, so a crash mid-run never leaves a truncated cassette behind.</p>
+
+<h2 id="5-replay"><span class="num">5.</span> Replay path</h2>
+<p><strong>Replay never touches the workspace registry.</strong> <code>replay=…</code> short-circuits nodeset loading entirely (<code>graph_sdk.py · _drive</code>: the load branch is skipped when <code>replay is not None</code>), so no scan, no conda-env resolution, no subprocess. <code>Player.install</code> then does two things (<code>graph_sdk_replay.py · Player.install</code>):</p>
+<ol>
+<li><strong>Rebuild missing proxy classes</strong> — for each saved manifest, <code>proxy.generate_proxy_nodes("http://replay.invalid", manifest)</code> produces the same proxy classes a live server would have yielded, and any class the cassette needs that isn't already in <code>NODE_HANDLERS</code> is <code>register_node()</code>'d. The bogus URL is intentional: the rebuilt <code>forward</code> is replaced in step 2, so nothing ever dials it.</li>
+<li><strong>Override <code>forward</code></strong> on every replayed node type — rebuilt or pre-existing — with a closure that pops the next result from that node type's FIFO deque, or raises <code>ReplayExhausted</code> when the queue is empty.</li>
+</ol>
+<p><code>Player.uninstall</code> runs in the <code>finally</code>: pre-existing classes get their original <code>forward</code> back; classes the Player registered are removed from <code>NODE_HANDLERS</code>.</p>
+
+<h2 id="6-drift"><span class="num">6.</span> What fails loudly — and what doesn't</h2>
+<p>Replay is an <em>order-based</em> contract: it checks that the graph fires the same server-call sequence it fired when recorded, not that the inputs are the same. Concretely:</p>
+<table>
+<thead><tr><th>Drift</th><th>Behaviour on replay</th></tr></thead>
+<tbody>
+<tr><td>Graph fires <strong>more</strong> calls of a node type than recorded</td><td><code>ReplayExhausted</code> from that node's <code>forward</code> — surfaces as a node error (§7)</td></tr>
+<tr><td>Graph uses a node type the cassette has <strong>no manifest</strong> for</td><td>unknown node type → <code>GraphValidationError</code> from the default-on <code>check</code></td></tr>
+<tr><td>Port renamed / removed on a <strong>local</strong> node</td><td>the local node runs for real — its real failure mode fires</td></tr>
+<tr><td>Cassette from an older <code>CASSETTE_VERSION</code></td><td><code>ValueError("regenerate it")</code> at <code>load_cassette</code></td></tr>
+<tr><td><code>record=</code> and <code>replay=</code> passed together</td><td><code>ValueError</code> — mutually exclusive (<code>graph_sdk.py · run</code>)</td></tr>
+<tr><td>Graph fires <strong>fewer</strong> calls than recorded</td><td><strong>warning</strong> at the end of a clean run — leftover results are named and discarded, the run still passes (§7)</td></tr>
+<tr><td>Same call order, <strong>different inputs</strong></td><td><strong>silent</strong> — inputs are not matched against the recording (§7)</td></tr>
+</tbody>
+</table>
+
+<h2 id="7-deviations"><span class="num">7.</span> Where it deviates from the mental model</h2>
+<p>"A recording of the run" suggests more fidelity than the mechanism provides. Four seams:</p>
+<div class="callout warn">
+<strong>Order-based, not input-matched.</strong> Results are keyed by <code>node_type</code> alone, FIFO. Unlike HTTP-VCR tools that match requests, the inputs of a replayed call are never compared to what was recorded — a graph that fires the same node types in the same order with <em>different</em> inputs replays "green" with stale data. Two node instances of the same type share one queue.
+</div>
+<div class="callout warn">
+<strong>Under-consumption warns, but does not fail.</strong> <code>ReplayExhausted</code> only fires on over-consumption — a graph that makes <em>fewer</em> server calls than the cassette holds (e.g. a branch got disconnected) has no <code>forward</code> to raise in. A clean run ends with a warning naming the leftover results per node type (<code>graph_sdk_replay.py · Player.leftover</code>, logged by <code>Graph.run</code>); the run itself still passes, so a test that only checks outputs can miss this drift.
+</div>
+<div class="callout warn">
+<strong>Exhaustion does not raise out of <code>run()</code>.</strong> <code>ReplayExhausted</code> is raised inside the node's <code>forward</code>; the executor records it as a node error and completes the run with that node's outputs missing. Assert on the event stream or the outputs — <code>test_graph_sdk.py · test_replay_exhausted_on_extra_call</code> collects <code>on_event</code> and checks for a <code>node_error</code> event, not <code>pytest.raises</code>.
+</div>
+<div class="callout warn">
+<strong>Global, single-run state.</strong> Both <code>Recorder</code> and <code>Player</code> mutate class attributes in the global <code>NODE_HANDLERS</code> for the duration of one run and restore them in <code>finally</code>. One in-process record-or-replay run at a time; concurrent runs would tee/pop each other's calls.
+</div>
+
+<h2 id="8-ci"><span class="num">8.</span> CI usage</h2>
+<p>The recorded cassette is committed (<code>tests/cassettes/habitat_sam_first_frame.mpk</code>), and the guard test skips rather than fails when it is absent — so the suite passes with or without the artifact, and runs the full offline replay when it is there (it does, in CI):</p>
+<pre class="hl">
+<span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">skipif</span><span class="p">(</span><span class="ow">not</span> <span class="n">_cassette_path</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">reason</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">habitat-sam cassette not present</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">test_habitat_sam_replay</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">g</span> <span class="o">=</span> <span class="n">_load_example07</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="p">)</span>
+    <span class="n">r</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">replay</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">_cassette_path</span><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">r</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">num_masks</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">35</span>        <span class="c1"># recorded SAM output flows through the real overlay</span>
+</pre>
+<p>Regeneration is deliberate, not automatic: rerun the example's <code>--record</code> flag on a machine with the real environments whenever the recorded interfaces genuinely change, and commit the new cassette. A version bump of <code>CASSETTE_VERSION</code> invalidates every existing cassette at load time.</p>
+
+<h2 id="9-key-files"><span class="num">9.</span> Key files</h2>
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>app/graph_sdk_replay.py</code></td><td><code>Recorder</code> / <code>Player</code> / <code>dump_cassette</code> / <code>load_cassette</code> / <code>_synthesize_manifests</code> / <code>ReplayExhausted</code> — the whole mechanism, zero edits to proxy / registry / executor</td></tr>
+<tr><td><code>app/graph_sdk.py · Graph.run / _drive</code></td><td><code>record=</code> / <code>replay=</code> orchestration: mutual exclusion, load-skip on replay, unwrap-then-write-on-success</td></tr>
+<tr><td><code>app/server/proxy.py · _make_forward / generate_proxy_nodes</code></td><td>the seam being teed, and the factory replay reuses to rebuild proxy classes</td></tr>
+<tr><td><code>app/server/serialization.py · pack_body / unpack_body</code></td><td>the lossless codec cassettes persist through</td></tr>
+<tr><td><code>app/test_graph_sdk.py</code> · <code>tests/cassettes/</code></td><td>round-trip / exhaustion / mutual-exclusion tests + the committed Habitat→SAM cassette and its CI guard</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-smallest">2. The smallest replay</a>
+      <a class="toc-h2" href="#3-cassette">3. The cassette</a>
+      <a class="toc-h2" href="#4-record">4. Record path</a>
+      <a class="toc-h2" href="#5-replay">5. Replay path</a>
+      <a class="toc-h2" href="#6-drift">6. What fails loudly — and what doesn't</a>
+      <a class="toc-h2" href="#7-deviations">7. Where it deviates from the mental model</a>
+      <a class="toc-h2" href="#8-ci">8. CI usage</a>
+      <a class="toc-h2" href="#9-key-files">9. Key files</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

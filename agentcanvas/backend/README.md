@@ -18,20 +18,28 @@ a build-only PoC into a full SDK:
 - **Reverse codegen** — `graph_to_code()` / `Graph.to_code()` compiles any graph
   back into a standalone builder script (round-trips exactly).
 - **Authoring sugar** — `g.loop()` / `g.hook()` / `g.composite()`.
-- **Pip-installable** — `pip install -e .` → `from agentcanvas import Graph`, no `PYTHONPATH`.
+- **Pip-installable** — `pip install -e .` at the repo root → `from agentcanvas import Graph`, no `PYTHONPATH`.
 
 Verified end-to-end on MapGPT-MP3D (1-ep `g.run` + 2-ep `g.eval`).
 
 ## Install
 
-The SDK surface is stdlib-only and importable as soon as the package is on the
-path. The heavy runtime dependencies a real *nodeset* run needs (FastAPI,
-torch, litellm, simulators) are provisioned by the `agentcanvas` conda env via
-`requirements.txt` — kept out of `pyproject.toml` so the SDK stays light.
+`pyproject.toml` lives at the **repo root** (it packages this directory), so a
+fresh clone installs with a plain editable install from there:
 
 ```bash
-pip install -e .          # exposes `agentcanvas` and `app`
+pip install -e .                  # from the repo root — exposes `agentcanvas` and `app`
+pip install -e ".[server]"        # + server-node proxy & cassette record/replay
+pip install -e ".[llm]"           # + the llmCall builtin node
+pip install -e ".[backend]"       # + the full FastAPI canvas backend
 ```
+
+The SDK surface is stdlib-only; the core install needs only `pydantic-settings`
+(workspace discovery). Everything heavier is an extra, and full nodeset runs
+(torch, simulators) still ride the dedicated conda envs via server mode —
+`requirements.txt` provisions the `agentcanvas` env as before. An editable
+install resolves `workspace/` from the source tree automatically, so graphs,
+nodesets, and cassettes work with zero extra configuration.
 
 ## Build & run
 

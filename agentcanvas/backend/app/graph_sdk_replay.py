@@ -206,6 +206,13 @@ class Player:
 
         return forward
 
+    def leftover(self) -> dict[str, int]:
+        """Recorded results never requested, per node type. Non-empty after a
+        clean run means the replayed graph fired *fewer* server calls than the
+        cassette holds — the under-consumption side of a topology drift, which
+        no ``forward`` can raise on. ``Graph.run`` warns on it."""
+        return {nt: len(q) for nt, q in self.queues.items() if q}
+
     def uninstall(self) -> None:
         from .agent_loop.builtin_nodes import NODE_HANDLERS
 

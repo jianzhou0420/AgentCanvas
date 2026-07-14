@@ -1128,6 +1128,21 @@ class Graph:
                         recorder.write(record)
                 if player is not None:
                     player.uninstall()
+                    left = player.leftover()
+                    if success and left:
+                        # Over-consumption raises ReplayExhausted in-forward;
+                        # under-consumption has no forward to raise in, so it
+                        # is surfaced here — a clean run that used fewer server
+                        # calls than recorded is still a drift from the cassette.
+                        import logging
+
+                        logging.getLogger(__name__).warning(
+                            "replay under-consumed the cassette: %d recorded "
+                            "result(s) never requested (%s) — the graph fired "
+                            "fewer server calls than were recorded",
+                            sum(left.values()),
+                            ", ".join(f"{nt} x{n}" for nt, n in sorted(left.items())),
+                        )
                 if reg is not None and teardown_nodesets and started:
                     for ns in started:
                         # best-effort cleanup
