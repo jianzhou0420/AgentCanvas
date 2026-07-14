@@ -108,8 +108,9 @@ export default function CodingAgentPage() {
   // log browser (any run under outputs/beta-coding-agent/, CLI-launched included)
   const [mode, setMode] = useState<"live" | "browse">("live");
   // which harness's runs to browse: Agent SDK (beta-coding-agent) vs
-  // mini-swe-agent (beta-react-harness). Live mode is SDK-runner-only.
-  const [harness, setHarness] = useState<"claude-sdk" | "mini-swe">("claude-sdk");
+  // mini-swe-agent (beta-react-harness) vs OpenAI Codex CLI
+  // (beta-codex-agent). Live mode is SDK-runner-only.
+  const [harness, setHarness] = useState<"claude-sdk" | "mini-swe" | "codex">("claude-sdk");
   const [runsList, setRunsList] = useState<RunInfo[]>([]);
   const [browseRun, setBrowseRun] = useState<string | null>(null);
   const [browseEpisodes, setBrowseEpisodes] = useState<EpisodeSummary[]>([]);
@@ -204,7 +205,7 @@ export default function CodingAgentPage() {
     };
   }, [viewEpisode, mode, browseRun, browseStarted, harness]);
 
-  const loadRuns = async (source?: "claude-sdk" | "mini-swe") => {
+  const loadRuns = async (source?: "claude-sdk" | "mini-swe" | "codex") => {
     try {
       const src = source ?? harness;
       const data = await (await fetch(`/api/coding-agent/runs?source=${src}`)).json();
@@ -475,6 +476,7 @@ export default function CodingAgentPage() {
               [
                 ["claude-sdk", "Claude SDK"],
                 ["mini-swe", "mini-swe-agent"],
+                ["codex", "Codex CLI"],
               ] as const
             ).map(([h, label]) => (
               <button
