@@ -24,28 +24,28 @@ STD_FROZEN: dict = {
     "episode_timeout": 2400,
 }
 
-# model key (board column) → model id passed to the harness
+# model key (board column) → model id passed to the harness.
+# gpt slugs are identical on the codex CLI and litellm's openai route;
+# gpt-5.6 on codex needs CLI > 0.142 (upgrade + re-probe before batch X).
 MODELS = {
     "sonnet-5": "claude-sonnet-5",
     "opus-4.8": "claude-opus-4-8",
     "fable-5": "claude-fable-5",
-    "gpt-5.5": "gpt-5.5",  # codex appendix column
-    # local appendix column: served by a user-space ollama (>=0.32) on a
-    # dedicated port so the machine's own ollama service stays untouched
-    "qwen3-vl-8b": "ollama_chat/qwen3-vl:8b",
+    "gpt-5.5": "gpt-5.5",
+    "gpt-5.6": "gpt-5.6",
 }
 
-# per-model default knobs, recorded into the run config. image_window is the
-# local column's registered deviation: 80-turn full-history multimodal
-# overflows a local model's context, so only the newest K frames ride the
-# payload (cloud cells run image_window=0 — never compare across this).
-MODEL_EXTRA: dict[str, dict] = {
-    "qwen3-vl-8b": {"api_base": "http://127.0.0.1:11435", "image_window": 4},
-}
+# per-model default knobs, recorded into the run config (e.g. a local model's
+# api_base + image_window). Empty on the current board.
+MODEL_EXTRA: dict[str, dict] = {}
 
 CONDITIONS = {
     "bare": {"bare": True, "skill": None},
     "nav": {"bare": False, "skill": "ledger-nav"},
+    # ablation: bare tool surface + BARE briefing, but the stock Claude Code
+    # persona is KEPT (preset system prompt, briefing appended instead of
+    # replacing). sdk-only — mini has no persona; codex can't drop its own.
+    "persona": {"bare": True, "skill": None, "persona": True},
 }
 
 # harness key → output root (the Monitor's SOURCE_ROOTS, unchanged)
@@ -62,9 +62,10 @@ class CellSpec:
     harness: str       # sdk | mini | codex
     model_key: str     # board column
     model_id: str      # harness-facing model string
-    condition: str     # bare | nav
+    condition: str     # bare | nav | persona
     bare: bool
     skill: str | None
+    persona: bool = False  # keep the harness's stock persona (ablation)
     extra: tuple = ()  # model-default knobs as (key, value) pairs (hashable)
 
     @property
@@ -90,31 +91,34 @@ def _cell(harness: str, model_key: str, condition: str) -> CellSpec:
         condition=condition,
         bare=cond["bare"],
         skill=cond["skill"],
+        persona=cond.get("persona", False),
         extra=tuple(sorted(MODEL_EXTRA.get(model_key, {}).items())),
     )
 
 
 CLAUDE_MODELS = ("sonnet-5", "opus-4.8", "fable-5")
 
+# current board: bare-only (nav / persona conditions stay defined above but
+# unregistered for now). Design: each closed harness vs the open mini harness
+# on the SAME models — claude side sdk↔mini (sonnet/opus; fable is sdk-only),
+# openai side codex↔mini (gpt-5.5 / gpt-5.6).
+BOARD = (
+    ("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"),
+    ("codex", "gpt-5.5"), ("codex", "gpt-5.6"),
+    ("mini", "sonnet-5"), ("mini", "opus-4.8"),
+    ("mini", "gpt-5.5"), ("mini", "gpt-5.6"),
+)
+
 CELLS: dict[str, CellSpec] = {}
-for _h in ("sdk", "mini"):
-    for _m in CLAUDE_MODELS:
-        for _c in ("bare", "nav"):
-            spec = _cell(_h, _m, _c)
-            CELLS[spec.name] = spec
-# appendix columns (outside the 12-cell board; same freeze applies):
-# codex = OpenAI's closed harness; qwen3-vl-8b = locally served via mini
-for _c in ("bare", "nav"):
-    for _h, _m in (("codex", "gpt-5.5"), ("mini", "qwen3-vl-8b")):
-        spec = _cell(_h, _m, _c)
-        CELLS[spec.name] = spec
+for _h, _m in BOARD:
+    spec = _cell(_h, _m, "bare")
+    CELLS[spec.name] = spec
 
 BATCHES = {
-    "A": [f"std_sdk_{m}_{c}" for m in CLAUDE_MODELS for c in ("bare", "nav")],
-    "B": [f"std_mini_{m}_{c}" for m in ("sonnet-5", "opus-4.8") for c in ("bare", "nav")],
-    "C": [f"std_mini_fable-5_{c}" for c in ("bare", "nav")],
-    "X": [f"std_codex_gpt-5.5_{c}" for c in ("bare", "nav")],       # appendix: codex
-    "L": [f"std_mini_qwen3-vl-8b_{c}" for c in ("bare", "nav")],    # appendix: local
+    "A": [f"std_sdk_{m}_bare" for m in CLAUDE_MODELS],
+    "B": ["std_mini_sonnet-5_bare", "std_mini_opus-4.8_bare"],      # API key: anthropic
+    "G": ["std_mini_gpt-5.5_bare", "std_mini_gpt-5.6_bare"],        # API key: openai
+    "X": ["std_codex_gpt-5.5_bare", "std_codex_gpt-5.6_bare"],      # 5.6 needs CLI upgrade
 }
 
 

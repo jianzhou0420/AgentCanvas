@@ -67,8 +67,14 @@ class ClaudeSdkAdapter:
     def _options(self, ctx: EpisodeContext) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
+        # persona ablation: keep the stock Claude Code system prompt and
+        # append the briefing, instead of replacing it wholesale
+        system_prompt: Any = (
+            {"type": "preset", "preset": "claude_code", "append": ctx.briefing}
+            if ctx.persona else ctx.briefing
+        )
         return ClaudeAgentOptions(
-            system_prompt=ctx.briefing,
+            system_prompt=system_prompt,
             mcp_servers={
                 "env": {
                     "type": "stdio",

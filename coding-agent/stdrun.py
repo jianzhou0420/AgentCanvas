@@ -7,7 +7,7 @@ run so it can never sit on the standard board.
 
 Usage (agentcanvas env; habitat auto_host(s) must already be up):
     python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
-    python coding-agent/stdrun.py run std_mini_sonnet-5_nav --servers http://127.0.0.1:9200,http://127.0.0.1:9201
+    python coding-agent/stdrun.py run std_mini_gpt-5.6_bare --servers http://127.0.0.1:9200,http://127.0.0.1:9201
     python coding-agent/stdrun.py run std_codex_gpt-5.5_bare --episodes 3,7   # rerun/resume two indices
     python coding-agent/stdrun.py batch A
     python coding-agent/stdrun.py board

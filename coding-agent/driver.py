@@ -198,6 +198,7 @@ class EpisodeContext:
     workdir: Path
     live_dir: Path
     raw_dir: Path
+    persona: bool = False  # ablation: keep the harness's stock persona
     extra: dict[str, Any] = field(default_factory=dict)  # harness-specific knobs
 
     @property
@@ -281,6 +282,7 @@ async def run_episode(
         workdir=workdir,
         live_dir=run_dir / f"live_{index}",
         raw_dir=raw_dir,
+        persona=spec.persona,
         extra=dict(cfg.get("extra") or {}),
     )
 
@@ -297,6 +299,7 @@ async def run_episode(
             "model": spec.model_id,
             "skill": spec.skill,
             "skill_md5": skill_md5,
+            "persona": spec.persona,
             "system_prompt": briefing,
             "first_prompt": FIRST_PROMPT,
             "tool_schemas": await bridge_tool_schemas(spec.bare),
@@ -440,7 +443,8 @@ async def run_cell(
                 "harness_inherent": adapter.inherent,
                 "config": {**{k: v for k, v in cfg.items() if k != "extra"},
                            "model": spec.model_id, "bare": spec.bare,
-                           "skill": spec.skill, "extra": json_safe(cfg["extra"])},
+                           "skill": spec.skill, "persona": spec.persona,
+                           "extra": json_safe(cfg["extra"])},
                 "servers": servers,
                 "aggregate": aggregate([e for e in ordered if "error" not in e]),
                 "episodes": ordered,

@@ -62,10 +62,15 @@ class MiniSweAdapter:
     def _check_auth(self, ctx: EpisodeContext) -> None:
         if self._is_local(ctx):
             return  # local server — no provider key involved
-        if any(s in ctx.model.lower() for s in ("anthropic", "claude")) \
+        model = ctx.model.lower()
+        if any(s in model for s in ("anthropic", "claude")) \
                 and not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError(
                 "ANTHROPIC_API_KEY is not set — litellm needs it (API billing)"
+            )
+        if model.startswith("gpt") and not os.environ.get("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set — litellm needs it (API billing)"
             )
 
     def _knobs(self, ctx: EpisodeContext) -> dict[str, Any]:
