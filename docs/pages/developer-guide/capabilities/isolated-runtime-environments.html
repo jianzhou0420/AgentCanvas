@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>3Isolated Runtime Environments — AgentCanvas</title>
+<title>Isolated Runtime Environments — AgentCanvas</title>
 <meta name="description" content="Server-mode nodesets run in their own subprocess and Python env; the framework talks HTTP to them.">
-<meta property="og:title" content="3Isolated Runtime Environments — AgentCanvas">
+<meta property="og:title" content="Isolated Runtime Environments — AgentCanvas">
 <meta property="og:description" content="Server-mode nodesets run in their own subprocess and Python env; the framework talks HTTP to them.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentCanvas">
@@ -23,7 +23,17 @@
     document.documentElement.setAttribute('data-theme', t);
   })();
 </script>
-
+<style>
+  .rxsvg { width:100%; height:auto; max-width:700px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--capability-bg); stroke: var(--capability); stroke-width:1.6; }
+  .rxsvg .at { fill: var(--capability); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#ire); }
+</style>
 <!-- site-layout -->
 </head>
 <body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/isolated-runtime-environments.html">
@@ -56,9 +66,9 @@
     <span class="sep">/</span>
     <a href="index.html">Capabilities</a>
     <span class="sep">/</span>
-    <span class="here">3Isolated Runtime Environments</span>
+    <span class="here">Isolated Runtime Environments</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-07-13</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">3</span>Isolated Runtime Environments</h1>
@@ -67,7 +77,43 @@
 
 
 
-<p>Research tools often require conflicting Python environments. Any <code>BaseNodeSet</code> can run in <strong>server mode</strong> in its own interpreter — the framework auto-generates an HTTP server from the tool's port definitions. Zero extra server code. Under batch eval, the same mechanism fans out to <strong>N tagged subprocesses</strong> for per-worker isolation (ADR-eval-002).</p>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="ire" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">Habitat-Sim wants Python 3.8; modern HF models want torch ≥ 2.x; the backend runs Python 3.10+. They cannot share an interpreter — so any <code>BaseNodeSet</code> can opt into <strong>server mode</strong>: the framework spawns it as its own subprocess on its own interpreter (<code>server_python</code>), auto-generates the HTTP surface from the same <code>PortDef</code>s the nodeset already declares, and registers <strong>proxy nodes</strong> that look identical on the canvas. Zero server code per nodeset; the researcher cannot tell which mode is active. Under batch eval the same mechanism fans out to N tagged subprocesses, one leased per episode (ADR-eval-002).</p>
+
+<svg class="rxsvg" viewBox="0 0 700 256" role="img" aria-label="Two processes separated by an HTTP boundary. Left, the backend process on the agentcanvas env (Python 3.10+): the GraphExecutor fires a proxy node that has the same node_type as the real tool and forwards over HTTP. Right, an isolated subprocess on the nodeset's own server_python (for example Python 3.8 with Habitat), drawn with stacked ghost outlines to suggest N instances: AutoServerApp hosts the nodeset and its env panel next to the live simulator state. Three arrows cross the boundary: at load, GET /manifest generates the proxies; at call time, POST /call/{fn}; episode control goes through /env-panel/{method}. Bottom notes: server_python picks the interpreter per nodeset, and batch eval spawns N tagged subprocesses leased one per episode.">
+  <text x="135" y="18" text-anchor="middle">backend process</text>
+  <text x="135" y="34" text-anchor="middle" class="dim">agentcanvas env · py3.10+</text>
+  <text x="545" y="18" text-anchor="middle">isolated subprocess</text>
+  <text x="545" y="34" text-anchor="middle" class="dim">server_python · e.g. py3.8 + habitat</text>
+
+  <rect x="436" y="58" width="250" height="150" rx="10" class="ghost"/>
+  <rect x="428" y="50" width="250" height="150" rx="10" class="ghost"/>
+
+  <rect x="10" y="42" width="250" height="150" rx="10" class="box"/>
+  <rect x="30" y="60" width="210" height="34" rx="7" class="box"/>
+  <text x="135" y="81" text-anchor="middle">GraphExecutor</text>
+  <rect x="30" y="110" width="210" height="60" rx="7" class="accent"/>
+  <text x="135" y="131" text-anchor="middle" class="at">proxy node</text>
+  <text x="135" y="150" text-anchor="middle" class="mono">same node_type · forward() → HTTP</text>
+
+  <rect x="420" y="42" width="250" height="150" rx="10" class="box"/>
+  <rect x="440" y="60" width="210" height="34" rx="7" class="accent"/>
+  <text x="545" y="81" text-anchor="middle" class="at">AutoServerApp</text>
+  <rect x="440" y="110" width="210" height="60" rx="7" class="box"/>
+  <text x="545" y="131" text-anchor="middle">nodeset + env panel</text>
+  <text x="545" y="150" text-anchor="middle" class="mono">tool.forward() · sim state</text>
+
+  <path class="edge" d="M260,77 H420"/><text x="340" y="69" text-anchor="middle" class="dim">load: /manifest → proxies</text>
+  <path class="edge" d="M260,128 H420"/><text x="340" y="120" text-anchor="middle" class="dim">POST /call/{fn}</text>
+  <path class="edge" d="M260,160 H420"/><text x="340" y="152" text-anchor="middle" class="dim">/env-panel/{method}</text>
+
+  <text x="10" y="230" class="dim">server_python picks the interpreter per nodeset — py3.8 Habitat and the py3.10 backend never share a process</text>
+  <text x="10" y="246" class="dim">batch eval: ×N tagged subprocesses per env nodeset (#0…#N-1), leased one per episode (worker_count=N)</text>
+</svg>
+
 <p><em>Design docs: <a href="../design-docs/operations/server-mode.html">Server Mode</a> · <a href="../design-docs/components/env-panels.html">Env Panels</a></em></p>
 <hr>
 <h2 id="1-problem"><span class="num">1.</span> Problem</h2>

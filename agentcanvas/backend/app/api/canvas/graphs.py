@@ -70,6 +70,7 @@ class GraphSaveRequest(BaseModel):
     containers: list = []
     access_grants: list = []
     step_budget: int | None = 500
+    eval_graph: bool = True
     kind: str = "graph"  # "graph" or "node"
     group: str = ""  # legacy flat group for graph nodes — superseded by `folder`
     folder: str = ""  # target subdirectory under the kind root ("" = root)

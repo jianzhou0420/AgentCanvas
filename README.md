@@ -153,6 +153,8 @@ The engine then runs that graph: nodes fire when their inputs arrive, not in a f
 - **Bounded multi-agent** — fixed-N or `K_max`-bounded fan-out (e.g., DiscussNav-style debate, AutoGen-style fixed roles)
 - **Plan-and-Execute** — over a bounded tool pool, dispatched by router
 
+The engine is also extensible without touching graph nodes: shell hooks fire before/after each node execution and at graph lifecycle boundaries — log outputs, validate inputs, block nodes, or modify data — and travel with saved graphs.
+
 ### 2.3 Isolated Runtime Environments
 
 Research tools often need conflicting Python environments (Habitat needs Python 3.8, SLAM needs ROS). Any `BaseNodeSet` can run in **server mode** — the framework auto-generates an HTTP server from the nodeset's port definitions, running in its own interpreter. Zero extra code:
@@ -206,15 +208,11 @@ class MeasureDistanceNode(BaseCanvasNode):
 
 The node then appears in the canvas sidebar and wires to any other node with matching port types. Its appearance is Python-driven too: `GenericBlockRenderer` renders any node automatically from `NodeUIConfig` — colors, layout, inline config controls (sliders, dropdowns, text fields), and display widgets — so no custom React component is needed.
 
-### 2.7 Hook System
+### 2.7 Batch Evaluation & Job Queue
 
-Shell commands fire before/after each node execution and at graph lifecycle boundaries. Hooks can log outputs, validate inputs, block nodes, or modify data — all without changing graph nodes. Hooks travel with saved graphs.
+The same graph that runs on the canvas can be submitted as an eval job that scores it over hundreds of episodes. A backend-owned `JobScheduler` gates admission against a VRAM budget shared across all sessions (ADR-eval-003); each admitted run is its own subprocess whose lifetime is tied to the backend (`PR_SET_PDEATHSIG`) — no orphaned GPU processes, and every finished episode persists on disk. Per-episode logs land in a self-contained layout (ADR-eval-004) so a teammate can replay any single episode without re-running.
 
-### 2.8 Batch Evaluation & Job Queue
-
-The same graph that runs on the canvas can be submitted as an eval job that scores it over hundreds of episodes. A backend-owned `JobScheduler` gates admission against a VRAM budget shared across all sessions (ADR-eval-003); each admitted run is its own subprocess, so backend restarts don't kill in-flight evals. Per-episode logs land in a self-contained layout (ADR-eval-004) so a teammate can replay any single episode without re-running.
-
-### 2.9 Real-Time Observability
+### 2.8 Execution Logs & Live Views
 
 Every step streams observations, reasoning, actions, and metrics via WebSocket, routed by `execution_id` so concurrent runs don't cross streams. Errors from any source — node exceptions, server-mode subprocess crashes, and HTTP failures — flow through a unified `ErrorBus` and surface as Report-tab entries + toasts (ADR-observability-004). (React render errors are caught by a client-side error boundary.)
 

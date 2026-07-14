@@ -97,6 +97,9 @@ export default function SaveGraphDialog({
         containers,
         access_grants: accessGrants,
         step_budget: 500,
+        eval_graph:
+          useFlowStore.getState().tabs[useFlowStore.getState().activeTabId]
+            ?.eval_graph ?? true,
         kind,
         ...(kind === "node" && group.trim() ? { group: group.trim() } : {}),
       });
