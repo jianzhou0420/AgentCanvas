@@ -15,7 +15,7 @@ Australian Institute for Machine Learning, University of Adelaide
   <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
   <a href="https://jianzhou0420.github.io/src/works/AgentCanvas/paper.html"><img src="https://img.shields.io/badge/Paper%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Paper Page"></a>
   <a href="https://jianzhou0420.github.io/AgentCanvas/"><img src="https://img.shields.io/badge/Docs-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
-  <a href="#9-引用"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
+  <a href="#6-引用"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
 </p>
 
 <img src="../assets/readme/editor-hero.gif" alt="AgentCanvas 编辑器：MapGPT executor 以节点-连线图的形式加载，随后一个真实的 R2R episode 端到端运行" width="760">
@@ -26,35 +26,42 @@ Australian Institute for Machine Learning, University of Adelaide
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](../LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
-[![Status: Research Preview](https://img.shields.io/badge/Status-Research_Preview-orange.svg)](#7-项目状态)
+[![Status: Research Preview](https://img.shields.io/badge/Status-Research_Preview-orange.svg)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html)
 [![GitHub stars](https://img.shields.io/github/stars/jianzhou0420/AgentCanvas?style=social)](https://github.com/jianzhou0420/AgentCanvas/stargazers)
 
 **面向具身 AI 研究的可视化智能体设计平台。** 一张类型化的图，两种角色：既是运行具身智能体的*运行框架（harness）*，也是供编程智能体（coding agent）编辑与验证的*脚手架（scaffold）*。
 
 AgentCanvas 让研究者通过绘制节点图来快速搭建具身智能体 —— 面向 VLN、EQA、VLA 及相邻任务 —— 这些图可以实时地在仿真器（Habitat-Sim、MatterSim、SAPIEN/ManiSkill2、MuJoCo/robosuite）上执行，原则上也可在真实世界的配置上执行。*一个 JSON = 一个智能体 = 一张图*：智能体的行为是一张数据流图，而非命令式代码；图就是唯一的真相来源，保存为单个 JSON 文件，并作为一个完整的智能体加载。
 
-**为谁打造**：希望组合、比较并分享具身智能体架构，又不想每次都重写执行栈的研究者。该平台覆盖 VLN（视觉语言导航）、EQA（具身问答）、VLA（视觉-语言-动作）策略基准，并通过 nodeset 模型适配其他具身 / 智能体场景。
+**为谁打造**：希望组合、比较并分享具身智能体架构，又不想每次都重写执行栈的研究者。该平台覆盖 VLN（视觉语言导航，Vision-and-Language Navigation）、EQA（具身问答，Embodied Question Answering）、VLA（视觉-语言-动作，Vision-Language-Action）策略基准，并通过 nodeset（节点集）模型适配其他具身 / 智能体场景。
 
-> **状态**：研究预览，处于积极开发中 · 46 个 ADR · 横跨四类可互换面板（palette）的 40+ 个 nodeset（节点集）—— **env**（仿真器）、**method**（推理循环）、**model**（基础模型）、**policy**（神经控制器）· 画布编辑器、支持多作用域迭代的图执行引擎、状态容器、自动托管的 server-mode nodeset、hook 系统、subprocess-per-run 的 JobScheduler + worker 池 + 批量推理，以及统一的错误总线 —— 全部已投入生产使用。
+> **状态**：研究预览，1.0 之前 —— 横跨四类可互换面板（palette）的 40+ 个 nodeset（**env** · **method** · **model** · **policy**）；公共 API 尚未冻结（[版本管理策略](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html)）。
 
-> **版本管理**：1.0 之前（v0.x）。当公共 API 稳定（开源 + 在 SemVer 下冻结）时发布 v1.0 —— 与任何论文无关。参见[版本管理策略](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html)。
+> **贡献**：nodeset、图与核心 PR 皆受欢迎 —— 每一份贡献都会记入[致谢](#致谢)榜。参见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
-> **贡献**：两种方式，皆受欢迎。**内容类** —— 编写一个 nodeset（工具或方法）或组合一张图，通过 PR 合入 `workspace/`；你会被记入[致谢](#致谢)榜，若有对应论文还会附上引用链接。**核心类** —— 改进框架（UI、后端、功能、重构）；任何较大的改动请先发起一个 [Discussion](https://github.com/jianzhou0420/AgentCanvas/discussions)。参见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+---
+
+## 最新动态！
+
+- [2026/07] 🚀 **Graph SDK —— 用 Python 构建并运行智能体** —— 同样的画布图，如今成了一个可导入的库：`from agentcanvas import Graph`，添加/连接节点，在进程内运行与批量评估，或把一张图编译回一个独立的构建脚本。同一份 `GraphDefinition`，与画布 + JSON 完全可逆。参见 [Graph SDK 文档](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/graph-sdk.html)。
+- [2026/07] 🎥 **pySLAM 经典 SLAM 演示** —— pySLAM 在 TUM RGB-D 上唱主角：一个流式重放环境把一个基准序列逐帧喂进一个实时 SLAM 会话 —— 估计出的相机轨迹自顶向下地拟合到真值上，一张稀疏 3-D 地图实时地稠密化，没有仿真器也没有策略，纯 CPU。完整片段 + 讲解见 [pySLAM nodeset 文档](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html)。
+
+  [![pySLAM 在 TUM RGB-D 上的流式 SLAM —— 实时相机轨迹对比真值，一张 3-D 地图实时稠密化，随后环绕展示完成的地图](../docs/assets/videos/pyslam-tum-slam-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html)
+- [2026/07] 🔥 **更广的基础模型支持** —— 现已有 29 个基础模型作为轻薄的 server-mode 外壳接入（transformers-native + 其他来源），同时供手工构建的图与 AAS optimizer 使用：近期的 VLM（Qwen3-VL、InternVL3、Gemma 3、SmolVLM2）、开放词表感知（SigLIP2、OWLv2、Grounding DINO），以及几何 / 深度骨干网络。参见[基础模型覆盖范围](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/index.html)与逐模型的 [Credits](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)。
+- [2026/07] 🔥 **在画布上编辑节点源码** —— 新的 Source 标签页会展示所选节点在其 nodeset 源码中的作用域切片（全局变量、被引用的函数、类本身），并以带语法检查的热重载把编辑拼接回去。PR：[#5](https://github.com/jianzhou0420/AgentCanvas/pull/5)。
+- [2026/07] 🎉 **首个公开发布** —— AgentCanvas 作为研究预览（1.0 之前）开源。文档：[jianzhou0420.github.io/AgentCanvas](https://jianzhou0420.github.io/AgentCanvas/)。
 
 ---
 
 ## 目录
 
-1. [为什么选择 AgentCanvas?](#1-为什么选择-agentcanvas) —— 一个可搜索的具身智能体基底，以及它要解决的痛点
+1. [为什么选择 AgentCanvas?](#1-为什么选择-agentcanvas) —— 一个面向具身智能体的可搜索基底，以及它要解决的痛点
 2. [功能特性](#2-功能特性) —— *一个 JSON = 一个智能体*（§2.2）/ *一个 Python 类 = 一个节点*（§2.6）原则，外加画布编辑器、图执行引擎、隔离的运行时环境、嵌套图、状态容器、hook
 3. [从仿真到真机的路径](#3-从仿真到真机的路径) —— 同一张智能体图，今天跑仿真，明天上真实机器人 —— 通过 env-as-nodeset + server mode + ROS
 4. [快速开始](#4-快速开始) —— 前置条件、运行 Web 仪表盘、运行评估、运行架构搜索、本地服务文档
-5. [架构](#5-架构) —— 前端 · 后端 · workspace · 仿真器
-6. [项目结构](#6-项目结构) —— 顶层目录地图
-7. [项目状态](#7-项目状态) —— 版本：v0.1 实验 → v0.2 预览 → v1.0 → v2.0
-8. [贡献](#8-贡献) —— 最需要帮助的地方 · 致谢
-9. [引用](#9-引用) —— 如何引用 AgentCanvas
-10. [许可证](#10-许可证) —— Apache 2.0
+5. [贡献](#5-贡献) —— 最需要帮助的地方 · 致谢
+6. [引用](#6-引用) —— 引用 AgentCanvas 论文
+7. [许可证](#7-许可证) —— Apache 2.0
 
 ---
 
@@ -106,6 +113,11 @@ AgentCanvas 让研究者通过绘制节点图来快速搭建具身智能体 —�
 
 > **完整参考见文档** —— 下面大多数功能都有对应的实现页面（机制 · 关键文件 · 当前状态）：**[九大能力 →](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/index.html)**
 
+<details>
+<summary><b>九大能力</b> —— 画布编辑器 · 图引擎 · 隔离运行时 · 嵌套图 · 状态容器 · Python 定义的节点 · hook · 批量评估 · 可观测性</summary>
+
+<br>
+
 ### 2.1 可视化画布编辑器
 
 一个 ComfyUI 风格的扁平工作区，所有节点类型在此共存 —— 环境、LLM、推理链、控制门、输出查看器。从侧边栏拖出节点，把它们连起来，按下 Play。
@@ -115,7 +127,7 @@ AgentCanvas 让研究者通过绘制节点图来快速搭建具身智能体 —�
 **一个 JSON = 一个智能体。** 一个智能体的全部行为 —— 节点、连线、配置、状态容器、hook —— 就是单个 JSON 文件：加载它、运行它、分享它、diff 它。没有隐藏的流水线代码；你在画布上看到的就是实际执行的。
 
 ```jsonc
-// 已简化 —— 真实的图还包含状态容器、hook 以及更多节点
+// Simplified — real graphs include state containers, hooks, and more nodes
 {
   "name": "NavGPT-CE",
   "description": "VLN reasoning graph with planner, VLM, and navigation memory",
@@ -141,14 +153,16 @@ AgentCanvas 让研究者通过绘制节点图来快速搭建具身智能体 —�
 - **有界多智能体** —— 固定 N 或受 `K_max` 约束的扇出（例如 DiscussNav 式辩论、AutoGen 式固定角色）
 - **Plan-and-Execute** —— 在一个有界工具池上，由路由器分派
 
+引擎也可以在不触碰图节点的前提下扩展：shell hook 会在每个节点执行的前/后以及图的生命周期边界上触发 —— 记录输出、校验输入、阻断节点或修改数据 —— 并随保存的图一起携带。
+
 ### 2.3 隔离的运行时环境
 
 研究工具常常需要相互冲突的 Python 环境（Habitat 需要 Python 3.8，SLAM 需要 ROS）。任何 `BaseNodeSet` 都能以 **server mode** 运行 —— 框架会根据该 nodeset 的端口定义自动生成一个 HTTP 服务器，运行在它自己的解释器中。无需任何额外代码：
 
 ```
-# 相同的 nodeset 代码，两种部署模式：
-POST /api/components/nodesets/env_habitat/load              # 进程内
-POST /api/components/nodesets/env_habitat/load?mode=server  # 独立进程
+# Same nodeset code, two deployment modes:
+POST /api/components/nodesets/env_habitat/load              # in-process
+POST /api/components/nodesets/env_habitat/load?mode=server  # separate process
 ```
 
 ### 2.4 嵌套图系统
@@ -194,23 +208,26 @@ class MeasureDistanceNode(BaseCanvasNode):
 
 随后该节点会出现在画布侧边栏，并能与任何端口类型匹配的其他节点连线。它的外观同样由 Python 驱动：`GenericBlockRenderer` 会根据 `NodeUIConfig` 自动渲染任意节点 —— 颜色、布局、内联配置控件（滑块、下拉框、文本框）以及显示控件 —— 因此无需任何自定义 React 组件。
 
-### 2.7 Hook 系统
+### 2.7 批量评估与任务队列
 
-Shell 命令会在每个节点执行的前/后以及图的生命周期边界上触发。Hook 可以记录输出、校验输入、阻断节点或修改数据 —— 全部无需改动图节点。Hook 会随保存的图一起携带。
+同一张在画布上运行的图，可以作为一个评估任务提交，对它在数百个 episode 上打分。一个由后端拥有的 `JobScheduler` 会针对所有会话共享的 VRAM 预算把控准入（ADR-eval-003）；每个被准入的运行都是它自己的子进程，其生命周期绑定到后端（`PR_SET_PDEATHSIG`）—— 没有孤儿 GPU 进程，且每个已完成的 episode 都会持久化到磁盘。逐 episode 的日志落在一个自包含的布局里（ADR-eval-004），让队友无需重跑就能重放任意单个 episode。
 
-### 2.8 批量评估与任务队列
-
-同一张在画布上运行的图，可以作为一个评估任务提交，对它在数百个 episode 上打分。一个由后端拥有的 `JobScheduler` 会针对所有会话共享的 VRAM 预算来把控准入（ADR-eval-003）；每个被准入的运行都是它自己的子进程，因此后端重启不会杀掉进行中的评估。逐 episode 的日志落在一个自包含的布局里（ADR-eval-004），让队友无需重跑就能重放任意单个 episode。
-
-### 2.9 实时可观测性
+### 2.8 执行日志与实时视图
 
 每一步都通过 WebSocket 流式推送观测、推理、动作与指标，并按 `execution_id` 路由，使并发运行不会串流。来自任何来源的错误 —— 节点异常、server mode 子进程崩溃、HTTP 失败 —— 都流经统一的 `ErrorBus`，并以 Report 标签页条目 + toast 的形式呈现（ADR-observability-004）。（React 渲染错误由客户端的错误边界捕获。）
+
+</details>
 
 ---
 
 ## 3. 从仿真到真机的路径
 
 AgentCanvas 为可移植性而设计：同一张智能体图，今天可以在仿真器上执行，未来无需图层面的改动即可迁移到真实机器人。这一特性源自两项架构决策 —— 环境本身就是 nodeset（ADR-components-002），且任何 nodeset 都能通过 *server mode* 在隔离的运行时中执行（ADR-server-001）。
+
+<details>
+<summary><b>完整路径</b> —— 当下的仿真器 · 拥有相同接口的 ROS nodeset · 双向集成 · 真值可见性</summary>
+
+<br>
 
 ### 当下：仿真器 Nodeset
 
@@ -235,7 +252,9 @@ AgentCanvas 与 ROS 之间的边界是对称的；任意一侧都可以拥有控
 
 ### 状态
 
-目前已随附的所有环境 nodeset 都是基于仿真器的。真实机器人的 **ROS nodeset 仍是一个[征集贡献](#8-贡献)的空位** —— 架构路径已经确立且是刻意为之，所需的 ROS 一侧组件也已在生态中就绪。
+目前已随附的所有环境 nodeset 都是基于仿真器的。真实机器人的 **ROS nodeset 仍是一个[征集贡献](#5-贡献)的空位** —— 架构路径已经确立且是刻意为之，所需的 ROS 一侧组件也已在生态中就绪。
+
+</details>
 
 ---
 
@@ -255,10 +274,10 @@ AgentCanvas 与 ROS 之间的边界是对称的；任意一侧都可以拥有控
 ### 4.2 运行 Web 仪表盘
 
 ```bash
-# 激活环境
+# Activate environment
 conda activate agentcanvas
 
-# 启动后端（FastAPI :8000）+ 前端（Vite :5173）
+# Start backend (FastAPI :8000) + frontend (Vite :5173)
 cd agentcanvas && bash run_dev.sh
 ```
 
@@ -303,8 +322,8 @@ cd agentcanvas && bash run_dev.sh
 curl -X POST http://localhost:8000/api/eval/v2/start \
   -H 'content-type: application/json' \
   -d '{"graph_name": "navgpt_ce", "split": "val_unseen", "worker_count": 4}'
-# 轮询  GET /api/eval/v2/status
-# 获取  GET /api/eval/v2/export/{run_id}
+# poll  GET /api/eval/v2/status
+# fetch GET /api/eval/v2/export/{run_id}
 ```
 
 → [从编程智能体驱动后端](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/tutorials/coding-agent-backend.html) —— 并排深入讲解所有编程式模式
@@ -327,10 +346,10 @@ curl -X POST http://localhost:8000/api/eval/v2/start \
 | `aflow` | **AFlow**（移植） | 分数 softmax 的父节点选择 + 防重放记忆 |
 
 ```text
-# 在本仓库的 Claude Code 会话中 —— 对 MapGPT executor 运行 KDLoop
+# In a Claude Code session on this repo — run KDLoop over the MapGPT executor
 /architect:myloop:loop mapgpt_mp3d --goal "raise val_unseen SR"
 
-# ADAS / AFlow 移植版采用相同的  <graph> [<version>]  形式
+# The ADAS / AFlow ports take the same  <graph> [<version>]  form
 /architect:adas-subagent:loop smartway_ce
 /architect:aflow:loop explore_eqa_hmeqa
 ```
@@ -342,216 +361,193 @@ curl -X POST http://localhost:8000/api/eval/v2/start \
 ### 4.5 文档
 
 ```bash
-# 在本地 :8092 上提供文档站服务（通过 SSE 实时重载）
+# Serve the doc-site locally on :8092 (live-reload via SSE)
 bash docs/run_dev.sh
 ```
 
 ---
 
-## 5. 架构
-
-```
-Frontend (React 18 + React Flow + Zustand)
-    |
-    |  REST + WebSocket
-    v
-Backend (FastAPI + Python 3.10+)
-    |
-    |-- WorkspaceComponentRegistry  -->  workspace/  (auto-discovery)
-    |-- GraphExecutor   -->  graph execution (DAG + cyclic + multi-scope)
-    |-- AutoServerApp      -->  server-mode nodesets (isolated envs)
-    |-- HookRunner         -->  pre/post interceptors
-    |-- JobScheduler       -->  subprocess-per-run eval admission (ADR-eval-003)
-    |-- ErrorBus           -->  unified error reporting (ADR-observability-004)
-    v
-Simulators (Habitat-Sim, MatterSim/MP3D, HM3D, SAPIEN/ManiSkill2, MuJoCo/robosuite, ...)
-```
-
-**关键设计**：框架**零领域知识**（ADR-platform-001）。所有领域相关的代码 —— VLN 策略、LLM 提示词、导航工具、环境包装器 —— 都住在 `workspace/` 里。框架在运行时通过基类继承来发现组件。它从不直接 import 领域代码；这条 import 边界由 `agentcanvas/backend/app/test_import_boundary.py` 强制约束。
-
----
-
-## 6. 项目结构
-
-```
-vlnworkspace/                  # 仓库根目录（沿用旧名；平台名为 "AgentCanvas"）
-├── agentcanvas/               # 全栈 Web 应用
-│   ├── backend/app/         #   FastAPI 后端（执行引擎、API、服务、错误处理）
-│   ├── frontend/src/        #   React + TypeScript（画布编辑器）
-│   └── mcp_server/          #   面向 coding-agent 集成的 MCP server
-├── workspace/                 # 用户工作区 —— 所有领域组件（自动发现）
-│   ├── nodesets/            #   按 palette 分类的 nodeset：env / method / model / policy（+ common, _upstream）
-│   ├── graphs/              #   已保存的智能体图（kind="graph"）
-│   ├── graph_nodes/         #   可复用的复合节点（kind="node"）
-│   ├── nodes/               #   独立的 BaseCanvasNode 子类
-│   ├── architect/           #   AAS 搜索 profile + 运行脚手架
-│   └── hooks.json           #   工作区级 hook 定义
-├── data/                      # 数据集、模型权重（gitignored）
-├── outputs/                   # 评估 + 设计运行输出（eval_runs/, design_runs/, …）
-├── docs/                      # 手写 HTML 文档站（run_dev.sh → :8092）
-├── third_party/               # Git 子模块（habitat-lab, VLN-CE, MatterSim, vla_workspace, …）
-└── scripts/                   # 数据准备 + 安装脚本
-```
-
----
-
-## 7. 项目状态
-
-AgentCanvas **处于 1.0 之前，并在积极开发中**。状态按版本跟踪，而非一张不断变化的功能清单 —— 详见[版本管理策略](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/repo/versioning.html)与 [`major-versions.html`](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/major-versions.html)。
-
-- **v0.1 —— AAS 实验。** 论文的智能体架构搜索运行所基于的快照 —— 是那些结果的可复现锚点，而非公开发布。
-- **v0.2 —— 研究预览（当前）。** 首个开源发布：画布编辑器、图执行引擎（DAG + 有环 + 多作用域）、状态容器、自动托管的 server-mode nodeset、批量评估，以及 40+ 个 nodeset（env / method / model / policy）全部投入生产。公共 API 尚未冻结，因此小版本发布可能会破坏它。已随附清单：[§2 功能特性](#2-功能特性) 以及 [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/vla-support-status.html) 支持状态页面。
-- **v1.0 —— 进行中。** 当公共 API 稳定时发布 —— 开源并在 SemVer 下冻结，与任何论文无关。
-- **v2.0 —— 未来。** 拓扑可变的执行：无界的子智能体派生、对运行时列表的运行时扇出、运行时涌现的新工具类型、自修改的图。论文与开放问题见 [`major-versions.html`](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/major-versions.html) §2。
-
----
-
-## 8. 贡献
+## 5. 贡献
 
 两类贡献，皆受欢迎 —— 参见 [CONTRIBUTING.md](../CONTRIBUTING.md)：
 
 - **内容类 —— nodeset 与图。** 编写一个包装工具 / 仿真器 / 模型的 nodeset（例如实时 3D 高斯泼溅、一个基于体素的 SLAM 系统），或编码一个方法（例如 NavGPT、MapGPT），或组合一张把现有 nodeset 连成一个完整智能体的图。提一个 PR 合入 `workspace/`；评审从轻。
 - **核心类 —— UI、后端、框架。** Bug 修复、新功能，乃至重构都受欢迎。唯一的请求：如果一个改动大到会耗费真金白银的时间，请先发起一个 [Discussion](https://github.com/jianzhou0420/AgentCanvas/discussions)，以便在你动手之前对齐。
 
-每个 nodeset 和图都会在下方的致谢榜上记到其作者/维护者名下 —— 若有相关论文还会附上引用链接 —— 因此在这里贡献不会让你失去署名。
+下方榜单会把每个 nodeset 和图记到其作者/维护者名下 —— 若有相关论文还会附上引用链接 —— 因此在这里贡献不会让你失去署名。**AgentCanvas 框架**以及首个发布的**方法、图与环境集成**由 **AC-Team** 完成。下方的**基础模型与策略**均为**第三方** —— AgentCanvas 只随附一层轻薄的 server-mode 包装，让每一个都能接入图（供人类用户与 AAS optimizer 同等使用）；每个模型的功劳都归其原作者所有 —— 这些基础模型被单独抽到**下方一张独立的表**中，按来源拆分（transformers-native 对比 `torch.hub` / `torchvision` / vendored 上游仓库），逐模型的完整署名在 Credits 页面上。该榜单在设计上只列名字：带有逐图验证细节的**权威清单**位于[文档站 Credits 页面](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)以及 [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) 支持状态页面。
 
 ### 致谢
 
+✅ 已验证 —— 复现其论文 / 参考实现 · 🚧 端到端可运行，验证进行中
+
 <table>
-<tr><th>组件</th><th>创建者</th></tr>
-<tr>
-<td><b>AgentCanvas 框架</b></td>
-<td><a href="https://github.com/jianzhou0420">@jianzhou0420</a></td>
-</tr>
-<tr>
-<td>
+  <thead align="center">
+    <tr>
+      <th>环境</th>
+      <th>方法</th>
+      <th>模型与策略</th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/habitat.html">Habitat (VLN-CE)</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/matterport3d.html">MatterSim / MP3D</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">HM-EQA</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">OpenEQA (EM-EQA)</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/simpler.html">SIMPLER</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/libero.html">LIBERO</a> ✅</li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><b>VLN</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/navgpt.html">NavGPT</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/mapgpt.html">MapGPT</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/smartway.html">SmartWay</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/threestepnav.html">Three-Step Nav</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/aoplanner.html">AO-Planner</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/discussnav.html">DiscussNav</a> 🚧</li>
+              <li>Open-Nav 🚧</li>
+              <li>SpatialNav 🚧</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/tools/basic-agent.html">Basic Agent 工具包</a> ✅</li>
+            </ul>
+          </li>
+          <li><b>EQA</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">EM-EQA 基线</a> ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/explore-eqa.html">Explore-EQA</a> ✅</li>
+              <li>ToolEQA 🚧</li>
+            </ul>
+          </li>
+          <li><b>VLA（零样本）</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/voxposer.html">VoxPoser-LIBERO</a> ✅</li>
+            </ul>
+          </li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><b>策略</b>
+            <ul>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-cma.html">CMA</a> ✅</li>
+              <li>Octo（SIMPLER 基线） ✅</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-vla.html">VLA 框架（Pi0 / SmolVLA / DP / DROID-DP）</a> 🚧</li>
+              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-adapters.html">R2R-CE 策略注册表（12 个变体）</a> 🚧</li>
+            </ul>
+          </li>
+          <li><b>建图</b> <sub><i>（AgentCanvas 自研）</i></sub>
+            <ul>
+              <li>TSDF 建图 ✅</li>
+              <li>语义场景图 ✅</li>
+            </ul>
+          </li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
-<details open>
-<summary><b>首个发布</b> —— 随附的 nodeset、参考图、文档站</summary>
+**基础模型** —— 第三方模型被包装在**一层轻薄的 nodeset 外壳**之后（惰性加载 · single-flight GPU · base64-npy 数据流封装），使每一个都成为供**人类用户**与 **AAS optimizer** 使用的统一构件。*这些并非我们所作 —— 我们只随附外壳；功劳归原作者所有*（逐模型的完整署名 + 论文见 [Credits 页面](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)）。按来源拆分：
 
-<br>
+<table>
+  <thead align="center">
+    <tr>
+      <th>transformers-native <sub>（对 <code>AutoModel</code> / <code>pipeline</code> 的轻薄包装）</sub></th>
+      <th>其他来源 <sub>（<code>torch.hub</code> / <code>torchvision</code> / vendored 上游仓库）</sub></th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-clip.html">CLIP</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-siglip2.html">SigLIP 2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-aimv2.html">AIMv2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-owlv2.html">OWLv2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam.html">SAM</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam-video.html">SAM Video</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-segmentation.html">Segmentation（Mask2Former）</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-florence2.html">Florence-2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depth-anything.html">Depth Anything V2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depthpro.html">DepthPro</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-normal.html">Surface Normals（Sapiens）</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pointmap.html">Pointmap（Sapiens 3D）</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-matching.html">SuperPoint + LightGlue</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-blip2.html">BLIP-2</a> + Faster R-CNN</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-instructblip.html">InstructBLIP</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen2-5-vl.html">Qwen2.5-VL</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen3-vl.html">Qwen3-VL</a> <sub>（图像 + 视频）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-internvl3.html">InternVL3</a> <sub>（图像 + 视频）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-gemma3.html">Gemma 3</a> <sub>（受限访问）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-smolvlm2.html">SmolVLM2</a> <sub>（图像 + 视频）</sub></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-dinov2.html">DINOv2 / DINOv3</a> <sub>（torch.hub + transformers hf）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-grounding-dino.html">Grounding DINO</a> <sub>（groundingdino-py + transformers hf_tiny）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-opticalflow.html">Optical Flow (RAFT)</a> <sub>（torchvision）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt.html">VGGT</a> <sub>（上游仓库）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-cotracker.html">CoTracker</a> <sub>（上游仓库）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-detany3d.html">DetAny3D</a> <sub>（vendored）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-ram.html">RAM / RAM++</a> <sub>（recognize-anything）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-spatialbot.html">SpatialBot</a> <sub>（Bunny 远程代码）</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-prismatic.html">Prismatic VLM</a> <sub>（上游仓库）</sub></li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
-<b>仿真器 / 环境</b>
+**征集贡献** —— 预留的空位，归到把它们实现落地的人名下（[如何贡献](../CONTRIBUTING.md)；ID 是 [Credits 页面](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)上的路线图空位）：
 
-- Habitat（VLN-CE 连续导航）
-- Matterport3D / MatterSim（离散全景导航）
-- HM-EQA（具身问答环境）
-- OpenEQA（具身问答基准，EM-EQA 模式）
-- SIMPLER（SAPIEN / ManiSkill2 real-to-sim VLA 评估）
-- LIBERO（MuJoCo / robosuite 操作，5 个套件）
-
-<b>智能体方法 / 推理</b>
-
-<i>EQA</i>
-
-- OpenEQA EM-EQA 基线 —— blind-LLM / 单帧 / 多帧（`openeqa_em_*.json`）✅ 全部已验证；多帧 LLM-Match 0.7025 vs 论文 0.466（gpt-4o reasoner+judge 优于论文的 gpt-4 / gpt-4-vision-preview）
-- Explore-EQA（在 HM-EQA 上的 Prismatic-locked 前沿探索）✅ 已验证 —— SR 0.42 复现了 0.44 基线
-- ToolEQA（仅 HM-EQA —— PortBench v1 基底）—— 2026-06-08 以 monolith-first 方式重做；端到端可运行（ReAct + 融合 TSDF 的 go_next + 经由 server mode HTTP 的 Qwen2.5-VL/DetAny3D），SR 调优进行中
-
-<i>VLN</i>
-
-- NavGPT（LLM 思考-动作推理原语）✅ 在 gpt-4 上可用（昂贵）；其他 LLM 未测试（已知 gpt-4o 在长 ReAct 提示词上会退化）
-- MapGPT（语言化拓扑地图 LLM 智能体，ACL 2024）✅ 已验证 —— 在 MapGPT_72 上 SR 0.477 / 0.463
-- SmartWay-mono（VLN-CE 路点预测器）✅ 与论文可比 —— SR 0.270 vs 论文 0.29
-- SmartWay-CE ✅ 静默完成竞态已修复；在 20-worker 评估上端到端运行
-- SpatialNav（空间图导航）❌ 未验证 —— SR=0
-- Open-Nav（开放词表导航）❌ 未验证 —— SR=0
-- DiscussNav（多 LLM 辩论，有界扇出）❓ 进行中 —— 适应度尚未推到与论文可比
-- Three-Step Nav（零样本路点导航，继承 Open-Nav）❓ 已端到端验证 —— SR 0.10 / oracle 0.30 @10ep；与论文可比的调优待定
-- AO-Planner（SAM + LLM + 3D 路径规划器，AAAI 2025）❓ 进行中 —— nodeset 已随附，评估待定
-- Basic Agent（基础 VLN 工具包 —— 跨 5 个类别的 11 个节点）
-
-<i>VLA</i>
-
-- VLA 专属方法（Pi0 / SmolVLA / DP / DROID-DP / Octo / VoxPoser-LIBERO）位于下方 <b>Policies</b> 之中 —— 它们是策略形态（环境观测 → 动作）而非推理形态，因此按代码结构而非任务族归类
-
-<b>感知 / 视觉</b>
-
-- SAM（Segment Anything）
-- BLIP-2 + Faster R-CNN（描述生成与检测）
-- RAM（recognize-anything model）
-- SpatialBot（深度感知 VLM）
-- Prismatic VLM（token 似然打分 + 自由形式生成）
-- TSDF 建图
-- 语义场景图
-
-<b>Policies</b>
-
-- CMA（Cross-Modal Attention VLN-CE 基线）✅ 已验证 —— `straightforward.json` 已提升至 verified/，SR 0.38 / SPL 0.348，与原生实现逐位一致
-- Octo（VLA 通才，原生 SIMPLER 基线）✅ 基线在 `octo_simpler.json` 上运行
-- 通用 VLA 框架（Pi0 / SmolVLA / DP / DROID-DP 适配器）✅ Pi0 已验证 —— 在 `vla_policy_libero` libero_spatial task 0 上 5/5；SIMPLER 变体待定
-- VoxPoser-LIBERO（LMP + 体素代价图 + OSC）✅ 端到端已验证（抓取 + 搬运）；SR 已记录
-- VLN-CE 策略适配器（12 变体 R2R-CE 注册表 —— 2 个上游已发布，10 个消融以占位符标记）
-
-<b>文档站</b> —— 手写 HTML（2026-05-18 MkDocs 退役后），含 46 个 ADR、术语表、能力页面、教程、设计文档
-
-</details>
-
-</td>
-<td><a href="https://github.com/jianzhou0420">@jianzhou0420</a></td>
-</tr>
-<tr>
-<td><b>基准：</b> AI2-THOR <i>(ALFRED / TEACh — E4)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>基准：</b> RxR-CE <i>(多语言 VLN-CE — E2)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>基准：</b> REVERIE <i>(远程物体定位 — E3)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>基准：</b> OpenEQA A-EQA <i>(主动 EQA 模式 — E10)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>方法：</b> HAMT <i>(分层历史 transformer — M5)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>方法：</b> DUET <i>(双尺度图 transformer — M6)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>方法：</b> MapGPT（度量网格变体）<i>(LLM + 由深度推导的占据栅格 — M2；区别于已随附的语言化拓扑变体)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>方法：</b> InstructNav <i>(Dynamic CoN + Multi-Sourced Value Maps, CoRL 2024 — M8)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>方法：</b> VLN-SIG <i>(子指令定位 — M4)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>功能：</b> 记忆 nodeset <i>(情景回忆 + 语义检索 — F1)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>功能：</b> 节点并行执行 <i>(Pregel 超步模型 — F3)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>功能：</b> 把图导出为独立 Python <i>(无头批量评估 — F4)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>基础设施：</b> Docker server mode <i>(Habitat / MP3D 容器 — F7)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
-<tr>
-<td><b>基础设施：</b> ROS nodeset <i>(经由 server mode 的真实机器人部署 — §3)</i></td>
-<td><i><a href="../CONTRIBUTING.md">征集贡献</a></i></td>
-</tr>
+<table>
+  <thead align="center">
+    <tr>
+      <th>基准</th>
+      <th>方法</th>
+      <th>功能与基础设施</th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li>AI2-THOR —— ALFRED / TEACh <i>(E4)</i></li>
+          <li>RxR-CE —— 多语言 VLN-CE <i>(E2)</i></li>
+          <li>REVERIE —— 远程物体定位 <i>(E3)</i></li>
+          <li>OpenEQA A-EQA —— 主动 EQA <i>(E10)</i></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li>HAMT —— 分层历史 transformer <i>(M5)</i></li>
+          <li>DUET —— 双尺度图 transformer <i>(M6)</i></li>
+          <li>InstructNav —— 动态 CoN + 价值图 <i>(M8)</i></li>
+          <li>VLN-SIG —— 子指令定位 <i>(M4)</i></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li>记忆 nodeset —— 情景回忆 + 语义检索 <i>(F1)</i></li>
+          <li>节点并行执行 —— Pregel 超步 <i>(F3)</i></li>
+          <li>把图导出为独立 Python <i>(F4)</i></li>
+          <li>Docker server mode —— Habitat / MP3D 容器 <i>(F7)</i></li>
+          <li>ROS nodeset —— 真实机器人部署（<a href="#3-从仿真到真机的路径">§3</a>）</li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
 </table>
 
 
 ---
 
-## 9. 引用
+## 6. 引用
 
 如果您在研究中使用了 AgentCanvas，请引用：
 
@@ -567,8 +563,6 @@ AgentCanvas **处于 1.0 之前，并在积极开发中**。状态按版本跟�
 }
 ```
 
----
-
-## 10. 许可证
+## 7. 许可证
 
 Apache License 2.0 —— 见 [LICENSE](../LICENSE)。
