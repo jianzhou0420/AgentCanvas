@@ -1,0 +1,469 @@
+{
+  "name": "VGGT-SLAM 2.0 on TUM RGB-D (dense feed-forward SLAM)",
+  "description": "VGGT-SLAM 2.0 (MIT-SPARK, RSS 2026) on a TUM RGB-D sequence, RGB-only: env_tum replays frames one per step; model_vggt_slam__track gates them through an optical-flow keyframe filter and batches keyframes into 17-frame submaps — each submap boundary runs a VGGT forward, a SALAD loop-closure check, and a GTSAM SL(4) optimize, so track.pose updates in submap BURSTS (None until the first submap; earlier poses retro-corrected by later optimization). No depth and no intrinsics edges anywhere: VGGT self-calibrates. The loop stops when the sequence is exhausted (step_replay.terminated -> iterOut.stop); iterOut.final_stop fires finalize, which flushes the trailing partial submap (upstream's last-image trigger), and its ok gates the read-out: get_trajectory (TUM-format poses via upstream's exact writer), get_map (merged confidence-filtered colored .pcd handle), and eval_trajectory — ATE RMSE with the upstream ruler evo_ape tum -as (Sim(3) alignment is mandatory: SL(4) poses are up-to-scale), ground truth resolved from the sequence name. trajectoryViewer shows the burst-updated estimate (blue) against TUM ground truth (grey), align=on. Sequence is the placed env_tum episode; fetch with workspace/nodesets/env/env_tum/download.sh. Runs on the ac-vggt-slam server (VGGT-1B, ~16 GB VRAM budget, worker_count=1 / exclusive GPU). || Parity vs upstream main.py (2026-07-14, run 20260714_174221): fr1_xyz ATE 0.019903 BIT-EXACT vs reference 0.019903; fr1_desk 0.02531 vs 0.02469 (+0.6mm) — upstream is run-to-run deterministic (two runs both 0.024690), the desk delta is env_tum's rgb/depth/gt timestamp association dropping 17 unmatched frames (613 raw rgb -> 596 replayed, head-heavy) that upstream's raw folder glob keeps; keyframe sets diverge in the first second then lock step. C-bucket env-forced deviation, not a port defect.",
+  "presetId": "vggt_slam_tum",
+  "step_budget": 5000,
+  "nodes": [
+    {
+      "id": "tum_reset",
+      "type": "env_tum__reset",
+      "label": "TUM: Reset (arm sequence)",
+      "position": {
+        "x": 0,
+        "y": 200
+      },
+      "config": {
+        "max_frames": "0"
+      }
+    },
+    {
+      "id": "vggt_reset",
+      "type": "model_vggt_slam__reset",
+      "label": "VGGT-SLAM: Reset (episode start)",
+      "position": {
+        "x": 340,
+        "y": 340
+      },
+      "config": {
+        "submap_size": "16",
+        "max_loops": "1",
+        "min_disparity": "50",
+        "conf_threshold": "25.0",
+        "lc_thres": "0.95",
+        "run_os": "false"
+      }
+    },
+    {
+      "id": "iterIn_tum",
+      "type": "iterIn",
+      "label": "Iter In",
+      "position": {
+        "x": 340,
+        "y": 60
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iterOut_tum",
+        "initPorts": [
+          {
+            "name": "slam_ready",
+            "wire_type": "ANY",
+            "persist": true
+          },
+          {
+            "name": "seq",
+            "wire_type": "TEXT",
+            "persist": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "tum_step",
+      "type": "env_tum__step_replay",
+      "label": "TUM: Step (advance frame)",
+      "position": {
+        "x": 680,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "tum_observe_loop",
+      "type": "env_tum__observe_egocentric",
+      "label": "TUM: Observe (egocentric)",
+      "position": {
+        "x": 1020,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "vggt_track",
+      "type": "model_vggt_slam__track",
+      "label": "VGGT-SLAM: Track (per frame)",
+      "position": {
+        "x": 1360,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "iterOut_tum",
+      "type": "iterOut",
+      "label": "Iter Out",
+      "position": {
+        "x": 1700,
+        "y": 200
+      },
+      "config": {
+        "pairedWith": "iterIn_tum",
+        "ports": [
+          {
+            "name": "slam_ready",
+            "wire_type": "ANY",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "seq",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "observationViewer",
+      "type": "imageViewer",
+      "label": "Observation (RGB)",
+      "position": {
+        "x": 620,
+        "y": 700
+      },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "trajectoryViewer_slam",
+      "type": "trajectoryViewer",
+      "label": "SLAM Trajectory (submap bursts)",
+      "position": {
+        "x": 1200,
+        "y": 700
+      },
+      "config": {
+        "axes": "auto",
+        "align": "on",
+        "max_points": "5000"
+      }
+    },
+    {
+      "id": "vggt_finalize",
+      "type": "model_vggt_slam__finalize",
+      "label": "VGGT-SLAM: Finalize (flush tail submap)",
+      "position": {
+        "x": 2040,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "vggt_get_traj",
+      "type": "model_vggt_slam__get_trajectory",
+      "label": "VGGT-SLAM: Get Trajectory",
+      "position": {
+        "x": 2380,
+        "y": 80
+      },
+      "config": {}
+    },
+    {
+      "id": "vggt_get_map",
+      "type": "model_vggt_slam__get_map",
+      "label": "VGGT-SLAM: Get Map (final .pcd)",
+      "position": {
+        "x": 2380,
+        "y": 340
+      },
+      "config": {}
+    },
+    {
+      "id": "vggt_eval",
+      "type": "model_vggt_slam__eval_trajectory",
+      "label": "VGGT-SLAM: Eval (ATE, evo -as)",
+      "position": {
+        "x": 2720,
+        "y": 80
+      },
+      "config": {
+        "align_scale": "true"
+      }
+    },
+    {
+      "id": "pointCloudViewer_slam",
+      "type": "pointCloudViewer",
+      "label": "Dense Map (3-D, final)",
+      "position": {
+        "x": 2720,
+        "y": 700
+      },
+      "config": {
+        "max_points": "30000",
+        "point_size": "1.5"
+      }
+    },
+    {
+      "id": "output_port__slam_map_handle",
+      "type": "graphOut",
+      "label": "slam_map_handle",
+      "position": {
+        "x": 3060,
+        "y": 340
+      },
+      "config": {
+        "portName": "slam_map_handle",
+        "wireType": "TEXT"
+      }
+    },
+    {
+      "id": "output_port__slam_eval_metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 3060,
+        "y": 80
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "output_port__num_poses",
+      "type": "graphOut",
+      "label": "num_poses",
+      "position": {
+        "x": 3060,
+        "y": 200
+      },
+      "config": {
+        "portName": "num_poses",
+        "wireType": "ANY"
+      }
+    },
+    {
+      "id": "output_port__num_submaps",
+      "type": "graphOut",
+      "label": "num_submaps",
+      "position": {
+        "x": 3060,
+        "y": 470
+      },
+      "config": {
+        "portName": "num_submaps",
+        "wireType": "ANY"
+      }
+    },
+    {
+      "id": "output_port__num_loops",
+      "type": "graphOut",
+      "label": "num_loops",
+      "position": {
+        "x": 3060,
+        "y": 600
+      },
+      "config": {
+        "portName": "num_loops",
+        "wireType": "ANY"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_ok_to_vggt",
+      "source": "tum_reset",
+      "sourceHandle": "episode_ok",
+      "target": "vggt_reset",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_vggt_reset_ready_to_iterin",
+      "source": "vggt_reset",
+      "sourceHandle": "episode_ok",
+      "target": "iterIn_tum",
+      "targetHandle": "init_slam_ready"
+    },
+    {
+      "id": "e_iterin_init_ready_to_step",
+      "source": "iterIn_tum",
+      "sourceHandle": "init_slam_ready",
+      "target": "tum_step",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iterin_iterout_ready_to_step",
+      "source": "iterIn_tum",
+      "sourceHandle": "iterout_slam_ready",
+      "target": "tum_step",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_info_to_observe",
+      "source": "tum_step",
+      "sourceHandle": "info",
+      "target": "tum_observe_loop",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_terminated_to_stop",
+      "source": "tum_step",
+      "sourceHandle": "terminated",
+      "target": "iterOut_tum",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_observe_rgb_to_track",
+      "source": "tum_observe_loop",
+      "sourceHandle": "rgb",
+      "target": "vggt_track",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_observe_ts_to_track",
+      "source": "tum_observe_loop",
+      "sourceHandle": "timestamp",
+      "target": "vggt_track",
+      "targetHandle": "timestamp"
+    },
+    {
+      "id": "e_observe_pose_to_track_gt",
+      "source": "tum_observe_loop",
+      "sourceHandle": "pose",
+      "target": "vggt_track",
+      "targetHandle": "gt_pose"
+    },
+    {
+      "id": "e_observe_rgb_to_view",
+      "source": "tum_observe_loop",
+      "sourceHandle": "rgb",
+      "target": "observationViewer",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_track_kf_to_iterout",
+      "source": "vggt_track",
+      "sourceHandle": "num_keyframes",
+      "target": "iterOut_tum",
+      "targetHandle": "slam_ready"
+    },
+    {
+      "id": "e_track_pose_to_trajviewer",
+      "source": "vggt_track",
+      "sourceHandle": "pose",
+      "target": "trajectoryViewer_slam",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_observe_pose_to_trajviewer_gt",
+      "source": "tum_observe_loop",
+      "sourceHandle": "pose",
+      "target": "trajectoryViewer_slam",
+      "targetHandle": "gt_pose"
+    },
+    {
+      "id": "e_finalstop_to_finalize",
+      "source": "iterOut_tum",
+      "sourceHandle": "final_stop",
+      "target": "vggt_finalize",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_finalize_ok_to_gettraj",
+      "source": "vggt_finalize",
+      "sourceHandle": "ok",
+      "target": "vggt_get_traj",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_finalize_ok_to_getmap",
+      "source": "vggt_finalize",
+      "sourceHandle": "ok",
+      "target": "vggt_get_map",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_gettraj_est_to_eval",
+      "source": "vggt_get_traj",
+      "sourceHandle": "traj_tum",
+      "target": "vggt_eval",
+      "targetHandle": "traj_tum"
+    },
+    {
+      "id": "e_gettraj_gt_to_eval",
+      "source": "vggt_get_traj",
+      "sourceHandle": "gt_tum",
+      "target": "vggt_eval",
+      "targetHandle": "gt_tum"
+    },
+    {
+      "id": "e_getmap_to_pcviewer",
+      "source": "vggt_get_map",
+      "sourceHandle": "map_handle",
+      "target": "pointCloudViewer_slam",
+      "targetHandle": "cloud"
+    },
+    {
+      "id": "e_getmap_to_out",
+      "source": "vggt_get_map",
+      "sourceHandle": "map_handle",
+      "target": "output_port__slam_map_handle",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_eval_metrics_to_out",
+      "source": "vggt_eval",
+      "sourceHandle": "metrics",
+      "target": "output_port__slam_eval_metrics",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_reset_seq_to_iterin",
+      "source": "tum_reset",
+      "sourceHandle": "sequence",
+      "target": "iterIn_tum",
+      "targetHandle": "init_seq"
+    },
+    {
+      "id": "e_iterin_init_seq_to_iterout",
+      "source": "iterIn_tum",
+      "sourceHandle": "init_seq",
+      "target": "iterOut_tum",
+      "targetHandle": "seq"
+    },
+    {
+      "id": "e_iterin_iterout_seq_to_iterout",
+      "source": "iterIn_tum",
+      "sourceHandle": "iterout_seq",
+      "target": "iterOut_tum",
+      "targetHandle": "seq"
+    },
+    {
+      "id": "e_finalseq_to_eval",
+      "source": "iterOut_tum",
+      "sourceHandle": "final_seq",
+      "target": "vggt_eval",
+      "targetHandle": "sequence"
+    },
+    {
+      "id": "e_gettraj_numposes_to_out",
+      "source": "vggt_get_traj",
+      "sourceHandle": "num_poses",
+      "target": "output_port__num_poses",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_getmap_numsubmaps_to_out",
+      "source": "vggt_get_map",
+      "sourceHandle": "num_submaps",
+      "target": "output_port__num_submaps",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_finalize_numloops_to_out",
+      "source": "vggt_finalize",
+      "sourceHandle": "num_loops",
+      "target": "output_port__num_loops",
+      "targetHandle": "value"
+    }
+  ]
+}
