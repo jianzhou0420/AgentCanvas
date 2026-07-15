@@ -236,7 +236,14 @@ def convert(path: Path) -> tuple[bool, dict | None]:
     # Pull and remove trailing <script> blocks (preserve them)
     inline_scripts = SCRIPT_RE.findall(body_inner)
     body_inner = SCRIPT_RE.sub("", body_inner)
-    extra_body_end = "\n".join(inline_scripts)
+    # A prior wrap pass emits these scripts OUTSIDE <main> (as extra_body_end,
+    # just before </body>), so a re-wrap must re-collect them from that tail
+    # region too — otherwise any page-specific script survives exactly one
+    # pass and silently vanishes on the next. Dedupe keeps the pass idempotent.
+    if main_matches:
+        tail = raw[main_matches[-1].end() :]
+        inline_scripts += SCRIPT_RE.findall(tail)
+    extra_body_end = "\n".join(dict.fromkeys(inline_scripts))
 
     # Strip layout-regenerated topbar
     body_inner = re.sub(

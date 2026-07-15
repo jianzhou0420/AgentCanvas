@@ -116,7 +116,7 @@
 </header>
 
 <div class="lede">
-  Reach for the section that matches the code/ADR you're reading, not an alphabetical lookup. Only terms that are currently live in the codebase are listed; removed/superseded names live in the changelog of <a href="glossary.html">the v1 source</a> + the ADR that retired them. <strong>v2 addition</strong>: live filter — type in the box and only matching terms remain.
+  Reach for the section that matches the code/ADR you're reading, not an alphabetical lookup. Only terms that are currently live in the codebase are listed; a handful of load-bearing removed names (Initialize, Termination, deprecated wire types) stay listed, marked <strong>Removed</strong>, with the ADR that retired them. <strong>v2 addition</strong>: live filter — type in the box and only matching terms remain.
 </div>
 
 <div class="glossary-controls">
@@ -135,7 +135,8 @@
   <a href="#s7">7. Server Mode</a><span class="toc-sep">·</span>
   <a href="#s8">8. Evaluation</a><span class="toc-sep">·</span>
   <a href="#s9">9. Observability &amp; Logs</a><span class="toc-sep">·</span>
-  <a href="#s10">10. VLN Domain</a>
+  <a href="#s10">10. Graph SDK</a><span class="toc-sep">·</span>
+  <a href="#s11">11. VLN Domain</a>
 </nav>
 
 <section class="glossary-section" id="s1">
@@ -314,8 +315,26 @@
 </section>
 
 <section class="glossary-section" id="s10">
-<h2><span class="num">§10</span>VLN Domain</h2>
-<p>Task-side vocabulary — datasets, action space, metrics. Independent of the architecture above; swapping to a non-VLN benchmark would replace this section but leave §§1–9 intact.</p>
+<h2><span class="num">§10</span>Graph SDK</h2>
+<p>The programmatic authoring surface (<a href="../capabilities/graph-sdk.html">capability page</a>) — build and run the same <code>GraphDefinition</code> as a Python library, no canvas, no JSON authoring. Core in <code>app/graph_sdk.py</code>; public import path <code>agentcanvas</code>.</p>
+<table class="term-table">
+<tr class="term-row"><td class="term">Graph SDK</td><td class="defn">The third way to produce and drive a <code>GraphDefinition</code> (after canvas and hand-written JSON): a thin ergonomic wrapper over <code>app/graph_def.py</code> and the in-process <code>GraphExecutor</code> — same nodes, same executor, same eval, no new execution machinery. Distributed as <code>pip install agentcanvas</code> (repo-root <code>pyproject.toml</code>; tiered extras <code>[server]</code> / <code>[llm]</code> / <code>[backend]</code>)</td></tr>
+<tr class="term-row"><td class="term">Graph (builder)</td><td class="defn">The SDK's builder class — <code>from agentcanvas import Graph</code>; <code>add(node_type, **config)</code> / <code>connect(src, dst)</code> / <code>graph_out(name)</code> assemble the same <code>NodeDef</code> / <code>EdgeDef</code> / <code>ContainerDef</code> the canvas emits, plus loop / hook / composite authoring sugar. <code>to_code()</code> is the inverse (see graph_to_code)</td></tr>
+<tr class="term-row"><td class="term">NodeHandle / PortRef</td><td class="defn">What <code>Graph.add()</code> returns and what <code>connect()</code> consumes — <code>handle.out("port")</code> / <code>handle.in_("port")</code> name a specific typed port on a specific node instance</td></tr>
+<tr class="term-row"><td class="term">catalog / describe / nodesets</td><td class="defn">Introspection over the live node catalog — <code>catalog()</code> lists registered node types, <code>describe(node_type)</code> details one type's ports/config, <code>nodesets()</code> lists loadable nodesets. Same registry the canvas sidebar reads</td></tr>
+<tr class="term-row"><td class="term">generate_node_stubs</td><td class="defn">Emits typed authoring stubs for the current catalog so SDK scripts get IDE/type-checker-verifiable node types and port names — the typed-authoring leg of the SDK</td></tr>
+<tr class="term-row"><td class="term">GraphValidationError</td><td class="defn">Raised by SDK validation before anything runs — unknown node types, port mismatches, wire-type conflicts surface at build time instead of mid-run</td></tr>
+<tr class="term-row"><td class="term">run() / RunResult</td><td class="defn">In-process single-run entry — drives the real <code>GraphExecutor</code> (identical loop semantics to canvas Play) and returns outputs keyed by each <code>graphOut</code>'s port name</td></tr>
+<tr class="term-row"><td class="term">RunEvent / on_event</td><td class="defn">Streaming observation hook for an SDK run — per-firing events delivered to a callback while the graph executes, the SDK-side analogue of the canvas's WebSocket stream</td></tr>
+<tr class="term-row"><td class="term">eval() / EvalResult</td><td class="defn">Batch-evaluation entry from code — scores a graph over an episode list and returns aggregate + per-episode results, the SDK-side analogue of <code>POST /api/eval/v2/start</code></td></tr>
+<tr class="term-row"><td class="term">Cassette record/replay</td><td class="defn"><code>graph_sdk_replay.py</code> — records server-node HTTP round-trips during a live run and replays them hermetically, so GPU-nodeset graphs (Habitat, SAM) become deterministic tests that need no simulator or GPU</td></tr>
+<tr class="term-row"><td class="term">graph_to_code</td><td class="defn"><code>graph_sdk_codegen.py</code> — compiles any <code>GraphDefinition</code> (canvas- or JSON-born) into a self-contained builder script; round-trip verified semantically exact on MapGPT-MP3D (roadmap F4). Keeps code ⇄ JSON ⇄ canvas fully reversible</td></tr>
+</table>
+</section>
+
+<section class="glossary-section" id="s11">
+<h2><span class="num">§11</span>VLN Domain</h2>
+<p>Task-side vocabulary — datasets, action space, metrics. Independent of the architecture above; swapping to a non-VLN benchmark would replace this section but leave §§1–10 intact.</p>
 <table class="term-table">
 <tr class="term-row"><td class="term">Episode</td><td class="defn">A single navigation task: start position + natural language instruction + goal</td></tr>
 <tr class="term-row"><td class="term">Split</td><td class="defn">Dataset partition: <code>train</code>, <code>val_seen</code>, <code>val_unseen</code>, <code>test</code></td></tr>
@@ -344,6 +363,43 @@
 </div>
 
 <script src="../../../assets/nav.js"></script>
+<script>
+(function () {
+  var input = document.getElementById('glossary-filter');
+  var countEl = document.getElementById('result-count');
+  if (!input) return;
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.term-table .term-row'));
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section.glossary-section'));
 
+  function apply() {
+    var q = input.value.trim().toLowerCase();
+    var shown = 0;
+    rows.forEach(function (row) {
+      var hit = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
+      row.classList.toggle('hidden', !hit);
+      if (hit) shown += 1;
+    });
+    sections.forEach(function (sec) {
+      var anyVisible = Array.prototype.some.call(
+        sec.querySelectorAll('.term-table .term-row'),
+        function (r) { return !r.classList.contains('hidden'); }
+      );
+      sec.classList.toggle('empty', Boolean(q) && !anyVisible);
+    });
+    if (countEl) countEl.textContent = q ? shown + ' / ' + rows.length + ' terms' : '';
+  }
+
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { input.value = ''; apply(); input.blur(); }
+  });
+  // Capture-phase so "/" reaches the glossary filter before nav.js's site-search binding.
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName) || '';
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable);
+    if (e.key === '/' && !typing) { e.preventDefault(); e.stopImmediatePropagation(); input.focus(); }
+  }, true);
+})();
+</script>
 </body>
 </html>
