@@ -249,7 +249,7 @@ class AutoServerApp(ServerApp):
         # the /call handlers close over ITS tools (self._nodeset back-refs), so
         # constructing a second instance here would initialize an object the
         # handlers never see — session-type nodesets (state on the nodeset
-        # instance, e.g. model_vggt_slam) then serve every call from the
+        # instance, e.g. model_vggt_slam2) then serve every call from the
         # never-initialized throwaway. Caught 2026-07-14.
         if self._nodeset is None:
             self._nodeset = self._nodeset_cls()
