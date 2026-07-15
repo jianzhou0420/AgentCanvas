@@ -102,7 +102,7 @@
 </defs></svg>
 
 <div class="lede">
-  Files are grouped by package; descriptions explain the <strong>role</strong>, not the implementation. As of 2026-07-03 the backend (<code>app/</code>) contains <strong>~22,800 lines of Python (tests excluded) across 10 packages + root files</strong>. The frontend (<code>src/</code>) is React 18 + TypeScript + React Flow + Zustand. <em>Line counts in tables below are approximate snapshots and drift between updates — trust the structure (which file holds what role), not the digits.</em>
+  Files are grouped by package; descriptions explain the <strong>role</strong>, not the implementation. As of 2026-07-15 the backend (<code>app/</code>) contains <strong>~28,400 lines of Python (tests excluded) across 10 packages + root files</strong>. The frontend (<code>src/</code>) is React 18 + TypeScript + React Flow + Zustand. <em>Line counts in tables below are approximate snapshots and drift between updates — trust the structure (which file holds what role), not the digits.</em>
 </div>
 
 <div class="callout note">
@@ -112,7 +112,7 @@
   <code>standard/</code> (wire types, actions, node I/O — §8) ·
   <code>replay/</code> (episode replay backend — §9) ·
   <code>logging/</code> (execution log layer — §7) ·
-  <code>tools/</code> (standalone graph validator — §9). Every package now has its own section below; tests (<code>test_*.py</code>) are out of scope throughout.
+  <code>tools/</code> (standalone graph validator — §9). Root-file additions since then: the <strong>Graph SDK</strong> cluster (<code>graph_sdk*.py</code>, §1.4) plus the <code>agentcanvas</code> public import package next to <code>app/</code>. Every package now has its own section below; tests (<code>test_*.py</code>) are out of scope throughout.
 </div>
 
 <nav class="toc-strip">
@@ -172,6 +172,17 @@
 <tr><td><code>errors.py</code></td><td>~300</td><td></td><td><strong>ErrorBus singleton</strong> + <code>ErrorEnvelope</code> dataclass (<a href="decisions/observability/adr-observability-004-error-reporting-bus.html">ADR-observability-004</a>). 200-entry ring buffer + 500-deep async dispatch queue, broadcasts <code>error_event</code> WS frames</td></tr>
 <tr><td><code>eval_subprocess_main.py</code></td><td>~310</td><td></td><td><strong>Subprocess-per-run entry</strong> (<a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>) — <code>python -m app.eval_subprocess_main --run-dir ...</code>: reads <code>spec.json</code> + <code>shared_urls.json</code>, attaches to parent backend's shared singletons, runs <code>BatchEvalRunner.execute()</code> unmodified, writes <code>_DONE</code> marker on clean exit</td></tr>
 </table>
+<h3>1.4 Graph SDK</h3>
+<p>The programmatic authoring surface (<a href="../capabilities/graph-sdk.html">capability page</a>): build and run the same <code>GraphDefinition</code> the canvas emits, as a Python library — no canvas, no JSON authoring. Public import path is the <code>agentcanvas</code> package (sits next to <code>app/</code>); <code>pip install agentcanvas</code> is wired by the repo-root <code>pyproject.toml</code> (§19).</p>
+<table class="file-table">
+<tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
+<tr><td><code>graph_sdk.py</code></td><td>1,330</td><td></td><td><strong>The Graph SDK core</strong> — <code>Graph</code> builder (<code>add</code> / <code>connect</code> / <code>graph_out</code> / loop &amp; composite sugar), catalog introspection (<code>catalog()</code>, <code>describe()</code>, <code>nodesets()</code>), typed-authoring stub generation (<code>generate_node_stubs</code>), load-time validation (<code>GraphValidationError</code>), and the in-process runner — <code>run()</code> → <code>RunResult</code>, <code>on_event</code> → <code>RunEvent</code> stream, batch <code>eval()</code> → <code>EvalResult</code>. Drives the real <code>GraphExecutor</code>; adds no execution machinery of its own</td></tr>
+<tr><td><code>graph_sdk_replay.py</code></td><td>226</td><td></td><td><strong>Cassette record/replay</strong> — records server-node HTTP round-trips during a live run, replays them hermetically so GPU-nodeset graphs (Habitat, SAM) become deterministic tests with no simulator or GPU present</td></tr>
+<tr><td><code>graph_sdk_codegen.py</code></td><td>188</td><td></td><td><strong>Reverse direction</strong> — <code>graph_to_code()</code> / <code>Graph.to_code()</code> compiles any <code>GraphDefinition</code> (canvas- or JSON-born) into a self-contained builder script; round-trip verified on MapGPT-MP3D (roadmap F4)</td></tr>
+<tr><td><code>graph_sdk_demo.py</code></td><td>104</td><td></td><td><strong>Runnable proof</strong> — <code>python -m app.graph_sdk_demo</code>: three pure-Python demo nodes, built + run in-process, round-tripped through canvas JSON. No env, no GPU, no LLM</td></tr>
+<tr><td><code>../agentcanvas/__init__.py</code></td><td>61</td><td></td><td><strong>Public namespace package</strong> — <code>from agentcanvas import Graph</code>; thin re-export of the <code>app.graph_sdk</code> + <code>graph_to_code</code> surface, so SDK users never import <code>app.*</code> directly</td></tr>
+</table>
+
 <div class="callout note">
   <strong>Removed since v1</strong>
   <code>env_controller.py</code> + its <code>HabitatEnvController</code> were superseded by the generic <code>BaseEnvPanel</code> contract in <code>app/components/env_panel.py</code> (<a href="decisions/server/adr-server-002-base-controller.html">ADR-server-002</a>). Episode control is now a nodeset-side concern, not a framework module.
@@ -349,7 +360,7 @@
   <li>5 events: <code>GraphStart</code>, <code>GraphComplete</code>, <code>GraphError</code>, <code>PreNodeExecute</code>, <code>PostNodeExecute</code></li>
   <li>Protocol: event payload sent as JSON on stdin → hook process → JSON response on stdout with <code>{"action": "continue"|"block"|"modify"}</code></li>
   <li><strong>Fail-open</strong>: any error (timeout, crash, malformed JSON) defaults to <code>action="continue"</code></li>
-  <li><code>HookRunner</code> class manages execution; <code>load_hooks_file()</code> loads hook definitions from YAML</li>
+  <li><code>HookRunner</code> class manages execution; <code>load_hooks_file()</code> loads hook definitions from a JSON file (array of hook defs)</li>
 </ul>
 
 <h3 class="file-entry"><code>__init__.py</code><span class="lines">17 lines</span></h3>
@@ -465,7 +476,8 @@
 <tr><td><code>wire_types.py</code></td><td>443</td><td></td><td><strong>Wire type registry</strong> — 9 current types (<code>IMAGE</code>, <code>DEPTH</code>, <code>POSE</code>, <code>DISCRETE_ACTION</code>, <code>CONTROL</code>, <code>TEXT</code>, <code>BOOL</code>, <code>METRICS</code>, <code>ANY</code>) + 3 deprecated aliases (<code>ACTION</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>) kept so legacy graphs load, + <code>LIST[T]</code> modifier, <code>WIRE_FORMAT_SPEC</code> canonical on-wire formats, display colours. Helpers: <code>image_to_base64()</code>, <code>depth_to_base64()</code>, <code>serialize_for_display()</code></td></tr>
 <tr><td><code>actions.py</code></td><td>40</td><td></td><td><strong>Action constants</strong> — <code>ACTION_STOP</code>, <code>ACTION_FORWARD</code>, <code>ACTION_TURN_LEFT</code>, <code>ACTION_TURN_RIGHT</code> (the VLN <code>Discrete(4)</code> space). <code>parse_action_from_text()</code> extracts an action from LLM output</td></tr>
 <tr><td><code>node_io.py</code></td><td>168</td><td></td><td><strong>Auto-generated node I/O schema</strong> — <code>NODE_IO_SCHEMA</code> + <code>REQUIRED_INPUTS</code> built lazily from the <code>NODE_HANDLERS</code> registry (no handler classes live here). Used by <code>GraphExecutor</code> for fan-in logic</td></tr>
-<tr><td><code>__init__.py</code></td><td>9</td><td></td><td>Re-exports everything from all 3 modules</td></tr>
+<tr><td><code>telemetry.py</code></td><td>25</td><td></td><td><strong>Per-node-firing accounting ContextVars</strong> — <code>_current_node_usage</code> (written by <code>llm_complete</code>/<code>vlm_complete</code>) and <code>_current_node_transport</code> (written by the server-proxy codec). The executor resets them around each firing and reads them back into the node's log entry; they live here so a pure-local run doesn't drag in litellm/numpy</td></tr>
+<tr><td><code>__init__.py</code></td><td>9</td><td></td><td>Re-exports everything from the sibling modules</td></tr>
 </table>
 
 <!-- 9 -->
@@ -724,11 +736,13 @@
 <!-- 19 -->
 <h2 id="s19"><span class="num">§19</span>Config and Build</h2>
 <table class="file-table">
+<tr><td><code>&lt;repo root&gt;/pyproject.toml</code></td><td></td><td></td><td><strong>The pip distribution</strong> — packages <code>app*</code> + <code>agentcanvas*</code> from <code>agentcanvas/backend/</code> as the <code>agentcanvas</code> distribution. Core install is deliberately light (stdlib + <code>pydantic-settings</code>); heavier layers are tiered extras: <code>[server]</code> (proxy + cassette record/replay), <code>[llm]</code> (the <code>llmCall</code> builtin), <code>[backend]</code> (full FastAPI canvas backend), <code>[all]</code>. Lives at the repo root so a fresh clone installs with plain <code>pip install -e .</code></td></tr>
+<tr><td><code>backend/requirements.txt</code></td><td></td><td></td><td>Python deps for the full backend — FastAPI, Uvicorn, Pydantic v2, LiteLLM, httpx, python-multipart. Kept in sync with the <code>agentcanvas[backend]</code> extra</td></tr>
+<tr><td><code>backend/examples/</code></td><td></td><td></td><td>Seven numbered Graph SDK example scripts (<code>01_pure_python.py</code> … <code>07_habitat_sam.py</code>) walking pure-Python builds → authoring sugar → MapGPT from code → single-episode run → batch eval → reverse codegen → a real Habitat+SAM graph</td></tr>
+<tr><td><code>backend/.env.example</code></td><td></td><td></td><td>Environment variable template — <code>AGENTCANVAS_*</code> keys, port config</td></tr>
 <tr><td><code>frontend/package.json</code></td><td></td><td></td><td>NPM manifest — React 18, <code>@xyflow/react</code>, Zustand, Tailwind, Vite, Three.js</td></tr>
 <tr><td><code>frontend/vite.config.ts</code></td><td></td><td></td><td>Vite config — API proxy (<code>/api</code> to <code>localhost:8000</code>), React plugin</td></tr>
 <tr><td><code>frontend/tsconfig.json</code></td><td></td><td></td><td>TypeScript config — strict mode, path aliases</td></tr>
-<tr><td><code>backend/requirements.txt</code></td><td></td><td></td><td>Python deps — FastAPI, Uvicorn, Pydantic v2, LiteLLM, httpx, python-multipart</td></tr>
-<tr><td><code>backend/.env.example</code></td><td></td><td></td><td>Environment variable template — <code>AGENTCANVAS_*</code> keys, port config</td></tr>
 <tr><td><code>run_dev.sh</code></td><td></td><td></td><td>Dev launcher — starts backend (uvicorn) on <code>:8000</code> and frontend (vite) on <code>:5173</code> in parallel</td></tr>
 </table>
 
