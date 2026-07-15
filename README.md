@@ -1,5 +1,3 @@
-**English** | [中文](docs-md/README_zh.md) | [Espanol](docs-md/README_es.md) | [日本語](docs-md/README_ja.md) | [한국어](docs-md/README_ko.md)
-
 <div align="center">
 
 # AgentCanvas
@@ -272,7 +270,7 @@ There are two ways to use AgentCanvas, both over the same typed-graph substrate:
 
 - Python 3.10+ with Conda (the default `agentcanvas` env — ADR-platform-004)
 - Node.js 18+
-- *(Optional, for Habitat-Sim)* a separate Python 3.8 env — `habitat-sim 0.1.7` only runs here; AgentCanvas talks to it via server mode, see [INSTALL.md](docs-md/INSTALL.md)
+- *(Optional, for Habitat-Sim)* a separate Python 3.8 env — `habitat-sim 0.1.7` only runs here; AgentCanvas talks to it via server mode, see [INSTALL.md](INSTALL.md)
 
 ### 4.2 Run the Web Dashboard
 
