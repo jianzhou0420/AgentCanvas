@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen3.5-4B × ledger-nav × rand100 前 50 集 — 实验报告 — AgentCanvas</title>
+<meta name="description" content="开源 4B 小模型第一次成批跑通 coding-agent VLN 管线：SR 0.12（n=50）、$0 API 成本、3.2 小时单卡完成、约 3,800 轮工具调用 0 次格式失败。本文是数据记录 + 有效性声明，先读数字再下判断。">
+<meta property="og:title" content="Qwen3.5-4B × ledger-nav × rand100 前 50 集 — 实验报告 — AgentCanvas">
+<meta property="og:description" content="开源 4B 小模型第一次成批跑通 coding-agent VLN 管线：SR 0.12（n=50）、$0 API 成本、3.2 小时单卡完成、约 3,800 轮工具调用 0 次格式失败。本文是数据记录 + 有效性声明，先读数字再下判断。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/experiments/1-qwen4b-ledger50.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Qwen4B ledger50 报告">
+<style>
+  .eptable td, .eptable th { padding: 2px 8px; font-size: 0.85em; text-align: right; }
+  .eptable td:first-child { text-align: left; }
+  tr.ok td { background: rgba(46, 160, 67, 0.18); }
+  tr.near td { background: rgba(210, 153, 34, 0.14); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/experiments/1-qwen4b-ledger50.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Coding Agent</a>
+    <span class="sep">/</span>
+    <a href="index.html">Experiments</a>
+    <span class="sep">/</span>
+    <span class="here">Qwen4B ledger50 报告</span>
+  </div>
+  <div class="last-updated">2026-07-13</div>
+</div>
+  <header class="page-header coding-agent">
+    <h1>Qwen3.5-4B × ledger-nav × rand100 前 50 集 — 实验报告</h1>
+    <p class="tagline">开源 4B 小模型第一次成批跑通 coding-agent VLN 管线：SR 0.12（n=50）、$0 API 成本、3.2 小时单卡完成、约 3,800 轮工具调用 0 次格式失败。本文是数据记录 + 有效性声明，先读数字再下判断。</p>
+  </header>
+
+  <p class="lede">这是 <a href="../index.html">CAN 计划</a>的第一个<strong>成批</strong>开源小模型数据点：<code>beta-react-harness</code>（mini-swe-agent 2.4.5）驱动 <strong>Qwen3.5-4B（Q8_0，本地 ollama）</strong>，挂 <strong>ledger-nav</strong> skill，跑 R2R-CE <code>rand100</code> 前 50 集——与 <a href="../../beta/zh-2-beta-agent.html">beta-coding-agent</a> 和 <code>beta-react-harness/REPORT.md</code> 的全部 n=50 基线<strong>逐集同题</strong>可比。运行是我（Claude）在本机全自动执行的：起服务、发批次、监视、评测、审计，全程无人值守。工件在 <code>outputs/beta-react-harness/qwen4b_ledger50_w10/</code>。</p>
+
+  <h2 id="1-tldr"><span class="num">1.</span> TL;DR</h2>
+  <table>
+    <thead><tr><th>指标</th><th>值</th><th>一句话解读</th></tr></thead>
+    <tbody>
+      <tr><td><strong>SR / SPL / nDTW / OSR</strong></td><td><strong>0.12 / 0.104 / 0.387 / 0.14</strong></td><td>4B 显著弱于同 harness 的 Claude（sonnet 0.44 / opus 0.42），但管线端到端成立且赢的集赢得很干净（成功集 nDTW 0.77–0.84）</td></tr>
+      <tr><td>停止纪律</td><td>stop_rate <strong>0.88</strong></td><td>ledger 的 STOP 协议在 4B 上仍然生效——44/50 集自主叫停</td></tr>
+      <tr><td>主导失败</td><td><strong>远距离迷走 42%</strong>（dtg&gt;10m）</td><td>失败结构与 Claude 完全不同：不是停错，是<strong>走丢</strong>（§5）</td></tr>
+      <tr><td>格式可靠性</td><td>~3,800 轮工具调用 <strong>0 次格式失败</strong></td><td>4B 的函数调用纪律成立；24 次 ollama 端解析噎住全部被 litellm 重试自愈</td></tr>
+      <tr><td>成本</td><td><strong>$0 · 3.19 h · 单卡 5090 峰值 ~9 GB</strong></td><td>零 API 成本的 50 集全跑——CAN「零成本复现」主张的第一次实证</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="2-setup"><span class="num">2.</span> 配置与出处（完整可复现口径）</h2>
+  <table>
+    <thead><tr><th>部件</th><th>本次取值</th><th>出处 / 备注</th></tr></thead>
+    <tbody>
+      <tr><td>模型</td><td><code>qwen3.5:4b-q8_0</code>（4.7B 参数，Q8_0 近无损量化，5.3 GB）</td><td>ollama 官方打包；原生多模态 + tools + thinking</td></tr>
+      <tr><td>服务</td><td>ollama v0.31.2（用户态 <code>~/ollama</code>），<code>OLLAMA_CONTEXT_LENGTH=65536</code></td><td>65536 是跑前审计的直接结论——事后验证见 §6：<strong>25.7% 的请求超过了 32768</strong></td></tr>
+      <tr><td>采样</td><td><strong>temp=1.0</strong>, top_p 0.95, top_k 20（模型 Modelfile 默认）</td><td>⚠️ harness 不传 temperature → 本批是<strong>随机单采样</strong>口径（§7）</td></tr>
+      <tr><td>harness</td><td>beta-react-harness（mini-swe-agent 2.4.5 DefaultAgent，函数调用）</td><td>litellm <code>ollama_chat/</code> 路由；<code>MSWEA_COST_TRACKING=ignore_errors</code></td></tr>
+      <tr><td>skill</td><td><code>ledger-nav</code>（9,076 字符 ≈ 2.6k token 追加进 system prompt）</td><td>航位推算 + 帧索引 + 预测-执行-验证 + STOP 前必须验证</td></tr>
+      <tr><td>上下文策略</td><td><code>--image-window 10</code>（API 载荷只留最新 10 帧，旧帧变文字桩）</td><td>与 Claude 批次（window 0 = 全帧保留）<strong>不同口径</strong>，见 §7</td></tr>
+      <tr><td>预算</td><td>max-turns 100 · step-budget 500 · episode-timeout 2400 s</td><td>与 REPORT §3.2 的 mini Claude 批次一致（turns 口径对齐）</td></tr>
+      <tr><td>评测</td><td>驱动侧 <code>env_habitat__evaluate</code>（habitat 官方度量）</td><td>R2R-CE val_unseen <code>rand100</code> eps 0–49，与全部基线同 50 集</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="3-results"><span class="num">3.</span> 主结果与同集对照</h2>
+  <p>下表所有 n=50 行都是<strong>完全相同的 50 个 episode</strong>（rand100 eps 0–49），直接横比合法；AgenticNav 行是文献锚点（同 rand100 协议、不同 harness，仅作参照）。</p>
+  <table>
+    <thead><tr><th>条件</th><th>harness</th><th>SR</th><th>SPL</th><th>nDTW</th><th>oracle</th><th>stop</th><th>成本</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Qwen3.5-4B q8 + ledger-nav（本次）</strong></td><td>mini</td><td><strong>0.12</strong></td><td>0.10</td><td>0.39</td><td>0.14</td><td>0.88</td><td><strong>$0</strong></td></tr>
+      <tr><td>sonnet-5（无 skill）</td><td>mini</td><td>0.44</td><td>0.31</td><td>0.46</td><td>0.50</td><td>0.94</td><td>$17.1</td></tr>
+      <tr><td>opus-4-8（无 skill）</td><td>mini</td><td>0.42</td><td>0.35</td><td>0.55</td><td>0.54</td><td>1.00</td><td>$27.3</td></tr>
+      <tr><td>sonnet-5（无 skill）</td><td>Claude SDK</td><td>0.18</td><td>0.15</td><td>0.49</td><td>0.34</td><td>—</td><td>订阅</td></tr>
+      <tr><td>opus-4-8 bare / +ledger</td><td>Claude SDK</td><td>0.48 / 0.50</td><td>0.46 / 0.43</td><td>0.59</td><td>0.58</td><td>0.72 / 1.00</td><td>订阅</td></tr>
+      <tr><td>fable-5 bare</td><td>Claude SDK</td><td>0.64</td><td>0.57</td><td>0.58</td><td>—</td><td>0.78</td><td>订阅</td></tr>
+      <tr><td>haiku-4-5 +ledger</td><td>Claude SDK</td><td>0.20</td><td>0.12</td><td>0.19</td><td>—</td><td>0.78</td><td>订阅</td></tr>
+      <tr><td><em>AgenticNav：GPT-5.5 / Qwen3.6-27B</em></td><td><em>bespoke</em></td><td><em>0.55 / 0.35</em></td><td><em>0.48 / —</em></td><td>—</td><td>—</td><td>—</td><td><em>API</em></td></tr>
+    </tbody>
+  </table>
+  <p>三个读法：① <strong>规模阶梯出现了</strong>——同类 harness 下 4B 0.12 &lt; haiku 0.20 &lt; sonnet/opus 0.42–0.50 &lt; fable 0.64，为 zh-1 H5（能力 × harness 增益曲线）提供了最低档数据点；② 4B+ledger 0.12 距 AgenticNav 的 27B 锚点（0.35）差 23 个点——CAN 的 H7（9B+工作区 ≥ 27B+bespoke）需要 9B 补上中间点才能判命运；③ <strong>成本列是本次真正的新信息</strong>：同一张表里第一次出现 $0 行。</p>
+  <h3 id="31-subsets"><span class="num">3.1</span> 分段对照（排除「挑了容易段」的质疑）</h3>
+  <table>
+    <thead><tr><th>子段</th><th>本次 4B</th><th>mini sonnet</th><th>mini opus</th><th>SDK opus bare</th></tr></thead>
+    <tbody>
+      <tr><td>eps 0–9</td><td>0.10</td><td>0.20</td><td>0.20</td><td>0.30</td></tr>
+      <tr><td>eps 10–19</td><td>0.10</td><td>0.30</td><td>0.80</td><td>0.60</td></tr>
+      <tr><td>eps 20–49</td><td>0.13</td><td>0.57</td><td>0.37</td><td>0.50</td></tr>
+    </tbody>
+  </table>
+  <p>4B 在三个子段均匀地弱（0.10/0.10/0.13），没有段间异常——差距是能力性的，不是个别场景灾难。</p>
+
+  <h2 id="4-episodes"><span class="num">4.</span> 逐集明细</h2>
+  <p>绿 = 成功；黄 = near-miss（停点距目标 3–5 m）。dur = 秒。</p>
+  <table class="eptable">
+    <thead><tr><th>ep</th><th>SR</th><th>dtg(m)</th><th>nDTW</th><th>SPL</th><th>env 步</th><th>LLM 轮</th><th>停</th><th>dur</th></tr></thead>
+    <tbody>
+<tr><td>0</td><td>0</td><td>8.21</td><td>0.37</td><td>0.00</td><td>40</td><td>23</td><td>✓</td><td>43</td></tr>
+<tr class="ok"><td>1</td><td>1</td><td>2.86</td><td>0.84</td><td>1.00</td><td>42</td><td>16</td><td>✓</td><td>23</td></tr>
+<tr><td>2</td><td>0</td><td>11.39</td><td>0.17</td><td>0.00</td><td>78</td><td>87</td><td>✓</td><td>305</td></tr>
+<tr><td>3</td><td>0</td><td>6.68</td><td>0.43</td><td>0.00</td><td>68</td><td>99</td><td>✗</td><td>480</td></tr>
+<tr><td>4</td><td>0</td><td>13.92</td><td>0.14</td><td>0.00</td><td>94</td><td>91</td><td>✓</td><td>354</td></tr>
+<tr><td>5</td><td>0</td><td>14.65</td><td>0.12</td><td>0.00</td><td>341</td><td>97</td><td>✓</td><td>215</td></tr>
+<tr><td>6</td><td>0</td><td>16.89</td><td>0.16</td><td>0.00</td><td>285</td><td>69</td><td>✓</td><td>187</td></tr>
+<tr class="near"><td>7</td><td>0</td><td>4.88</td><td>0.70</td><td>0.00</td><td>293</td><td>41</td><td>✓</td><td>144</td></tr>
+<tr><td>8</td><td>0</td><td>6.41</td><td>0.54</td><td>0.00</td><td>165</td><td>100</td><td>✗</td><td>195</td></tr>
+<tr><td>9</td><td>0</td><td>6.37</td><td>0.57</td><td>0.00</td><td>310</td><td>85</td><td>✓</td><td>166</td></tr>
+<tr><td>10</td><td>0</td><td>9.47</td><td>0.29</td><td>0.00</td><td>485</td><td>44</td><td>✓</td><td>142</td></tr>
+<tr><td>11</td><td>0</td><td>12.92</td><td>0.20</td><td>0.00</td><td>306</td><td>96</td><td>✓</td><td>327</td></tr>
+<tr class="ok"><td>12</td><td>1</td><td>0.78</td><td>0.77</td><td>0.77</td><td>278</td><td>85</td><td>✓</td><td>250</td></tr>
+<tr><td>13</td><td>0</td><td>10.75</td><td>0.25</td><td>0.00</td><td>494</td><td>100</td><td>✗</td><td>298</td></tr>
+<tr><td>14</td><td>0</td><td>6.17</td><td>0.62</td><td>0.00</td><td>80</td><td>90</td><td>✓</td><td>236</td></tr>
+<tr><td>15</td><td>0</td><td>11.79</td><td>0.31</td><td>0.00</td><td>123</td><td>76</td><td>✓</td><td>157</td></tr>
+<tr><td>16</td><td>0</td><td>11.31</td><td>0.20</td><td>0.00</td><td>230</td><td>85</td><td>✓</td><td>218</td></tr>
+<tr><td>17</td><td>0</td><td>13.75</td><td>0.15</td><td>0.00</td><td>307</td><td>86</td><td>✓</td><td>231</td></tr>
+<tr><td>18</td><td>0</td><td>6.43</td><td>0.46</td><td>0.00</td><td>69</td><td>81</td><td>✓</td><td>264</td></tr>
+<tr><td>19</td><td>0</td><td>17.09</td><td>0.09</td><td>0.00</td><td>56</td><td>45</td><td>✓</td><td>128</td></tr>
+<tr><td>20</td><td>0</td><td>8.25</td><td>0.36</td><td>0.00</td><td>264</td><td>38</td><td>✓</td><td>78</td></tr>
+<tr><td>21</td><td>0</td><td>6.13</td><td>0.52</td><td>0.00</td><td>348</td><td>85</td><td>✓</td><td>247</td></tr>
+<tr><td>22</td><td>0</td><td>12.19</td><td>0.19</td><td>0.00</td><td>133</td><td>90</td><td>✓</td><td>226</td></tr>
+<tr><td>23</td><td>0</td><td>7.34</td><td>0.40</td><td>0.00</td><td>174</td><td>58</td><td>✓</td><td>152</td></tr>
+<tr><td>24</td><td>0</td><td>10.36</td><td>0.18</td><td>0.00</td><td>317</td><td>85</td><td>✓</td><td>257</td></tr>
+<tr class="ok"><td>25</td><td>1</td><td>1.00</td><td>0.83</td><td>0.83</td><td>61</td><td>71</td><td>✓</td><td>240</td></tr>
+<tr class="ok"><td>26</td><td>1</td><td>1.06</td><td>0.77</td><td>0.81</td><td>138</td><td>78</td><td>✓</td><td>204</td></tr>
+<tr><td>27</td><td>0</td><td>14.96</td><td>0.17</td><td>0.00</td><td>109</td><td>92</td><td>✓</td><td>361</td></tr>
+<tr><td>28</td><td>0</td><td>7.45</td><td>0.32</td><td>0.00</td><td>500</td><td>48</td><td>✗</td><td>121</td></tr>
+<tr><td>29</td><td>0</td><td>6.73</td><td>0.50</td><td>0.00</td><td>191</td><td>84</td><td>✓</td><td>308</td></tr>
+<tr class="near"><td>30</td><td>0</td><td>4.47</td><td>0.61</td><td>0.00</td><td>157</td><td>71</td><td>✓</td><td>198</td></tr>
+<tr class="near"><td>31</td><td>0</td><td>3.40</td><td>0.67</td><td>0.00</td><td>74</td><td>61</td><td>✓</td><td>215</td></tr>
+<tr><td>32</td><td>0</td><td>11.03</td><td>0.27</td><td>0.00</td><td>74</td><td>94</td><td>✓</td><td>328</td></tr>
+<tr><td>33</td><td>0</td><td>7.59</td><td>0.42</td><td>0.00</td><td>331</td><td>92</td><td>✓</td><td>278</td></tr>
+<tr><td>34</td><td>0</td><td>10.06</td><td>0.39</td><td>0.00</td><td>173</td><td>100</td><td>✓</td><td>313</td></tr>
+<tr><td>35</td><td>0</td><td>7.71</td><td>0.15</td><td>0.00</td><td>335</td><td>92</td><td>✓</td><td>224</td></tr>
+<tr><td>36</td><td>0</td><td>9.73</td><td>0.31</td><td>0.00</td><td>168</td><td>100</td><td>✗</td><td>230</td></tr>
+<tr class="ok"><td>37</td><td>1</td><td>0.63</td><td>0.84</td><td>0.94</td><td>238</td><td>97</td><td>✓</td><td>299</td></tr>
+<tr><td>38</td><td>0</td><td>12.88</td><td>0.20</td><td>0.00</td><td>69</td><td>91</td><td>✓</td><td>367</td></tr>
+<tr><td>39</td><td>0</td><td>5.32</td><td>0.18</td><td>0.00</td><td>102</td><td>80</td><td>✓</td><td>258</td></tr>
+<tr><td>40</td><td>0</td><td>12.84</td><td>0.22</td><td>0.00</td><td>267</td><td>84</td><td>✓</td><td>252</td></tr>
+<tr class="near"><td>41</td><td>0</td><td>4.39</td><td>0.66</td><td>0.00</td><td>52</td><td>50</td><td>✓</td><td>153</td></tr>
+<tr><td>42</td><td>0</td><td>5.79</td><td>0.68</td><td>0.00</td><td>472</td><td>87</td><td>✓</td><td>305</td></tr>
+<tr><td>43</td><td>0</td><td>12.89</td><td>0.18</td><td>0.00</td><td>35</td><td>14</td><td>✓</td><td>35</td></tr>
+<tr><td>44</td><td>0</td><td>14.52</td><td>0.14</td><td>0.00</td><td>500</td><td>82</td><td>✗</td><td>242</td></tr>
+<tr class="near"><td>45</td><td>0</td><td>4.53</td><td>0.45</td><td>0.00</td><td>100</td><td>38</td><td>✓</td><td>80</td></tr>
+<tr><td>46</td><td>0</td><td>19.44</td><td>0.06</td><td>0.00</td><td>89</td><td>55</td><td>✓</td><td>148</td></tr>
+<tr class="ok"><td>47</td><td>1</td><td>1.71</td><td>0.82</td><td>0.86</td><td>395</td><td>90</td><td>✓</td><td>376</td></tr>
+<tr class="near"><td>48</td><td>0</td><td>4.43</td><td>0.24</td><td>0.00</td><td>127</td><td>91</td><td>✓</td><td>359</td></tr>
+<tr><td>49</td><td>0</td><td>10.18</td><td>0.21</td><td>0.00</td><td>265</td><td>94</td><td>✓</td><td>277</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="5-failure"><span class="num">5.</span> 失败结构：4B 的病和 Claude 不一样</h2>
+  <table>
+    <thead><tr><th>桶（按停点距目标，互斥）</th><th>n</th><th>占比</th><th>episodes</th></tr></thead>
+    <tbody>
+      <tr><td>成功（&lt;3 m）</td><td>6</td><td>12%</td><td>1, 12, 25, 26, 37, 47</td></tr>
+      <tr><td>near-miss（3–5 m）</td><td>6</td><td>12%</td><td>7, 30, 31, 41, 45, 48</td></tr>
+      <tr><td>中距失败（5–10 m）</td><td>17</td><td>34%</td><td>—</td></tr>
+      <tr><td><strong>远距迷走（&gt;10 m）</strong></td><td><strong>21</strong></td><td><strong>42%</strong></td><td>其中 ep46 走到 19.4 m</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li><strong>主导失败是「走丢」不是「停错」</strong>：42% 的集停点离目标 10 m 开外，且往往伴随大量步数（ep5 走 341 步到 14.7 m、ep10 走 485 步到 9.5 m）——模型在错误方向上持续勤奋。这与 Claude 系的典型失败（near-miss 或过早 STOP）结构不同：4B 缺的不是纪律而是<strong>指令-场景接地</strong>。</li>
+    <li><strong>纪律部分确实被 skill 撑住了</strong>：stop_rate 0.88（6 次不停里 3 次是把 500 步预算走穿）；成功的 6 集全部干净利落（nDTW 0.77–0.84，SPL 最高 0.94）。ledger 给了 4B「赢法」，没给它「不输法」。</li>
+    <li><strong>方差实录（同一 ep0 三次采样）</strong>：昨早 window-5/32K 成功（dtg 0.59）→ 本批前身 window-5/65K 失败 → 本批 window-10/65K 失败（8.21）。temp=1.0 下单集结果是抽样，50 集聚合才有意义——这也是把上午 ep0 的成功故事降级为「幸运抽样」的诚实修正。</li>
+  </ul>
+
+  <h2 id="6-system"><span class="num">6.</span> 系统开销与上下文审计（batch 级实测）</h2>
+  <table>
+    <thead><tr><th>量</th><th>实测值</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td>总时长 / 单集均值</td><td>3.19 h / ~230 s</td><td>串行单 worker（:9200 单会话）</td></tr>
+      <tr><td>LLM 请求</td><td>3,867 次（均 76 轮/集）</td><td>llama.cpp serve 日志逐请求计数，与事件流对账一致</td></tr>
+      <tr><td>提交 token 总量</td><td>89.1 M</td><td>prefix cache 命中率高，实际增量 prefill 远小于此</td></tr>
+      <tr><td><strong>峰值 prompt</strong></td><td><strong>65,005 token</strong></td><td>距 65,536 上限仅 531——最长的集<strong>贴着天花板</strong>过线</td></tr>
+      <tr><td>超过 32,768 的请求</td><td><strong>993 次（25.7%）</strong></td><td>跑前把 serve 从 32K 提到 64K 的决定是 load-bearing 的：不提则四分之一的调用被静默截断</td></tr>
+      <tr><td>格式失败（harness 级）</td><td>0</td><td>~3,800 轮无一次 FormatError requery</td></tr>
+      <tr><td>服务端解析噎住</td><td>24 次（0.6%）</td><td>temp=1.0 下偶发畸形工具调用 XML，litellm 重试全部自愈</td></tr>
+      <tr><td>显存驻留</td><td>~9.0 GB（模型 5.3 + 64K KV/缓冲）</td><td>5090 占用 28%，与 habitat 共卡无压力</td></tr>
+      <tr><td>API 成本</td><td><strong>$0.00</strong></td><td>对照：mini-sonnet 同 50 集 $17.08、mini-opus $27.27</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="7-validity"><span class="num">7.</span> 有效性声明（引用本表前必读）</h2>
+  <ul>
+    <li><strong>采样口径</strong>：temp=1.0（模型默认，harness 未传参）单次采样，无置信区间。§5 的 ep0 三连已示范单集方差之大。正式对照需钉 temp=0 或 ≥3 种子。</li>
+    <li><strong>量化口径</strong>：Q8_0 近无损，但论文口径应为 bf16（vLLM 栈）；ollama+Q8 是本批的服务栈，数字标注应带此后缀。</li>
+    <li><strong>上下文口径</strong>：<code>image-window 10</code>，而 REPORT 的全部 Claude 批次是 window 0（全帧保留）——图像可见性对 4B 更严苛。文本历史两边都是全量线性。</li>
+    <li><strong>skill × mini 是首次组合</strong>：Claude 的 +ledger 数字全部来自 SDK harness，严格讲「4B+ledger vs sonnet 无 skill」不是单变量对比。缺的对照臂：4B 无 skill 50 集（预计 ~2.5 h、$0，最值得补的一跑）。</li>
+    <li><strong>turns 口径</strong>：max-turns 100 与 mini Claude 批一致；与 SDK 批（80）有已记录的差异。</li>
+  </ul>
+
+  <h2 id="8-next"><span class="num">8.</span> 下一步（按信息量/成本排序）</h2>
+  <ol>
+    <li><strong>4B 无 skill 50 集</strong>（~2.5 h，$0）——补上 skill 单变量对照，直接回答「ledger 给 4B 带来几个点」。</li>
+    <li><strong>9B 同配置 50 集</strong>——规模阶梯的关键中间点，H7（vs AgenticNav 27B=0.35）的命运判据；权重已在 HF 缓存。</li>
+    <li><strong>temp=0 重跑本配置</strong>——消掉方差口径问题，同时验证 24 次解析噎住是否归零。</li>
+    <li>失败标注：per-episode 按 NavHarness 六类归因（本批原始轨迹 <code>raw/</code> 全量在盘，可直接标）。</li>
+    <li>正式测量迁移 vLLM bf16（<code>--gpu-memory-utilization 0.65</code>），ollama 退回调试/图臂角色。</li>
+  </ol>
+
+  <h2 id="9-artifacts"><span class="num">9.</span> 工件</h2>
+  <ul>
+    <li>本批：<code>outputs/beta-react-harness/qwen4b_ledger50_w10/</code>——<code>summary.json</code>（聚合+逐集）、<code>episode_{i}.jsonl</code>（事件流，Monitor 页 mini-swe-agent 源可视化）、<code>raw/episode_{i}.traj.json</code>（完整消息史）、<code>live_{i}/</code>（逐帧）、<code>driver.log</code></li>
+    <li>单集探针（昨日）：<code>qwen4b_ollama_ep0{,_ledger,_opus}/</code>；上下文/显存审计脚本：session scratchpad <code>context_audit.py</code></li>
+    <li>基线数字出处：<code>beta-react-harness/REPORT.md</code> §3.2–3.4；AgenticNav 锚点见 <a href="../index.html">zh-1</a> §5</li>
+  </ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-tldr">1. TL;DR</a>
+      <a class="toc-h2" href="#2-setup">2. 配置与出处（完整可复现口径）</a>
+      <a class="toc-h2" href="#3-results">3. 主结果与同集对照</a>
+      <a class="toc-h3" href="#31-subsets">3.1 分段对照（排除「挑了容易段」的质疑）</a>
+      <a class="toc-h2" href="#4-episodes">4. 逐集明细</a>
+      <a class="toc-h2" href="#5-failure">5. 失败结构：4B 的病和 Claude 不一样</a>
+      <a class="toc-h2" href="#6-system">6. 系统开销与上下文审计（batch 级实测）</a>
+      <a class="toc-h2" href="#7-validity">7. 有效性声明（引用本表前必读）</a>
+      <a class="toc-h2" href="#8-next">8. 下一步（按信息量/成本排序）</a>
+      <a class="toc-h2" href="#9-artifacts">9. 工件</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

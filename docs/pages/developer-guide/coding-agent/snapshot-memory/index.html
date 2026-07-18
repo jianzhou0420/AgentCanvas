@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapshot 记忆：位姿锚定的 2D 关键帧记忆（而非 3D 重建） — AgentCanvas</title>
+<meta name="description" content="一个 household / 具身 agent 的记忆形式:与其把环境重建成 3D(点云/voxel/TSDF/高斯/NeRF)——VLM 又吃不了 3D、也没有足够 3D 数据去训一个 3D-native VLM——不如在运行中 持续拍照并给每帧打上相机位姿 ,再从上千帧里 选出七八张有代表性的关键帧 作为这间屋子的记忆。单次 reasoning 只把这几张位姿锚定的快照塞进…">
+<meta property="og:title" content="Snapshot 记忆：位姿锚定的 2D 关键帧记忆（而非 3D 重建） — AgentCanvas">
+<meta property="og:description" content="一个 household / 具身 agent 的记忆形式:与其把环境重建成 3D(点云/voxel/TSDF/高斯/NeRF)——VLM 又吃不了 3D、也没有足够 3D 数据去训一个 3D-native VLM——不如在运行中 持续拍照并给每帧打上相机位姿 ,再从上千帧里 选出七八张有代表性的关键帧 作为这间屋子的记忆。单次 reasoning 只把这几张位姿锚定的快照塞进…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/snapshot-memory/index.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Snapshot 记忆">
+<style>
+  .key { border-left: 3px solid var(--accent, #3b82f6); padding: 0.5em 0 0.5em 1em; margin: 1.1em 0;
+         background: rgba(59, 130, 246, 0.06); }
+  .warn { border-left: 3px solid #d29922; padding: 0.5em 0 0.5em 1em; margin: 1.1em 0;
+          background: rgba(210, 153, 34, 0.08); }
+  .quote { border-left: 3px solid var(--text-muted, #999); padding: 0.2em 0 0.2em 1em; margin: 0.8em 0;
+           color: var(--text-muted, #777); font-style: italic; }
+  .board { border-collapse: collapse; margin: 1em 0; font-variant-numeric: tabular-nums; width: 100%; }
+  .board td, .board th { text-align: left; padding: 5px 12px; border-bottom: 1px solid var(--border, #ddd);
+                         vertical-align: top; }
+  .board th { color: var(--text-muted, #888); font-weight: 600; }
+  .caption { font-size: 0.82em; color: var(--text-muted, #888); margin: 0.3em 0 0 0; }
+  pre.term { background: rgba(127,127,127,0.09); border: 1px solid var(--border, #ddd); border-radius: 6px;
+             padding: 0.7em 0.9em; overflow-x: auto; font-size: 0.83em; line-height: 1.5; }
+  pre.term code { background: none; padding: 0; }
+  .lbl { display: inline-block; min-width: 5.5em; color: var(--text-muted, #888); }
+  code.f { font-size: 0.88em; }
+  .phase { border-left: 3px solid var(--accent, #3b82f6); padding: 0.1em 0 0.1em 1em; margin: 0.6em 0; }
+  ol.steps > li { margin: 0.4em 0; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/snapshot-memory/index.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Coding Agent</a>
+    <span class="sep">/</span>
+    <span class="here">Snapshot Memory</span>
+  </div>
+  <div class="last-updated">2026-07-17</div>
+</div>
+  <header class="page-header coding-agent">
+    <h1>Snapshot 记忆：位姿锚定的 2D 关键帧记忆（而非 3D 重建）</h1>
+  </header>
+
+  <p class="lede">一个 household / 具身 agent 的记忆形式:与其把环境重建成 3D(点云/voxel/TSDF/高斯/NeRF)——VLM 又吃不了 3D、也没有足够 3D 数据去训一个 3D-native VLM——不如在运行中<strong>持续拍照并给每帧打上相机位姿</strong>,再从上千帧里<strong>选出七八张有代表性的关键帧</strong>作为这间屋子的记忆。单次 reasoning 只把这几张位姿锚定的快照塞进 API。本文把这个 idea 精确重构、评估可行性、定位到 prior art,并给出可在现有 habitat 上直接起步的方法论与分阶段计划。</p>
+
+  <div class="key">
+  <strong>一句话：</strong>这<strong>不是 3D 重建,是「位姿锚定的 2D 关键帧记忆」(posed keyframe / view-graph)</strong> —— 3D 只是每张图的位姿元数据,不建任何 3D 模型。这恰恰是优点:VLM 原生吃 2D、绕开 3D 数据荒;而位姿又补上了纯图袋子缺的空间结构。它同时<strong>直接解掉</strong> <a href="../harness-notes/index.html">harness-notes</a> 里的请求膨胀(只发 7-8 张,不是 1000 张也不是滑窗),给 <a href="../real-robot/index.html">真机</a> 一个记忆底座,并有硬核的生物学依据(昆虫/鸽子的 snapshot 归巢)。可行,且能在我们现有轨迹上先离线验证。
+  </div>
+
+  <h2 id="1-reframe"><span class="num">1.</span> 先把 idea 说准：不是重建，是「带位姿的快照集」</h2>
+  <p>你说的「2D 的 3D 重建」,技术上更准确的名字是 <strong>posed keyframe set / view-graph</strong>:一组 <code class="f">(图像, 6-DoF 位姿, 语义标签)</code> 三元组,外加轨迹给出的邻接边。没有 dense 3D、没有 mesh、没有辐射场。价值恰恰在「<strong>不重建</strong>」:</p>
+  <ul>
+    <li><strong>VLM 原生</strong>:记忆单元就是图片,直接进 API,不需要 3D-native VLM,也绕开「没有足够 3D 数据」这个死结 —— 这正是你的核心论点。</li>
+    <li><strong>位姿补上空间结构</strong>:纯图片袋子不知道「哪张在哪」;加了位姿,就能做「离我最近的记忆」「沿路径的记忆」「我现在在哪」——拿到 2.5D 的空间推理,却不付 3D 的表示/训练代价。</li>
+    <li><strong>压缩即记忆</strong>:1000 帧 → 7-8 张,单次 reasoning 只打包这几张。</li>
+  </ul>
+
+  <h2 id="2-why-now"><span class="num">2.</span> 为什么可行 + 为什么现在做（咬合三处）</h2>
+  <table class="board">
+    <thead><tr><th>咬合点</th><th>关系</th></tr></thead>
+    <tbody>
+      <tr><td><a href="../harness-notes/index.html">harness-notes</a>（请求膨胀）</td><td>全带 1000 帧撞 32MB;滑窗只保留「最近」而非「最有信息」。Snapshot 记忆选「最有代表性的 K 张」,配 Files API(<code class="f">file_id</code> 引用)请求恒小 —— 是那个问题的正解。</td></tr>
+      <tr><td><a href="../real-robot/index.html">real-robot</a>（位姿来源）</td><td>Unitree 里程计 / VIO 给位姿;habitat 直接给 GT 位姿。位姿是这套记忆的前提,而我们两边都有。</td></tr>
+      <tr><td><a href="../reasoning/index.html">reasoning</a>（工作记忆）</td><td>把「进单次调用的那几张图」当成 agent 的显式工作记忆,可读、可控 —— 和「让推理可见」一脉。</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="3-bio"><span class="num">3.</span> 生物 / 认知依据（你的直觉是对的）</h2>
+  <p>你说「人回忆的不是 3D 空间,而是一张张模糊的 2D 图片;找手机时脑子飞速扫过各房间的印象;睁眼一看和记忆中的差不多,就知道自己在客厅桌子旁」—— 这在导航神经科学里是<strong>成熟理论</strong>,叫 <strong>view-based / snapshot 归巢</strong>:</p>
+  <div class="quote">昆虫(蜜蜂、蚂蚁、黄蜂)靠把<strong>当前视图和存下的 egocentric 快照做匹配</strong>来回到熟悉地点(Cartwright &amp; Collett 1983 的 snapshot 模型)。现代版本用低分辨率全景视图 + 边缘等初级特征,甚至逐像素强度差的相似度梯度就够归巢;鸽子也用 snapshot 式的全景记忆做空间重定向。</div>
+  <p>所以你的「睁眼对一下记忆快照 → 判断我在哪」不是比喻,而是可以直接实现的<strong>自定位原语</strong>(见 §5 的 localization 组件)。</p>
+
+  <h2 id="4-priorart"><span class="num">4.</span> Prior art 定位（诚实：组件都有，我们的角度在哪）</h2>
+  <table class="board">
+    <thead><tr><th>方向</th><th>代表</th><th>给了我们什么 / 差在哪</th></tr></thead>
+    <tbody>
+      <tr><td>长视频 VLM 关键帧选择</td><td>AdaRD-Key、Event-Anchored FS、KTV</td><td><strong>选择算法</strong>(relevance+diversity+coverage);但把视频当被动流,无位姿、无主动探索、无自定位</td></tr>
+      <tr><td>具身情节记忆 + 检索</td><td><a href="https://arxiv.org/abs/2409.13682">ReMEmbR</a>(NVIDIA)、OpenEQA、Mind Palace</td><td>位姿 + <strong>captioned 帧</strong>存向量库、LLM 迭代检索;但记忆是 <em>caption(文字)</em>,已知「caption 噪声大、视角不一致,被当 oracle」—— 我们改喂<strong>原图</strong>规避</td></tr>
+      <tr><td>VLN 拓扑 / 图记忆</td><td><a href="https://arxiv.org/html/2506.15096">DyNaVLM</a>、<a href="https://arxiv.org/pdf/2502.13451">MapNav</a>、<a href="https://arxiv.org/html/2604.15495">GIST</a>、cognitive memory graph</td><td>keyframe 作 visual anchor、图记忆引导 VLM —— 和本 idea 最近;多为在线导航决策,较少把「塞进单次小请求 + snapshot 自定位」当一等公民</td></tr>
+      <tr><td>view-based 归巢(生物/机器人)</td><td>snapshot 模型、image-matching homing</td><td>自定位/归巢的原理来源</td></tr>
+    </tbody>
+  </table>
+  <div class="key"><strong>我们的角度（值得做的差异化）：</strong>(1) 记忆是<strong>原始位姿快照</strong>、<strong>直接进每一次小 reasoning 调用</strong>作工作记忆(不是 caption 检索库,规避 caption 噪声);(2) 选择预算 K 由「一次请求装得下多少」驱动 —— 把它当成<strong>harness 级记忆管理底座</strong>,不只是精度技巧;(3) 把 <strong>snapshot 自定位闭环</strong>(当前视图→最近关键帧→「我在哪」)接进 VLM agent loop;(4) <strong>主动、在线、带位姿</strong>;(5) <strong>完全不做重建</strong>。这套组合,而非任一单点,是贡献。</div>
+
+  <h2 id="5-method"><span class="num">5.</span> 方法论：四个组件</h2>
+
+  <h3 id="5a-capture">5.1 采集 —— pose-tagged frames</h3>
+  <p>agent 每走一步就 <code class="f">observe()</code> 拿一帧,附上相机 6-DoF 位姿。位姿来源:habitat 直接给 GT;真机用 Unitree 里程计 / VIO(有漂移,见 §8)。每帧 = <code class="f">(image, pose, t)</code>。</p>
+
+  <h3 id="5b-select">5.2 关键帧选择 —— 「七八张」这一步的核心</h3>
+  <p>两段式:<strong>在线插入</strong> + <strong>离线压缩到预算 K</strong>,三准则 <em>覆盖 / 多样 / 相关</em>:</p>
+  <pre class="term"><code># 在线（SLAM-keyframe 式）：满足任一即插入新关键帧
+insert if  Δpose > τ_pos  or  Δheading > τ_ang        # 几何覆盖
+        or  embed_dist(frame, last_kf) > τ_vis        # 视觉新颖度(DINO/CLIP 特征)
+        or  new_objects_detected(frame) not in memory  # 语义新增(开放词检测)
+
+# 离线压缩到预算 K（一次装得下的张数，如 8）
+1) 语义 set-cover：选最小帧集，覆盖所有检测到的语义实体
+2) farthest-point：在 pose ⊕ embedding 联合空间里做最远点采样，补足多样性/覆盖
+3) 相关性重排：若已知任务/查询，按 query-relevance 提权（可选）</code></pre>
+  <p class="caption">语义 set-cover 是关键:把「覆盖一屋的信息」形式化成「最小帧集覆盖所有物体/地标」。「7-8 张」是这个覆盖问题在典型卧室上的经验解 —— 是否成立是可测的经验问题(Phase 0 直接量)。</p>
+
+  <h3 id="5c-store">5.3 记忆存储 —— view-graph</h3>
+  <p>node = <code class="f">{image(或 file_id), pose, caption/tags, embedding}</code>;edge = 轨迹邻接 / 可达。这就是一张「视图图」:既能按空间近邻查,也能沿路径走。</p>
+
+  <h3 id="5d-retrieve">5.4 检索 → 单次 reasoning</h3>
+  <p>推理前,从 view-graph 取<strong>最相关的 K 张</strong>塞进这一次 VLM 调用:</p>
+  <ol class="steps">
+    <li><strong>任务相关</strong>:query↔image(CLIP 文图 / caption 匹配)——「去厨房」→ 含厨房的快照。</li>
+    <li><strong>空间相关</strong>:离当前位姿近 / 沿目标路径的关键帧。</li>
+    <li><strong>自定位(snapshot homing)</strong>:当前帧 embedding ↔ 关键帧库最近邻 →「我在客厅桌子旁,朝厨房」。这就是你说的「睁眼对一下记忆」。</li>
+  </ol>
+  <p>把 top-K(7-8)位姿快照 + 每张的 pose/caption 标注 + 当前视图 + 任务 一起喂 VLM。请求小、可读、空间有据。</p>
+
+  <h2 id="6-integrate"><span class="num">6.</span> 落到我们系统</h2>
+  <p>一个 <strong>memory bridge / tool</strong>,和现有 MCP bridge 同形:</p>
+  <pre class="term"><code>@mcp.tool()
+def observe():        # 照旧回当前帧；bridge 顺手记 (image, pose) 进 view-graph
+    ...
+@mcp.tool()
+def recall(query):    # 返回 top-K 位姿快照（file_id 引用，请求恒小）
+    kfs = view_graph.retrieve(query, cur_pose, cur_frame, k=8)
+    return [image_block(kf) for kf in kfs]            # 直接进下一次 reasoning
+@mcp.tool()
+def where_am_i():     # snapshot 自定位：当前帧 → 最近关键帧
+    return view_graph.localize(cur_frame)             # "客厅桌旁，朝厨房"</code></pre>
+  <p>关键帧走 <strong>Files API</strong>(上传一次、<code class="f">file_id</code> 引用),直接吃掉 harness-notes 的请求膨胀。检索既可由 agent 主动调 <code class="f">recall()</code>(ReAct 友好),也可 harness 自动注入。</p>
+
+  <h2 id="7-eval"><span class="num">7.</span> 评测 + 基线（现有 habitat 就能起）</h2>
+  <p>我们已有 R2R-CE 轨迹,<strong>带 frames + GT 位姿</strong>,离线就能验证核心假设。</p>
+  <table class="board">
+    <thead><tr><th>指标</th><th>问的问题</th></tr></thead>
+    <tbody>
+      <tr><td>紧凑度 K</td><td>覆盖一个场景要几张?「7-8」在真实轨迹上成立吗?</td></tr>
+      <tr><td>覆盖率</td><td>选出的 K 张覆盖了多少比例的语义实体 / 可行走空间?</td></tr>
+      <tr><td>下游 VLN(SR/SPL/nDTW)</td><td>只给 keyframes,导航掉多少?对比全历史?</td></tr>
+      <tr><td>请求大小</td><td>vs 全历史 / 滑窗,单请求省多少?</td></tr>
+      <tr><td>自定位准确率</td><td>最近关键帧 → 对不对得上真实位置?混叠多严重?</td></tr>
+    </tbody>
+  </table>
+  <p><strong>基线</strong>:全历史(mini <code class="f">image_window=0</code>)/ 近窗(CC 行为)/ 均匀抽样 K / <strong>本方法(位姿关键帧)</strong>—— 在<strong>相同请求预算</strong>下比,才公平(见 harness-notes 的 confound)。</p>
+
+  <h2 id="8-risks"><span class="num">8.</span> 诚实的难点</h2>
+  <div class="warn">
+  <ul style="margin:0">
+    <li><strong>选择质量(主风险)</strong>:「7-8 张覆盖一屋」对粗语义可能成立,对任务细节偏乐观;欠覆盖 → agent 漏东西。对策:预算自适应、任务感知选择;Phase 0 先量清楚覆盖-K 曲线。</li>
+    <li><strong>位姿漂移</strong>:真机里程计/VIO 长程漂移;habitat 无此问题。对策:先在 sim 验证方法,再谈真机回环校正。</li>
+    <li><strong>感知混叠</strong>:两个角落长得像 → 自定位歧义。对策:位姿 + 视图联合判定,而非纯图匹配。</li>
+    <li><strong>动态场景</strong>:手机被挪走 → 记忆过期。对策:时间戳 + 失效/更新机制(见到冲突就重写该节点)。</li>
+    <li><strong>caption 噪声</strong>:ReMEmbR 已踩过(caption 当 oracle 出错)。对策:记忆喂<strong>原图</strong>,caption 只做检索索引不做事实来源。</li>
+    <li><strong>覆盖率如何度量</strong>:需要 GT 语义(habitat 有实例分割)才能算「覆盖了多少」——这也是先在 sim 做的理由。</li>
+  </ul>
+  </div>
+
+  <h2 id="9-roadmap"><span class="num">9.</span> 分阶段路线</h2>
+  <div class="phase"><strong>Phase 0 · 离线分析(零新硬件,现有轨迹)</strong>:在已有 R2R-CE 轨迹上实现关键帧选择,画<strong>覆盖率 vs K</strong> 曲线,可视化「几张覆盖一屋」;再跑「只用 keyframes」的下游 VLN / EQA,量掉点。—— 这一步就能证伪或证实核心假设。</div>
+  <div class="phase"><strong>Phase 1 · 接入 agent loop</strong>:memory bridge(<code class="f">observe/recall/where_am_i</code>)+ Files API,在<strong>相同请求预算</strong>下做「全历史 / 近窗 / 位姿关键帧」的受控对比。</div>
+  <div class="phase"><strong>Phase 2 · snapshot 自定位</strong>:把「当前视图→最近关键帧→我在哪」做成原语,评混叠与准确率;支持「找手机」式 EQA。</div>
+  <div class="phase"><strong>Phase 3 · 真机</strong>:Unitree 里程计给位姿(接 real-robot 那条 bridge),验证漂移下的鲁棒性。</div>
+
+  <h2 id="10-refs"><span class="num">10.</span> 附：Prior art 与相关</h2>
+  <ul>
+    <li><span class="lbl">情节记忆</span><a href="https://arxiv.org/abs/2409.13682">ReMEmbR</a>（位姿+captioned 帧检索）· OpenEQA · Mind Palace（2507.12846）</li>
+    <li><span class="lbl">VLN 图记忆</span><a href="https://arxiv.org/html/2506.15096">DyNaVLM</a> · <a href="https://arxiv.org/pdf/2502.13451">MapNav</a> · <a href="https://arxiv.org/html/2604.15495">GIST</a></li>
+    <li><span class="lbl">关键帧选择</span>AdaRD-Key（2510.02778）· Event-Anchored FS（2603.00983）· KTV（2602.03615）</li>
+    <li><span class="lbl">生物依据</span>Cartwright &amp; Collett 1983 snapshot 模型 · <a href="https://www.cell.com/current-biology/pdf/S0960-9822(13)00843-9.pdf">Spatial Memory in Insect Navigation</a></li>
+    <li><span class="lbl">咬合</span><a href="../harness-notes/index.html">Harness 隐性差异</a>（请求/vision）· <a href="../real-robot/index.html">真机具身</a>（位姿）· <a href="../reasoning/index.html">思维链可见性</a>（工作记忆）</li>
+  </ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-reframe">1. 先把 idea 说准：不是重建，是「带位姿的快照集」</a>
+      <a class="toc-h2" href="#2-why-now">2. 为什么可行 + 为什么现在做（咬合三处）</a>
+      <a class="toc-h2" href="#3-bio">3. 生物 / 认知依据（你的直觉是对的）</a>
+      <a class="toc-h2" href="#4-priorart">4. Prior art 定位（诚实：组件都有，我们的角度在哪）</a>
+      <a class="toc-h2" href="#5-method">5. 方法论：四个组件</a>
+      <a class="toc-h3" href="#5a-capture">5.1 采集 —— pose-tagged frames</a>
+      <a class="toc-h3" href="#5b-select">5.2 关键帧选择 —— 「七八张」这一步的核心</a>
+      <a class="toc-h3" href="#5c-store">5.3 记忆存储 —— view-graph</a>
+      <a class="toc-h3" href="#5d-retrieve">5.4 检索 → 单次 reasoning</a>
+      <a class="toc-h2" href="#6-integrate">6. 落到我们系统</a>
+      <a class="toc-h2" href="#7-eval">7. 评测 + 基线（现有 habitat 就能起）</a>
+      <a class="toc-h2" href="#8-risks">8. 诚实的难点</a>
+      <a class="toc-h2" href="#9-roadmap">9. 分阶段路线</a>
+      <a class="toc-h2" href="#10-refs">10. 附：Prior art 与相关</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
