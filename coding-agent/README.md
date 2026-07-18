@@ -24,8 +24,21 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
   --file ../../workspace/nodesets/env/env_habitat.py \
   --class EnvHabitatNodeSet --port 9200
 
+# wp cells additionally need the waypoint-predictor server. It runs in the
+# ac-wp env (py3.10 + torch cu128 — GPU inference on sm_120 cards) against the
+# habitat-free shim tree; see beta-coding-agent/wp_predictor_shim/README.md.
+# Checkpoints: data/smartway/waypoint_ckpt/best.pth + data/smartway/ddppo/
+# gibson-2plus-resnet50.pth (symlink into VLN-MME's data).
+cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
+  SMARTWAY_REPO_PATH=$PWD/../../beta-coding-agent/wp_predictor_shim \
+  TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
+  ~/miniconda3/envs/ac-wp/bin/python -m app.server.auto_host \
+  --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \
+  --class SmartWayWaypointNodeSet --port 9210
+
 # then (agentcanvas env):
 python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
+python coding-agent/stdrun.py run std_sdk_fable-5_wp   # reads --wp-server (default :9210)
 python coding-agent/stdrun.py batch A          # sdk × {sonnet,opus,fable} × {bare,nav}
 python coding-agent/stdrun.py board            # grid status from summaries on disk
 python coding-agent/stdrun.py compare std_sdk_opus-4.8_bare std_mini_opus-4.8_bare

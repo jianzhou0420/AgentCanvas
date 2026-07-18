@@ -20,6 +20,9 @@ import dataclasses
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,11 +30,12 @@ from typing import Any, Protocol
 
 import requests
 
-from cells import STD_FROZEN, CellSpec
+from cells import STD_FROZEN, WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec
 from prompts import FIRST_PROMPT, assert_std_skill_freeze, build_briefing
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
+WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -91,37 +95,40 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
     return str(obj)
 
 
-_TOOL_SCHEMAS_CACHE: dict[bool, Any] = {}
+_TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool], Any] = {}
 
 
-async def bridge_tool_schemas(bare: bool) -> Any:
-    """The bridge's own tool definitions, introspected in-process from
-    BRIDGE_PATH — the module the sessions actually talk to (mini's port is
-    byte-equivalent, gated by check_equivalence.py). Cached per bare flag;
-    never raises (logging must not break a run)."""
-    if bare in _TOOL_SCHEMAS_CACHE:
-        return _TOOL_SCHEMAS_CACHE[bare]
+async def bridge_tool_schemas(bare: bool, wp: bool = False) -> Any:
+    """The bridge's own tool definitions, introspected in-process from the
+    bridge module the sessions actually talk to (mcp_bridge.py, or
+    wp_bridge.py for the wp condition; mini's port is byte-equivalent, gated
+    by check_equivalence.py). Cached per (bare, wp); never raises (logging
+    must not break a run)."""
+    key = (bare, wp)
+    if key in _TOOL_SCHEMAS_CACHE:
+        return _TOOL_SCHEMAS_CACHE[key]
+    bridge_path = WP_BRIDGE_PATH if wp else BRIDGE_PATH
     saved = os.environ.get("HABITAT_BARE")
     try:
         os.environ["HABITAT_BARE"] = "1" if bare else "0"
-        spec = importlib.util.spec_from_file_location("_bridge_introspect", BRIDGE_PATH)
+        spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         tools = await mod.mcp.list_tools()
-        _TOOL_SCHEMAS_CACHE[bare] = json_safe([
+        _TOOL_SCHEMAS_CACHE[key] = json_safe([
             {"name": getattr(t, "name", None),
              "description": getattr(t, "description", None),
              "input_schema": getattr(t, "inputSchema", None)}
             for t in tools
         ])
     except Exception as exc:  # noqa: BLE001 — logging must never break a run
-        _TOOL_SCHEMAS_CACHE[bare] = {"error": f"tool-schema introspection failed: {exc!r}"}
+        _TOOL_SCHEMAS_CACHE[key] = {"error": f"tool-schema introspection failed: {exc!r}"}
     finally:
         if saved is None:
             os.environ.pop("HABITAT_BARE", None)
         else:
             os.environ["HABITAT_BARE"] = saved
-    return _TOOL_SCHEMAS_CACHE[bare]
+    return _TOOL_SCHEMAS_CACHE[key]
 
 
 # ── event sink: the one writer of the episode_{i}.jsonl vocabulary ──
@@ -199,6 +206,9 @@ class EpisodeContext:
     live_dir: Path
     raw_dir: Path
     persona: bool = False  # ablation: keep the harness's stock persona
+    wp: bool = False       # waypoint action space (wp_bridge.py)
+    wp_server_url: str = ""  # waypoint-predictor auto_host (wp cells only)
+    wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
     extra: dict[str, Any] = field(default_factory=dict)  # harness-specific knobs
 
     @property
@@ -206,15 +216,26 @@ class EpisodeContext:
         """Bridge broadcast/STOP-gate budget: off (0) in the bare condition."""
         return 0 if self.bare else self.max_turns
 
+    @property
+    def bridge_path(self) -> Path:
+        """Stdio bridge module for this condition's action space."""
+        return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
+
     def bridge_env(self) -> dict[str, str]:
         """HABITAT_* env for harnesses that spawn the stdio bridge."""
-        return {
+        env = {
             "HABITAT_SERVER_URL": self.server_url,
             "HABITAT_STEP_BUDGET": str(self.step_budget),
             "HABITAT_TURN_BUDGET": str(self.turn_budget),
             "HABITAT_BARE": "1" if self.bare else "0",
             "HABITAT_LIVE_DIR": str(self.live_dir),
         }
+        if self.wp:
+            env["HABITAT_WP_SERVER_URL"] = self.wp_server_url
+            env["HABITAT_WP_MAX_MOVES"] = str(self.wp_max_moves)
+            if self.extra.get("wp_predict_fn"):
+                env["HABITAT_WP_PREDICT_FN"] = str(self.extra["wp_predict_fn"])
+        return env
 
 
 @dataclass
@@ -230,14 +251,57 @@ class HarnessAdapter(Protocol):
     name: str            # "claude-sdk" | "mini-swe" | "codex"
     inherent: dict       # recorded harness-inherent facts (thinking, auth, caps)
 
-    def prepare(self) -> None:
-        """Once per run: auth guards, version pins into self.inherent."""
+    def prepare(self, spec: CellSpec) -> None:
+        """Once per run, BEFORE any episode: auth guards, version pins into
+        self.inherent, and any serving stack the harness owns (mini brings up
+        ollama for local models — see mini_swe.py). Raise to abort the cell:
+        a misconfigured server that silently degrades is worse than no run."""
 
     def describe(self, ctx: EpisodeContext) -> dict[str, Any]:
         """Harness-specific block merged into the session_inputs event."""
 
     async def run(self, ctx: EpisodeContext, sink: EventSink) -> SessionOutcome:
         """Run ONE clean session; emit events through sink only."""
+
+    def finalize(self, run_dir: Path) -> dict[str, Any]:
+        """Optional. Once per run, AFTER the last episode: whatever audit the
+        harness alone can produce (mini slices its serve log for the exact
+        per-request prompt-token counts). Merged into summary.run_stats."""
+
+
+class VramSampler:
+    """Peak GPU memory over a run. Silent no-op where nvidia-smi is absent, so
+    it costs nothing on the API-billed cells."""
+
+    def __init__(self, period_s: float = 0.5) -> None:
+        self.peak_mib = 0
+        self._period = period_s
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if shutil.which("nvidia-smi") is None:
+            return
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._period):
+            try:
+                out = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=memory.used",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5).stdout.split()
+                if out:
+                    self.peak_mib = max(self.peak_mib, int(out[0]))
+            except Exception:  # noqa: BLE001 — sampling must never break a run
+                pass
+
+    def stop(self) -> int | None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        return self.peak_mib or None
 
 
 # ── episode + run loops ──
@@ -259,7 +323,8 @@ async def run_episode(
     instruction = ep["instruction"]
 
     briefing, skill_md5 = build_briefing(
-        instruction, cfg["step_budget"], bare=spec.bare, skill=spec.skill
+        instruction, cfg["step_budget"], bare=spec.bare, skill=spec.skill,
+        wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30),
     )
 
     workdir = run_dir / f"workdir_{index}"
@@ -283,6 +348,9 @@ async def run_episode(
         live_dir=run_dir / f"live_{index}",
         raw_dir=raw_dir,
         persona=spec.persona,
+        wp=spec.wp,
+        wp_server_url=cfg.get("wp_server") or "",
+        wp_max_moves=cfg.get("wp_max_moves", 30),
         extra=dict(cfg.get("extra") or {}),
     )
 
@@ -302,7 +370,7 @@ async def run_episode(
             "persona": spec.persona,
             "system_prompt": briefing,
             "first_prompt": FIRST_PROMPT,
-            "tool_schemas": await bridge_tool_schemas(spec.bare),
+            "tool_schemas": await bridge_tool_schemas(spec.bare, spec.wp),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -388,22 +456,38 @@ def parse_episodes(spec: str) -> list[int]:
 async def run_cell(
     adapter: HarnessAdapter, spec: CellSpec, servers: list[str],
     episodes_spec: str | None = None, run_name: str | None = None,
-    extra: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None, wp_server: str | None = None,
 ) -> dict[str, Any]:
     """Run (or resume) one cell. Existing episode records in the run dir's
     summary are kept; requested indices are re-run and replace their records."""
     cfg = dict(STD_FROZEN)
-    cfg["extra"] = extra or {}
+    if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
+        cfg["max_turns"] = spec.max_turns
+    cfg["extra"] = dict(extra or {})
+    cfg["wp_server"] = wp_server if spec.wp else None
+    if spec.wp:
+        cfg["wp_max_moves"] = WP_MAX_MOVES
+        # force substantive thinking (overridable via --set think_budget=N)
+        cfg["extra"].setdefault("think_budget", WP_THINK_BUDGET)
     if spec.skill:
         skill_md5 = assert_std_skill_freeze(spec.skill)
         print(f"[std] skill {spec.skill} md5 {skill_md5} (frozen OK)")
 
-    adapter.prepare()
+    # May raise (bad auth, unpinnable serving context) — that is the point.
+    adapter.prepare(spec)
 
     for url in servers:
         health = requests.get(f"{url}/health", timeout=10)
         health.raise_for_status()
         print(f"[std] {url} healthy: {health.json()['name']}")
+
+    if spec.wp:
+        # a wp cell without its predictor would silently degrade — refuse
+        if not wp_server:
+            raise RuntimeError("wp cell needs --wp-server (waypoint-predictor auto_host)")
+        health = requests.get(f"{wp_server}/health", timeout=10)
+        health.raise_for_status()
+        print(f"[std] {wp_server} healthy: {health.json()['name']} (waypoint predictor)")
 
     run_name = run_name or spec.name
     run_dir = spec.output_root / run_name
@@ -432,6 +516,7 @@ async def run_cell(
 
     episodes: dict[int, dict[str, Any]] = dict(prior)
     write_lock = asyncio.Lock()
+    run_stats: dict[str, Any] = {}  # VRAM peak + the harness's own audit
 
     async def flush_summary() -> None:
         async with write_lock:
@@ -446,6 +531,7 @@ async def run_cell(
                            "skill": spec.skill, "persona": spec.persona,
                            "extra": json_safe(cfg["extra"])},
                 "servers": servers,
+                "run_stats": run_stats,
                 "aggregate": aggregate([e for e in ordered if "error" not in e]),
                 "episodes": ordered,
             }
@@ -479,10 +565,23 @@ async def run_cell(
                   f"spl={m.get('spl')} steps={episode['agent'].get('env_steps')} "
                   f"stop={episode['agent'].get('called_stop')}")
 
-    await asyncio.gather(*(worker(i, url) for i, url in enumerate(servers)))
-    await flush_summary()
+    vram = VramSampler()
+    vram.start()
+    try:
+        await asyncio.gather(*(worker(i, url) for i, url in enumerate(servers)))
+    finally:
+        run_stats["vram_peak_mib"] = vram.stop()
+        finalize = getattr(adapter, "finalize", None)
+        if callable(finalize):
+            try:
+                run_stats.update(finalize(run_dir) or {})
+            except Exception as exc:  # noqa: BLE001 — audit must not lose a run
+                run_stats["finalize_error"] = repr(exc)
+        await flush_summary()
 
     final = aggregate([e for e in episodes.values() if "error" not in e])
     print(f"[std] cell complete -> {summary_path}")
+    if run_stats:
+        print(f"[std] run stats: {json.dumps(run_stats)}")
     print(json.dumps(final, indent=2))
     return final

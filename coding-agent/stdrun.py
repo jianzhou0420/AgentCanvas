@@ -54,7 +54,8 @@ async def _run(args: argparse.Namespace) -> None:
     extra = {**spec.extra_dict, **cli_extra}
     adapter = get_adapter(spec.harness)
     await run_cell(adapter, spec, _servers(args.servers),
-                   episodes_spec=args.episodes, run_name=run_name, extra=extra)
+                   episodes_spec=args.episodes, run_name=run_name, extra=extra,
+                   wp_server=args.wp_server)
 
 
 async def _batch(args: argparse.Namespace) -> None:
@@ -65,7 +66,8 @@ async def _batch(args: argparse.Namespace) -> None:
     for name in names:
         spec = get_cell(name)
         adapter = get_adapter(spec.harness)
-        await run_cell(adapter, spec, _servers(args.servers))
+        await run_cell(adapter, spec, _servers(args.servers),
+                       wp_server=args.wp_server)
 
 
 def _load_summary(cell_name: str) -> dict | None:
@@ -76,17 +78,29 @@ def _load_summary(cell_name: str) -> dict | None:
 
 
 def _board(_args: argparse.Namespace) -> None:
-    print(f"{'cell':<34} {'eps':>5} {'SR':>6} {'SPL':>6} {'nDTW':>6} {'stop':>5}")
-    for name in CELLS:
+    # turns and rgb are printed because the cell NAME carries neither, and both
+    # have changed under a stable name (turns 80→200→150→100, rgb 224→512; the
+    # archived Claude baselines ran 80). Two runs with the same cell name can be
+    # different protocols. Read the board, never the name, before comparing.
+    print(f"{'cell':<34} {'eps':>5} {'turns':>6} {'rgb':>5} {'SR':>6} {'SPL':>6} "
+          f"{'nDTW':>6} {'stop':>5}")
+    for name, spec in CELLS.items():
+        # for an unrun cell show what it WILL run at, not the frozen default, or
+        # the board lies about a protocol it has not executed yet
+        planned_turns = spec.max_turns or STD_FROZEN["max_turns"]
+        planned_rgb = STD_FROZEN["rgb_resolution"]
         summary = _load_summary(name)
         if summary is None:
-            print(f"{name:<34} {'—':>5}")
+            print(f"{name:<34} {'—':>5} {planned_turns:>6} {planned_rgb:>5}")
             continue
         agg = summary.get("aggregate") or {}
+        cfg = summary.get("config") or {}
         n = agg.get("episode_count", 0)
         errored = sum(1 for e in summary.get("episodes", []) if "error" in e)
         flag = f" ({errored} err)" if errored else ""
-        print(f"{name:<34} {n:>5} {agg.get('success', float('nan')):>6.2f} "
+        print(f"{name:<34} {n:>5} {cfg.get('max_turns', planned_turns):>6} "
+              f"{cfg.get('rgb_resolution', planned_rgb):>5} "
+              f"{agg.get('success', float('nan')):>6.2f} "
               f"{agg.get('spl', float('nan')):>6.2f} {agg.get('ndtw', float('nan')):>6.2f} "
               f"{agg.get('stop_rate', float('nan')):>5.2f}{flag}")
 
@@ -148,10 +162,14 @@ def main() -> None:
     p_run.add_argument("--run-name", default=None, help="requires --nonstd")
     p_run.add_argument("--set", action="append", metavar="KEY=VAL",
                        help="harness extra knob (requires --nonstd), e.g. effort=xhigh")
+    p_run.add_argument("--wp-server", default="http://127.0.0.1:9210",
+                       help="waypoint-predictor auto_host (wp cells only)")
 
     p_batch = sub.add_parser("batch", help="run a batch of cells sequentially")
     p_batch.add_argument("batch", choices=sorted(BATCHES))
     p_batch.add_argument("--servers", default="http://127.0.0.1:9200")
+    p_batch.add_argument("--wp-server", default="http://127.0.0.1:9210",
+                         help="waypoint-predictor auto_host (wp cells only)")
 
     sub.add_parser("board", help="show the standard board")
 

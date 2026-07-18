@@ -24,7 +24,7 @@ import subprocess
 import sys
 from typing import Any
 
-from driver import BRIDGE_PATH, EpisodeContext, EventSink, SessionOutcome, json_safe
+from driver import EpisodeContext, EventSink, SessionOutcome, json_safe
 
 
 def _toml_str(value: str) -> str:
@@ -56,9 +56,13 @@ class CodexCliAdapter:
             "auth": "ChatGPT subscription (codex login)",
             "thinking": "reasoning tokens counted, content unreadable",
             "turn_cap": "broadcast only (no codex-side hard cap)",
+            # codex CLI owns its own context/vision management; its image
+            # retention policy is not audited here. See docs developer-guide/
+            # coding-agent/harness-notes.
+            "vision_context": "codex-managed (unaudited)",
         }
 
-    def prepare(self) -> None:
+    def prepare(self, spec) -> None:  # noqa: ARG002 — no per-cell setup needed
         self.inherent["codex_version"] = subprocess.run(
             ["codex", "--version"], capture_output=True, text=True, check=True
         ).stdout.strip()
@@ -74,7 +78,7 @@ class CodexCliAdapter:
             # Display-layer knob: surfaces reasoning summaries if any exist.
             "-c", 'model_reasoning_summary = "detailed"',
             "-c", f"mcp_servers.env.command = {_toml_str(sys.executable)}",
-            "-c", f"mcp_servers.env.args = [{_toml_str(str(BRIDGE_PATH))}]",
+            "-c", f"mcp_servers.env.args = [{_toml_str(str(ctx.bridge_path))}]",
             "-c", f"mcp_servers.env.env = {{ {env_table} }}",
             "-c", 'mcp_servers.env.default_tools_approval_mode = "approve"',
             # No AGENTS.md injection (the SDK cell's setting_sources=[] analog).
