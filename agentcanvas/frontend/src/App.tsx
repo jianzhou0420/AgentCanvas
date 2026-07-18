@@ -9,6 +9,7 @@ import LogViewerPage from "./logs/LogViewerPage";
 import ReplayPage from "./replay/ReplayPage";
 import MonitorPage from "./pages/monitor/MonitorPage";
 import CodingAgentPage from "./pages/coding/CodingAgentPage";
+import HumanPage from "./pages/human/HumanPage";
 
 export default function App() {
   const loadEvalStatus = useStore((s) => s.loadEvalStatus);
@@ -32,6 +33,7 @@ export default function App() {
         {appMode === "replay" && <ReplayPage />}
         {appMode === "monitor" && <MonitorPage />}
         {appMode === "coding" && <CodingAgentPage />}
+        {appMode === "human" && <HumanPage />}
       </div>
       <ErrorToast />
     </div>

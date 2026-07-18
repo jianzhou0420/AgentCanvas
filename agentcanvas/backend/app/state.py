@@ -139,6 +139,9 @@ class ProcessServices:
         # CodingAgentRunner — created in main.py lifespan (Coding-Agent
         # Monitor tab); None in eval subprocesses and tests.
         self.coding_agent_runner: Any = None
+        # HumanRunner — created in main.py lifespan (Human tab, interactive
+        # human driver over env_habitat); None in eval subprocesses and tests.
+        self.human_runner: Any = None
 
 
 # Module-level singleton
