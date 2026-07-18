@@ -15,12 +15,37 @@ import type {
   NavLLMStepData,
 } from "./types";
 
+// Top-level page selector. Persisted to localStorage so a page refresh keeps
+// you on the current page instead of snapping back to the canvas ("nav").
+const APP_MODES = [
+  "nav",
+  "manager",
+  "eval",
+  "logs",
+  "replay",
+  "monitor",
+  "coding",
+] as const;
+export type AppMode = (typeof APP_MODES)[number];
+const APP_MODE_KEY = "agentcanvas.appMode";
+
+function loadAppMode(): AppMode {
+  try {
+    const v = localStorage.getItem(APP_MODE_KEY);
+    return (APP_MODES as readonly string[]).includes(v ?? "")
+      ? (v as AppMode)
+      : "nav";
+  } catch {
+    return "nav";
+  }
+}
+
 interface AppStore {
   // Connection
   connected: boolean;
 
   // Eval
-  appMode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor" | "coding";
+  appMode: AppMode;
   evalRun: EvalRunSummary | null;
   evalEpisodes: EvalEpisodeResult[];
 
@@ -38,9 +63,7 @@ interface AppStore {
   setConnected: (v: boolean) => void;
 
   // Eval actions
-  setAppMode: (
-    mode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor" | "coding",
-  ) => void;
+  setAppMode: (mode: AppMode) => void;
   setEvalRun: (run: EvalRunSummary | null) => void;
   addOrUpdateEvalEpisode: (ep: EvalEpisodeResult) => void;
   loadEvalStatus: () => Promise<void>;
@@ -55,7 +78,7 @@ export const useStore = create<AppStore>((set, get) => ({
   connected: false,
 
   // Eval
-  appMode: "nav",
+  appMode: loadAppMode(),
   evalRun: null,
   evalEpisodes: [],
 
@@ -72,7 +95,14 @@ export const useStore = create<AppStore>((set, get) => ({
   setConnected: (v) => set({ connected: v }),
 
   // Eval actions
-  setAppMode: (mode) => set({ appMode: mode }),
+  setAppMode: (mode) => {
+    try {
+      localStorage.setItem(APP_MODE_KEY, mode);
+    } catch {
+      /* storage disabled — persistence is best-effort */
+    }
+    set({ appMode: mode });
+  },
 
   setEvalRun: (run) => set({ evalRun: run }),
 
