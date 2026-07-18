@@ -3,6 +3,7 @@ import { Bot, Download, Play, Square } from "lucide-react";
 import clsx from "clsx";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
+import { usePersistentState } from "./usePersistentState";
 
 // Coding-Agent Monitor — control panel + live text/image logs for beta-coding-agent
 // runs (vanilla coding agent driving env_habitat through the MCP bridge).
@@ -91,28 +92,43 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
 }
 
 export default function CodingAgentPage() {
-  // control panel form
-  const [episodes, setEpisodes] = useState("0-9");
-  const [split, setSplit] = useState("rand100");
-  const [maxTurns, setMaxTurns] = useState(80);
-  const [model, setModel] = useState("");
+  // control panel form (persisted: survive a refresh with the same inputs)
+  const [episodes, setEpisodes] = usePersistentState("agentcanvas.coding.episodes", "0-9");
+  const [split, setSplit] = usePersistentState("agentcanvas.coding.split", "rand100");
+  const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 80);
+  const [model, setModel] = usePersistentState("agentcanvas.coding.model", "");
   const [startError, setStartError] = useState<string | null>(null);
 
   // live state
   const [status, setStatus] = useState<RunStatus | null>(null);
-  const [viewEpisode, setViewEpisode] = useState<number | null>(null); // null = follow active
+  // which episode's log/frames are shown (null = follow active). Persisted so a
+  // refresh keeps you on the same episode; in live mode the poll loop below
+  // resets it to null on a run change, so a stale index can't stick.
+  const [viewEpisode, setViewEpisode] = usePersistentState<number | null>(
+    "agentcanvas.coding.viewEpisode",
+    null,
+  );
   const [lines, setLines] = useState<LogLine[]>([]);
   const [frames, setFrames] = useState<string[]>([]);
   const [zoomFrame, setZoomFrame] = useState<string | null>(null); // lightbox overlay
 
   // log browser (any run under outputs/beta-coding-agent/, CLI-launched included)
-  const [mode, setMode] = useState<"live" | "browse">("live");
+  const [mode, setMode] = usePersistentState<"live" | "browse">(
+    "agentcanvas.coding.mode",
+    "live",
+  );
   // which harness's runs to browse: Agent SDK (beta-coding-agent) vs
   // mini-swe-agent (beta-react-harness) vs OpenAI Codex CLI
   // (beta-codex-agent). Live mode is SDK-runner-only.
-  const [harness, setHarness] = useState<"claude-sdk" | "mini-swe" | "codex">("claude-sdk");
+  const [harness, setHarness] = usePersistentState<"claude-sdk" | "mini-swe" | "codex">(
+    "agentcanvas.coding.harness",
+    "claude-sdk",
+  );
   const [runsList, setRunsList] = useState<RunInfo[]>([]);
-  const [browseRun, setBrowseRun] = useState<string | null>(null);
+  const [browseRun, setBrowseRun] = usePersistentState<string | null>(
+    "agentcanvas.coding.browseRun",
+    null,
+  );
   const [browseEpisodes, setBrowseEpisodes] = useState<EpisodeSummary[]>([]);
   const [browseStarted, setBrowseStarted] = useState<number[]>([]);
 
@@ -215,6 +231,14 @@ export default function CodingAgentPage() {
       /* backend unreachable */
     }
   };
+
+  // On mount, if a persisted refresh landed us back in browse mode, repopulate
+  // the run list (loadRuns keeps the restored browseRun via its `r ?? …` guard).
+  // Live mode needs nothing here — the status poll below drives it.
+  useEffect(() => {
+    if (mode === "browse") loadRuns(harness);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // per-run episode outcomes for the browse selector badges
   useEffect(() => {
