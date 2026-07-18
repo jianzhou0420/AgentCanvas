@@ -114,6 +114,17 @@ export default function Header() {
           >
             Coding Agent
           </button>
+          <button
+            onClick={() => setAppMode("human")}
+            className={clsx(
+              "px-3 py-1 text-sm font-medium",
+              appMode === "human"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-800 text-gray-400 hover:text-gray-200",
+            )}
+          >
+            Human
+          </button>
         </div>
 
         <div className="flex-1" />

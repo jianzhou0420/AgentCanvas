@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from .api.canvas import env_panel, graphs
 from .api.execution import coding_agent as coding_agent_api
 from .api.execution import eval as eval_api_v2
+from .api.execution import human as human_api
 from .api.execution import internal_containers, internal_events, logs, run, websocket
 from .api.platform import components, profiles, providers
 from .api.platform import config as config_api
@@ -183,6 +184,11 @@ async def lifespan(app: FastAPI):
         registry=state.workspace_component_registry
     )
 
+    # ── Human-performance runner (Human tab, interactive human driver) ──
+    from .services.human_runner import HumanRunner
+
+    state.human_runner = HumanRunner(registry=state.workspace_component_registry)
+
     # ── Resource sampler (System Log) — 1 Hz machine snapshot to disk ──
     from .services.resource_sampler import ResourceSampler, set_sampler
 
@@ -212,6 +218,8 @@ async def lifespan(app: FastAPI):
     await resource_sampler.stop()
     if getattr(state, "coding_agent_runner", None) is not None:
         await asyncio.to_thread(state.coding_agent_runner.shutdown)
+    if getattr(state, "human_runner", None) is not None:
+        await asyncio.to_thread(state.human_runner.shutdown)
     if state.job_scheduler is not None:
         await state.job_scheduler.shutdown()
 
@@ -250,6 +258,7 @@ app.include_router(internal_containers.router, prefix="/api/internal", tags=["in
 app.include_router(internal_events.router, prefix="/api/internal", tags=["internal"])
 app.include_router(eval_api_v2.router, prefix="/api/eval/v2", tags=["eval-v2"])
 app.include_router(coding_agent_api.router, prefix="/api/coding-agent", tags=["coding-agent"])
+app.include_router(human_api.router, prefix="/api/human", tags=["human"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(replay_router, prefix="/api/replay", tags=["replay"])
 app.include_router(websocket.router, tags=["websocket"])

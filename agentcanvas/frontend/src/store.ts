@@ -20,7 +20,7 @@ interface AppStore {
   connected: boolean;
 
   // Eval
-  appMode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor" | "coding";
+  appMode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor" | "coding" | "human";
   evalRun: EvalRunSummary | null;
   evalEpisodes: EvalEpisodeResult[];
 
@@ -39,7 +39,7 @@ interface AppStore {
 
   // Eval actions
   setAppMode: (
-    mode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor" | "coding",
+    mode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor" | "coding" | "human",
   ) => void;
   setEvalRun: (run: EvalRunSummary | null) => void;
   addOrUpdateEvalEpisode: (ep: EvalEpisodeResult) => void;
