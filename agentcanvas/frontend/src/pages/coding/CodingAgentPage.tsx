@@ -821,7 +821,12 @@ export default function CodingAgentPage() {
                     <div className="mt-1 flex flex-wrap items-end gap-1">
                       {tiles.map((tile, k) => {
                         const frame = tile.url;
-                        const sizeCls = nViews <= 1 ? "h-56 w-56" : "h-32 w-32";
+                        // height is the only fixed dimension: frames keep
+                        // their native aspect ratio (egocentric obs are
+                        // square; wp panorama strips are ~4:1 and must not
+                        // be squashed). max-w-full + object-contain degrade
+                        // gracefully when a strip outgrows the log pane.
+                        const heightCls = nViews <= 1 ? "h-56" : "h-32";
                         const label = tile.label;
                         return (
                           <div key={k} className="flex flex-col items-center">
@@ -837,15 +842,16 @@ export default function CodingAgentPage() {
                                 title={`${frame} — click to enlarge`}
                                 onClick={() => setZoomFrame(frame)}
                                 className={clsx(
-                                  "block cursor-zoom-in rounded border border-gray-800",
-                                  sizeCls,
+                                  "block w-auto max-w-full object-contain cursor-zoom-in rounded border border-gray-800",
+                                  heightCls,
                                 )}
                               />
                             ) : (
                               <div
                                 className={clsx(
                                   "flex items-center justify-center rounded border border-dashed border-gray-800 text-gray-600",
-                                  sizeCls,
+                                  heightCls,
+                                  nViews <= 1 ? "w-56" : "w-32",
                                 )}
                               >
                                 frame pending…
