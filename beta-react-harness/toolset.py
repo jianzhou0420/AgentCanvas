@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -29,6 +30,7 @@ from typing import Any, Callable
 import numpy as np
 import requests
 from PIL import Image as PILImage
+from PIL import ImageDraw, ImageFont
 
 MAX_ACTIONS_PER_CALL = 50
 
@@ -421,6 +423,411 @@ class HabitatToolSet(NodesetToolSet):
         img = img.resize((side, side), PILImage.LANCZOS)
         buf = BytesIO()
         img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def _live_frame(self, png: bytes) -> None:
+        if self.live_dir is None:
+            return
+        self.live_dir.mkdir(parents=True, exist_ok=True)
+        (self.live_dir / f"obs_{self._obs_count:04d}_step{self.steps_taken:03d}.png").write_bytes(png)
+        (self.live_dir / "latest.png").write_bytes(png)
+
+    def _live_log(self, entry: dict[str, Any]) -> None:
+        if self.live_dir is None:
+            return
+        self.live_dir.mkdir(parents=True, exist_ok=True)
+        with (self.live_dir / "actions.log").open("a") as fh:
+            fh.write(json.dumps({"t": round(time.time() - self._t0, 1), **entry}) + "\n")
+
+
+# ── waypoint toolset — wp_bridge.py port ──
+#
+# In-process mirror of beta-coding-agent/wp_bridge.py's action space: a
+# depth-based predictor proposes ≤5 candidate waypoints, they are drawn as
+# numbered circles on a [Left|Front|Right|Back] strip, and the agent picks one
+# by number (goto) or stops. Tool descriptions + input schemas are byte-
+# identical to the bridge (verified by check_equivalence.py), as are the
+# geometry helpers and the annotated strip. Unlike HabitatToolSet this talks to
+# TWO auto_hosts: the habitat env (self.server_url) and the waypoint predictor
+# (self.wp_server_url) — hence the _call2 that carries a base + config, matching
+# the bridge's own _call. Per-episode state lives on the instance (one toolset
+# per episode), exactly as the bridge kept it in module globals.
+
+# Descriptions: byte-identical to wp_bridge.py's _OBSERVE_DESC / _GOTO_DESC /
+# _STOP_DESC (checked by check_equivalence.py).
+WP_OBSERVE_DESC = (
+    "Look around from where you stand. Returns a panoramic image of four "
+    "views labeled Left / Front / Right / Back with numbered green circles "
+    "marking the waypoints you can move to, plus a JSON listing each "
+    "waypoint's direction, angle (degrees left of your heading; negative = "
+    "right) and distance in meters. Pure read — does not advance the "
+    "simulator or consume step budget."
+)
+WP_GOTO_DESC = (
+    "Move to one numbered waypoint from the LATEST observe() result: the "
+    "robot turns toward it and walks there. Moving invalidates the old "
+    "numbers — call observe() again afterwards to see the new surroundings "
+    "and waypoints. Returns steps consumed, remaining budget, and whether "
+    "the episode is over."
+)
+WP_STOP_DESC = (
+    "Permanently END the episode, declaring you have reached the goal. "
+    "Issue it only when you believe the robot is within 3 meters of the "
+    "instruction's endpoint — stopping is irreversible."
+)
+
+# FastMCP generates these from the tool signatures; the port hardcodes the
+# exact shapes (title "<name>Arguments", "Waypoint" capitalized) so the schemas
+# the model sees are byte-equal across paths.
+WP_OBSERVE_SCHEMA = {"properties": {}, "title": "observeArguments", "type": "object"}
+WP_GOTO_SCHEMA = {
+    "properties": {"waypoint": {"title": "Waypoint", "type": "integer"}},
+    "required": ["waypoint"],
+    "title": "gotoArguments",
+    "type": "object",
+}
+WP_STOP_SCHEMA = {"properties": {}, "title": "stopArguments", "type": "object"}
+
+N_PANO_VIEWS = 12
+# dir_id -> strip slot: render_panorama_rgbd's dir i faces i*30° counter-
+# clockwise, so 3 = Left, 0 = Front, 9 = Right, 6 = Back — the VLN-MME
+# [Left|Front|Right|Back] display order at zero extra render cost.
+STRIP_DIRS = ((3, "Left"), (0, "Front"), (9, "Right"), (6, "Back"))
+
+
+class WaypointToolSet(NodesetToolSet):
+    """The env_habitat waypoint toolset — observe / goto / stop."""
+
+    def __init__(
+        self,
+        server_url: str,
+        *,
+        wp_server_url: str,
+        wp_max_moves: int = 40,
+        predict_fn: str = "smartway_waypoint__predict",
+        turn_budget: int = 0,
+        pano_view_px: int = 384,
+        live_dir: Path | None = None,
+    ) -> None:
+        super().__init__(server_url)
+        self.wp_server_url = wp_server_url
+        self.wp_max_moves = wp_max_moves
+        self.predict_fn = predict_fn
+        self.turn_budget = turn_budget
+        self.pano_view_px = pano_view_px
+        self.live_dir = live_dir
+
+        self.steps_taken = 0
+        self.episode_over = False
+        self.end_reason: str | None = None
+        self._obs_count = 0
+        self._tool_calls = 0
+        self._moves = 0  # waypoint moves executed (goto calls that ran)
+        self._last_candidates: list[dict[str, float]] | None = None
+        self._t0 = time.time()
+
+        self._register("observe", WP_OBSERVE_DESC, WP_OBSERVE_SCHEMA, self._tool_observe)
+        self._register("goto", WP_GOTO_DESC, WP_GOTO_SCHEMA, self._tool_goto)
+        self._register("stop", WP_STOP_DESC, WP_STOP_SCHEMA, self._tool_stop)
+
+    # ── two-server HTTP (env + predictor); mirrors wp_bridge._call ──
+
+    def _call2(
+        self, function_name: str, inputs: dict[str, Any],
+        config: dict[str, Any] | None = None, base: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"inputs": inputs}
+        if config:
+            body["config"] = config
+        resp = requests.post(
+            f"{base or self.server_url}/call/{function_name}", json=body, timeout=600
+        )
+        resp.raise_for_status()
+        return resp.json()["outputs"]
+
+    # ── tools ──
+
+    def _tool_observe(self, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            msg = f"episode already over ({self.end_reason}); no more moves possible"
+            return ToolResult(content=[text_part(msg)], info={"kind": "observe", "error": msg})
+
+        pano = self._call2(
+            "env_habitat__observe_panorama", {"trigger": "wp"},
+            config={"representation": "views_rgbd", "n_views": N_PANO_VIEWS},
+        )
+        views = pano.get("views") or []
+        # forward only what the predictor reads — drops depth_raw_base64 (~4 MB)
+        slim = [
+            {"dir_id": v.get("dir_id"), "rgb_base64": v.get("rgb_base64"),
+             "depth_base64": v.get("depth_base64")}
+            for v in views
+        ]
+        pred = self._call2(self.predict_fn, {"views": slim}, base=self.wp_server_url)
+        self._last_candidates = self._normalize_candidates(pred.get("candidates"))
+
+        png = self._annotate_strip(views, self._last_candidates, self.pano_view_px)
+        self._obs_count += 1
+        self._live_frame(png)
+
+        status: dict[str, Any] = {
+            "kind": "observe",
+            "waypoints": {
+                str(i + 1): {
+                    "direction": self._direction_of(c["angle"]),
+                    "angle_deg": round(math.degrees(self._norm_pi(c["angle"])), 1),
+                    "distance_m": round(c["distance"], 2),
+                }
+                for i, c in enumerate(self._last_candidates)
+            },
+            "action_options": self._action_options(self._last_candidates),
+            "steps_taken_total": self.steps_taken,
+            **self._move_fields(),
+            **self._budget_fields(),
+        }
+        if not self._last_candidates:
+            status["note"] = (
+                "no reachable waypoints predicted here; if you believe you are at "
+                "the goal call stop(), otherwise observe() again after the next move"
+            )
+        self._live_log({"observe_wp": True, "num_waypoints": len(self._last_candidates)})
+        public = {k: v for k, v in status.items() if k != "kind"}
+        return ToolResult(content=[png_part(png), text_part(json.dumps(public))], info=status)
+
+    def _tool_goto(self, waypoint: Any = None, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            return self._json_result(
+                {"kind": "goto", "error": f"episode already over ({self.end_reason}); "
+                                          "no more moves possible"})
+        if self._last_candidates is None:
+            return self._json_result(
+                {"kind": "goto", "error": "no current waypoint set — call observe() first"})
+        try:
+            waypoint = int(waypoint)
+        except (TypeError, ValueError):
+            return self._json_result(
+                {"kind": "goto", "error": f"invalid waypoint {waypoint!r}; expected an integer"})
+        if not 1 <= waypoint <= len(self._last_candidates):
+            return self._json_result({
+                "kind": "goto",
+                "error": (f"invalid waypoint {waypoint}; valid choices are 1-"
+                          f"{len(self._last_candidates)} from the LATEST observe()"),
+            })
+
+        cand = self._last_candidates[waypoint - 1]
+        outputs = self._call2(
+            "env_habitat__step_hightolow",
+            {"angle": cand["angle"], "distance": cand["distance"]},
+        )
+        info = outputs.get("info") or {}
+        if isinstance(info.get("step_count"), (int, float)):
+            self.steps_taken = int(info["step_count"])
+        self._moves += 1
+        terminated = bool(outputs.get("terminated"))
+        truncated = bool(outputs.get("truncated"))
+        if terminated or truncated:
+            self.episode_over = True
+            self.end_reason = "step_budget_exhausted" if truncated else "terminated"
+        elif self._moves >= self.wp_max_moves:
+            # decision-step budget spent — truncate like habitat's step cap
+            self.episode_over = True
+            self.end_reason = "wp_move_budget_exhausted"
+        self._last_candidates = None  # position changed; numbers are stale
+
+        result: dict[str, Any] = {
+            "kind": "goto",
+            "moved_to": waypoint,
+            "direction": self._direction_of(cand["angle"]),
+            "distance_m": round(cand["distance"], 2),
+            "steps_taken_total": self.steps_taken,
+            "episode_over": self.episode_over,
+            "end_reason": self.end_reason,
+            **self._move_fields(),
+            **self._budget_fields(),
+        }
+        if not self.episode_over:
+            result["note"] = "call observe() to see the new surroundings and waypoints"
+        self._live_log({"goto": waypoint, "distance_m": result["distance_m"],
+                        "steps_taken_total": self.steps_taken, "episode_over": self.episode_over})
+        return self._json_result(result)
+
+    def _tool_stop(self, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            return self._json_result(
+                {"kind": "stop", "error": f"episode already over ({self.end_reason}); "
+                                          "no more moves possible"})
+        self._call2("env_habitat__step_discrete", {"action": 0})
+        self.steps_taken += 1
+        self.episode_over = True
+        self.end_reason = "stop_called"
+        result = {
+            "kind": "stop",
+            "stopped": True,
+            "steps_taken_total": self.steps_taken,
+            "episode_over": True,
+            "end_reason": self.end_reason,
+        }
+        self._live_log(result)
+        return self._json_result(result)
+
+    # ── helpers ──
+
+    def _json_result(self, result: dict[str, Any]) -> ToolResult:
+        public = {k: v for k, v in result.items() if k != "kind"}
+        return ToolResult(content=[text_part(json.dumps(public))], info=result)
+
+    def _move_fields(self) -> dict[str, Any]:
+        """Waypoint-move budget broadcast — the binding budget in wp mode."""
+        remaining = max(0, self.wp_max_moves - self._moves)
+        fields: dict[str, Any] = {"moves_used": self._moves, "moves_remaining": remaining}
+        if 0 < remaining <= 3:
+            fields["MOVE_WARNING"] = (
+                f"Only {remaining} waypoint move(s) left before the episode ends. "
+                "If you are at the goal, call stop() now; otherwise make them count."
+            )
+        return fields
+
+    def _budget_fields(self) -> dict[str, Any]:
+        """Turn-budget broadcast — verbatim contract from wp_bridge.py. Inert
+        while turn_budget<=0, which is the case for every wp cell (bare=True)."""
+        if self.turn_budget <= 0:
+            return {}
+        remaining = max(0, self.turn_budget - self._tool_calls)
+        fields: dict[str, Any] = {
+            "tool_calls_used": self._tool_calls,
+            "tool_calls_remaining": remaining,
+        }
+        if remaining <= 10:
+            fields["BUDGET_WARNING"] = (
+                f"CRITICAL — only {remaining} tool calls left before this session is "
+                "killed. Move to your best goal candidate (or stay right here if it "
+                "scores best) and call stop() NOW. Ending without stop scores ZERO."
+            )
+        elif remaining <= 20:
+            fields["BUDGET_WARNING"] = (
+                f"Only {remaining} tool calls remain before this session is killed. "
+                "Stop exploring new areas; commit to your best goal candidate, "
+                "approach it, and stop() before the budget runs out."
+            )
+        return fields
+
+    # ── geometry (verbatim from wp_bridge.py; asserted equal in check_equivalence) ──
+
+    @staticmethod
+    def _normalize_candidates(raw: Any) -> list[dict[str, float]]:
+        out: list[dict[str, float]] = []
+        if not isinstance(raw, dict):
+            return out
+        for value in raw.values():
+            if isinstance(value, dict) and "angle" in value and "distance" in value:
+                out.append({"angle": float(value["angle"]), "distance": float(value["distance"])})
+            elif isinstance(value, (list, tuple)) and len(value) >= 2:
+                out.append({"angle": float(value[0]), "distance": float(value[1])})
+        return out
+
+    @staticmethod
+    def _norm_pi(angle: float) -> float:
+        """Normalize to [-pi, pi) — counter-clockwise positive (left)."""
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    @staticmethod
+    def _direction_of(angle: float) -> str:
+        a = angle % (2 * math.pi)
+        if a <= math.pi / 4 or a >= 7 * math.pi / 4:
+            return "Front"
+        if a <= 3 * math.pi / 4:
+            return "Left"
+        if a <= 5 * math.pi / 4:
+            return "Back"
+        return "Right"
+
+    @staticmethod
+    def _action_options(candidates: list[dict[str, float]]) -> dict[str, list[int]]:
+        options: dict[str, list[int]] = {"Left": [], "Front": [], "Right": [], "Back": []}
+        for i, cand in enumerate(candidates):
+            options[WaypointToolSet._direction_of(cand["angle"])].append(i + 1)
+        return options
+
+    @staticmethod
+    def _font(size: int) -> "ImageFont.FreeTypeFont | ImageFont.ImageFont":
+        try:
+            return ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+        except OSError:
+            try:
+                return ImageFont.load_default(size)
+            except TypeError:
+                return ImageFont.load_default()
+
+    @staticmethod
+    def _annotate_strip(views: list[dict[str, Any]],
+                        candidates: list[dict[str, float]],
+                        view_px: int = 384) -> bytes:
+        """[Left|Front|Right|Back] hstack with numbered waypoint markers.
+
+        Angle→x is the VLN-MME formula (vlnce_baselines/utils.py:216-232): for
+        counter-clockwise θ normalized to [-pi, pi), ``x = w_single·(1.5 - 2θ/π)``
+        — Front centers on tile 2, Left on tile 1, Right on tile 3, Back wraps
+        across the strip ends onto tile 4. Verbatim port of wp_bridge._annotate_strip.
+        """
+        by_dir = {v.get("dir_id"): v for v in views}
+        tiles: list[PILImage.Image] = []
+        for dir_id, _label in STRIP_DIRS:
+            view = by_dir.get(dir_id)
+            if view is None or not view.get("rgb_base64"):
+                raise ValueError(f"panorama view dir_id={dir_id} missing")
+            tiles.append(
+                PILImage.open(BytesIO(base64.b64decode(view["rgb_base64"]))).convert("RGB")
+            )
+
+        w_single, h = tiles[0].size
+        w_full = w_single * 4
+        label_h = max(20, h // 14)
+        canvas = PILImage.new("RGB", (w_full, h + label_h), (255, 255, 255))
+        for i, tile in enumerate(tiles):
+            canvas.paste(tile, (i * w_single, label_h))
+
+        draw = ImageDraw.Draw(canvas)
+        label_font = WaypointToolSet._font(int(label_h * 0.7))
+        for i, (_dir_id, label) in enumerate(STRIP_DIRS):
+            bbox = draw.textbbox((0, 0), label, font=label_font)
+            draw.text(
+                ((i + 0.5) * w_single - (bbox[2] - bbox[0]) / 2,
+                 (label_h - (bbox[3] - bbox[1])) / 2 - bbox[1]),
+                label, fill=(0, 0, 0), font=label_font,
+            )
+
+        radius = max(12, h // 20)
+        num_font = WaypointToolSet._font(int(radius * 1.15))
+        y = label_h + h // 2
+        for i, cand in enumerate(candidates):
+            theta = WaypointToolSet._norm_pi(cand["angle"])
+            x = w_single * (1.5 - 2 * theta / math.pi)
+            if x < 0:
+                x += w_full
+            x = min(max(x, radius), w_full - radius)
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill=(0, 255, 0), outline=(0, 128, 0), width=2,
+            )
+            text = str(i + 1)
+            bbox = draw.textbbox((0, 0), text, font=num_font)
+            draw.text(
+                (x - (bbox[2] - bbox[0]) / 2 - bbox[0],
+                 y - (bbox[3] - bbox[1]) / 2 - bbox[1]),
+                text, fill=(255, 0, 0), font=num_font,
+            )
+
+        if h > view_px:
+            scale = view_px / h
+            canvas = canvas.resize(
+                (int(canvas.width * scale), int(canvas.height * scale)), PILImage.LANCZOS
+            )
+        buf = BytesIO()
+        canvas.save(buf, format="PNG")
         return buf.getvalue()
 
     def _live_frame(self, png: bytes) -> None:

@@ -21,15 +21,19 @@ import asyncio
 import base64
 import difflib
 import importlib.util
+import math
 import os
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+from PIL import Image as PILImage
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[0]
 BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
+WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
 SDK_DRIVER_PATH = REPO_ROOT / "beta-coding-agent" / "run_episodes.py"
 
 sys.path.insert(0, str(HERE))
@@ -38,7 +42,7 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 from jinja2 import StrictUndefined, Template
 
 import run_episodes as ours
-from toolset import HabitatToolSet
+from toolset import HabitatToolSet, WaypointToolSet
 
 FAILURES: list[str] = []
 
@@ -144,9 +148,74 @@ def check_clearance() -> None:
           bridge._clearance_m(None) is None and HabitatToolSet._clearance_m(None) is None)
 
 
+def _wp_bridge_schemas() -> list[dict]:
+    mod = _import_from_path("_wp_bridge_schema", WP_BRIDGE_PATH)
+    tools = asyncio.run(mod.mcp.list_tools())
+    return [
+        {"name": t.name, "description": t.description, "input_schema": t.inputSchema}
+        for t in tools
+    ]
+
+
+def _synthetic_pano(px: int = 512) -> list[dict]:
+    """12 solid-color tiles so both annotators decode byte-identical PNGs.
+    px > WP_VIEW_PX exercises the LANCZOS downscale path too."""
+    views = []
+    for dir_id in range(12):
+        img = PILImage.new("RGB", (px, px), ((dir_id * 20) % 256, 90, 170))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        views.append({"dir_id": dir_id,
+                      "rgb_base64": base64.b64encode(buf.getvalue()).decode()})
+    return views
+
+
+def check_wp() -> None:
+    """wp_bridge.py (SDK/codex path) vs WaypointToolSet (mini path): tool
+    schemas the model sees, the geometry helpers, and the annotated strip."""
+    wpb = _import_from_path("_wp_bridge_mod", WP_BRIDGE_PATH)
+
+    sdk = {t["name"]: t for t in _wp_bridge_schemas()}
+    mini = {
+        t["name"]: t
+        for t in WaypointToolSet("http://x", wp_server_url="http://y").tool_schemas()
+    }
+    check("wp schema tool set", set(sdk) == set(mini),
+          f"  sdk={sorted(sdk)} mini={sorted(mini)}")
+    for name in sorted(set(sdk) & set(mini)):
+        check(f"wp schema {name}.description",
+              sdk[name]["description"] == mini[name]["description"],
+              _diff(repr(sdk[name]["description"]), repr(mini[name]["description"])))
+        check(f"wp schema {name}.input_schema",
+              sdk[name]["input_schema"] == mini[name]["input_schema"],
+              f"  sdk={sdk[name]['input_schema']}\n  mini={mini[name]['input_schema']}")
+
+    # geometry helpers over an angle sweep + both candidate encodings
+    angles = [i * math.pi / 6 for i in range(13)] + [-0.3, 3.5, 6.5, 0.0]
+    check("wp _direction_of",
+          all(wpb._direction_of(a) == WaypointToolSet._direction_of(a) for a in angles))
+    check("wp _norm_pi",
+          all(abs(wpb._norm_pi(a) - WaypointToolSet._norm_pi(a)) < 1e-12 for a in angles))
+    raw = {"0": {"angle": 0.2, "distance": 1.5},
+           "1": {"angle": 2.0, "distance": 3.0},
+           "2": [3.14, 0.75]}  # opennav list-encoding path
+    cands = wpb._normalize_candidates(raw)
+    check("wp _normalize_candidates", cands == WaypointToolSet._normalize_candidates(raw))
+    check("wp _action_options",
+          wpb._action_options(cands) == WaypointToolSet._action_options(cands))
+
+    # annotated strip: same views + candidates → byte-identical PNG
+    views = _synthetic_pano()
+    sdk_png = wpb._annotate_strip(views, cands)  # bridge reads WP_VIEW_PX global
+    mini_png = WaypointToolSet._annotate_strip(views, cands, wpb.WP_VIEW_PX)
+    check("wp _annotate_strip bytes", sdk_png == mini_png,
+          f"  len sdk={len(sdk_png)} mini={len(mini_png)}")
+
+
 if __name__ == "__main__":
     check_schemas()
     check_prompts()
     check_clearance()
+    check_wp()
     print(f"\n{len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)
