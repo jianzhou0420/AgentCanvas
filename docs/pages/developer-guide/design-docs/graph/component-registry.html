@@ -45,6 +45,7 @@
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>
@@ -205,7 +206,27 @@
 
 <p><strong>Bottom line.</strong> "Too complex for batch eval" inverts the dependency: jobs 1 and 2 are what makes a parallel, VRAM-safe, drift-free eval possible, and the executor is mechanically a no-op without job 1. The removable complexity is the cross-process re-scan, not the <code>WorkspaceComponentRegistry</code>. Delete the registry and you must either hard-code node types (lose plugins) or hand-roll a second loader and leak env processes — strictly worse than the object you have.</p>
 
-<h2 id="6-deeper"><span class="num">6.</span> Where to go deeper</h2>
+
+<h2 id="6-degradation"><span class="num">6.</span> Missing environments — the three-gate degradation</h2>
+<p><strong>An interpreter without a nodeset's conda env is a first-class case, not an error — the registry degrades at three distinct gates, and which gate fires tells you what is wrong.</strong></p>
+<table>
+<thead><tr><th>Gate</th><th>What executes</th><th>On a missing dependency / env</th></tr></thead>
+<tbody>
+<tr><td><strong>1 · scan</strong> (<code>scan_all</code> → <code>registry.py · _load_from</code>)</td><td>imports each workspace file — top-level code <em>and class bodies</em> run; no instantiation, no servers</td><td>a raising file is logged ("Failed to load component from …") and <strong>skipped</strong>; every other nodeset scans normally. What dies here: eager top-level imports of missing deps, and class bodies that violate the <code>None</code> contract (callout below)</td></tr>
+<tr><td><strong>2 · load</strong> (<code>registry.py · load_nodeset</code>, via <code>ensure_nodesets_for_graph</code>)</td><td>routing, then instantiation: <code>server_python</code> truthy <em>and</em> ≠ <code>sys.executable</code> → auto-route to server mode; <strong><code>None</code> → local mode</strong>, in-process</td><td>local instantiation imports the nodeset's real dependencies — missing → the load fails with a <em>named</em> error ("Failed to auto-load nodeset env_habitat: No module named 'gym'"). The Graph SDK surfaces it as <code>RuntimeError: nodeset load failed: ['env_habitat']</code> <strong>before the graph executes a single node</strong></td></tr>
+<tr><td><strong>3 · fire</strong> (<code>graph_executor.py · _fire_node</code>)</td><td>a node's <code>forward()</code> runs</td><td>dependencies imported lazily inside <code>forward</code> surface as node errors — the executor convicts the node and the run records an episode error</td></tr>
+</tbody>
+</table>
+<p>The routing input is <code>bases.py · conda_env_python</code>, resolved <em>once, at class-definition time</em> (i.e. at gate 1): an explicit env-var override wins; else <code>&lt;conda root&gt;/envs/&lt;name&gt;/bin/python</code> with the root derived from the running interpreter's <code>sys.prefix</code>; else <code>None</code>. Two consequences deserve callouts:</p>
+<div class="callout warn">
+<strong>Resolution is interpreter-relative, not machine-relative.</strong> The conda root is derived from <code>sys.prefix</code>, so a venv (or system python) on a fully-provisioned machine still resolves <code>None</code> — the env zoo being installed is not enough; the <em>running interpreter</em> must live in the same conda installation (or the env var must point across). Introspection metadata follows the same rule: the same nodeset reports <code>server=True</code> under the conda env and <code>server=False</code> under a venv on the same box.
+</div>
+<div class="callout warn">
+<strong>Class bodies run at scan — the <code>None</code> contract.</strong> The documented contract (<code>bases.py · conda_env_python</code> docstring) is that a <code>None</code> resolution must leave the class importable, degrading to local mode. A nodeset that <em>consumes</em> <code>server_python</code> in its class body (e.g. <code>Path(server_python)</code>) crashes gate 1 wherever resolution yields <code>None</code> — and disappears from the catalog entirely instead of appearing with <code>server=False</code>.
+</div>
+<p>Two paths bypass the gates by design: spawn-free introspection (<code>catalog()</code> / <code>describe()</code> / <code>nodesets()</code>) stops after gate 1, and cassette replay (<code>g.run(replay=…)</code>) skips nodeset loading entirely — see <a href="../surfaces/graph-sdk-record-replay.html">Graph SDK Record / Replay</a>.</p>
+
+<h2 id="7-deeper"><span class="num">7.</span> Where to go deeper</h2>
 <table>
 <thead><tr><th>You want…</th><th>Read</th></tr></thead>
 <tbody>
@@ -214,6 +235,7 @@
 <tr><td>Batch eval internals — workers, parallelism, persistence</td><td><a href="batch-eval.html">batch-eval</a></td></tr>
 <tr><td>The server subprocesses themselves — auto_host, manifest, lifecycle</td><td><a href="../operations/server-mode.html">server-mode</a></td></tr>
 <tr><td>Why the table re-scans cold per eval (per-process model)</td><td><a href="../operations/reload-and-code-freshness.html">reload-and-code-freshness</a></td></tr>
+<tr><td>Run env/model graphs with no env at all (cassette replay)</td><td><a href="../surfaces/graph-sdk-record-replay.html">graph-sdk-record-replay</a></td></tr>
 <tr><td>How a node author plugs into <code>NODE_HANDLERS</code></td><td><a href="../components/base-canvas-node.html">base-canvas-node</a> · <a href="../components/nodesets.html">nodesets</a></td></tr>
 </tbody>
 </table>
@@ -237,7 +259,8 @@
       <a class="toc-h2" href="#3-servers">3. Reason 2 — owning the env servers is batch eval's reason</a>
       <a class="toc-h2" href="#4-one-loader">4. Reason 3 — one loader, both paths, one source of truth</a>
       <a class="toc-h2" href="#5-overhead">5. Where the argument has caveats (the honest part)</a>
-      <a class="toc-h2" href="#6-deeper">6. Where to go deeper</a>
+      <a class="toc-h2" href="#6-degradation">6. Missing environments — the three-gate degradation</a>
+      <a class="toc-h2" href="#7-deeper">7. Where to go deeper</a>
     </nav>
   </div>
 </aside>

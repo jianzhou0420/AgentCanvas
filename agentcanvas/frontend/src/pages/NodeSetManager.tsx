@@ -1,16 +1,27 @@
 /** NodeSet Manager page — two-column layout: Resources | Active.
  *
- * Left column (Resources): all discovered nodesets and servers.
- *   Unloaded items get a "Load" / "Start" button. Loaded items show an "Active" badge.
+ * Left column (Resources): all discovered nodesets and servers, grouped by
+ *   role category (env / method / model / policy / common / other) into
+ *   collapsible sections. Unloaded items get a "Load" / "Start" button.
  *
- * Right column (Active): only currently loaded/connected items with full detail,
- *   tool tags, and Unload/Stop/Restart controls.
+ * Right column (Active): only currently loaded/connected items, grouped by the
+ *   same categories, with tool tags and Unload/Stop/Restart controls.
  *
- * See ADR-008.
+ * A search box in the header filters both columns by name / description / tool.
+ *
+ * See ADR-008. Category = the workspace/nodesets/<role>/ folder, surfaced by
+ * the backend on each NodeSetInfo (see .claude/standard/nodeset-layout.md).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, Loader2, Package } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  RefreshCw,
+  Loader2,
+  Package,
+  Search,
+  ChevronRight,
+} from "lucide-react";
+import clsx from "clsx";
 import { api } from "../api";
 import type { ServerStatus } from "../api";
 import type { NodeSetInfo } from "../types";
@@ -21,11 +32,102 @@ const SERVER_POLL_MS = 5000;
 
 const noop = async () => {};
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
+// Role buckets (workspace/nodesets/<role>/) surfaced as categories, in display
+// order. Mirrors .claude/standard/nodeset-layout.md. Unknown categories are
+// appended after these, alphabetically.
+const CATEGORY_LABELS: Record<string, string> = {
+  env: "Environments",
+  method: "Methods",
+  model: "Models",
+  policy: "Policies",
+  common: "Common",
+  other: "Other",
+};
+const CATEGORY_ORDER = ["env", "method", "model", "policy", "common", "other"];
+
+function catLabel(key: string): string {
+  return CATEGORY_LABELS[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function matchesQuery(ns: NodeSetInfo, q: string): boolean {
+  if (!q) return true;
+  const s = q.toLowerCase();
   return (
-    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-      {children}
-    </h3>
+    ns.name.toLowerCase().includes(s) ||
+    (ns.description ?? "").toLowerCase().includes(s) ||
+    ns.tools.some((t) => t.toLowerCase().includes(s))
+  );
+}
+
+interface CategoryBucket {
+  key: string;
+  label: string;
+  items: NodeSetInfo[];
+}
+
+function groupByCategory(list: NodeSetInfo[]): CategoryBucket[] {
+  const map = new Map<string, NodeSetInfo[]>();
+  for (const ns of list) {
+    const key = ns.category ?? "other";
+    const arr = map.get(key);
+    if (arr) arr.push(ns);
+    else map.set(key, [ns]);
+  }
+  const keys = [...map.keys()].sort((a, b) => {
+    const ia = CATEGORY_ORDER.indexOf(a);
+    const ib = CATEGORY_ORDER.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  return keys.map((key) => ({
+    key,
+    label: catLabel(key),
+    items: map
+      .get(key)!
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  }));
+}
+
+/** Collapsible section with a chevron, title and count. `forceOpen` overrides
+ * the local toggle (used while searching so matches are always visible). */
+function CategoryGroup({
+  label,
+  count,
+  forceOpen,
+  children,
+}: {
+  label: string;
+  count: number;
+  forceOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+  const isOpen = forceOpen || open;
+  return (
+    <section>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="mb-2 flex w-full items-center gap-2 text-left"
+      >
+        <ChevronRight
+          size={18}
+          className={clsx(
+            "text-gray-400 transition-transform",
+            isOpen && "rotate-90",
+          )}
+        />
+        <span className="text-base font-semibold uppercase tracking-wide text-gray-200">
+          {label}
+        </span>
+        <span className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-400">
+          {count}
+        </span>
+      </button>
+      {isOpen && <div className="space-y-2">{children}</div>}
+    </section>
   );
 }
 
@@ -33,6 +135,7 @@ export default function NodeSetManager() {
   const [nodesets, setNodesets] = useState<NodeSetInfo[]>([]);
   const [servers, setServers] = useState<ServerStatus[]>([]);
   const [rescanning, setRescanning] = useState(false);
+  const [query, setQuery] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
   // ── Fetch helpers ──
@@ -108,19 +211,38 @@ export default function NodeSetManager() {
     await fetchServers();
   };
 
-  // ── Derived active lists ──
+  // ── Derived, query-filtered lists ──
 
-  const localNodesets = nodesets.filter((ns) => !ns.requires_server);
-  const serverNodesets = nodesets.filter((ns) => ns.requires_server);
-  const activeLocalNodesets = localNodesets.filter((ns) => ns.loaded);
-  const activeServerNodesets = serverNodesets.filter((ns) => ns.loaded);
-  const activeServers = servers.filter(
+  const q = query.trim();
+
+  const visibleNodesets = useMemo(
+    () => nodesets.filter((ns) => matchesQuery(ns, q)),
+    [nodesets, q],
+  );
+  const resourceGroups = useMemo(
+    () => groupByCategory(visibleNodesets),
+    [visibleNodesets],
+  );
+  const activeGroups = useMemo(
+    () => groupByCategory(visibleNodesets.filter((ns) => ns.loaded)),
+    [visibleNodesets],
+  );
+
+  const serverMatches = (srv: ServerStatus) => {
+    if (!q) return true;
+    const s = q.toLowerCase();
+    return (
+      srv.name.toLowerCase().includes(s) ||
+      (srv.description ?? "").toLowerCase().includes(s)
+    );
+  };
+  const visibleServers = servers.filter(serverMatches);
+  const activeServers = visibleServers.filter(
     (srv) => srv.connected || srv.status === "starting",
   );
-  const hasActive =
-    activeLocalNodesets.length > 0 ||
-    activeServerNodesets.length > 0 ||
-    activeServers.length > 0;
+
+  const hasResources = resourceGroups.length > 0 || visibleServers.length > 0;
+  const hasActive = activeGroups.length > 0 || activeServers.length > 0;
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-950">
@@ -153,41 +275,38 @@ export default function NodeSetManager() {
           <div className="border-b border-gray-800 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
             Resources
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
-            {/* Local Mode */}
-            <section>
-              <SectionHeading>Local Mode</SectionHeading>
-              <div className="space-y-2">
-                {localNodesets.length === 0 && (
-                  <div className="rounded border border-gray-800 bg-gray-900/50 p-3 text-sm text-gray-600">
-                    No local nodesets discovered
-                  </div>
-                )}
-                {localNodesets.map((ns) => (
-                  <NodeSetCard
-                    key={ns.name}
-                    variant="resource"
-                    name={ns.name}
-                    description={ns.description}
-                    loaded={ns.loaded}
-                    tools={ns.tools}
-                    onLoad={handleLoadNodeset(ns.name)}
-                    onUnload={noop}
-                  />
-                ))}
+          {/* Search — left-aligned under the Resources tab; filters both columns */}
+          <div className="border-b border-gray-800 px-4 py-2">
+            <div className="relative w-full max-w-xs">
+              <Search
+                size={14}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+              />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search nodesets…"
+                className="w-full rounded border border-gray-800 bg-gray-900 py-1.5 pl-8 pr-3 text-sm text-gray-200 placeholder-gray-600 focus:border-gray-600 focus:outline-none"
+              />
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {!hasResources && (
+              <div className="rounded border border-gray-800 bg-gray-900/50 p-3 text-sm text-gray-600">
+                {q
+                  ? `No nodesets match "${q}"`
+                  : "No nodesets discovered"}
               </div>
-            </section>
+            )}
 
-            {/* Server Mode */}
-            <section>
-              <SectionHeading>Server Mode</SectionHeading>
-              <div className="space-y-2">
-                {serverNodesets.length === 0 && servers.length === 0 && (
-                  <div className="rounded border border-gray-800 bg-gray-900/50 p-3 text-sm text-gray-600">
-                    No server-mode nodesets discovered
-                  </div>
-                )}
-                {serverNodesets.map((ns) => (
+            {resourceGroups.map((g) => (
+              <CategoryGroup
+                key={g.key}
+                label={g.label}
+                count={g.items.length}
+                forceOpen={!!q}
+              >
+                {g.items.map((ns) => (
                   <NodeSetCard
                     key={ns.name}
                     variant="resource"
@@ -195,11 +314,21 @@ export default function NodeSetManager() {
                     description={ns.description}
                     loaded={ns.loaded}
                     tools={ns.tools}
+                    requiresServer={ns.requires_server}
                     onLoad={handleLoadNodeset(ns.name)}
                     onUnload={noop}
                   />
                 ))}
-                {servers.map((srv) => (
+              </CategoryGroup>
+            ))}
+
+            {visibleServers.length > 0 && (
+              <CategoryGroup
+                label="Servers"
+                count={visibleServers.length}
+                forceOpen={!!q}
+              >
+                {visibleServers.map((srv) => (
                   <ServerCard
                     key={srv.name}
                     variant="resource"
@@ -209,8 +338,8 @@ export default function NodeSetManager() {
                     onRestart={noop}
                   />
                 ))}
-              </div>
-            </section>
+              </CategoryGroup>
+            )}
           </div>
         </div>
 
@@ -219,13 +348,13 @@ export default function NodeSetManager() {
           <div className="border-b border-gray-800 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
             Active
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {!hasActive ? (
               <div className="flex h-full items-center justify-center">
                 <div className="text-center">
                   <Package size={32} className="mx-auto mb-2 text-gray-700" />
                   <div className="text-sm text-gray-500">
-                    No active resources
+                    {q ? "No active resources match" : "No active resources"}
                   </div>
                   <div className="mt-1 text-xs text-gray-600">
                     Load a nodeset from Resources
@@ -234,57 +363,46 @@ export default function NodeSetManager() {
               </div>
             ) : (
               <>
-                {/* Active Local Mode */}
-                {activeLocalNodesets.length > 0 && (
-                  <section>
-                    <SectionHeading>Local Mode</SectionHeading>
-                    <div className="space-y-2">
-                      {activeLocalNodesets.map((ns) => (
-                        <NodeSetCard
-                          key={ns.name}
-                          variant="active"
-                          name={ns.name}
-                          description={ns.description}
-                          loaded={ns.loaded}
-                          tools={ns.tools}
-                          onLoad={noop}
-                          onUnload={handleUnloadNodeset(ns.name)}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                )}
+                {activeGroups.map((g) => (
+                  <CategoryGroup
+                    key={g.key}
+                    label={g.label}
+                    count={g.items.length}
+                    forceOpen={!!q}
+                  >
+                    {g.items.map((ns) => (
+                      <NodeSetCard
+                        key={ns.name}
+                        variant="active"
+                        name={ns.name}
+                        description={ns.description}
+                        loaded={ns.loaded}
+                        tools={ns.tools}
+                        requiresServer={ns.requires_server}
+                        onLoad={noop}
+                        onUnload={handleUnloadNodeset(ns.name)}
+                      />
+                    ))}
+                  </CategoryGroup>
+                ))}
 
-                {/* Active Server Mode */}
-                {(activeServerNodesets.length > 0 ||
-                  activeServers.length > 0) && (
-                  <section>
-                    <SectionHeading>Server Mode</SectionHeading>
-                    <div className="space-y-2">
-                      {activeServerNodesets.map((ns) => (
-                        <NodeSetCard
-                          key={ns.name}
-                          variant="active"
-                          name={ns.name}
-                          description={ns.description}
-                          loaded={ns.loaded}
-                          tools={ns.tools}
-                          onLoad={noop}
-                          onUnload={handleUnloadNodeset(ns.name)}
-                        />
-                      ))}
-                      {activeServers.map((srv) => (
-                        <ServerCard
-                          key={srv.name}
-                          variant="active"
-                          server={srv}
-                          onStart={noop}
-                          onStop={handleStopServer(srv.name)}
-                          onRestart={handleRestartServer(srv.name)}
-                        />
-                      ))}
-                    </div>
-                  </section>
+                {activeServers.length > 0 && (
+                  <CategoryGroup
+                    label="Servers"
+                    count={activeServers.length}
+                    forceOpen={!!q}
+                  >
+                    {activeServers.map((srv) => (
+                      <ServerCard
+                        key={srv.name}
+                        variant="active"
+                        server={srv}
+                        onStart={noop}
+                        onStop={handleStopServer(srv.name)}
+                        onRestart={handleRestartServer(srv.name)}
+                      />
+                    ))}
+                  </CategoryGroup>
                 )}
               </>
             )}

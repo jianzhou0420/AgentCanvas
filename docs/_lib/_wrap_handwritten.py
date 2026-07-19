@@ -237,7 +237,14 @@ def convert(path: Path) -> tuple[bool, dict | None]:
     # Pull and remove trailing <script> blocks (preserve them)
     inline_scripts = SCRIPT_RE.findall(body_inner)
     body_inner = SCRIPT_RE.sub("", body_inner)
-    extra_body_end = "\n".join(inline_scripts)
+    # A prior wrap pass emits these scripts OUTSIDE <main> (as extra_body_end,
+    # just before </body>), so a re-wrap must re-collect them from that tail
+    # region too — otherwise any page-specific script survives exactly one
+    # pass and silently vanishes on the next. Dedupe keeps the pass idempotent.
+    if main_matches:
+        tail = raw[main_matches[-1].end() :]
+        inline_scripts += SCRIPT_RE.findall(tail)
+    extra_body_end = "\n".join(dict.fromkeys(inline_scripts))
 
     # Strip layout-regenerated topbar
     body_inner = re.sub(
@@ -265,7 +272,13 @@ def convert(path: Path) -> tuple[bool, dict | None]:
     # old name stranded — "Guide — Old — New"). Fall back to the <title> otherwise.
     m_h1 = H1_RE.search(body_inner)
     if m_h1:
-        h1_text = html.unescape(_strip_html_tags(m_h1.group(1)))
+        # Badge spans (e.g. the capability-num chip) are presentation, not title
+        # text — drop them before flattening, or "1Graph-…" leaks into <title>,
+        # crumbs, nav and the search index.
+        h1_inner = re.sub(
+            r'<span\s+class="capability-num">.*?</span>', "", m_h1.group(1), flags=re.DOTALL
+        )
+        h1_text = html.unescape(_strip_html_tags(h1_inner)).strip()
         if h1_text:
             title = h1_text
 

@@ -2,7 +2,7 @@
 # =============================================================================
 # DetAny3D Environment Installation Script
 # =============================================================================
-# Creates the `detany3d` conda env (Python 3.9 + CUDA 11.8) for DetAny3D
+# Creates the `ac-detany3d` conda env (Python 3.9 + CUDA 11.8) for DetAny3D
 # (3D detection model used by ToolEQA).
 #
 # Used in server mode by `model_detany3d` nodeset at

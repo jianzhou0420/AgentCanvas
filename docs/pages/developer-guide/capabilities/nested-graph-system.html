@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>4Nested Graph System — AgentCanvas</title>
+<title>Nested Graph System — AgentCanvas</title>
 <meta name="description" content="Composite nodes contain subgraphs; flatten.py recursively expands them before execution.">
-<meta property="og:title" content="4Nested Graph System — AgentCanvas">
+<meta property="og:title" content="Nested Graph System — AgentCanvas">
 <meta property="og:description" content="Composite nodes contain subgraphs; flatten.py recursively expands them before execution.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentCanvas">
@@ -23,7 +23,19 @@
     document.documentElement.setAttribute('data-theme', t);
   })();
 </script>
-
+<style>
+  .rxsvg { width:100%; height:auto; max-width:700px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--capability-bg); stroke: var(--capability); stroke-width:1.6; }
+  .rxsvg .at { fill: var(--capability); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#ngs); }
+  .rxsvg .edgeA { stroke: var(--capability); stroke-width:1.7; fill:none; marker-end:url(#ngsA); }
+  .rxsvg .edgeAd { stroke: var(--capability); stroke-width:1.7; fill:none; stroke-dasharray:6 5; marker-end:url(#ngsA); }
+</style>
 <!-- site-layout -->
 </head>
 <body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/nested-graph-system.html">
@@ -34,6 +46,7 @@
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>
@@ -55,9 +68,9 @@
     <span class="sep">/</span>
     <a href="index.html">Capabilities</a>
     <span class="sep">/</span>
-    <span class="here">4Nested Graph System</span>
+    <span class="here">Nested Graph System</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-07-13</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">4</span>Nested Graph System</h1>
@@ -66,7 +79,53 @@
 
 
 
-<p>Any canvas graph can be saved as a <strong>graph node</strong> and dragged onto another canvas as a reusable block. This page explains the data model, boundary nodes, flattening algorithm, and storage.</p>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="ngs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="ngsA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--capability)"/></marker>
+</defs></svg>
+
+<p class="lede">Any canvas graph can be saved as a <strong>graph node</strong> — a frozen composite — and dragged onto another canvas as one reusable block. <code>GraphIn</code> / <code>GraphOut</code> nodes inside it define its ports; the <code>NodeDef.subgraph</code> field nests a full <code>GraphDefinition</code>, recursively, to any depth. The executor never learns any of this: before every run <code>flatten_graph()</code> expands all composites into one flat graph — boundary nodes removed, edges rewired, inner IDs prefixed, loops passing through intact (IterIn/IterOut and their pairing are not boundaries) — and a <code>FlattenMap</code> keeps error traces readable (<code>agentLoop &gt; step3 &gt; llmCall</code>, not the mangled flat ID). Composition is an authoring-time construct; by run time it has already disappeared.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 272" role="img" aria-label="What you draw versus what the executor sees, with a loop inside the composite. Top row, the parent canvas: node A wired into a composite node whose subgraph is graphIn, then a loop — iterIn, X, iterOut with a dashed pairing arc — then graphOut, wired on to node B. A vertical accent arrow labelled flatten_graph(), before every run, points to the bottom row: the flat graph A, iterIn, X, iterOut, B — the loop pivots and their pairing arc survive; only graphIn and graphOut are gone. Side notes: inner IDs are prefixed with the composite id, and the FlattenMap records composite &gt; X for error tracing. Bottom caption: graphIn and graphOut removed, parent edges rewired, iterIn/iterOut and their pairing survive, containers and access grants prefixed the same way.">
+  <text x="10" y="24">parent canvas — what you draw</text>
+
+  <rect x="10" y="64" width="52" height="32" rx="7" class="box"/><text x="36" y="84" text-anchor="middle">A</text>
+  <rect x="102" y="40" width="400" height="84" rx="9" class="ghost"/>
+  <text x="302" y="115" text-anchor="middle" class="at">composite node — subgraph inside</text>
+  <rect x="116" y="72" width="70" height="30" rx="6" class="box"/><text x="151" y="91" text-anchor="middle" class="mono">graphIn</text>
+  <rect x="200" y="72" width="56" height="30" rx="6" class="accent"/><text x="228" y="91" text-anchor="middle" class="at">iterIn</text>
+  <rect x="270" y="72" width="44" height="30" rx="6" class="box"/><text x="292" y="91" text-anchor="middle">X</text>
+  <rect x="328" y="72" width="62" height="30" rx="6" class="accent"/><text x="359" y="91" text-anchor="middle" class="at">iterOut</text>
+  <rect x="404" y="72" width="74" height="30" rx="6" class="box"/><text x="441" y="91" text-anchor="middle" class="mono">graphOut</text>
+  <path class="edge" d="M186,87 H200"/>
+  <path class="edge" d="M256,87 H270"/>
+  <path class="edge" d="M314,87 H328"/>
+  <path class="edge" d="M390,87 H404"/>
+  <path class="edgeAd" d="M359,72 C359,52 228,52 228,70"/>
+  <rect x="542" y="64" width="52" height="32" rx="7" class="box"/><text x="568" y="84" text-anchor="middle">B</text>
+  <path class="edge" d="M62,80 H102"/>
+  <path class="edge" d="M502,80 H542"/>
+
+  <path class="edgeA" d="M302,128 V166"/>
+  <text x="318" y="152" class="at">flatten_graph() — before every run</text>
+
+  <text x="10" y="184">flat graph — what the executor sees</text>
+  <rect x="10" y="208" width="52" height="32" rx="7" class="box"/><text x="36" y="228" text-anchor="middle">A</text>
+  <rect x="106" y="208" width="58" height="32" rx="7" class="accent"/><text x="135" y="228" text-anchor="middle" class="at">iterIn</text>
+  <rect x="208" y="208" width="48" height="32" rx="7" class="box"/><text x="232" y="228" text-anchor="middle">X</text>
+  <rect x="300" y="208" width="62" height="32" rx="7" class="accent"/><text x="331" y="228" text-anchor="middle" class="at">iterOut</text>
+  <rect x="406" y="208" width="52" height="32" rx="7" class="box"/><text x="432" y="228" text-anchor="middle">B</text>
+  <path class="edge" d="M62,224 H106"/>
+  <path class="edge" d="M164,224 H208"/>
+  <path class="edge" d="M256,224 H300"/>
+  <path class="edge" d="M362,224 H406"/>
+  <path class="edgeAd" d="M331,208 C331,190 135,190 135,206"/>
+  <text x="480" y="222" class="mono">ids prefixed: composite__X</text>
+  <text x="480" y="240" class="mono">FlattenMap: composite &gt; X</text>
+
+  <text x="10" y="264" class="dim">graphIn / graphOut removed · edges rewired · iterIn / iterOut and their pairing survive · containers &amp; grants prefixed</text>
+</svg>
+
 <p><em>Design doc: <a href="../design-docs/graph/graph-system.html">Graph System</a></em></p>
 <hr>
 <h2 id="1-concepts"><span class="num">1.</span> Concepts</h2>

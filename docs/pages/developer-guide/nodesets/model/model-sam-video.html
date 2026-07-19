@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAM Video NodeSet — AgentCanvas</title>
+<meta name="description" content="The SAM Video NodeSet ( SamVideoNodeSet , workspace/nodesets/model/model_sam_video.py ) wraps SAM 2 video object tracking via transformers Sam2VideoModel : prompt an object once on the first frame (a…">
+<meta property="og:title" content="SAM Video NodeSet — AgentCanvas">
+<meta property="og:description" content="The SAM Video NodeSet ( SamVideoNodeSet , workspace/nodesets/model/model_sam_video.py ) wraps SAM 2 video object tracking via transformers Sam2VideoModel : prompt an object once on the first frame (a…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam-video.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-sam-video.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">SAM Video NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>SAM Video NodeSet</h1>
+</header>
+
+<p>The <strong>SAM Video NodeSet</strong> (<code>SamVideoNodeSet</code>, <code>workspace/nodesets/model/model_sam_video.py</code>) wraps <a href="https://ai.meta.com/sam2/">SAM 2</a> video object tracking via <code>transformers</code> <code>Sam2VideoModel</code>: prompt an object once on the first frame (a click or a box) and SAM 2 propagates a mask for <em>that</em> object across every subsequent frame. It is the temporal counterpart to <a href="model-sam.html">SAM</a>'s per-frame image segmentation — "keep this object segmented as I walk" rather than "segment this frame". Following an instructed landmark through an egocentric rollout, persisting an object identity across steps, and mask-based visual servoing all want this.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>transformers</code> <code>Sam2VideoModel</code> + <code>Sam2VideoProcessor</code> · default: <code>facebook/sam2.1-hiera-tiny</code> (ungated)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_sam_video__track</code></td>
+<td>Prompt one object on frame 0 (points or a box) and propagate its mask across the clip → <code>masks</code> (JSON envelope of a <code>(T, H, W)</code> uint8 binary stack).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-why-separate"><span class="num">1.</span> Why a separate nodeset (not a <code>model_sam</code> variant)</h2>
+<p><a href="model-sam.html"><code>model_sam</code></a> is a fully stateless image server, with an explicit ruling that video/session state does not belong on it. This nodeset honours that. The SAM 2 inference session — the object memory that makes tracking work — is created, prompted, propagated, and torn down <strong>entirely inside one tool call</strong>, over a whole clip. Nothing survives across calls; the session is a call-local temporary, exactly like any other forward's scratch state. The server stays stateless, and the "segment a frame" and "track across a clip" capabilities live in their own files.</p>
+<hr>
+<h2 id="2-frames-and-prompt"><span class="num">2.</span> Frames in, prompt on frame 0</h2>
+<p>The <code>frames</code> port accepts either a JSON list of base64 PNG/JPEG frames, or a base64-npy <code>{"shape":[T,H,W,3],"dtype":"uint8","b64":…}</code> buffer. Prompt the object on frame 0 with <strong>either</strong>:</p>
+<ul>
+<li><code>points</code> — a JSON list of <code>[x, y]</code> pixel coordinates (foreground unless <code>labels</code> marks some background: <code>1</code>=fg, <code>0</code>=bg), or</li>
+<li><code>box</code> — a JSON <code>[x1, y1, x2, y2]</code> box.</li>
+</ul>
+<p>If both are given, the box wins. With no prompt the call degrades (there is nothing to track). Tracking is single-object (object id <code>1</code>); multi-object tracking is left for a future contract.</p>
+<hr>
+<h2 id="3-propagate"><span class="num">3.</span> Model &amp; propagation</h2>
+<p>The engine opens a video session on the clip, registers the frame-0 prompt for object 1, then iterates SAM 2's propagator, which yields a mask for the tracked object on each frame; every frame's mask is upscaled back to the original resolution and written into the output stack:</p>
+<pre class="hl">
+<span class="n">session</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">init_video_session</span><span class="p">(</span><span class="n">video</span><span class="o">=</span><span class="n">frames</span><span class="p">,</span> <span class="n">inference_device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="c1"># prompt object 1 once, on frame 0 (a click here; a box is symmetric)</span>
+<span class="n">processor</span><span class="o">.</span><span class="n">process_new_points_or_boxes_for_video_frame</span><span class="p">(</span>
+    <span class="n">session</span><span class="p">,</span> <span class="n">frame_idx</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">obj_ids</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="p">,</span> <span class="n">input_points</span><span class="o">=</span><span class="p">[</span><span class="p">[</span><span class="p">[</span><span class="p">[</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">]</span><span class="p">]</span><span class="p">]</span><span class="p">]</span><span class="p">,</span> <span class="n">input_labels</span><span class="o">=</span><span class="p">[</span><span class="p">[</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="p">]</span><span class="p">]</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">seg</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">propagate_in_video_iterator</span><span class="p">(</span><span class="n">session</span><span class="p">,</span> <span class="n">start_frame_idx</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">post_process_masks</span><span class="p">(</span><span class="p">[</span><span class="n">seg</span><span class="o">.</span><span class="n">pred_masks</span><span class="p">]</span><span class="p">,</span> <span class="n">original_sizes</span><span class="o">=</span><span class="p">[</span><span class="p">[</span><span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">]</span><span class="p">]</span><span class="p">)</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">out</span><span class="p">[</span><span class="n">seg</span><span class="o">.</span><span class="n">frame_idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">mask</span> <span class="o">&gt;</span> <span class="mi">0</span>                <span class="c1"># (T, H, W) uint8, filled frame by frame</span>
+</pre>
+<p>The checkpoint is a lazy singleton in a registry, frozen and moved to the device once; the whole track is single-flight per engine (one clip in flight bounds peak VRAM under concurrent workers).</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Masks envelope</h2>
+<p>The output is a TEXT JSON envelope — the per-frame masks as a single raw C-contiguous uint8 buffer, base64-encoded:</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;uint8&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;buffer&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;variant&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;facebook/sam2.1-hiera-tiny&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;object_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">}</span>
+</pre>
+<p><code>masks[t]</code> is the tracked object's binary mask (<code>{0, 1}</code>) on frame <code>t</code>, at the <strong>original resolution</strong>. Frames where the object is absent or fully occluded come back all-zero.</p>
+<hr>
+<h2 id="5-canvas-node"><span class="num">5.</span> Canvas Node</h2>
+<h3 id="model_sam_video__track"><code>model_sam_video__track</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>frames</code> (ANY — list of base64 frames or a <code>(T,H,W,3)</code> uint8 envelope), <code>points</code> / <code>labels</code> / <code>box</code> (TEXT JSON, all optional; a point or box prompt is required)</td></tr>
+<tr><td>Outputs</td><td><code>masks</code> (TEXT — the §4 envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>ckpt</code> (select — sam2.1-hiera tiny/small/base-plus/large)</td></tr>
+<tr><td>Backend call</td><td><code>init_video_session</code> → <code>process_new_points_or_boxes_for_video_frame</code> → <code>propagate_in_video_iterator</code> → <code>post_process_masks</code></td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (the inference session is call-local, so the server holds no cross-call state — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "SAM_VIDEO_PYTHON")</code>. SAM 2 video runs in the <strong>shared <code>ac-fm</code> env</strong> — <code>Sam2VideoModel</code> is native to the transformers stack there. SAM 3 video (text-concept tracking, gated weights) is a future variant, deferred until a consumer needs it. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_sam_video/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>SAM_VIDEO_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>SAM_VIDEO_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, malformed/mixed-size frames, or a missing prompt yields <code>""</code> on the node's output. An empty envelope is a clean "no track this clip" signal; consumers keep their own fallback and never receive a fabricated mask stack.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-why-separate">1. Why a separate nodeset (not a model_sam variant)</a>
+      <a class="toc-h2" href="#2-frames-and-prompt">2. Frames in, prompt on frame 0</a>
+      <a class="toc-h2" href="#3-propagate">3. Model &amp; propagation</a>
+      <a class="toc-h2" href="#4-envelope">4. Masks envelope</a>
+      <a class="toc-h2" href="#5-canvas-node">5. Canvas Node</a>
+      <a class="toc-h3" href="#model_sam_video__track">model_sam_video__track</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

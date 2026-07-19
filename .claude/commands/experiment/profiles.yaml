@@ -30,6 +30,14 @@
 # declaration is a deliberate fudge that lets ≤4 jobs of these families
 # admit simultaneously (usable_vram_mb=8576) and unblocks multi-spec
 # parallelism. Other entries retain their original calibration.
+#
+# ── 2026-07-05: measured resource admission supersedes declarations ──
+# The backend gate is now measured + calibrated per resource (VRAM + RAM,
+# see design doc operations/jobscheduler.html). vram_mb declarations are
+# only the FALLBACK rung when a graph has no calibration yet; once a
+# family has run once, admission charges the measured estimate and the
+# under-declaration fudge above is ignored (harmless, no longer
+# load-bearing). Submit still rejects vram_mb above the machine ceiling.
 
 budget:
   gpu_vram_mb: 22000        # user-set 2026-05-07
@@ -89,6 +97,17 @@ experiments:
     vram_mb: 8000
     exclusive_gpu: false
     notes: "Three-Step Nav VLN-CE port. env_habitat ~1.5GB/worker + RAM Swin-L (~2GB) + SpatialBot-3B fp16 (~6.5GB) + waypoint TRM/DDPPO — RAM+SpatialBot+waypoint are shared singletons in the opennav_perception/opennav_waypoint server nodesets (reserved out-of-budget, per ADR-eval-003). ~4 gpt-5 vision calls/step (navigator + 2 summaries + gated judge). Reuses Open-Nav's RAM+SpatialBot stack (cf. discussnav-mp3d). 8000 covers a small-worker smoke with headroom."
+
+  opennav-habitat:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "Open-Nav VLN-CE. Same FM stack as threestepnav-ce (env_habitat ~1.5GB/worker + RAM Swin-L + SpatialBot-3B fp16 + waypoint TRM/DDPPO shared singletons, reserved out-of-budget per ADR-eval-003) + GPT API. Added 2026-07-04 for the FM-extraction baseline capture."
+
+  # ---- MP3D MatterSim + online BLIP-2 (spatialnav) ----
+  spatialnav-mp3d:
+    vram_mb: 8000
+    exclusive_gpu: false
+    notes: "SpatialNav on MatterSim (~1GB CUDA-GL) + ONLINE BLIP-2 flan-t5-xl fp16 (~4GB via model_blip2 server) + torchvision FasterRCNN (~0.5GB). 12000 (initial sizing) exceeded usable_vram_mb=8576 and could NEVER admit — a queued job with marginal > usable parks forever (caught 2026-07-04). 8000 fits the stack with headroom."
 
   # ---- SIMPLER eval ----
   simpler-rt1:
@@ -159,6 +178,24 @@ experiments:
     vram_mb: 2000                # mirror explore-eqa-hmeqa under-declaration
     exclusive_gpu: false
     notes: "perf (100 ep, 10 workers) — Prismatic singleton shared, marginal-only"
+
+  # ---- VGGT-SLAM on TUM (dense feed-forward SLAM, no LLM) ----
+  vggt-slam2-tum:
+    vram_mb: 8000
+    exclusive_gpu: true
+    notes: "VGGT-1B bf16 (~5GB weights + ~3-5GB activations per 17-frame/518px submap) + DINOv2-SALAD (~1GB). Real peak ~8-10GB — exclusive_gpu is the actual guard (serializes everything); vram_mb deliberately ≤ usable_vram_mb=8576 because a declared marginal above usable can NEVER admit and parks forever (spatialnav lesson, 2026-07-04). worker_count=1 (replicated stateful session)."
+  vggt-slam2-tum-os:
+    vram_mb: 8000
+    exclusive_gpu: true
+    notes: "vggt-slam2-tum + open-set stack: PE-Core-L14-336 (~1.5GB, eager at reset) + SAM 3 (~2GB, lazy at first query_object). Same ≤usable declaration rationale; exclusive_gpu guards the real ~12GB peak."
+  smoke_vggt_slam2_tum:
+    vram_mb: 8000
+    exclusive_gpu: true
+    notes: "smoke (1 sequence head-truncated via env_tum max_frames, 1 worker) — mirror vggt-slam2-tum"
+  perf_vggt_slam2_tum:
+    vram_mb: 8000
+    exclusive_gpu: true
+    notes: "perf (freiburg1 desk+xyz full sequences, 1 worker, serialized) — TUM ATE parity vs upstream reference; mirror vggt-slam2-tum"
 
   smoke_voxposer_libero_decomposed:
     vram_mb: 2000                # mirror vla-libero under-declaration

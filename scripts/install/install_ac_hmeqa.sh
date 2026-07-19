@@ -2,9 +2,10 @@
 # =============================================================================
 # HM-EQA Environment Installation Script
 # =============================================================================
-# Creates the `hmeqa` conda env (Python 3.9) for explore-eqa / HM-EQA.
-# Used in server mode by `env_hmeqa` nodeset at
-# `workspace/nodesets/server/hmeqa.py` (server_python points here).
+# Creates the `ac-hmeqa` conda env (Python 3.9) for explore-eqa / HM-EQA.
+# Used in server mode by the `env_hmeqa` nodeset
+# (`workspace/nodesets/env/env_hmeqa/`) and the `vlm_prismatic` FM nodeset
+# (`workspace/nodesets/model/vlm_prismatic.py`) — server_python points here.
 #
 # Why separate from `vlnce`:
 #   vlnce pins habitat-sim 0.1.7 + Python 3.8 + torch 1.9 (VLN-CE stack).
@@ -70,7 +71,10 @@ echo ""
 echo "=== Step 2: Installing Prismatic VLM (pinned upstream) ==="
 PRISMATIC_COMMIT="7573aeb4f8cb49b4107b6ef0dc7845377c57b4a7"
 PRISMATIC_URL="git+https://github.com/allenzren/prismatic-vlms.git@${PRISMATIC_COMMIT}"
-"$HMEQA_PYTHON" -m pip install "$PRISMATIC_URL" 2>&1 | tail -5
+# pipefail subshell: `pip ... | tail` masks pip's exit code (tail returns 0), so
+# under `set -e` a failed install would slip through. Keep the log trimmed but
+# abort on real failure.
+( set -o pipefail; "$HMEQA_PYTHON" -m pip install "$PRISMATIC_URL" 2>&1 | tail -5 )
 
 # ── Step 3: Remove conda OpenGL libs (use system NVIDIA drivers) ──
 #
@@ -147,6 +151,11 @@ EOF
 echo ""
 echo "=== Step 6: Verifying installation ==="
 
+# Load the env's lib/ so the bare-python imports below pick the env's
+# libstdc++ (stock Ubuntu 20.04 lacks GLIBCXX_3.4.29 that numba/llvmlite needs).
+# Real server-mode spawn gets this via EnvHMEQANodeSet.server_env.
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+
 echo -n "  PyTorch: "
 "$HMEQA_PYTHON" -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())" 2>&1
 
@@ -171,7 +180,7 @@ echo -n "  agentcanvas app: "
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The hmeqa env is used by workspace/nodesets/server/hmeqa.py in server mode."
+echo "The ac-hmeqa env is used by env_hmeqa + vlm_prismatic in server mode."
 echo "To set it explicitly:  export HMEQA_PYTHON=$HMEQA_PYTHON"
 echo "To activate manually:  conda activate ac-hmeqa"
 echo ""

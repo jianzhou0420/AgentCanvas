@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OWLv2 NodeSet — AgentCanvas</title>
+<meta name="description" content="The OWLv2 NodeSet ( Owlv2NodeSet , workspace/nodesets/model/model_owlv2.py ) wraps OWLv2 (OWL-ViT v2) as an open-vocabulary object detector driven by a set of label queries — hand it a list of class…">
+<meta property="og:title" content="OWLv2 NodeSet — AgentCanvas">
+<meta property="og:description" content="The OWLv2 NodeSet ( Owlv2NodeSet , workspace/nodesets/model/model_owlv2.py ) wraps OWLv2 (OWL-ViT v2) as an open-vocabulary object detector driven by a set of label queries — hand it a list of class…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-owlv2.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-owlv2.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">OWLv2 NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>OWLv2 NodeSet</h1>
+</header>
+
+<p>The <strong>OWLv2 NodeSet</strong> (<code>Owlv2NodeSet</code>, <code>workspace/nodesets/model/model_owlv2.py</code>) wraps <a href="https://huggingface.co/google/owlv2-base-patch16-ensemble">OWLv2</a> (OWL-ViT&nbsp;v2) as an <strong>open-vocabulary object detector driven by a set of label queries</strong> — hand it a list of class names ("chair", "door", "table") and it returns every matching box per query. It is the zero-shot detection sibling of <a href="model-grounding-dino.html">Grounding DINO</a>, but from a different lineage: OWLv2 scores each candidate label <em>independently</em> with a CLIP-style open-vocab head, so the natural input is a label set rather than a free-text caption.</p>
+<p>env: <code>ac-fm</code> · backend: <code>transformers</code> <code>Owlv2ForObjectDetection</code> + <code>AutoProcessor</code> · default <code>model_id</code>: <code>google/owlv2-base-patch16-ensemble</code></p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_owlv2__detect</code></td>
+<td>Open-vocab detection over a label set: <code>(image_b64, queries?)</code> → <code>result</code> JSON <code>{boxes:[{xyxy:[x1,y1,x2,y2], score, phrase}], count, image_w, image_h, queries}</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-open-vocab"><span class="num">1.</span> Open-vocab by label set</h2>
+<p>OWLv2 is open-vocabulary detection like Grounding DINO, but the two ask for their targets differently, and that is the whole point of having both. Grounding DINO parses a single free-text <em>caption</em> and grounds spans of it to boxes. OWLv2 instead scores <strong>each candidate label independently</strong> with a CLIP-style head, so you hand it a <em>set</em> of queries and it returns the boxes matching each one. That makes it the natural fit for "find all of <em>these</em> object classes in the frame" — object goals, affordance targets, scene inventory — and because every query is scored by the same head, the resulting scores are directly comparable across the label set.</p>
+<p>Practically: give it <code>["chair", "door", "table"]</code> and you get back boxes tagged with which class each one matched, rather than having to compose and later re-parse one prose sentence. The <code>queries</code> input accepts a <code>list[str]</code>, a JSON list, or a comma/newline-separated string; a blank input falls back to the configured default (<code>"chair, door, table"</code>).</p>
+<hr>
+<h2 id="2-detect-primitive"><span class="num">2.</span> The <code>detect</code> primitive + result schema</h2>
+<p>One pure single-step primitive:</p>
+<pre class="hl">model_owlv2__detect  (image_b64: TEXT, [queries: ANY])
+    → result: TEXT  (JSON {boxes:[{xyxy,score,phrase}], count, image_w, image_h, queries})
+</pre>
+<p>Each element of <code>boxes</code> is <code>{"xyxy": [x1, y1, x2, y2], "score": &lt;float&gt;, "phrase": &lt;str&gt;}</code>. Boxes are pixel <code>xyxy</code> at the <strong>input image's resolution</strong> (the post-processor is handed the decoded height/width as its target size), rounded to integers, and filtered by <code>threshold</code>. <code>count</code> is <code>len(boxes)</code>, <code>image_w</code>/<code>image_h</code> echo the decoded frame, and <code>queries</code> echoes the resolved label list.</p>
+<p>The matched <code>phrase</code> is looked up as <code>queries[label_index]</code> — the post-processor's <code>labels</code> tensor indexes into the flat query list. This is deliberately version-robust: it does not rely on the optional <code>text_labels</code> key that some transformers versions attach to the post-process output.</p>
+<p>This <code>result</code> schema is <strong>identical</strong> to <a href="model-grounding-dino.html"><code>model_grounding_dino__detect</code></a> (pixel <code>xyxy</code> + score + matched phrase). A graph can therefore swap detector backends — OWLv2 ↔ Grounding DINO — <em>without touching any downstream node</em>; the difference is only in how you phrase the target (label set vs. caption).</p>
+<hr>
+<h2 id="3-canvas-node"><span class="num">3.</span> Canvas Node</h2>
+<h3 id="model_owlv2__detect"><code>model_owlv2__detect</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>image_b64</code> (TEXT — base64 PNG/JPEG RGB image); <code>queries</code> (ANY, optional — override labels: <code>list[str]</code> / JSON list / comma-or-newline-separated string)</td></tr>
+<tr><td>Outputs</td><td><code>result</code> (TEXT — the §2 JSON schema; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — owlv2 base/large × ensemble/plain/finetuned), <code>queries</code> (text, default <code>"chair, door, table"</code>), <code>threshold</code> (text, default <code>0.1</code>)</td></tr>
+<tr><td>Backend call</td><td><code>Owlv2Processor</code> encodes the label set + image → <code>Owlv2ForObjectDetection</code> forward under <code>no_grad</code> → <code>post_process_grounded_object_detection(threshold, target_sizes)</code> → pixel <code>xyxy</code> + score + <code>queries[label]</code> phrase per box</td></tr>
+</tbody>
+</table>
+<p>Query resolution is a fall-through: the <code>queries</code> input wins, else the node's <code>queries</code> config, else the built-in default. The <code>threshold</code> config parses to a float (a bad value falls back to <code>0.1</code>).</p>
+<p>Engines are lazy singletons in a registry keyed by <code>model_id</code> — two OWLv2 checkpoints can coexist in one server without cross-serving detections. GPU inference is single-flight per engine (one in-flight forward bounds peak VRAM under concurrent eval workers), and the loaded model is frozen (<code>eval()</code>, <code>requires_grad = False</code>).</p>
+<hr>
+<h2 id="4-server-mode"><span class="num">4.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (a stateless detector — one server across eval workers, which coalesce onto it); <code>server_python = conda_env_python("ac-fm", "OWLV2_PYTHON")</code>. <code>Owlv2ForObjectDetection</code> / <code>AutoProcessor</code> are native to the shared <code>ac-fm</code> FM env (transformers&nbsp;5.13), so no dedicated env is needed; the checkpoints are ungated. The nodeset file stays Python-3.8-parseable (an <code>$OWLV2_PYTHON</code> override may point at a py3.8 env). Load: <code>POST /api/components/nodesets/model_owlv2/load?mode=server</code>.</p>
+<hr>
+<h2 id="5-environment-variables"><span class="num">5.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>OWLV2_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>OWLV2_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-degraded-mode"><span class="num">6.</span> Degraded Mode</h2>
+<p>An empty <code>image_b64</code> short-circuits before the model is touched, returning <code>{"boxes": [], "count": 0, "error": "no image_b64"}</code> — a clean "nothing to detect" signal, never a fabricated box. A model/processor load failure latches (<code>_load_failed</code> — no retry storm) and yields <code>""</code> on <code>result</code> with a <code>degraded</code> self-log; consumers keep their own fallback.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-open-vocab">1. Open-vocab by label set</a>
+      <a class="toc-h2" href="#2-detect-primitive">2. The detect primitive + result schema</a>
+      <a class="toc-h2" href="#3-canvas-node">3. Canvas Node</a>
+      <a class="toc-h3" href="#model_owlv2__detect">model_owlv2__detect</a>
+      <a class="toc-h2" href="#4-server-mode">4. Server Mode</a>
+      <a class="toc-h2" href="#5-environment-variables">5. Environment Variables</a>
+      <a class="toc-h2" href="#6-degraded-mode">6. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

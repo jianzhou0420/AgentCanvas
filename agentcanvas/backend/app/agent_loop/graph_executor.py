@@ -13,6 +13,7 @@ Key concepts:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import time
@@ -22,10 +23,9 @@ from typing import Any
 from ..components.bases import FireList
 from ..errors import get_bus
 from ..graph_def import GraphDefinition
-from ..llm.call import _current_node_usage
-from ..server.serialization import _current_node_transport
 from ..standard.actions import ACTION_NAMES
 from ..standard.node_io import get_required_inputs
+from ..standard.telemetry import _current_node_transport, _current_node_usage
 from ..standard.wire_types import is_list_type
 from ..state import broadcast
 
@@ -198,6 +198,7 @@ class GraphExecutor:
         logger: Any = None,
         env_panel_overrides: dict[str, Any] | None = None,
         server_url_overrides: dict[str, str] | None = None,
+        on_event: Any = None,
     ) -> None:
         self.nodes: dict[str, NodeInstance] = {}
         self.edges: list[dict] = []
@@ -246,6 +247,11 @@ class GraphExecutor:
         # at registry-load time. Empty/None = use the baked URL (canvas Play
         # / single-worker bit-identical behaviour).
         self._server_url_overrides: dict[str, str] = server_url_overrides or {}
+        # Optional SDK-level run-event sink (Graph.run(on_event=...)). A plain
+        # callable taking one event dict; sync or async. Surfaces the per-node
+        # lifecycle (already dispatched to shell hooks) as native Python events
+        # so an in-process run is observable without tailing logs. See _emit.
+        self._on_event: Any = on_event
 
     def get_env_panel(self, name: str) -> Any:
         """Resolve an env panel, checking per-runner overrides before the global registry.
@@ -270,6 +276,31 @@ class GraphExecutor:
         ``server/proxy.py:_make_execute`` at every proxy fire.
         """
         return self._server_url_overrides.get(nodeset_name)
+
+    async def _emit(self, kind: str, **fields: Any) -> None:
+        """Deliver one run event to the ``on_event`` sink, if one is set.
+
+        Best-effort and defensive: a sync *or* async callback is supported
+        (an awaitable return is awaited), and any exception it raises is logged,
+        never propagated — an observability hook must not be able to break the
+        run. ``kind`` is one of ``graph_start`` / ``node_start`` /
+        ``node_finish`` / ``node_error`` / ``graph_complete`` / ``graph_error``;
+        ``fields`` carries that kind's payload (``node_id``, ``node_type``,
+        ``inputs``, ``outputs``, ``error``, ``duration_ms``, …). ``step`` is
+        stamped from the current step counter. Values are passed **live** (not
+        copied/serialised) so a debugger sees the real objects; a callback must
+        not mutate them.
+        """
+        cb = self._on_event
+        if cb is None:
+            return
+        event = {"kind": kind, "step": self.step_counter, **fields}
+        try:
+            r = cb(event)
+            if inspect.isawaitable(r):
+                await r
+        except Exception:
+            log.warning("on_event callback raised on %r event", kind, exc_info=True)
 
     async def run(
         self,
@@ -485,6 +516,7 @@ class GraphExecutor:
                     "node_count": len(self.nodes),
                 },
             )
+        await self._emit("graph_start", graph_name=graph.name, node_count=len(self.nodes))
 
         # Safety: max total firings to prevent infinite loops
         max_firings = self.step_budget * len(self.nodes) * 3
@@ -1030,6 +1062,9 @@ class GraphExecutor:
                         "terminated": self.terminated,
                     },
                 )
+            await self._emit(
+                "graph_complete", terminated=self.terminated, metrics=metrics
+            )
 
             # Final flush of any remaining log entries
             if self._logger:
@@ -1074,6 +1109,7 @@ class GraphExecutor:
             # GraphError hook — fires on unhandled exceptions
             if self._hook_runner.has_hooks():
                 await self._hook_runner.run_hooks("GraphError", payload={"error": str(e)})
+            await self._emit("graph_error", error=str(e))
 
             # Flush log entries even on error
             if self._logger:
@@ -1223,10 +1259,19 @@ class GraphExecutor:
         # slots are left in place until next write.
         fire_inputs = dict(node.port_slots) if node.type == "iterIn" else node.pending_inputs
 
+        await self._emit(
+            "node_start",
+            node_id=node.id,
+            node_type=node.type,
+            node_label=node.label or node.id,
+            inputs=fire_inputs,
+            parent_node_id=getattr(node, "_dynamic_parent_id", None),
+        )
+
         exec_error: Exception | None = None
         # Per-node LLM usage bucket — populated by every llm_complete /
         # vlm_complete call reached during this execute(). See
-        # ``app.llm.call._current_node_usage``. The ContextVar is set
+        # ``app.standard.telemetry``. The ContextVar is set
         # for ALL node firings (cheap), so any future node that calls
         # the LLM helpers automatically gets accounting without code
         # changes.
@@ -1426,6 +1471,22 @@ class GraphExecutor:
                         },
                     )
                 )
+
+        # Native run event — terminal per-fire signal (start already emitted).
+        # Fires with the post-hook ``result`` on success, or the error before
+        # it is re-raised below, so an ``on_event`` sink sees every fire.
+        _ev = {
+            "node_id": node.id,
+            "node_type": node.type,
+            "node_label": node.label or node.id,
+            "inputs": node.pending_inputs,
+            "duration_ms": duration_ms_total,
+            "parent_node_id": getattr(node, "_dynamic_parent_id", None),
+        }
+        if exec_error is not None:
+            await self._emit("node_error", error=str(exec_error), **_ev)
+        else:
+            await self._emit("node_finish", outputs=result, **_ev)
 
         # Re-raise if execute() failed (after hooks had a chance to observe)
         if exec_error is not None:

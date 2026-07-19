@@ -134,6 +134,8 @@ export interface NodeSetInfo {
   loaded: boolean;
   mode: "local" | "server";
   requires_server: boolean;
+  /** Role bucket (workspace/nodesets/<role>/): env|method|model|policy|common|other. */
+  category?: string;
   tools: string[];
   // Declared nodeset-owned container schemas (from the server manifest), so
   // the State panel can show them statically before/without a run.
@@ -157,6 +159,7 @@ export interface SavedGraph {
   nodes: unknown[];
   edges: unknown[];
   step_budget: number | null;
+  eval_graph?: boolean;
   kind?: "graph" | "node";
   group?: string;
   folder?: string; // POSIX subdirectory under the kind root ("" = root)

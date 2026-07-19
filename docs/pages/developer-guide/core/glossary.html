@@ -85,6 +85,7 @@
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>
@@ -115,7 +116,7 @@
 </header>
 
 <div class="lede">
-  Reach for the section that matches the code/ADR you're reading, not an alphabetical lookup. Only terms that are currently live in the codebase are listed; removed/superseded names live in the changelog of <a href="glossary.html">the v1 source</a> + the ADR that retired them. <strong>v2 addition</strong>: live filter — type in the box and only matching terms remain.
+  Reach for the section that matches the code/ADR you're reading, not an alphabetical lookup. Only terms that are currently live in the codebase are listed; a handful of load-bearing removed names (Initialize, Termination, deprecated wire types) stay listed, marked <strong>Removed</strong>, with the ADR that retired them. <strong>v2 addition</strong>: live filter — type in the box and only matching terms remain.
 </div>
 
 <div class="glossary-controls">
@@ -134,7 +135,8 @@
   <a href="#s7">7. Server Mode</a><span class="toc-sep">·</span>
   <a href="#s8">8. Evaluation</a><span class="toc-sep">·</span>
   <a href="#s9">9. Observability &amp; Logs</a><span class="toc-sep">·</span>
-  <a href="#s10">10. VLN Domain</a>
+  <a href="#s10">10. Graph SDK</a><span class="toc-sep">·</span>
+  <a href="#s11">11. VLN Domain</a>
 </nav>
 
 <section class="glossary-section" id="s1">
@@ -228,7 +230,11 @@
 <h2><span class="num">§6</span>Execution Engine</h2>
 <p>The runtime that turns a <code>GraphDefinition</code> into a live agent run — node scheduling, iteration gates, termination.</p>
 <table class="term-table">
-<tr class="term-row"><td class="term">Graph Executor</td><td class="defn">Data-driven executor — nodes fire when inputs arrive. Handles both DAG workflows (single forward pass) and cyclic agent loops (via IterIn/IterOut). No separate DAG executor exists</td></tr>
+<tr class="term-row"><td class="term">Graph Executor</td><td class="defn">Data-driven executor — nodes fire when inputs arrive. Handles both DAG workflows (single forward pass) and loops (via IterIn/IterOut). No separate DAG executor exists</td></tr>
+<tr class="term-row"><td class="term">Loop</td><td class="defn">The dataflow iteration construct: a paired IterIn/IterOut plus the body between them. Purely structural — the engine neither knows nor cares what iterates. The two archetypal realizations are the <strong>rollout loop</strong> and the <strong>agent loop</strong> below; multi-scope graphs can nest one inside the other. Terminology argued in full: <a href="https://jianzhou0420.github.io/src/blog/rollout-loop-vs-agent-loop.html">Rollout Loop vs. Agent Loop</a></td></tr>
+<tr class="term-row"><td class="term">Rollout loop</td><td class="defn">A loop whose iteration cadence is the <em>environment step</em>: observe → act → step, once per tick, until the episode ends. Embodied agents have one by nature — and it needs no LLM at all (a frozen CMA or VLA policy stepping an env is a rollout loop with zero reasoning in it)</td></tr>
+<tr class="term-row"><td class="term">Agent loop</td><td class="defn">A loop whose iteration cadence is the <em>LLM turn</em> — reason, call tools, read results, repeat until the task is done. This is the LLM-agent community's sense of the term (ReAct); it requires no physical environment. Not to be conflated with the rollout loop: an embodied graph always has the latter, only sometimes the former — e.g. an inner agent loop deliberating within each env step</td></tr>
+<tr class="term-row"><td class="term">Agent workflow</td><td class="defn">Reasoning realized as a DAG workflow: a fixed pipeline of LLM/VLM calls run front-to-back once per invocation — typically once per rollout step — with no open-ended iteration inside. The shape of most ported embodied-agent methods (NavGPT, MapGPT, VoxPoser). Contrast with the <strong>agent loop</strong>, which iterates on the reasoner's clock until the task is done</td></tr>
 <tr class="term-row"><td class="term">Entry node</td><td class="defn">A node the executor queues at run-start, discovered automatically (no author marking) by three structural conditions: not an <code>iterIn</code>, no incoming edges, no required input ports. Entry nodes fire first and feed the rest of the graph; a loop starts when an entry node’s output reaches the iterIn’s <code>init_*</code> handles. Formerly called “seed node” (renamed 2026-06-11 — “seed” collided with RNG seeds and AAS seed data)</td></tr>
 <tr class="term-row"><td class="term">Loop Runner</td><td class="defn">Singleton that wraps the executor and manages pause/stop/resume lifecycle</td></tr>
 <tr class="term-row"><td class="term">Initialize</td><td class="defn"><strong>Removed</strong> (2026-06-10, follow-through of <a href="decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a>): its run-start collection role lives on <code>iterIn</code>'s left/input side (declared via <code>iterIn.config.initPorts</code>). The node type is no longer registered; <code>validate_graph_connectivity</code> rejects graphs that still carry one, with a migration hint. <em>Historic (<a href="decisions/dataflow/adr-dataflow-006-three-pivot-boundary-nodes.html">ADR-dataflow-006</a>):</em> a run-start pivot (<code>node_type="initialize"</code>, <code>ports_mode="sink"</code>) that collected step-0 state and handed it to the paired iterIn via executor-internal <code>pairedWith</code> transfer</td></tr>
@@ -275,9 +281,9 @@
 <p>Batch evaluation harness — each run is its own Python subprocess spawned by <code>JobScheduler</code>, with <code>EnvWorkerPool</code> fan-out <em>inside</em> each subprocess for parallel env workers.</p>
 <table class="term-table">
 <tr class="term-row"><td class="term">ExecutionGuard / ExecutionMode</td><td class="defn">Thread-safe mutex in <code>app/state.py</code> making canvas Play and batch eval mutually exclusive — <code>ExecutionMode</code> is <code>idle</code> / <code>canvas</code> / <code>eval</code>; <code>acquire()</code> succeeds only from idle. Subprocess eval jobs don't hold the guard — the JobScheduler's admission gate simply refuses to admit while the canvas lock is held (the <code>eval</code> mode is acquired only by the legacy in-process path). Env-panel POSTs are guarded by it too</td></tr>
-<tr class="term-row"><td class="term">JobScheduler</td><td class="defn">Backend service managing admission control + a FIFO queue of eval jobs across all Claude sessions hitting one backend. Lives at <code>app/services/job_scheduler.py</code>; tick loop runs every 1s admitting queued jobs whose declared <code>marginal_vram_mb</code> fits the budget (see <a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>)</td></tr>
+<tr class="term-row"><td class="term">JobScheduler</td><td class="defn">Backend service managing admission control + a FIFO queue of eval jobs across all Claude sessions hitting one backend. Lives at <code>app/services/job_scheduler.py</code>; tick loop runs every 1s admitting queued jobs through a per-resource measured gate — calibrated estimate vs measured free (VRAM + RAM) minus standing reservations (see <a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a> and the <a href="../design-docs/operations/jobscheduler.html">JobScheduler design doc</a>)</td></tr>
 <tr class="term-row"><td class="term">run subprocess</td><td class="defn">Independent Python process (<code>python -m app.eval_subprocess_main --run-dir ...</code>) that runs one eval. Reads <code>spec.json</code> + <code>shared_urls.json</code> from the run dir, registers parent backend's shared singletons via <code>WorkspaceComponentRegistry.register_remote_nodeset</code>, runs <code>BatchEvalRunner.execute()</code> unmodified. <code>PR_SET_PDEATHSIG</code>-tied to backend</td></tr>
-<tr class="term-row"><td class="term">marginal_vram_mb</td><td class="defn">Per-job VRAM declaration in <code>spec.scheduling</code>. <em>Only</em> the env-side workers + per-job adapters — shared singletons are implicit in <code>usable_vram_mb</code>. Admission rule: <code>Σ active.marginal ≤ usable</code></td></tr>
+<tr class="term-row"><td class="term">marginal_vram_mb</td><td class="defn">Per-job VRAM declaration in <code>spec.scheduling</code> — since 2026-07 the <em>fallback</em> admission rung: the measured gate charges calibrated per-resource estimates when coverage exists, the declaration when not (RAM rides ungated on that rung). Submit rejects declarations beyond the machine ceiling</td></tr>
 <tr class="term-row"><td class="term">register_remote_nodeset</td><td class="defn"><code>WorkspaceComponentRegistry</code> method letting a run subprocess attach to a parent-owned shared singleton without spawning a duplicate. Fetches the auto_host manifest, generates proxy nodes, registers a <code>RemoteEnvPanelProxy</code></td></tr>
 <tr class="term-row"><td class="term"><code>_DONE</code> marker</td><td class="defn">Empty file at <code>outputs/eval_runs/{run_id}/_DONE</code> written by the run subprocess on clean exit. Presence ⇔ run finalized; absence + dead PID = <code>aborted</code></td></tr>
 <tr class="term-row"><td class="term">shared_urls.json</td><td class="defn">File at <code>outputs/eval_runs/{run_id}/shared_urls.json</code> mapping shared nodeset name → auto_host URL. Run subprocess reads it on startup to attach to parent's singletons rather than loading its own copy</td></tr>
@@ -309,8 +315,26 @@
 </section>
 
 <section class="glossary-section" id="s10">
-<h2><span class="num">§10</span>VLN Domain</h2>
-<p>Task-side vocabulary — datasets, action space, metrics. Independent of the architecture above; swapping to a non-VLN benchmark would replace this section but leave §§1–9 intact.</p>
+<h2><span class="num">§10</span>Graph SDK</h2>
+<p>The programmatic authoring surface (<a href="../capabilities/graph-sdk.html">capability page</a>) — build and run the same <code>GraphDefinition</code> as a Python library, no canvas, no JSON authoring. Core in <code>app/graph_sdk.py</code>; public import path <code>agentcanvas</code>.</p>
+<table class="term-table">
+<tr class="term-row"><td class="term">Graph SDK</td><td class="defn">The third way to produce and drive a <code>GraphDefinition</code> (after canvas and hand-written JSON): a thin ergonomic wrapper over <code>app/graph_def.py</code> and the in-process <code>GraphExecutor</code> — same nodes, same executor, same eval, no new execution machinery. Distributed as <code>pip install agentcanvas</code> (repo-root <code>pyproject.toml</code>; tiered extras <code>[server]</code> / <code>[llm]</code> / <code>[backend]</code>)</td></tr>
+<tr class="term-row"><td class="term">Graph (builder)</td><td class="defn">The SDK's builder class — <code>from agentcanvas import Graph</code>; <code>add(node_type, **config)</code> / <code>connect(src, dst)</code> / <code>graph_out(name)</code> assemble the same <code>NodeDef</code> / <code>EdgeDef</code> / <code>ContainerDef</code> the canvas emits, plus loop / hook / composite authoring sugar. <code>to_code()</code> is the inverse (see graph_to_code)</td></tr>
+<tr class="term-row"><td class="term">NodeHandle / PortRef</td><td class="defn">What <code>Graph.add()</code> returns and what <code>connect()</code> consumes — <code>handle.out("port")</code> / <code>handle.in_("port")</code> name a specific typed port on a specific node instance</td></tr>
+<tr class="term-row"><td class="term">catalog / describe / nodesets</td><td class="defn">Introspection over the live node catalog — <code>catalog()</code> lists registered node types, <code>describe(node_type)</code> details one type's ports/config, <code>nodesets()</code> lists loadable nodesets. Same registry the canvas sidebar reads</td></tr>
+<tr class="term-row"><td class="term">generate_node_stubs</td><td class="defn">Emits typed authoring stubs for the current catalog so SDK scripts get IDE/type-checker-verifiable node types and port names — the typed-authoring leg of the SDK</td></tr>
+<tr class="term-row"><td class="term">GraphValidationError</td><td class="defn">Raised by SDK validation before anything runs — unknown node types, port mismatches, wire-type conflicts surface at build time instead of mid-run</td></tr>
+<tr class="term-row"><td class="term">run() / RunResult</td><td class="defn">In-process single-run entry — drives the real <code>GraphExecutor</code> (identical loop semantics to canvas Play) and returns outputs keyed by each <code>graphOut</code>'s port name</td></tr>
+<tr class="term-row"><td class="term">RunEvent / on_event</td><td class="defn">Streaming observation hook for an SDK run — per-firing events delivered to a callback while the graph executes, the SDK-side analogue of the canvas's WebSocket stream</td></tr>
+<tr class="term-row"><td class="term">eval() / EvalResult</td><td class="defn">Batch-evaluation entry from code — scores a graph over an episode list and returns aggregate + per-episode results, the SDK-side analogue of <code>POST /api/eval/v2/start</code></td></tr>
+<tr class="term-row"><td class="term">Cassette record/replay</td><td class="defn"><code>graph_sdk_replay.py</code> — records server-node HTTP round-trips during a live run and replays them hermetically, so GPU-nodeset graphs (Habitat, SAM) become deterministic tests that need no simulator or GPU</td></tr>
+<tr class="term-row"><td class="term">graph_to_code</td><td class="defn"><code>graph_sdk_codegen.py</code> — compiles any <code>GraphDefinition</code> (canvas- or JSON-born) into a self-contained builder script; round-trip verified semantically exact on MapGPT-MP3D (roadmap F4). Keeps code ⇄ JSON ⇄ canvas fully reversible</td></tr>
+</table>
+</section>
+
+<section class="glossary-section" id="s11">
+<h2><span class="num">§11</span>VLN Domain</h2>
+<p>Task-side vocabulary — datasets, action space, metrics. Independent of the architecture above; swapping to a non-VLN benchmark would replace this section but leave §§1–10 intact.</p>
 <table class="term-table">
 <tr class="term-row"><td class="term">Episode</td><td class="defn">A single navigation task: start position + natural language instruction + goal</td></tr>
 <tr class="term-row"><td class="term">Split</td><td class="defn">Dataset partition: <code>train</code>, <code>val_seen</code>, <code>val_unseen</code>, <code>test</code></td></tr>
@@ -339,6 +363,43 @@
 </div>
 
 <script src="../../../assets/nav.js"></script>
+<script>
+(function () {
+  var input = document.getElementById('glossary-filter');
+  var countEl = document.getElementById('result-count');
+  if (!input) return;
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.term-table .term-row'));
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section.glossary-section'));
 
+  function apply() {
+    var q = input.value.trim().toLowerCase();
+    var shown = 0;
+    rows.forEach(function (row) {
+      var hit = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
+      row.classList.toggle('hidden', !hit);
+      if (hit) shown += 1;
+    });
+    sections.forEach(function (sec) {
+      var anyVisible = Array.prototype.some.call(
+        sec.querySelectorAll('.term-table .term-row'),
+        function (r) { return !r.classList.contains('hidden'); }
+      );
+      sec.classList.toggle('empty', Boolean(q) && !anyVisible);
+    });
+    if (countEl) countEl.textContent = q ? shown + ' / ' + rows.length + ' terms' : '';
+  }
+
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { input.value = ''; apply(); input.blur(); }
+  });
+  // Capture-phase so "/" reaches the glossary filter before nav.js's site-search binding.
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName) || '';
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable);
+    if (e.key === '/' && !typing) { e.preventDefault(); e.stopImmediatePropagation(); input.focus(); }
+  }, true);
+})();
+</script>
 </body>
 </html>

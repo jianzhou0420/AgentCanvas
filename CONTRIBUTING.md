@@ -45,7 +45,7 @@ Two hard constraints any core PR must respect:
 
 ## 3. Dev loop & checks
 
-For the full install flow (conda envs, submodules, data), read [`INSTALL.md`](docs-md/INSTALL.md). Once installed, the minimal dev loop is:
+For the full install flow (conda envs, submodules, data), read [`INSTALL.md`](INSTALL.md). Once installed, the minimal dev loop is:
 
 ```bash
 conda activate agentcanvas            # Python 3.10+, ADR-platform-004

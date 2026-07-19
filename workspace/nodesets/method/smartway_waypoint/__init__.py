@@ -13,19 +13,21 @@ existing ``opennav_waypoint`` pattern for vendored upstream-repo imports):
 Upstream: SmartWay-Code @ daa2dd8 — see
 ``workspace/nodesets/_upstream/smartway-code/fetch_upstream.sh`` to re-fetch.
 
-Plus DINOv2-small (loaded via ``torch.hub.load('facebookresearch/dinov2',
-'dinov2_vits14_reg')`` per upstream Policy_ViewSelection_VLNBERT.py:111)
-and ``facebook/dinov2-small`` image processor (upstream
-base_il_trainer.py:356).
+The DINOv2 RGB backbone was extracted to the ``model_dinov2`` FM nodeset
+(TODO #56, 2026-07-04): graphs wire ``model_dinov2__extract_features``
+(env-order per-view embeddings) into this node's ``rgb_features`` input; the
+engine applies its own clockwise remap, byte-identical to the old in-engine
+forward. Unwired ``rgb_features`` → zeros (degraded mode, mirrors the old
+DINOv2 load-failure fallback).
 
 Runs in the new ``smartway`` conda env (Python 3.8.20 + torch 2.1.1 + cu121
-+ dinov2 + recognize-anything). ``SMARTWAY_PYTHON`` env var overrides the
++ recognize-anything). ``SMARTWAY_PYTHON`` env var overrides the
 interpreter path.
 
 One tool:
 
-    smartway_waypoint__predict   views → candidates (incl. per-cand RGB),
-                                 num_candidates
+    smartway_waypoint__predict   views + rgb_features → candidates
+                                 (incl. per-cand RGB), num_candidates
 
 The output ``candidates`` is **keyed by integer index 0..K-1** (not by
 12-slot dir_id like Open-Nav) because SmartWay's prompt assembly reads
@@ -45,7 +47,7 @@ import logging
 import os
 from typing import Any, ClassVar
 
-from app.components import BaseCanvasNode, BaseNodeSet, NodeUIConfig, PortDef
+from app.components import BaseCanvasNode, BaseNodeSet, NodeUIConfig, PortDef, conda_env_python
 
 log = logging.getLogger("agentcanvas.smartway_waypoint")
 
@@ -80,7 +82,7 @@ class SmartwayWaypointPredictTool(BaseCanvasNode):
     node_type: ClassVar[str] = "smartway_waypoint__predict"
     display_name: ClassVar[str] = "SmartWay: Predict Waypoints"
     description: ClassVar[str] = (
-        "DINOv2 + ID-cross-attn + TRM heatmap → ≤5 candidates with RGB tiles"
+        "ID-cross-attn + TRM heatmap over wired DINOv2 features → ≤5 candidates with RGB tiles"
     )
     category: ClassVar[str] = "perception"
     icon: ClassVar[str] = "Target"
@@ -90,6 +92,15 @@ class SmartwayWaypointPredictTool(BaseCanvasNode):
             "views",
             "ANY",
             "List of {dir_id, rgb_base64, depth_base64} (12 views, clockwise convention)",
+        ),
+        PortDef(
+            "rgb_features",
+            "TEXT",
+            'DINOv2 feature envelope {"shape":[N,384],"dtype":"float32","b64":…} from'
+            " model_dinov2__extract_features, env order. REQUIRED — an optional port"
+            " does not gate firing, so the executor raced ahead of the DINOv2 node"
+            " and silently ran zeros-degraded (caught 2026-07-04). Load-failure"
+            " degradation still works: an empty envelope decodes to None → zeros.",
         ),
     ]
     output_ports = [
@@ -101,11 +112,31 @@ class SmartwayWaypointPredictTool(BaseCanvasNode):
         PortDef("num_candidates", "ANY", "K"),
     ]
 
+    @staticmethod
+    def _decode_features(envelope: Any):
+        """base64-npy envelope → (N, D) float32 ndarray, or None."""
+        if not envelope or not isinstance(envelope, str):
+            return None
+        import base64
+        import json
+
+        import numpy as np
+
+        try:
+            meta = json.loads(envelope)
+            buf = base64.b64decode(meta["b64"])
+            arr = np.frombuffer(buf, dtype=meta.get("dtype", "float32"))
+            return arr.reshape(meta["shape"]).astype(np.float32)
+        except Exception:
+            log.warning("rgb_features envelope decode failed — features zeroed", exc_info=True)
+            return None
+
     async def forward(self, inputs: dict, ctx: Any = None) -> dict:
         from ._engine import WaypointEngine, decode_views
 
         views = inputs.get("views") or []
         rgb_arrays, depth_arrays = decode_views(views)
+        rgb_features = self._decode_features(inputs.get("rgb_features"))
 
         if not rgb_arrays:
             self._self_log("skipped", "no_rgb_views")
@@ -114,9 +145,10 @@ class SmartwayWaypointPredictTool(BaseCanvasNode):
         loop = asyncio.get_running_loop()
         engine = WaypointEngine.get()
         candidates = await loop.run_in_executor(
-            None, engine.predict, rgb_arrays, depth_arrays
+            None, engine.predict, rgb_arrays, depth_arrays, rgb_features
         )
         self._self_log("num_candidates", len(candidates))
+        self._self_log("rgb_features", "wired" if rgb_features is not None else "MISSING(zeros)")
         return {"candidates": candidates, "num_candidates": len(candidates)}
 
 
@@ -133,9 +165,7 @@ class SmartWayWaypointNodeSet(BaseNodeSet):
     # Smartway env: Py 3.8.20 + torch 2.1.1 + dinov2 + habitat-sim 0.1.7.
     # The depth encoder import chain needs vlnce_baselines on sys.path,
     # which the engine handles at load time.
-    server_python = os.environ.get(
-        "SMARTWAY_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-smartway/bin/python")
-    )
+    server_python = conda_env_python("ac-smartway", "SMARTWAY_PYTHON")
     # Pure-functional inference: K waypoint predictions per call, no
     # caller-scoped state — safe to share across batched-eval workers.
     parallelism: ClassVar[str] = "shared"

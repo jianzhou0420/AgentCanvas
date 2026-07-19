@@ -4,7 +4,7 @@
 # =============================================================================
 # Creates the `ac-libero` conda env (Python 3.10) for the LIBERO
 # manipulation benchmark. Used in server mode by `env_libero` nodeset at
-# `workspace/nodesets/server/libero.py` (server_python points here).
+# `workspace/nodesets/env/env_libero/` (server_python points here).
 #
 # Why a separate env:
 #   LIBERO depends on robosuite 1.4.x + MuJoCo + numpy<2 + LIBERO's own
@@ -140,6 +140,15 @@ else
     "$LIBERO_PYTHON" -m pip install "$LIBERO_INSTALL_TARGET"
 fi
 
+# LIBERO prompts interactively ("Do you want to specify a custom path...") on the
+# FIRST `import libero`, writing ~/.libero/config.yaml. Under a non-interactive
+# install the input() hits EOF and import fails. Answer "N" (use default paths)
+# once to create the config so later imports — the verify below and server-mode
+# spawns — are non-interactive.
+echo "N" | "$LIBERO_PYTHON" -c "import libero" >/dev/null 2>&1 \
+    && echo "  [ok] libero config initialized (~/.libero/config.yaml)" \
+    || echo "  [WARN] libero config init failed — first import may still prompt."
+
 # AgentCanvas backend has no setup.py — the framework injects
 # PYTHONPATH=<backend>:<workspace> at server-mode spawn time
 # (registry.py:289-308). No pip install needed here. The verification
@@ -184,7 +193,7 @@ PYTHONPATH="$PROJECT_ROOT/agentcanvas/backend:$PROJECT_ROOT" \
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The $ENV_NAME env is used by workspace/nodesets/server/libero.py in server mode."
+echo "The $ENV_NAME env is used by workspace/nodesets/env/env_libero/ in server mode."
 echo "To set it explicitly:  export LIBERO_PYTHON=$LIBERO_PYTHON"
 echo "To activate manually:  conda activate $ENV_NAME"
 echo ""

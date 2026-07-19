@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIMv2 NodeSet — AgentCanvas</title>
+<meta name="description" content="The AIMv2 NodeSet ( Aimv2NodeSet , workspace/nodesets/model/model_aimv2.py ) wraps AIMv2 (Apple) as a second self-supervised per-image feature backbone alongside DINOv2 . It fills the same graph role…">
+<meta property="og:title" content="AIMv2 NodeSet — AgentCanvas">
+<meta property="og:description" content="The AIMv2 NodeSet ( Aimv2NodeSet , workspace/nodesets/model/model_aimv2.py ) wraps AIMv2 (Apple) as a second self-supervised per-image feature backbone alongside DINOv2 . It fills the same graph role…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-aimv2.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-aimv2.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">AIMv2 NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-08</div>
+</div>
+  <header class="page-header guide">
+  <h1>AIMv2 NodeSet</h1>
+</header>
+
+<p>The <strong>AIMv2 NodeSet</strong> (<code>Aimv2NodeSet</code>, <code>workspace/nodesets/model/model_aimv2.py</code>) wraps <a href="https://huggingface.co/apple/aimv2-large-patch14-224">AIMv2</a> (Apple) as a <strong>second self-supervised per-image feature backbone</strong> alongside <a href="model-dinov2.html">DINOv2</a>. It fills the same graph role — a generic per-image descriptor with no language head — but comes from a different pre-training recipe, so its feature geometry differs and it is worth having both when a downstream head is sensitive to the backbone.</p>
+<p>env: <code>ac-fm</code> · backend: <code>transformers</code> <code>AutoModel</code> (<code>Aimv2VisionModel</code>) + <code>AutoImageProcessor</code> · default <code>model_id</code>: <code>apple/aimv2-large-patch14-224</code> (1024-d)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_aimv2__extract_features</code></td>
+<td>Mean-pooled embedding per image: list of <code>{rgb_base64}</code> (or raw base64) → <code>features</code> (TEXT — base64-npy JSON envelope of the (N,&nbsp;D) float32 matrix).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-second-backbone"><span class="num">1.</span> A second self-supervised backbone</h2>
+<p>AIMv2 is trained <strong>autoregressively</strong>: a multimodal decoder predicts image patches (and text), a different objective from DINOv2's self-distillation. The two backbones therefore land in different feature spaces even though both are label-free per-image ViTs with no notion of language. Neither is universally better — which one transfers best depends on the downstream head — so the graph keeps both available and picks per experiment.</p>
+<p>Like DINOv2, AIMv2 has <strong>no language head</strong>: it produces a visual descriptor, not a shared image–text embedding. For language-aligned embeddings (open-vocab maps, zero-shot retrieval) reach for <a href="model-clip.html">CLIP</a> instead.</p>
+<hr>
+<h2 id="2-mean-pooled-descriptor"><span class="num">2.</span> Mean-pooled descriptor &amp; envelope</h2>
+<p>The AIMv2 vision tower emits per-patch tokens <code>(N, P, D)</code> with <strong>no CLS / pooler token</strong>. The per-image descriptor here is therefore the <strong>mean over the patch tokens</strong> of <code>last_hidden_state</code> — the standard global-feature reduction for a CLS-less ViT:</p>
+<pre class="hl">
+<span class="n">feats</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">pixel_values</span><span class="o">=</span><span class="n">pixel_values</span><span class="p">)</span><span class="o">.</span><span class="n">last_hidden_state</span>  <span class="c1"># (N, P, D)</span>
+<span class="n">feats</span> <span class="o">=</span> <span class="n">feats</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># (N, D)</span>
+</pre>
+<p>Features are <strong>not L2-normalized</strong> — they are raw pooled activations. Normalize downstream if a cosine metric is wanted. The output is a TEXT JSON envelope carrying the raw C-contiguous float32 buffer base64-encoded (DINOv2/CLIP's sibling format, plus <code>model_id</code> + a <code>pooled</code> self-description):</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">N</span><span class="p">,</span><span class="w"> </span><span class="mi">1024</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;base64 of the C-contiguous float32 buffer&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;apple/aimv2-large-patch14-224&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;pooled&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mean&quot;</span><span class="p">}</span>
+</pre>
+<p>Byte-exact across the server-mode HTTP boundary — a plain JSON float list would round-trip every value through decimal text — and ~4× smaller. The <code>large</code> default gives <code>D&nbsp;=&nbsp;1024</code>.</p>
+<hr>
+<h2 id="3-canvas-nodes"><span class="num">3.</span> Canvas Nodes</h2>
+<h3 id="model_aimv2__extract_features"><code>model_aimv2__extract_features</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>images</code> (ANY — list of <code>{rgb_base64}</code> dicts or raw base64 strings)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>features</code> (TEXT — the §2 envelope; <code>""</code> on degraded)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>model_id</code> (select — aimv2 large/huge/1B/3B @patch14-224)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td>one batched <code>model(pixel_values)</code> under <code>no_grad</code> → patch-token mean → <code>(N, D)</code> float32, input order preserved</td>
+</tr>
+</tbody>
+</table>
+<p>Engines are lazy singletons in a registry keyed by <code>model_id</code> — two checkpoints coexist in one server without cross-serving features. GPU inference is single-flight per engine (one in-flight forward bounds peak VRAM under concurrent eval workers).</p>
+<hr>
+<h2 id="4-server-mode"><span class="num">4.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless extractor — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "AIMV2_PYTHON")</code>. <code>AutoModel</code> loads the AIMv2 checkpoint as an <code>Aimv2VisionModel</code>, and both it and <code>AutoImageProcessor</code> are native to the shared <code>ac-fm</code> env (transformers&nbsp;5.13), so no dedicated env is needed and the checkpoints are ungated. The nodeset file stays Python-3.8-parseable (an override may point at a py3.8 env). Load: <code>POST /api/components/nodesets/model_aimv2/load?mode=server</code>.</p>
+<hr>
+<h2 id="5-environment-variables"><span class="num">5.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>AIMV2_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>AIMV2_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-degraded-mode"><span class="num">6.</span> Degraded Mode</h2>
+<p>A model/processor load failure latches (<code>_load_failed</code> — no retry storm); that, or an <code>images</code> entry missing its base64, yields <code>features = ""</code>. An empty envelope is a clean "no features this step" signal, never a fabricated vector — consumers keep their own fallback.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-second-backbone">1. A second self-supervised backbone</a>
+      <a class="toc-h2" href="#2-mean-pooled-descriptor">2. Mean-pooled descriptor &amp; envelope</a>
+      <a class="toc-h2" href="#3-canvas-nodes">3. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_aimv2__extract_features">model_aimv2__extract_features</a>
+      <a class="toc-h2" href="#4-server-mode">4. Server Mode</a>
+      <a class="toc-h2" href="#5-environment-variables">5. Environment Variables</a>
+      <a class="toc-h2" href="#6-degraded-mode">6. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

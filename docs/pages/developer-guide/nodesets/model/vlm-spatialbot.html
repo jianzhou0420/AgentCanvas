@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpatialBot NodeSet — AgentCanvas</title>
+<meta name="description" content="The SpatialBot NodeSet ( SpatialBotNodeSet , workspace/nodesets/model/vlm_spatialbot.py ) wraps SpatialBot-3B (24.06) — a Bunny-Phi VLM finetuned for RGB-D spatial understanding — as a generic…">
+<meta property="og:title" content="SpatialBot NodeSet — AgentCanvas">
+<meta property="og:description" content="The SpatialBot NodeSet ( SpatialBotNodeSet , workspace/nodesets/model/vlm_spatialbot.py ) wraps SpatialBot-3B (24.06) — a Bunny-Phi VLM finetuned for RGB-D spatial understanding — as a generic…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-spatialbot.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/vlm-spatialbot.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">SpatialBot NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header guide">
+  <h1>SpatialBot NodeSet</h1>
+</header>
+
+<p>The <strong>SpatialBot NodeSet</strong> (<code>SpatialBotNodeSet</code>, <code>workspace/nodesets/model/vlm_spatialbot.py</code>) wraps <a href="https://arxiv.org/abs/2406.13642">SpatialBot-3B</a> (24.06) — a Bunny-Phi VLM finetuned for RGB-D spatial understanding — as a <strong>generic depth-aware VLM foundation-model nodeset</strong>. It was extracted from <code>opennav_perception</code> — where SpatialBot lived co-hosted with RAM in one method-owned PerceptionEngine — in the TODO #56 boundary pass (2026-07-04).</p>
+<p>env: <code>ac-ram</code></p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vlm_spatialbot__caption_views</code></td>
+<td>Keyed-batch captioning: <code>{key: {rgb_base64, depth_base64?, depth_raw_base64?}}</code> → <code>{key: caption}</code>, keys opaque, insertion order preserved.</td>
+</tr>
+<tr>
+<td><code>vlm_spatialbot__generate</code></td>
+<td>Single-view generation: <code>(rgb_b64, depth_b64?, prompt) → text</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-extraction-fidelity"><span class="num">1.</span> Extraction &amp; fidelity</h2>
+<p>The model-side semantics moved here <strong>byte-faithful to upstream</strong> (Open-Nav <code>api.py</code>; the deviations fixed 2026-07-03 are preserved). Four load-bearing details:</p>
+<p><strong>(a) Depth packing.</strong> Upstream packs the per-tile min-max-normalised <strong>uint8</strong> depth image — <em>not</em> raw 16-bit millimetres — so the R channel is degenerate-zero. The explicit <code>int16</code> promotion keeps NumPy&nbsp;≥2 (NEP&nbsp;50) byte-identical to NumPy 1.x's silent promotion:</p>
+<pre class="hl">
+<span class="n">img</span> <span class="o">=</span> <span class="n">depth_u8</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int16</span><span class="p">)</span>  <span class="c1"># explicit promotion: NumPy &gt;= 2 (NEP 50) safe</span>
+<span class="n">three_channel_array</span><span class="p">[</span><span class="p">:</span><span class="p">,</span> <span class="p">:</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">img</span> <span class="o">/</span><span class="o">/</span> <span class="mi">1024</span><span class="p">)</span> <span class="o">*</span> <span class="mi">4</span>  <span class="c1"># always 0 for uint8 input</span>
+<span class="n">three_channel_array</span><span class="p">[</span><span class="p">:</span><span class="p">,</span> <span class="p">:</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">img</span> <span class="o">/</span><span class="o">/</span> <span class="mi">32</span><span class="p">)</span> <span class="o">*</span> <span class="mi">8</span>
+<span class="n">three_channel_array</span><span class="p">[</span><span class="p">:</span><span class="p">,</span> <span class="p">:</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">img</span> <span class="o">%</span> <span class="mi">32</span><span class="p">)</span> <span class="o">*</span> <span class="mi">8</span>
+
+</pre>
+<p><strong>(b) Image-token splice.</strong> Bunny-Phi expects the two <code>&lt;image 1&gt;/&lt;image 2&gt;</code> placeholders spliced into the input ids as special token ids <code>-201 / -202</code> — passing the literal placeholder text means the model never attends to the images ("I cannot see any images provided").</p>
+<p><strong>(c) Generation args.</strong> Mirrors <code>api.py:271-277</code> exactly — upstream relies on the checkpoint's own generation defaults, so injecting <code>do_sample</code>/<code>temperature</code> would diverge:</p>
+<pre class="hl">
+<span class="n">output_ids</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span>
+    <span class="n">text_ids</span><span class="p">,</span>
+    <span class="n">images</span><span class="o">=</span><span class="n">image_tensors</span><span class="p">,</span>
+    <span class="n">max_new_tokens</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span>      <span class="c1"># api.py:133</span>
+    <span class="n">use_cache</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">repetition_penalty</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>  <span class="c1"># nothing else: the checkpoint&#x27;s own defaults</span>
+<span class="p">)</span>
+
+</pre>
+<p><strong>(d) SigLIP vision-tower force-load.</strong> The tower is lazily constructed, so the model-level <code>.to(device)</code> misses it; without an explicit <code>load_model()</code> + move it loads onto CPU during generate and raises a device-mismatch 500.</p>
+<p>What stayed with the methods: the compute-saving candidate filter. <code>opennav__select_candidate_views</code> / <code>threestepnav__select_candidate_views</code> are pure method nodes that produce the keyed views dict this nodeset consumes.</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<h3 id="vlm_spatialbot__caption_views"><code>vlm_spatialbot__caption_views</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>views</code> (ANY — <code>{key: {rgb_base64, depth_base64?, depth_raw_base64?}}</code> keyed dict)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>captions</code> (ANY — <code>{key: caption}</code>, every input key covered)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>model_path</code> (blank = <code>$SPATIALBOT_PATH</code> or repo default), <code>prompt</code> (default: the spatial what-objects-how-far prompt), <code>max_new_tokens</code> (slider, default 200)</td>
+</tr>
+<tr>
+<td>Backend call</td>
+<td>per view: decode RGB (+ depth, see below) → Bunny-Phi chat template → <code>generate</code> per §1(c)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="vlm_spatialbot__generate"><code>vlm_spatialbot__generate</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inputs</td>
+<td><code>rgb_b64</code> (TEXT), <code>depth_b64</code> (TEXT, optional — normalised-u8 depth), <code>prompt</code> (TEXT)</td>
+</tr>
+<tr>
+<td>Outputs</td>
+<td><code>text</code> (TEXT)</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>model_path</code> (blank = <code>$SPATIALBOT_PATH</code> or repo default), <code>max_new_tokens</code> (slider, default 200)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Depth input selection</strong> — per view, the packer receives the image upstream actually packs: prefer <code>depth_base64</code> (the env's per-tile min-max-normalised uint8 encode, byte-identical to upstream <code>generate_input</code>'s <code>depth_img</code>); else reconstruct that normalisation from <code>depth_raw_base64</code> (16-bit absolute depth); with no depth at all, the RGB image is duplicated as the second image (upstream behaviour).</p>
+<hr>
+<h2 id="3-server-mode"><span class="num">3.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless VLM — one server, K eval workers coalesce); <code>server_python = conda_env_python("ac-ram", "SPATIALBOT_PYTHON")</code>.</p>
+<p>The <strong><code>ac-ram</code> env</strong> (transformers 4.39.3 + torch 2.4.1) is in Bunny-Phi's compatible range and is the env that already hosted this exact forward inside <code>opennav_perception</code> — so the extraction cannot shift outputs (verified 10/10 byte-equal via captured-input unit replay). A dedicated env remains the ideal; point <code>$SPATIALBOT_PYTHON</code> at it when built.</p>
+<p>Engines live in a lazy registry keyed by <code>model_path</code> (fp16, <code>trust_remote_code</code>), with a load-failure latch and a single-flight GPU inference lock (FM template, 2026-07-05). Checkpoint path resolution walks upward from the nodeset file to the repo's <code>data/</code> anchor — a fixed <code>../../..</code> breaks when the file is served from a workspace <em>overlay</em> copy at a different depth. Load: <code>POST /api/components/nodesets/vlm_spatialbot/load?mode=server</code>.</p>
+<hr>
+<h2 id="4-environment-variables"><span class="num">4.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SPATIALBOT_PYTHON</code></td>
+<td><code>ac-ram</code> env python</td>
+<td>Interpreter for the server subprocess</td>
+</tr>
+<tr>
+<td><code>SPATIALBOT_PATH</code></td>
+<td><code>data/opennav/SpatialBot-3B</code></td>
+<td>Checkpoint directory</td>
+</tr>
+<tr>
+<td><code>OPENNAV_SPATIALBOT_PATH</code></td>
+<td>—</td>
+<td>Legacy alias from the <code>opennav_perception</code> era (still honoured)</td>
+</tr>
+</tbody>
+</table>
+<p><code>initialize(spatialbot_path=…)</code> also accepts the checkpoint path as a nodeset kwarg.</p>
+<hr>
+<h2 id="5-failure-behaviour"><span class="num">5.</span> Failure Behaviour</h2>
+<ul>
+<li><strong>Degraded latch</strong> — a model-load failure latches; every call then returns empty outputs with a <code>degraded</code> self-log entry (house FM convention since 2026-07-05).</li>
+<li>A view missing <code>rgb_base64</code> yields <code>""</code> for that key; the keyed output always covers every input key.</li>
+<li>Empty <code>views</code> / missing <code>rgb_b64</code> → empty output without touching the model.</li>
+</ul>
+<hr>
+<h2 id="6-consumers"><span class="num">6.</span> Consumers</h2>
+<ul>
+<li><a href="../method/threestepnav.html">Three-Step Nav</a> — <code>threestepnav_ce.json</code> (verified): <code>threestepnav__select_candidate_views → vlm_spatialbot__caption_views</code> feeding the navigator's observation formatter.</li>
+<li>Open-Nav — <code>opennav_habitat.json</code> (unverified): same shape via <code>opennav__select_candidate_views</code>.</li>
+</ul>
+<p>See also: <code>model_ram</code> (the RAM/RAM++ tagger it used to be co-hosted with) in the <a href="index.html">Foundation Models index</a>.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-extraction-fidelity">1. Extraction &amp; fidelity</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h3" href="#vlm_spatialbot__caption_views">vlm_spatialbot__caption_views</a>
+      <a class="toc-h3" href="#vlm_spatialbot__generate">vlm_spatialbot__generate</a>
+      <a class="toc-h2" href="#3-server-mode">3. Server Mode</a>
+      <a class="toc-h2" href="#4-environment-variables">4. Environment Variables</a>
+      <a class="toc-h2" href="#5-failure-behaviour">5. Failure Behaviour</a>
+      <a class="toc-h2" href="#6-consumers">6. Consumers</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

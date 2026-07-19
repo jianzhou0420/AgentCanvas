@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>5Graph Execution Engine — AgentCanvas</title>
+<title>Graph Execution Engine — AgentCanvas</title>
 <meta name="description" content="Fire-on-input ready-queue scheduler — no form-specific code paths for DAG vs. loop vs. mixed.">
-<meta property="og:title" content="5Graph Execution Engine — AgentCanvas">
+<meta property="og:title" content="Graph Execution Engine — AgentCanvas">
 <meta property="og:description" content="Fire-on-input ready-queue scheduler — no form-specific code paths for DAG vs. loop vs. mixed.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentCanvas">
@@ -23,7 +23,19 @@
     document.documentElement.setAttribute('data-theme', t);
   })();
 </script>
-
+<style>
+  .rxsvg { width:100%; height:auto; max-width:700px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--capability-bg); stroke: var(--capability); stroke-width:1.6; }
+  .rxsvg .at { fill: var(--capability); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#gee); }
+  .rxsvg .edgeA { stroke: var(--capability); stroke-width:1.7; fill:none; marker-end:url(#geeA); }
+  .rxsvg .edgeAd { stroke: var(--capability); stroke-width:1.7; fill:none; stroke-dasharray:6 5; marker-end:url(#geeA); }
+</style>
 <!-- site-layout -->
 </head>
 <body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/graph-execution-engine.html">
@@ -34,6 +46,7 @@
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>
@@ -55,9 +68,9 @@
     <span class="sep">/</span>
     <a href="index.html">Capabilities</a>
     <span class="sep">/</span>
-    <span class="here">5Graph Execution Engine</span>
+    <span class="here">Graph Execution Engine</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-07-13</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">5</span>Graph Execution Engine</h1>
@@ -66,14 +79,54 @@
 
 
 
-<p>Nodes fire when inputs arrive, not in a fixed order. The <code>GraphExecutor</code> supports cycles natively, enables real-time streaming, and opens the door for future parallelism.</p>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="gee" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="geeA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--capability)"/></marker>
+</defs></svg>
+
+<p class="lede">The <code>GraphExecutor</code> is one while-loop over a ready queue: pop a node, fire it, route its outputs into downstream port slots, enqueue whoever became ready — repeat until nothing is ready or something says stop. Execution order is declared nowhere; data arriving is the only trigger. The only node types the engine special-cases are the two loop pivots: popping an <code>iterIn</code> opens an iteration (<code>step_start</code>), firing an <code>iterOut</code> closes it — step counter, checkpoint, <code>nav_step</code> broadcast, then the loop-carry transfer into the paired <code>iterIn</code>, which re-enters the queue and the cycle runs again. Everything else on this page — readiness, hooks, state containers, signals, multi-scope, termination — hangs off that loop.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 260" role="img" aria-label="The engine's while-loop, with the loop special case. Top cycle: a FIFO ready queue pops a node; the node fires via await forward(); its outputs are routed to downstream ports, with LIST[T] coercion at the port seam; downstream nodes that became ready are enqueued back into the queue. Accent branch below: if the fired node is an iterOut, the iteration closes — step_end, checkpoint, nav_step broadcast, then the iterout_* slots transfer to the paired iterIn — and the paired iterIn is enqueued for the next iteration, which is how a cycle runs on this scheduler. Bottom notes: every firing is wrapped by fail-open Pre/PostNodeExecute hooks, popping an iterIn emits step_start; the run ends on iterOut.stop, step budget, the max-firings guard, or the Stop button, and every exit fires run_end plus the Graph-level hooks.">
+  <rect x="20" y="60" width="130" height="44" rx="8" class="box"/>
+  <text x="85" y="78" text-anchor="middle">ready queue</text>
+  <text x="85" y="94" text-anchor="middle" class="mono">FIFO · pop(0)</text>
+
+  <rect x="230" y="60" width="120" height="44" rx="8" class="box"/>
+  <text x="290" y="78" text-anchor="middle">fire node</text>
+  <text x="290" y="94" text-anchor="middle" class="mono">await forward()</text>
+
+  <rect x="430" y="60" width="150" height="44" rx="8" class="box"/>
+  <text x="505" y="78" text-anchor="middle">route outputs</text>
+  <text x="505" y="94" text-anchor="middle" class="mono">LIST[T] at port seam</text>
+
+  <path class="edge" d="M150,82 H230"/><text x="190" y="74" text-anchor="middle" class="dim">pop</text>
+  <path class="edge" d="M350,82 H430"/><text x="390" y="74" text-anchor="middle" class="dim">outputs</text>
+  <path class="edge" d="M505,60 C505,24 85,24 85,58"/>
+  <text x="295" y="18" text-anchor="middle" class="dim">downstream nodes that became ready — enqueue</text>
+
+  <path class="edgeA" d="M290,104 V148"/>
+  <text x="300" y="132" class="at">if node.type == iterOut</text>
+
+  <rect x="150" y="148" width="400" height="62" rx="8" class="accent"/>
+  <text x="350" y="168" text-anchor="middle" class="at">close the iteration</text>
+  <text x="350" y="186" text-anchor="middle" class="mono">step_end · checkpoint · nav_step broadcast</text>
+  <text x="350" y="202" text-anchor="middle" class="mono">transfer iterout_* slots → paired iterIn</text>
+
+  <path class="edgeA" d="M150,180 C70,180 60,150 60,106"/>
+  <text x="14" y="200" class="at">enqueue paired iterIn</text>
+  <text x="14" y="216" class="dim">— next iteration</text>
+
+  <text x="14" y="240" class="dim">every firing wrapped by Pre/PostNodeExecute hooks (fail-open) · popping an iterIn emits step_start</text>
+  <text x="14" y="256" class="dim">runs until: iterOut.stop truthy · step budget · max-firings guard · Stop — every exit fires run_end + Graph* hooks</text>
+</svg>
+
 <p><em>Design docs: <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · <a href="../design-docs/graph/loop-control-system.html">Loop Control</a> · <a href="../design-docs/graph/state-containers.html">State Containers</a></em></p>
 <hr>
 <h2 id="1-overview"><span class="num">1.</span> Overview</h2>
 <p>The <code>GraphExecutor</code> is the primary execution engine. It replaces a linear DAG executor with a dataflow model where data drives execution order. This naturally supports:</p>
 <ul>
 <li><strong>DAG workflows</strong> — single forward pass</li>
-<li><strong>Cyclic agent loops</strong> — <code>iterOut</code> feeds back to <code>iterIn</code>; run-start values wire into iterIn's init side (ADR-dataflow-008)</li>
+<li><strong>Loops</strong> — <code>iterOut</code> feeds back to <code>iterIn</code>; run-start values wire into iterIn's init side (ADR-dataflow-008)</li>
 <li><strong>Mixed patterns</strong> — both in the same graph</li>
 </ul>
 <div class="highlight"><pre><span></span><code>Ready queue: [entry₁, entry₂, ...]
@@ -245,10 +298,10 @@
 </tr>
 </tbody>
 </table>
-<p>Graph-level hooks (<code>GraphStart</code> / <code>GraphComplete</code> / <code>GraphError</code>) fire at run entry and both exit paths. All hooks are <strong>fail-open</strong> — hook errors never break execution.</p>
+<p>Graph-level hooks fire at run entry (<code>GraphStart</code>) and on the matching exit path (<code>GraphComplete</code> on success, <code>GraphError</code> on crash). All hooks are <strong>fail-open</strong> — hook errors never break execution. Full contract — sources, matching, protocol, ordering — in <a href="#11-extension-points">§11</a>.</p>
 <h2 id="4-two-pivot-iteration-adr-dataflow-008"><span class="num">4.</span> Two-Pivot Iteration (ADR-dataflow-008)</h2>
 <div class="highlight"><p><strong><a href="../core/decisions/dataflow/adr-dataflow-008-two-sided-iterin.html">ADR-dataflow-008</a> + full removal (2026-06-10):</strong> the <code>initialize</code> pivot is folded into <code>iterIn</code>'s left/input side and the node type has been deleted outright — graphs still carrying one are rejected by <code>validate_graph_connectivity</code> with a migration hint. Run-start inputs are authored in <code>iterIn.config.initPorts</code> and wired as ordinary canvas edges into the <code>init_&lt;name&gt;</code> handles; the <code>iterOut</code> transfer is unchanged.</p></div>
-<p>Cyclic agent loops use two pivot node types — the loop-carry transfer goes through the executor, not through a canvas wire:</p>
+<p>Loops use two pivot node types — the loop-carry transfer goes through the executor, not through a canvas wire:</p>
 <table>
 <thead>
 <tr>
@@ -433,7 +486,163 @@
 </ul>
 <h3 id="105-termination-is-per-scope"><span class="num">10.5</span> Stop is per-scope</h3>
 <p>In a multi-scope graph, each scope's halt signal lives on its own iterOut's <code>stop</code> input — structurally bound to the right loop. An inner scope's stop ends <em>only</em> that scope (its final side emits, the outer loop continues); only the root scope's stop ends the run.</p>
-<h2 id="11-key-files"><span class="num">11.</span> Key Files</h2>
+<h2 id="11-extension-points"><span class="num">11.</span> Extension Points — Shell Hooks &amp; <code>on_event</code></h2>
+<p>The boundaries the loop exposes (§3.4) can carry user code without touching the engine. Two mechanisms: <strong>shell hooks</strong> — command lines stored as data in the graph, run as subprocesses, able to observe, block, or rewrite a firing — and the SDK's in-process <code>on_event</code> callback. Both are fail-open by construction, and both cost one boolean check per boundary when unused.</p>
+
+<svg class="rxsvg" viewBox="0 0 700 300" role="img" aria-label="Two-row diagram. Top row, where hooks come from: three source boxes — workspace/hooks.json, graph JSON hooks array, and per-node config hooks with a note that match_node_id is auto-set — feed merge_hooks(), ordered global then graph then node, which builds the HookRunner; disabled hooks are dropped and the rest indexed by event. Bottom row, when they fire: GraphStart, then PreNodeExecute, forward(), PostNodeExecute with a dashed loop arc marked times-every-node-firing, ending in either GraphComplete on a clean run or GraphError on a crash. Under PreNodeExecute: block skips the node, modify patches its inputs. Under PostNodeExecute: modify replaces outputs, success only. Bottom caption: stdin carries the JSON payload to your command, stdout answers with an action of continue, block, or modify; fail-open — timeout, crash, or garbage means continue; no hooks means one boolean check per boundary.">
+  <text x="10" y="20">where hooks come from</text>
+
+  <rect x="10" y="34" width="190" height="26" rx="6" class="box"/><text x="105" y="51" text-anchor="middle" class="mono">workspace/hooks.json</text>
+  <rect x="10" y="66" width="190" height="26" rx="6" class="box"/><text x="105" y="83" text-anchor="middle" class="mono">graph JSON — hooks[]</text>
+  <rect x="10" y="98" width="190" height="26" rx="6" class="box"/><text x="105" y="115" text-anchor="middle" class="mono">node config — hooks</text>
+  <text x="105" y="138" text-anchor="middle" class="dim">match_node_id auto-set</text>
+
+  <path class="edge" d="M200,47 C228,47 234,70 250,74"/>
+  <path class="edge" d="M200,79 H250"/>
+  <path class="edge" d="M200,111 C228,111 234,88 250,84"/>
+
+  <rect x="252" y="64" width="124" height="30" rx="6" class="box"/><text x="314" y="83" text-anchor="middle" class="mono">merge_hooks()</text>
+  <text x="314" y="112" text-anchor="middle" class="dim">global → graph → node</text>
+
+  <path class="edge" d="M376,79 H428"/>
+
+  <rect x="430" y="62" width="112" height="34" rx="7" class="accent"/><text x="486" y="83" text-anchor="middle" class="at">HookRunner</text>
+  <text x="486" y="112" text-anchor="middle" class="dim">disabled dropped · indexed by event</text>
+
+  <path class="edgeAd" d="M486,118 V176"/>
+
+  <text x="10" y="152">when they fire</text>
+  <text x="327" y="154" text-anchor="middle" class="at">× every node firing</text>
+
+  <rect x="10" y="180" width="88" height="32" rx="7" class="box"/><text x="54" y="200" text-anchor="middle">GraphStart</text>
+  <rect x="128" y="180" width="124" height="32" rx="7" class="accent"/><text x="190" y="200" text-anchor="middle" class="at">PreNodeExecute</text>
+  <rect x="286" y="180" width="84" height="32" rx="7" class="box"/><text x="328" y="201" text-anchor="middle" class="mono">forward()</text>
+  <rect x="400" y="180" width="128" height="32" rx="7" class="accent"/><text x="464" y="200" text-anchor="middle" class="at">PostNodeExecute</text>
+  <rect x="572" y="164" width="118" height="28" rx="7" class="box"/><text x="631" y="182" text-anchor="middle">GraphComplete</text>
+  <rect x="572" y="212" width="118" height="28" rx="7" class="box"/><text x="631" y="230" text-anchor="middle">GraphError</text>
+
+  <path class="edge" d="M98,196 H126"/>
+  <path class="edge" d="M252,196 H284"/>
+  <path class="edge" d="M370,196 H398"/>
+  <path class="edge" d="M528,190 C548,186 552,180 570,178"/>
+  <path class="edge" d="M528,202 C548,206 552,222 570,225"/>
+  <text x="547" y="172" text-anchor="middle" class="dim">run ok</text>
+  <text x="547" y="240" text-anchor="middle" class="dim">crash</text>
+  <path class="edgeAd" d="M464,180 C464,160 190,160 190,178"/>
+
+  <text x="190" y="230" text-anchor="middle" class="mono">block → skip node</text>
+  <text x="190" y="244" text-anchor="middle" class="mono">modify → patch inputs</text>
+  <text x="464" y="230" text-anchor="middle" class="mono">modify → replace outputs</text>
+  <text x="464" y="244" text-anchor="middle" class="dim">(success only)</text>
+
+  <text x="350" y="272" text-anchor="middle" class="mono">stdin: JSON payload → your command → stdout: {"action": "continue" | "block" | "modify"}</text>
+  <text x="350" y="291" text-anchor="middle" class="dim">fail-open — timeout / crash / garbage ⇒ continue · no hooks ⇒ one boolean check per boundary</text>
+</svg>
+
+<p>A hook is pure data — <code>HookDef</code>: <code>event</code>, <code>command</code>, <code>match_node_type="*"</code>, <code>match_node_id</code>, <code>timeout_ms=1000</code>, <code>enabled</code> (<code>graph_def.py</code>) — merged once per run in <code>run()</code> from three sources: <code>workspace/hooks.json</code> (global, loaded at component scan; in active-overlay setups the overlay's file replaces it whole, never an array merge), the graph JSON's <code>hooks[]</code> (travels with the saved file), and per-node config edited in the Properties panel (both match fields are auto-set to the owning node, so panel hooks fire only there). Matching is by node type — <code>"*"</code>, exact, or the <code>__*</code> prefix glob (only that suffix form is a glob; <code>"env_*"</code> is a literal) — unless <code>match_node_id</code> is set, which wins outright (<code>hooks.py · HookRunner._matches</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Fires</th>
+<th>Payload fields (besides <code>event</code>, <code>node_type</code>)</th>
+<th>Actions honored</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PreNodeExecute</code></td>
+<td>Before <code>instance.forward()</code>, every firing</td>
+<td><code>node_id</code>, <code>inputs</code></td>
+<td><code>block</code>, <code>modify</code> (patches <code>pending_inputs</code> key-by-key)</td>
+</tr>
+<tr>
+<td><code>PostNodeExecute</code></td>
+<td>After <code>forward()</code> — on success <em>and</em> on node error</td>
+<td><code>node_id</code>, <code>outputs</code>, <code>error</code> (<code>null</code> on success)</td>
+<td><code>modify</code> (replaces the output dict, success only)</td>
+</tr>
+<tr>
+<td><code>GraphStart</code></td>
+<td>Before the dataflow loop starts</td>
+<td><code>graph_name</code>, <code>node_count</code></td>
+<td>observe only</td>
+</tr>
+<tr>
+<td><code>GraphComplete</code></td>
+<td>After a run that finishes without an unhandled error</td>
+<td><code>step</code>, <code>terminated</code></td>
+<td>observe only</td>
+</tr>
+<tr>
+<td><code>GraphError</code></td>
+<td>When the run crashes with an unhandled exception</td>
+<td><code>error</code></td>
+<td>observe only</td>
+</tr>
+</tbody>
+</table>
+<p><code>GraphComplete</code> and <code>GraphError</code> are <strong>mutually exclusive</strong> — success path vs <code>except</code> path, no <code>finally</code>; an end-of-run hook that must always fire needs to register on both.</p>
+<p>The protocol is stdin/stdout JSON. The executor writes one event object to the hook's stdin — payload values pass <code>safe_serialize()</code> first, so images and arrays arrive as metadata stubs (<code>{"__type": "ndarray", "shape": …}</code>), never raw data. The hook answers <code>{"action": …, "modified_data": …}</code> on stdout. Every failure mode degrades to <code>continue</code>: command fails to tokenize, subprocess fails to spawn, timeout (killed), empty stdout, invalid JSON, unknown action. <strong>The exit code is never read</strong> — only stdout decides. And the command does not go through a shell — it's <code>shlex.split()</code> + <code>create_subprocess_exec()</code>, so pipes, redirection, and <code>$VAR</code> expansion don't work; put shell features in a script and make the script the command.</p>
+<p>The smallest hook is the Properties panel plus <code>tee</code> — select a node, <strong>Hooks → Add</strong>, type the command, press Play (the panel offers <code>PreNodeExecute</code> / <code>PostNodeExecute</code>; the three lifecycle events don't belong to a single node, so they're configured in JSON):</p>
+<figure style="margin:1.5rem 0;text-align:center">
+  <img src="img/hook-properties-panel.png" alt="The Properties panel with the Sentiment Tagger node selected: id, type, category, position and label rows, then the HOOKS section with an Add button and one hook row — event dropdown set to PostNodeExecute, an enabled checkbox, a delete icon, the command input reading tee -a /tmp/sentiment_firings.jsonl, and a timeout field of 1000 ms" loading="lazy" style="max-width:340px;width:100%;border-radius:8px">
+  <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">One <code>PostNodeExecute</code> hook on the Text Analysis Demo's Sentiment Tagger. <code>match_node_type</code> / <code>match_node_id</code> don't appear — for node-level hooks they're auto-set server-side.</figcaption>
+</figure>
+<p>This is the actual line that run appended — the event as the hook's stdin saw it (<code>tee</code> echoes the payload back on stdout, which parses as JSON with no <code>"action"</code> key: default <code>continue</code>):</p>
+<pre class="hl">
+<span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PostNodeExecute&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;example__sentiment&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;example__sentiment_n03&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;outputs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;sentiment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;neutral&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The weather today is great and wonderful but the traffic is terrible and the roads are in poor condition&quot;</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="p">}</span>
+
+</pre>
+<p>Matched hooks run sequentially in merge order — global → graph → node. First <code>block</code> wins and short-circuits the rest; <code>modify</code> results accumulate key-by-key via <code>dict.update()</code>, so later hooks override colliding keys and node-level has the last word; one hook's error never stops the rest. Each invocation is a fork+exec (~5–20&thinsp;ms) — match narrowly (or per-node) on long loops.</p>
+<p>The same boundaries are also exposed <strong>in-process</strong>: <code>Graph.run(on_event=…)</code> in the <a href="graph-sdk.html">Graph SDK</a> registers a native callback, delivered by <code>GraphExecutor._emit()</code> with kinds <code>graph_start</code> / <code>node_start</code> / <code>node_finish</code> / <code>node_error</code> / <code>graph_complete</code> / <code>graph_error</code>. (The SDK's <code>g.hook(event, command, …)</code> builder writes shell <code>HookDef</code>s into the graph it's building.)</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Shell hooks</th>
+<th><code>on_event</code> callback</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runs</td>
+<td>Subprocess per invocation</td>
+<td>In-process, sync or async</td>
+</tr>
+<tr>
+<td>Can block / modify</td>
+<td>Yes</td>
+<td>No — observe only</td>
+</tr>
+<tr>
+<td>Payload</td>
+<td><code>safe_serialize</code>d JSON</td>
+<td>Live Python objects (don't mutate them)</td>
+</tr>
+<tr>
+<td>Travels with the graph JSON</td>
+<td>Yes — pure data</td>
+<td>No — code, per <code>run()</code> call</td>
+</tr>
+<tr>
+<td>Failure isolation</td>
+<td>Fail-open → <code>continue</code></td>
+<td>Exceptions logged, never propagated</td>
+</tr>
+</tbody>
+</table>
+<p>Coverage note: only <code>HookDef</code> serialization round-trip is tested (<code>test_graph_sdk.py::test_hooks_round_trip</code>); runner, matching, and merge behaviour have no direct tests — re-introduce a focused suite before using hooks for load-bearing eval gating.</p>
+<h2 id="12-key-files"><span class="num">12.</span> Key Files</h2>
 <table>
 <thead>
 <tr>
@@ -618,7 +827,7 @@
 </table>
 <p>All items fully implemented.</p>
 <nav class="page-nav">
-  <p><a href="nested-graph-system.html">← 4. Nested Graph System</a> · <a href="index.html">↑ Capabilities index</a> · <a href="real-time-observability.html">6. Real-Time Observability →</a></p>
+  <p><a href="nested-graph-system.html">← 4. Nested Graph System</a> · <a href="index.html">↑ Capabilities index</a> · <a href="execution-logs-live-views.html">6. Execution Logs &amp; Live Views →</a></p>
 </nav>
 
   <footer>
@@ -655,7 +864,8 @@
       <a class="toc-h3" href="#103-checkpoint-+-broadcast-roots-only">10.3 Checkpoint + nav_step only on root-scope iter</a>
       <a class="toc-h3" href="#104-scope-re-entry-graphout-latch">10.4 Scope re-entry + graphOut latch</a>
       <a class="toc-h3" href="#105-termination-is-per-scope">10.5 Stop is per-scope</a>
-      <a class="toc-h2" href="#11-key-files">11. Key Files</a>
+      <a class="toc-h2" href="#11-extension-points">11. Extension Points — Shell Hooks &amp; on_event</a>
+      <a class="toc-h2" href="#12-key-files">12. Key Files</a>
       <a class="toc-h2" href="#status">Status</a>
     </nav>
   </div>

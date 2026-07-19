@@ -1,7 +1,7 @@
 {
   "name": "Open-Nav (Habitat VLN-CE)",
   "kind": "graph",
-  "description": "Faithful AgentCanvas port of [Open-Nav](https://arxiv.org/abs/2409.18794) (Qiao et al., ICRA 2025). Spatial-temporal chain-of-thought VLN-CE pipeline: Stage 1 instruction parse (action + landmark detection, once per episode), Stage 2 progress estimation, Stage 3 ensemble decision (3 navigator samples → fusion → tie-break → random fallback). Uses env_habitat for the simulator, opennav_waypoint for the frozen TRM_net + image encoders, opennav_perception for RAM tagging + SpatialBot depth-aware captions, and the opennav method nodeset for prompts/parsers/decision logic. Step cap is 6 or 8 depending on parsed action count, mirroring base_il_trainer_llm.py:394.",
+  "description": "Faithful AgentCanvas port of [Open-Nav](https://arxiv.org/abs/2409.18794) (Qiao et al., ICRA 2025). Spatial-temporal chain-of-thought VLN-CE pipeline: Stage 1 instruction parse (action + landmark detection, once per episode), Stage 2 progress estimation, Stage 3 ensemble decision (3 navigator samples → fusion → tie-break → random fallback). Uses env_habitat for the simulator, opennav_waypoint for the frozen TRM_net + image encoders, model_ram + vlm_spatialbot for RAM tagging + SpatialBot depth-aware captions, and the opennav method nodeset for prompts/parsers/decision logic. Step cap is 6 or 8 depending on parsed action count, mirroring base_il_trainer_llm.py:394.",
   "nodes": [
     {
       "id": "episode_info",
@@ -122,18 +122,22 @@
     },
     {
       "id": "ram_tag",
-      "type": "opennav_perception__tag",
-      "label": "RAM Tag (per candidate)",
+      "type": "model_ram__tag_views",
+      "label": "RAM: Tag Views (Open-Nav 224, raw seps)",
       "position": {
         "x": 2240,
         "y": 880
       },
-      "config": {}
+      "config": {
+        "variant": "ram",
+        "image_size": "224",
+        "keep_separators": true
+      }
     },
     {
       "id": "spatial_caption",
-      "type": "opennav_perception__caption",
-      "label": "SpatialBot Caption (per candidate)",
+      "type": "vlm_spatialbot__caption_views",
+      "label": "SpatialBot: Caption Views",
       "position": {
         "x": 2240,
         "y": 480
@@ -427,6 +431,16 @@
         "y": 780
       },
       "config": {}
+    },
+    {
+      "id": "select_cand_views",
+      "type": "opennav__select_candidate_views",
+      "label": "Select Candidate Views",
+      "position": {
+        "x": 2240,
+        "y": 680
+      },
+      "config": {}
     }
   ],
   "edges": [
@@ -525,34 +539,6 @@
       "id": "e_predict_to_bin",
       "source": "predict_waypoints",
       "target": "bin_to_directions",
-      "sourceHandle": "candidates",
-      "targetHandle": "candidates"
-    },
-    {
-      "id": "e_pano_to_ram_views",
-      "source": "panorama_rgbd",
-      "target": "ram_tag",
-      "sourceHandle": "views",
-      "targetHandle": "views"
-    },
-    {
-      "id": "e_pano_to_caption_views",
-      "source": "panorama_rgbd",
-      "target": "spatial_caption",
-      "sourceHandle": "views",
-      "targetHandle": "views"
-    },
-    {
-      "id": "e_bin_to_ram_cands",
-      "source": "bin_to_directions",
-      "target": "ram_tag",
-      "sourceHandle": "candidates",
-      "targetHandle": "candidates"
-    },
-    {
-      "id": "e_bin_to_caption_cands",
-      "source": "bin_to_directions",
-      "target": "spatial_caption",
       "sourceHandle": "candidates",
       "targetHandle": "candidates"
     },
@@ -877,6 +863,34 @@
       "sourceHandle": "final_stop",
       "target": "evaluate",
       "targetHandle": "trigger"
+    },
+    {
+      "id": "e_pano_views_to_select",
+      "source": "panorama_rgbd",
+      "target": "select_cand_views",
+      "sourceHandle": "views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_bin_cands_to_select",
+      "source": "bin_to_directions",
+      "target": "select_cand_views",
+      "sourceHandle": "candidates",
+      "targetHandle": "candidates"
+    },
+    {
+      "id": "e_select_to_ram_tag",
+      "source": "select_cand_views",
+      "target": "ram_tag",
+      "sourceHandle": "candidate_views",
+      "targetHandle": "views"
+    },
+    {
+      "id": "e_select_to_spatial_caption",
+      "source": "select_cand_views",
+      "target": "spatial_caption",
+      "sourceHandle": "candidate_views",
+      "targetHandle": "views"
     }
   ]
 }

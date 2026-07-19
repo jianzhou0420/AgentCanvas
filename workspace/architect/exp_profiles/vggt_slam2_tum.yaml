@@ -1,0 +1,32 @@
+# Experiment harness profile for the vggt_slam_tum graph.
+# Read by /architect:experiment and /architect:debug.
+# Schema: see .claude/commands/architect/_common/evaluator.md (profile block: split/worker_count/step_budget/per_step_budget_sec/metrics).
+
+# Eval-API parameters
+split: ""                        # env_tum has no splits — sequence = placed episode
+worker_count: 1                  # replicated stateful session; exclusive GPU anyway
+step_budget: 5000                # one graph iter per frame; fr1 sequences run 573-798 frames
+per_step_budget_sec: 30          # boundary steps run a 17-frame VGGT forward + LC + optimize
+
+# Metric handling
+primary_metric: ate_rmse         # from model_vggt_slam__eval_trajectory (evo_ape tum -as)
+secondary_metrics: [num_poses, num_submaps, num_loops]
+
+# Free-form rationale; lives here so the skill .md stays graph-agnostic.
+rationale:
+  step_budget: |
+    env_tum replays one frame per graph iteration. freiburg1_desk = 573 rgb
+    frames, freiburg1_xyz = 798, fr3_long_office = 2585. 5000 covers every
+    TUM sequence on disk with headroom; the loop actually stops on
+    step_replay.terminated, so the budget is a runaway guard, not a tuner.
+  per_step_budget_sec: |
+    Non-boundary track = LK keyframe gate only (<50 ms). A submap boundary
+    fires a 17-frame VGGT forward (~1-3 s bf16 on RTX-4090-class) + SALAD
+    retrieval + (on loop closure) a second 2-frame VGGT pass + LM optimize.
+    30 s is a generous envelope for the boundary; first-reset model load
+    (~5 GB weights) is on reset, not track.
+  worker_count: |
+    1 — parallelism="replicated" would give each worker its own VGGT-1B +
+    SALAD (~8-10 GB each); peak exceeds usable_vram_mb=8576, and the
+    admission entry is exclusive_gpu anyway. TUM parity needs exactly one
+    deterministic session per sequence.

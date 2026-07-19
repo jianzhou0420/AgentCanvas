@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph SDK — AgentCanvas</title>
+<meta name="description" content="Build and run the same graphs as a Python library — no canvas, no JSON authoring.">
+<meta property="og:title" content="Graph SDK — AgentCanvas">
+<meta property="og:description" content="Build and run the same graphs as a Python library — no canvas, no JSON authoring.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/graph-sdk.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/graph-sdk.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">Graph SDK</span>
+  </div>
+  <div class="last-updated">2026-07-12</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">9</span>Graph SDK</h1>
+  <p class="tagline">Build and run the same graphs as a Python library — no canvas, no JSON authoring.</p>
+</header>
+
+<div class="callout success">
+<strong>Recommended</strong>
+This is a highly structured SDK — hand it to a coding agent like Claude Code or Codex rather than wasting your effort hand-writing the boilerplate.
+</div>
+
+<p>Every graph on the platform is a <code>GraphDefinition</code> — a pure dataclass the canvas emits, the JSON stores, and the <code>GraphExecutor</code> runs (<a href="graph-expressible-agents.html">Graph-Expressible Agents</a>). The Graph SDK adds a third way to produce and drive that same object: <strong>write it in Python</strong>, imported like LangGraph / LangChain rather than authored as JSON or wired on the canvas. Same nodes, same executor, same eval — just a builder in front and a runner behind. Because it is the same <code>GraphDefinition</code>, code ⇄ JSON ⇄ canvas stay fully reversible.</p>
+<p><em>Design docs: <a href="../design-docs/surfaces/graph-sdk-builder.html">SDK Builder Contract</a> · <a href="../design-docs/surfaces/graph-sdk-dependency-boundary.html">SDK Dependency Boundary</a> · <a href="../design-docs/surfaces/graph-sdk-record-replay.html">Graph SDK Record / Replay</a> · <a href="../design-docs/graph/graph-executor.html">Graph Executor</a> · builds on <a href="graph-expressible-agents.html">Graph-Expressible Agents</a>, <a href="nested-graph-system.html">Nested Graph System</a>, <a href="graph-execution-engine.html">Graph Execution Engine</a>, <a href="batch-evaluation-job-queue.html">Batch Evaluation</a></em></p>
+<hr>
+<h2 id="1-three-ways"><span class="num">1.</span> Three ways to the same graph</h2>
+<table>
+<thead>
+<tr>
+<th>Author with</th>
+<th>Surface</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Canvas</strong></td>
+<td>Visual editor (<a href="visual-canvas-editor.html">#8</a>)</td>
+<td><code>GraphDefinition</code> JSON</td>
+</tr>
+<tr>
+<td><strong>JSON</strong></td>
+<td>Hand-written <code>workspace/graphs/**.json</code></td>
+<td><code>GraphDefinition</code> JSON</td>
+</tr>
+<tr>
+<td><strong>Code</strong> (this page)</td>
+<td><code>from agentcanvas import Graph</code></td>
+<td>the same <code>GraphDefinition</code> — in memory, runnable, serialisable</td>
+</tr>
+</tbody>
+</table>
+<p>The Graph SDK surface is a thin, ergonomic wrapper over the existing dataclass model (<code>app/graph_def.py</code>) and the in-process engine (<code>app/agent_loop/graph_executor.py</code>). It adds no new execution machinery — every method assembles the same <code>NodeDef</code> / <code>EdgeDef</code> / <code>ContainerDef</code> the canvas emits.</p>
+<h2 id="2-build"><span class="num">2.</span> Build a graph in code</h2>
+<p>Three moves build any graph: <code>add</code> a node, <code>connect</code> two ports, mark the boundary with <code>graph_out</code> — then <code>run</code>. Node types you write yourself are <code>BaseCanvasNode</code> subclasses you <code>register_node()</code>; the platform ships no arithmetic builtins, so this hermetic hello-world defines its own. Extra kwargs to <code>add</code> become the node's <code>config</code>; the <code>graphOut</code>'s <code>portName</code> becomes the run's output key. (A graph that spans real GPU nodesets — Habitat, SAM — is <a href="#4-run">§4</a>.)</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">agent_loop</span><span class="nn">.</span><span class="nn">builtin_nodes</span><span class="w"> </span><span class="kn">import</span> <span class="n">register_node</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="nn">.</span><span class="nn">bases</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseCanvasNode</span><span class="p">,</span> <span class="n">PortDef</span>
+
+<span class="c1"># The platform ships no arithmetic builtins, so a hello-world defines its own.</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Const</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">ex_const</span><span class="s2">&quot;</span>
+    <span class="n">input_ports</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">PortDef</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span><span class="p">}</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Add</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">ex_add</span><span class="s2">&quot;</span>
+    <span class="n">input_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">a</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">b</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">sum</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">ANY</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">sum</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">a</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">b</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">}</span>
+
+<span class="n">register_node</span><span class="p">(</span><span class="n">Const</span><span class="p">)</span><span class="p">;</span> <span class="n">register_node</span><span class="p">(</span><span class="n">Add</span><span class="p">)</span>
+
+<span class="n">g</span> <span class="o">=</span> <span class="n">Graph</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">demo</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">ex_const</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span><span class="p">,</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">ex_const</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+<span class="n">add</span><span class="p">,</span> <span class="n">out</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">ex_add</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">g</span><span class="o">.</span><span class="n">graph_out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">total</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">add</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">a</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+<span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">b</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">add</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">b</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+<span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">add</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">sum</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">out</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="p">)</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">total</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span>   <span class="c1"># -&gt; 12, in-process, no backend</span>
+</pre>
+<p>Shared state is first-class too: <code>g.container(id, states=…)</code> declares a blackboard and <code>g.grant(node, container_id)</code> gives a node read/write access — the same containers + access grants the canvas draws.</p>
+<h2 id="3-catalog"><span class="num">3.</span> Catalog, typed authoring &amp; validation</h2>
+<p>Answer "what can I add?" without spawning anything: <code>catalog()</code> / <code>describe(node_type)</code> / <code>nodesets()</code> read every node type — ports, config schema, owning nodeset, server/env routing — from a spawn-free workspace scan. For IDE support, <code>agentcanvas.nodes</code> ships generated typed stubs (regenerate with <code>generate_node_stubs()</code>): <code>g.add(EnvHabitat.reset)</code> gets completion and port checking, and stays fully interchangeable with the string form <code>g.add("env_habitat__reset")</code>. Validation is default-on: every <code>run()</code> first checks the graph resolves — unknown node types, required input ports with no incoming edge — and a failure raises <code>GraphValidationError</code> listing <em>every</em> issue at once, before anything executes; <code>validate=True</code> adds the deeper connectivity pass.</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">catalog</span><span class="p">,</span> <span class="n">describe</span><span class="p">,</span> <span class="n">nodesets</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="nn">.</span><span class="nn">nodes</span><span class="w"> </span><span class="kn">import</span> <span class="n">EnvHabitat</span><span class="p">,</span> <span class="n">ModelSam</span>        <span class="c1"># generated typed stubs</span>
+
+<span class="n">catalog</span><span class="p">(</span><span class="p">)</span>                          <span class="c1"># every node type, from a spawn-free workspace scan</span>
+<span class="n">describe</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">model_sam__segment_auto</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># ports, config schema, nodeset, server/env</span>
+<span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">EnvHabitat</span><span class="o">.</span><span class="n">reset</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">reset</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># typed authoring — IDE completion, checked ports</span>
+</pre>
+<h2 id="4-run"><span class="num">4.</span> Run it in-process</h2>
+<p><code>g.run()</code> drives <code>GraphExecutor.run()</code> directly — the same engine as the canvas Play button — with no FastAPI, no scheduler, and no GPU-admission gate (that lives in <code>JobScheduler</code>, not the executor). Pure-Python graphs run untouched (<a href="#2-build">§2</a>). <strong>Nodeset graphs run too</strong> — and a real one usually spans more than one conda env. Here is the whole story in a single graph: <em>sample Habitat's first frame, segment it with SAM, save the annotated frame.</em></p>
+<p>Two of the node types run in foreign conda envs this process must never import — <code>env_habitat__*</code> (habitat-sim, <code>ac-vlnce</code>) and <code>model_sam__*</code> (SAM, <code>ac-fm</code>). The two glue nodes (<code>RgbToPng</code>, <code>OverlayMasks</code>) are the other kind: tiny <code>BaseCanvasNode</code> subclasses defined and <code>register_node()</code>'d right here, running in-process. One <code>build()</code> wires all five:</p>
+<pre class="hl">
+<span class="k">def</span><span class="w"> </span><span class="nf">build</span><span class="p">(</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="n">Graph</span><span class="p">:</span>
+    <span class="n">g</span> <span class="o">=</span> <span class="n">Graph</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">habitat-sam-first-frame</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="n">reset</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">env_habitat__reset</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">reset</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">observe</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">env_habitat__observe_egocentric</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">observe</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">to_png</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">ex_rgb_to_png</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">to_png</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">sam</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">model_sam__segment_auto</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">sam</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># defaults: variant=sam1, sam_vit_b.pth</span>
+    <span class="n">overlay</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">ex_overlay_masks</span><span class="s2">&quot;</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">overlay</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">annotated</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">graph_out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">annotated</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">num_masks</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">graph_out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">num_masks</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">reset</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">episode_id</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">observe</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">trigger</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>   <span class="c1"># observe only after reset</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">observe</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">to_png</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>             <span class="c1"># frame → base64 for SAM</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">to_png</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">image_b64</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">sam</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">image_b64</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">observe</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">overlay</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>            <span class="c1"># fan-out: raw frame reused</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">sam</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">masks</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">overlay</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">masks</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">overlay</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">annotated</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">annotated</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+    <span class="n">g</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">overlay</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">count</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span> <span class="n">num_masks</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">g</span>
+</pre>
+<p>The seam between the two worlds is real: Habitat emits <code>rgb</code> as an <code>np.ndarray</code> (msgpack restores it as one across the proxy), while SAM wants a base64 PNG string — so a three-line local node bridges it:</p>
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">RgbToPng</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">ex_rgb_to_png</span><span class="s2">&quot;</span>
+    <span class="n">input_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">IMAGE</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">RGB frame (np.uint8 H,W,3)</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+    <span class="n">output_ports</span> <span class="o">=</span> <span class="p">[</span><span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">image_b64</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Base64-encoded PNG</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">rgb</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">inputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">rgb</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+        <span class="n">buf</span> <span class="o">=</span> <span class="n">io</span><span class="o">.</span><span class="n">BytesIO</span><span class="p">(</span><span class="p">)</span>
+        <span class="n">Image</span><span class="o">.</span><span class="n">fromarray</span><span class="p">(</span><span class="n">rgb</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">RGB</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">PNG</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">image_b64</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">buf</span><span class="o">.</span><span class="n">getvalue</span><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="p">)</span><span class="p">}</span>
+</pre>
+<p>One call runs it: <code>load_nodesets="auto"</code> scans the workspace registry, spawns an <code>auto_host</code> subprocess for each env, reaches them over HTTP, and tears them down when the run ends.</p>
+<pre class="hl">
+<span class="n">g</span> <span class="o">=</span> <span class="n">build</span><span class="p">(</span><span class="p">)</span>                          <span class="c1"># the graph above</span>
+<span class="n">r</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">load_nodesets</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">auto</span><span class="s2">&quot;</span><span class="p">)</span>      <span class="c1"># spawns ac-vlnce + ac-fm, proxies, tears them down</span>
+<span class="n">frame</span><span class="p">,</span> <span class="n">n</span> <span class="o">=</span> <span class="n">r</span><span class="o">.</span><span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">annotated</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">num_masks</span><span class="s2">&quot;</span><span class="p">]</span>
+<span class="c1"># SAM found 35 masks — annotated frame saved to outputs/habitat_sam_first_frame.png</span>
+</pre>
+<figure style="margin:1.5rem 0;text-align:center">
+  <img src="img/graph-sdk-habitat-sam.png" alt="Habitat first frame with SAM auto-segmentation masks overlaid" loading="lazy" style="max-width:min(100%,360px);border-radius:8px">
+  <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">Habitat's first frame (MP3D scene <code>zsNo4HB9uLZ</code>) with SAM's 35 auto-masks and boxes — produced end-to-end by the graph above, in-process.</figcaption>
+</figure>
+<p><strong>Both worlds, one graph.</strong> <code>load_nodesets="auto"</code> classifies every node from workspace <em>metadata</em> alone — no <code>habitat</code> or <code>torch</code> imported in the calling process — routing server nodes to a subprocess + proxy and running local nodes in-process:</p>
+<table>
+<thead><tr><th>Node</th><th>Where it runs</th></tr></thead>
+<tbody>
+<tr><td><code>env_habitat__reset</code> · <code>env_habitat__observe_egocentric</code></td><td><strong>server</strong> → <code>ac-vlnce</code> subprocess, HTTP proxy</td></tr>
+<tr><td><code>model_sam__segment_auto</code></td><td><strong>server</strong> → <code>ac-fm</code> subprocess, HTTP proxy</td></tr>
+<tr><td><code>RgbToPng</code> · <code>OverlayMasks</code> (defined in the example)</td><td><strong>local</strong> → in-process (you <code>register_node()</code> them)</td></tr>
+</tbody>
+</table>
+<p>The env node never runs inside the calling process. <code>ensure_nodesets_for_graph()</code> spawns an <code>auto_host</code> subprocess in the nodeset's own conda env, registers HTTP-proxy node classes into the global <code>NODE_HANDLERS</code>, and the executor reaches the simulator through those proxies:</p>
+<div class="highlight"><pre><span></span><code>  g.run(load_nodesets="auto")
+      │  scan_all()  +  ensure_nodesets_for_graph()   → register node types into NODE_HANDLERS
+      ▼
+  GraphExecutor.run(graph, DefaultSession)             ← same engine as the canvas Play button
+      │  ex_rgb_to_png / ex_overlay_masks  → run in-process (local mode)
+      │  env_habitat__* nodes ──HTTP──▶  auto_host subprocess  (ac-vlnce env, habitat-sim + GPU)
+      │  model_sam__*   nodes ──HTTP──▶  auto_host subprocess  (ac-fm env, SAM + GPU)
+      ▼
+  RunResult.outputs["annotated"]                        → teardown: both env servers unloaded
+</code></pre></div>
+<div class="highlight"><p><strong>A real env run is an experiment.</strong> Spawning habitat-sim and SAM uses the GPU, so this belongs behind <code>/experiment:run</code> (GPU admission, port regulation), not a bare call in a busy session. The code path is identical either way — only admission control differs. Full runnable file: <code>agentcanvas/backend/examples/07_habitat_sam.py</code>.</p></div>
+<h2 id="5-observe"><span class="num">5.</span> Watch a run: <code>on_event</code></h2>
+<p><code>g.run(on_event=cb)</code> surfaces the executor's per-node lifecycle as typed <code>RunEvent</code> objects, delivered as they happen — the same events the engine's <a href="graph-execution-engine.html#11-extension-points">shell-hook dispatcher</a> sees, now consumable in Python without tailing logs. Six kinds: <code>graph_start</code>, <code>node_start</code> (node + live inputs), <code>node_finish</code> (outputs + <code>duration_ms</code>), <code>node_error</code>, <code>graph_complete</code> (terminated + metrics), <code>graph_error</code>. The callback may be sync or async, runs inside the executor's event loop (keep it cheap), and a callback exception is logged, never fatal to the run.</p>
+<pre class="hl">
+<span class="n">events</span> <span class="o">=</span> <span class="p">[</span><span class="p">]</span>
+<span class="n">r</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">on_event</span><span class="o">=</span><span class="n">events</span><span class="o">.</span><span class="n">append</span><span class="p">)</span>          <span class="c1"># sync or async callback, called in-loop</span>
+
+<span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">events</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>                <span class="c1"># node_start / node_finish / node_error / graph_complete …</span>
+</pre>
+<h2 id="6-replay"><span class="num">6.</span> Record &amp; replay: GPU graphs as hermetic tests</h2>
+<p>One real run records; every later run replays offline. <code>g.run(record="run.mpk")</code> tees every server-node result of a real run into a cassette (msgpack + zlib — ndarray / tensor / PIL results survive byte-exact); <code>g.run(replay="run.mpk")</code> reruns the graph with <strong>no servers, no conda envs, no GPU</strong> — server calls answered from the recording while local nodes run for real, so a topology or port drift from the recording fails loudly instead of silently passing. The shipped Habitat→SAM cassette replays a two-conda-env GPU graph as an ordinary unit test in CI. Mechanism, cassette format, and the honest limits (order-based matching, not input matching): <a href="../design-docs/surfaces/graph-sdk-record-replay.html">design doc — Graph SDK Record / Replay</a>.</p>
+<pre class="hl">
+<span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">record</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">run.mpk</span><span class="s2">&quot;</span><span class="p">)</span>                 <span class="c1"># real run — tee every server-node result</span>
+<span class="n">g</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">replay</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">run.mpk</span><span class="s2">&quot;</span><span class="p">)</span>                 <span class="c1"># offline — no servers, local nodes still real</span>
+</pre>
+<h2 id="7-batch-eval"><span class="num">7.</span> Batch evaluation</h2>
+<p><code>g.eval(episodes=N, dataset=…, split=…)</code> is the Graph SDK entry to <a href="batch-evaluation-job-queue.html">Batch Evaluation</a>. It constructs the very same <code>BatchEvalRunner</code> the backend eval API uses (<code>app/agent_loop/eval_batch.py</code>) — one <code>GraphExecutor</code> run per episode, episode placement pushed through the env panel, per-episode metrics harvested from the graph's <code>metrics</code> <code>graphOut</code>, and the aggregate computed as the mean over <em>completed</em> episodes. The returned <code>EvalResult</code> carries <code>.metrics</code> (aggregate), <code>.episodes</code> (per-episode), and <code>.by_task</code>. "Correct" here is structural: <code>g.eval</code> does not re-implement evaluation, it reuses the audited runner.</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">mapgpt_mp3d_sdk</span><span class="w"> </span><span class="kn">import</span> <span class="n">build</span>
+
+<span class="n">g</span> <span class="o">=</span> <span class="n">build</span><span class="p">(</span><span class="p">)</span>
+<span class="n">ev</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">eval</span><span class="p">(</span><span class="n">episodes</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">dataset</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">R2R</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">split</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">val_unseen</span><span class="s2">&quot;</span><span class="p">)</span>   <span class="c1"># BatchEvalRunner, one executor run per episode</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">metrics</span><span class="p">)</span>         <span class="c1"># aggregate over completed episodes: {&#x27;success&#x27;: ..., &#x27;spl&#x27;: ...}</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ev</span><span class="o">.</span><span class="n">episodes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="p">)</span>     <span class="c1"># per-episode breakdown</span>
+</pre>
+<h2 id="8-sugar"><span class="num">8.</span> Authoring sugar: loop / hook / composite</h2>
+<p>The fiddly parts of a graph get intent-named helpers. <code>g.loop(init=…, carry=…)</code> declares a two-sided iterIn/iterOut episode loop (<a href="graph-expressible-agents.html">Graph-Expressible Agents §3</a>) with the correct <code>persist</code> flags set automatically — init-only ports persist across steps, carried ports do not persist on the init side (the iterOut carry supersedes) — so the loop can't accidentally starve on iteration 1. Wire it through the returned handle:</p>
+<pre class="hl">
+<span class="n">loop</span> <span class="o">=</span> <span class="n">g</span><span class="o">.</span><span class="n">loop</span><span class="p">(</span>
+    <span class="n">init</span><span class="o">=</span><span class="p">[</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span><span class="p">,</span>            <span class="c1"># seed-only; persists across steps</span>
+    <span class="n">carry</span><span class="o">=</span><span class="p">[</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">]</span><span class="p">,</span>          <span class="c1"># written back each step by iterOut</span>
+<span class="p">)</span>
+
+<span class="n">loop</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">reset</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">instruction</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>     <span class="c1"># run-start value</span>
+<span class="n">loop</span><span class="o">.</span><span class="n">feed</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">observe</span><span class="o">.</span><span class="n">in_</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span> <span class="c1"># wires BOTH init + carry sides</span>
+<span class="n">loop</span><span class="o">.</span><span class="n">carry</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">step</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">viewpoint_id</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>   <span class="c1"># per-step write-back</span>
+<span class="n">loop</span><span class="o">.</span><span class="n">stop</span><span class="p">(</span><span class="n">budget</span><span class="o">.</span><span class="n">out</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">done</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span>                          <span class="c1"># termination signal</span>
+</pre>
+<p>Two more: <code>g.hook(event, command, …)</code> attaches a lifecycle shell hook (<a href="graph-execution-engine.html#11-extension-points">engine extension points</a>) — <code>GraphStart</code>, <code>PreNodeExecute</code>, <code>PostNodeExecute</code>, <code>GraphComplete</code>, <code>GraphError</code>. <code>g.composite(id, subgraph)</code> wraps a nested graph as a composite node (<a href="nested-graph-system.html">Nested Graph System</a>); <code>flatten_graph()</code> expands it before execution, so composites run in-process like everything else.</p>
+<h2 id="9-reverse"><span class="num">9.</span> Reverse — graph → code</h2>
+<p>The inverse direction (roadmap <strong>F4</strong>): compile <em>any</em> <code>GraphDefinition</code> — canvas-authored, loaded from JSON, or code-built — back into a self-contained builder script via <code>graph_to_code(gd)</code> (or <code>Graph.to_code()</code>). The emitted script rebuilds the same topology through this very API; the round-trip is semantically exact (node types + configs, wire multiset, containers, grants, hooks), verified against the reference MapGPT-MP3D graph.</p>
+<pre class="hl">
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">agentcanvas</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span><span class="p">,</span> <span class="n">graph_to_code</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">graph_def</span><span class="w"> </span><span class="kn">import</span> <span class="n">GraphDefinition</span>
+
+<span class="n">gd</span> <span class="o">=</span> <span class="n">GraphDefinition</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">mapgpt_mp3d.json</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">graph_to_code</span><span class="p">(</span><span class="n">gd</span><span class="p">)</span><span class="p">)</span>            <span class="c1"># a standalone, runnable builder script</span>
+<span class="c1"># ...or on a live Graph:  Graph.from_definition(gd).to_code()</span>
+</pre>
+<h2 id="10-packaging"><span class="num">10.</span> Packaging &amp; install</h2>
+<p><code>pyproject.toml</code> lives at the <strong>repo root</strong>: a fresh clone installs with a plain <code>pip install -e .</code>, and <code>from agentcanvas import Graph</code> works from any directory with no <code>PYTHONPATH</code>. The editable install resolves through the source tree, so the <code>workspace/</code> registry — graphs, nodesets, cassettes — is discovered with zero configuration. The core install depends only on <code>pydantic-settings</code>; heavier capability is opt-in <strong>extras</strong> — the code always ships whole, extras just power more of it on:</p>
+<table>
+<thead><tr><th>Install</th><th>Adds</th><th>Powers on</th></tr></thead>
+<tbody>
+<tr><td><code>pip install -e .</code></td><td><code>pydantic-settings</code></td><td>build / validate / run pure-local graphs, <code>to_code</code>, catalog</td></tr>
+<tr><td><code>… ".[server]"</code></td><td>httpx · msgpack · numpy</td><td>server-node proxy + cassette record / replay</td></tr>
+<tr><td><code>… ".[llm]"</code></td><td>litellm · pyyaml</td><td>the <code>llmCall</code> builtin node</td></tr>
+<tr><td><code>… ".[backend]"</code></td><td>FastAPI stack</td><td>the full canvas backend</td></tr>
+</tbody>
+</table>
+<p>A non-editable install (<code>pip install "agentcanvas[server] @ git+https://github.com/jianzhou0420/AgentCanvas.git"</code>) carries the engine but not the workspace — build graphs, run local nodes, replay cassettes; full nodeset runs still want the clone plus the conda envs (torch, simulators — provisioned by <code>requirements.txt</code> / server mode as before). PyPI publication is deliberately deferred until the top-level <code>app</code> package is renamed. The tier contract is CI-enforced (<code>app/test_dependency_boundary.py</code>) and specified in the <a href="../design-docs/surfaces/graph-sdk-dependency-boundary.html">dependency-boundary design doc</a>. Runnable examples live under <code>agentcanvas/backend/examples/</code>.</p>
+<h2 id="11-key-files"><span class="num">11.</span> Key Files</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentcanvas/backend/app/graph_sdk.py</code></td>
+<td><code>Graph</code> builder — <code>add</code> / <code>connect</code> / <code>loop</code> / <code>hook</code> / <code>composite</code>, <code>run(load_nodesets=…)</code>, <code>eval(…)</code>; <code>RunResult</code> / <code>EvalResult</code> / <code>Loop</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_sdk_codegen.py</code></td>
+<td><code>graph_to_code()</code> — the reverse compiler (graph → standalone builder script)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_sdk_replay.py</code></td>
+<td><code>Recorder</code> / <code>Player</code> / cassette persistence — <code>record=</code> / <code>replay=</code> (<a href="../design-docs/surfaces/graph-sdk-record-replay.html">design doc</a>)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/graph_def.py</code></td>
+<td><code>GraphDefinition</code> / <code>NodeDef</code> / <code>EdgeDef</code> dataclasses — the shared model all three surfaces produce</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/graph_executor.py</code></td>
+<td><code>GraphExecutor.run()</code> — the in-process engine <code>g.run()</code> drives</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/agent_loop/eval_batch.py</code></td>
+<td><code>BatchEvalRunner</code> — the audited batch runner <code>g.eval()</code> drives</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/registry.py</code></td>
+<td><code>ensure_nodesets_for_graph()</code> — nodeset load + env-server spawn on <code>load_nodesets</code></td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/agentcanvas/</code> + root <code>pyproject.toml</code></td>
+<td>Pip-installable <code>agentcanvas</code> namespace + typed node stubs (<code>agentcanvas.nodes</code>); repo-root <code>pyproject</code> with the <code>server</code>/<code>llm</code>/<code>backend</code> extras</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/test_graph_sdk.py</code> · <code>examples/</code></td>
+<td>Hermetic tests + runnable examples (build / run / eval / codegen / record-replay)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="status">Status</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Build in code (add / connect / boundary / container / grant)</td>
+<td>Done</td>
+<td>Assembles the same <code>GraphDefinition</code> dataclasses; round-trips to canvas JSON</td>
+</tr>
+<tr>
+<td>In-process run — pure-Python / builtin graphs</td>
+<td>Done</td>
+<td><code>g.run()</code> drives <code>GraphExecutor.run()</code> directly; no FastAPI / scheduler / GPU gate</td>
+</tr>
+<tr>
+<td>In-process run — nodeset graphs</td>
+<td>Done</td>
+<td><code>load_nodesets="auto"</code> scans + loads via <code>ensure_nodesets_for_graph()</code>; env nodes reached over HTTP to an <code>auto_host</code> subprocess; teardown after. A real env episode is an <strong>experiment</strong> → <code>/experiment:run</code></td>
+</tr>
+<tr>
+<td>Batch eval (<code>g.eval</code>)</td>
+<td>Done</td>
+<td>Reuses <code>BatchEvalRunner</code>; aggregate = mean over completed episodes. Verified end-to-end on MapGPT-MP3D</td>
+</tr>
+<tr>
+<td>Authoring sugar — loop / hook / composite</td>
+<td>Done</td>
+<td><code>g.loop</code> reproduces the hand-wired MapGPT loop byte-for-byte; composites flatten + run</td>
+</tr>
+<tr>
+<td>Reverse codegen (<code>to_code</code>, F4)</td>
+<td>Done</td>
+<td>Round-trip semantically exact against the verified MapGPT-MP3D graph</td>
+</tr>
+<tr>
+<td>Catalog + typed authoring (<code>catalog</code> / <code>describe</code> / <code>nodesets</code>, <code>agentcanvas.nodes</code> stubs)</td>
+<td>Done</td>
+<td>Spawn-free workspace scan; string and typed <code>g.add</code> forms interchangeable</td>
+</tr>
+<tr>
+<td>Default-on validation (<code>check</code>, <code>validate</code>)</td>
+<td>Done</td>
+<td><code>GraphValidationError</code> lists every issue at once, before anything executes</td>
+</tr>
+<tr>
+<td>Run events (<code>on_event</code> / <code>RunEvent</code>)</td>
+<td>Done</td>
+<td>Six lifecycle kinds; sync or async callback; callback exceptions never fatal</td>
+</tr>
+<tr>
+<td>Record / replay (<code>record=</code> / <code>replay=</code>)</td>
+<td>Done</td>
+<td>Habitat→SAM cassette replays a two-env GPU graph offline in CI — <a href="../design-docs/surfaces/graph-sdk-record-replay.html">design doc</a></td>
+</tr>
+<tr>
+<td>Packaging (<code>pip install</code> → <code>import agentcanvas</code>)</td>
+<td>Done</td>
+<td>Repo-root <code>pyproject</code>; <code>pip install -e .</code> + extras (<code>server</code>/<code>llm</code>/<code>backend</code>); verified in a clean venv: import, local run, zero-config workspace discovery, cassette replay</td>
+</tr>
+<tr>
+<td>Single-run metric channel</td>
+<td>Known</td>
+<td>Read <code>result.outputs["metrics"]</code> (the <code>graphOut</code> channel). <code>result.metrics</code> (the session channel) is empty for graphs whose evaluate node emits metrics without a top-level <code>{done, metrics}</code> — an upstream metric-outlet split, not a Graph SDK defect</td>
+</tr>
+<tr>
+<td>Per-episode <code>scene_id</code> in eval</td>
+<td>Known</td>
+<td>Empty for server-mode env nodesets — the env panel's <code>on_load</code> readback is stubbed in server mode (upstream); aggregate metrics are unaffected</td>
+</tr>
+</tbody>
+</table>
+<p>Core surface fully implemented; the two <em>Known</em> rows are upstream behaviours documented for honesty, not Graph SDK defects.</p>
+<nav class="page-nav">
+  <p><a href="visual-canvas-editor.html">← 8. Visual Canvas Editor</a> · <a href="index.html">↑ Capabilities index</a></p>
+</nav>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-three-ways">1. Three ways to the same graph</a>
+      <a class="toc-h2" href="#2-build">2. Build a graph in code</a>
+      <a class="toc-h2" href="#3-catalog">3. Catalog, typed authoring &amp; validation</a>
+      <a class="toc-h2" href="#4-run">4. Run it in-process</a>
+      <a class="toc-h2" href="#5-observe">5. Watch a run: on_event</a>
+      <a class="toc-h2" href="#6-replay">6. Record &amp; replay: GPU graphs as hermetic tests</a>
+      <a class="toc-h2" href="#7-batch-eval">7. Batch evaluation</a>
+      <a class="toc-h2" href="#8-sugar">8. Authoring sugar: loop / hook / composite</a>
+      <a class="toc-h2" href="#9-reverse">9. Reverse — graph → code</a>
+      <a class="toc-h2" href="#10-packaging">10. Packaging &amp; install</a>
+      <a class="toc-h2" href="#11-key-files">11. Key Files</a>
+      <a class="toc-h2" href="#status">Status</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

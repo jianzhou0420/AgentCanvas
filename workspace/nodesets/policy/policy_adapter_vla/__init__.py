@@ -75,7 +75,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef
+from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef, conda_env_python
 from app.server.batched_inference import OUTPUTS_KEY, SAMPLES_KEY
 from workspace.nodesets.policy.policy_adapter_vla.adapters.canonical import CanonicalInfo
 
@@ -880,10 +880,7 @@ class PolicyAdapterVlaNodeSet(BaseNodeSet):
         "canonical→model, predict, model→canonical. Pair with env_adapter "
         "(env-side stages) and an env nodeset (env_libero / env_simpler)."
     )
-    server_python = os.environ.get(
-        "VLA_POLICY_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/ac-vla-policy/bin/python"),
-    )
+    server_python = conda_env_python("ac-vla-policy", "VLA_POLICY_PYTHON")
     # Subprocess env extras (TF 2.19 + tf-agents 0.19 path):
     #   - TF_USE_LEGACY_KERAS=1 — tf-agents 0.19.0 uses Keras 2 internal API
     #     (`keras._tf_keras.keras.__internal__`) which Keras 3 (TF 2.16+ default)
@@ -896,12 +893,19 @@ class PolicyAdapterVlaNodeSet(BaseNodeSet):
     #     libstdc++.so.6 (CXXABI_1.3.15, from libstdcxx-ng>=12) is preferred
     #     over Ubuntu 20.04's system libstdc++ 6.0.28 which lacks it. TF /
     #     tf-agents extensions fail to load without this on stock 20.04.
-    _vla_env_lib = str(Path(server_python).parent.parent / "lib")
+    #     Set only when the env resolved: server_python is None wherever
+    #     ac-vla-policy is absent, and the conda_env_python contract is that
+    #     None must leave this class importable (scan-time degrade to local
+    #     mode), not crash the workspace scan.
     server_env = {
         "TF_USE_LEGACY_KERAS": "1",
         "TF_FORCE_GPU_ALLOW_GROWTH": "true",
-        "LD_LIBRARY_PATH": f"{_vla_env_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}",
     }
+    if server_python:
+        server_env["LD_LIBRARY_PATH"] = (
+            f"{Path(server_python).parent.parent / 'lib'}"
+            f":{os.environ.get('LD_LIBRARY_PATH', '')}"
+        )
     # No env panel — config is distributed across the 2 config-owning nodes
     # (canonical_to_model / predict; the model→canonical node has no config;
     # the env-side robot select lives on env_adapter's nodes). Env panels in

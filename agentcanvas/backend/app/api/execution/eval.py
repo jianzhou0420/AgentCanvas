@@ -353,7 +353,12 @@ async def start_eval_v2(req: StartEvalV2Request):
             # JobScheduler._spawn(). None = run against frozen workspace.
             "active_workspace_dir": req.active_workspace_dir,
         }
-        run_id = scheduler.submit(spec)
+        try:
+            run_id = scheduler.submit(spec)
+        except ValueError as exc:
+            # P3 feasibility rejection (e.g. declaration exceeds the
+            # machine's physical ceiling) — a client error, not a 500.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"run_id": run_id, "status": "queued", "via_subprocess": True}
 
     # ── Legacy in-process path (default) ──
@@ -412,22 +417,123 @@ async def stop_eval_v2():
     return {"run_id": run.run_id, "status": "stopping"}
 
 
+def _summary_from_disk(data: dict) -> dict:
+    """Map a persisted run dict (``eval_storage.run_to_dict`` shape) onto the
+    ``EvalRun.to_summary()`` shape the eval page consumes.
+
+    Lets ``/status`` and ``/episodes`` serve the default *subprocess* path,
+    which runs under the JobScheduler and never populates the in-process
+    ``_current_run``. The subprocess rewrites ``summary.json`` on every episode
+    boundary (``eval_subprocess_main._install_episode_writer``), so this is live
+    incremental progress, not just the final result.
+    """
+    config = data.get("config", {}) or {}
+    episodes = data.get("episodes", []) or []
+    completed_count = sum(
+        1 for ep in episodes if ep.get("status") in ("completed", "error")
+    )
+    error_count = sum(1 for ep in episodes if ep.get("status") == "error")
+    return {
+        "run_id": data.get("run_id"),
+        "graph_name": config.get("graph_name", ""),
+        "env_nodeset": config.get("env_nodeset", ""),
+        "status": data.get("status", "running"),
+        "selectors": config.get("selectors", {}),
+        "dataset": "",
+        "split": config.get("split", ""),
+        "episode_count": config.get("episode_count", -1),
+        "total_episodes": data.get("total_episodes", 0),
+        "completed_count": completed_count,
+        "error_count": error_count,
+        "elapsed_sec": round(data.get("elapsed_sec", 0.0) or 0.0, 1),
+        "aggregate_metrics": data.get("aggregate_metrics", {}),
+        "aggregate_by_task": data.get("aggregate_by_task", {}),
+        "error": data.get("error"),
+        "created_at": data.get("created_at"),
+        "finished_at": data.get("finished_at"),
+    }
+
+
+def _scheduler_current_run() -> tuple[str, str] | None:
+    """This backend's active subprocess-path run as ``(run_id, coarse_status)``.
+
+    Running wins over queued; ``None`` when the scheduler has nothing active.
+    Coarse status maps to the frontend ``EvalStatus`` (``running`` / ``pending``)
+    so its ``isRunning`` gate + poll loop engage even before ``summary.json``
+    lands on disk.
+    """
+    scheduler = get_services().job_scheduler
+    if scheduler is None:
+        return None
+    active = scheduler.list_active()
+    running = active.get("running", [])
+    if running:
+        return running[0]["run_id"], "running"
+    queued = active.get("queued", [])
+    if queued:
+        return queued[0]["run_id"], "pending"
+    return None
+
+
 @router.get("/status")
 async def eval_v2_status():
-    """Current run status and progress."""
+    """Current run status and progress.
+
+    Prefers the in-process ``_current_run`` (legacy / Canvas-Play path). When
+    that is empty, falls back to the subprocess-scheduler run this backend is
+    driving — otherwise the eval page (which only polls this endpoint) shows
+    nothing for the *default* subprocess path and looks like Start did nothing.
+    """
     run = _current_run
-    if run is None:
-        return {"status": "none", "run": None}
-    return {"status": run.status.value, "run": run.to_summary()}
+    if run is not None:
+        return {"status": run.status.value, "run": run.to_summary()}
+    active = _scheduler_current_run()
+    if active is not None:
+        run_id, coarse = active
+        data = load_run(run_id)
+        if data is not None:
+            summary = _summary_from_disk(data)
+            # Trust the persisted status once terminal; otherwise the scheduler's
+            # coarse running/pending view (disk status can lag a tick).
+            disk_status = summary.get("status")
+            status = (
+                disk_status
+                if disk_status in ("completed", "error", "cancelled")
+                else coarse
+            )
+            summary["status"] = status
+            return {"status": status, "run": summary}
+        # Admitted/queued but no summary.json yet — report progress-less so the
+        # UI still flips to running/pending instead of "none".
+        return {
+            "status": coarse,
+            "run": {
+                "run_id": run_id,
+                "status": coarse,
+                "completed_count": 0,
+                "total_episodes": 0,
+                "episode_count": -1,
+                "elapsed_sec": 0.0,
+                "aggregate_metrics": {},
+                "graph_name": "",
+                "created_at": None,
+            },
+        }
+    return {"status": "none", "run": None}
 
 
 @router.get("/episodes")
 async def eval_v2_episodes():
-    """Episode results for the current run."""
+    """Episode results for the current run (in-process or subprocess-path)."""
     run = _current_run
-    if run is None:
-        return {"episodes": []}
-    return {"episodes": [run.to_episode_summary(ep) for ep in run.episodes]}
+    if run is not None:
+        return {"episodes": [run.to_episode_summary(ep) for ep in run.episodes]}
+    active = _scheduler_current_run()
+    if active is not None:
+        data = load_run(active[0])
+        if data is not None:
+            return {"episodes": data.get("episodes", [])}
+    return {"episodes": []}
 
 
 @router.get("/runs")
@@ -476,6 +582,25 @@ async def cancel_subprocess_run(run_id: str):
     if new_status == "unknown":
         raise HTTPException(status_code=404, detail=f"run {run_id} not in scheduler")
     return {"run_id": run_id, "status": new_status}
+
+
+@router.get("/estimate")
+async def estimate_eval_v2(graph_name: str, worker_count: int = 1):
+    """Advisory resource estimate for a run (VRAM + RAM, one entry per
+    resource under ``resources``).
+
+    Read-only: resolves the graph and consults the calibration store —
+    loads no nodesets, reserves nothing. Per resource, ``estimate_mb`` is
+    null until every component the graph needs has calibration data (run
+    it once to calibrate); ``uncalibrated`` lists the gaps. Top-level
+    ``max_workers`` is the largest worker_count whose estimate fits the
+    measured free of every measurable resource.
+    """
+    scheduler = get_services().job_scheduler
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="JobScheduler not initialized")
+    graph = _load_graph_by_name(graph_name, None)
+    return scheduler.estimate_run(graph_name, [n.type for n in graph.nodes], worker_count)
 
 
 @router.post("/introspect")
