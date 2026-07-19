@@ -11,6 +11,7 @@ an MCP bridge. Metrics come from habitat's own measures via
 | File | Role |
 |---|---|
 | `mcp_bridge.py` | Stdio MCP server; agent-facing toolset (`observe`, `step`) forwarding to a habitat auto_host over `POST /call/{fn}`. One bridge process per agent session per episode. |
+| `wp_bridge.py` | Sibling bridge for the waypoint action space (std-v1 `wp` condition): `observe()` renders a 12-view RGB-D panorama, a second auto_host (smartway/opennav waypoint predictor) proposes ≤5 candidates, they are drawn numbered on a 4-view [Left\|Front\|Right\|Back] strip (VLN-MME convention); `goto(waypoint)` executes via `env_habitat__step_hightolow`, `stop()` ends the episode. |
 | `run_episodes.py` | Driver: places episodes via `/env-panel/*`, runs one clean SDK session per episode, evaluates, writes `outputs/beta-coding-agent/{run}/summary.json` + per-episode trajectory JSONL. |
 
 The agent sees ONLY `observe()` (egocentric RGB) and `step(actions)`

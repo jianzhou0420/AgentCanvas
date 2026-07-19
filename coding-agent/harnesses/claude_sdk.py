@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from driver import (
-    BRIDGE_PATH, EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe,
+    EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe,
 )
 
 
@@ -45,9 +45,16 @@ class ClaudeSdkAdapter:
             "thinking": "adaptive+summarized (4.6+/5) / enabled+budget (haiku); "
                         "effort per cell extra",
             "turn_cap": "hard (SDK max_turns)",
+            # CC/Agent-SDK keeps only a recent window of tool_result images in
+            # the outgoing request (old observe()/look_around() frames are
+            # evicted) — undocumented but empirically bounded: image-heavy
+            # episodes stay single-digit MB, far under the API's 32 MB cap.
+            # Contrast mini's image_window=0 (full history). See docs
+            # developer-guide/coding-agent/harness-notes.
+            "vision_context": "recent-window auto (evicts old tool_result images; ~single-digit MB)",
         }
 
-    def prepare(self) -> None:
+    def prepare(self, spec) -> None:  # noqa: ARG002 — no per-cell setup needed
         # Default: strip ANTHROPIC_API_KEY so sessions use the logged-in
         # subscription (a stray key silently switches billing to the metered API
         # in headless mode). Opt-in escape hatch: STD_SDK_USE_API=1 KEEPS the key
@@ -70,9 +77,15 @@ class ClaudeSdkAdapter:
     # and think ONCE per turn (no interleaved thinking without the beta).
     @staticmethod
     def _thinking_config(ctx: EpisodeContext) -> dict[str, Any]:
+        # An explicit think_budget (wp cells set it; --set think_budget=N
+        # overrides) forces enabled thinking so reasoning blocks are
+        # substantive rather than adaptive one-liners.
+        budget = ctx.extra.get("think_budget")
+        if budget:
+            return {"type": "enabled", "budget_tokens": int(budget),
+                    "display": "summarized"}
         if "haiku" in (ctx.model or ""):
-            return {"type": "enabled",
-                    "budget_tokens": ctx.extra.get("think_budget", 4000),
+            return {"type": "enabled", "budget_tokens": 4000,
                     "display": "summarized"}
         return {"type": "adaptive", "display": "summarized"}
 
@@ -91,7 +104,7 @@ class ClaudeSdkAdapter:
                 "env": {
                     "type": "stdio",
                     "command": sys.executable,
-                    "args": [str(BRIDGE_PATH)],
+                    "args": [str(ctx.bridge_path)],
                     "env": ctx.bridge_env(),
                 }
             },
@@ -105,7 +118,9 @@ class ClaudeSdkAdapter:
             # ONLY our bridge — never the user's global MCP config.
             strict_mcp_config=True,
             allowed_tools=(
-                ["mcp__env__observe", "mcp__env__step"]
+                ["mcp__env__observe", "mcp__env__goto", "mcp__env__stop"]
+                if ctx.wp
+                else ["mcp__env__observe", "mcp__env__step"]
                 if ctx.bare
                 else ["mcp__env__observe", "mcp__env__step", "mcp__env__look_around"]
             ),

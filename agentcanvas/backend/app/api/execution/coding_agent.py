@@ -34,7 +34,7 @@ SOURCE_ROOTS = {
 class StartRequest(BaseModel):
     episodes: str = "0-9"
     split: str = "rand100"
-    max_turns: int = 200
+    max_turns: int = 80
     model: str | None = None
 
 
@@ -53,9 +53,11 @@ def _source_root(source: str):
 
 
 def _run_dir(source: str, run_name: str):
-    # "." is legal in run names (std_sdk_opus-4.8_bare); ".." stays forbidden
-    if (not run_name or ".." in run_name
-            or not all(c.isalnum() or c in "_-." for c in run_name)):
+    # Dots are legal: every std-v1 cell name carries one (qwen3.5, opus-4.8,
+    # gpt-5.5). Traversal stays blocked — "/" is not in the allowlist, and ".."
+    # is rejected outright.
+    if not run_name or ".." in run_name \
+            or not all(c.isalnum() or c in "_-." for c in run_name):
         raise HTTPException(400, f"bad run name: {run_name!r}")
     run_dir = _source_root(source) / run_name
     if not run_dir.exists():
