@@ -3,6 +3,7 @@ import { Bot, Download, Play, Square } from "lucide-react";
 import clsx from "clsx";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
+import { usePersistentState } from "./usePersistentState";
 
 // Coding-Agent Monitor — control panel + live text/image logs for beta-coding-agent
 // runs (vanilla coding agent driving env_habitat through the MCP bridge).
@@ -91,28 +92,43 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
 }
 
 export default function CodingAgentPage() {
-  // control panel form
-  const [episodes, setEpisodes] = useState("0-9");
-  const [split, setSplit] = useState("rand100");
-  const [maxTurns, setMaxTurns] = useState(80);
-  const [model, setModel] = useState("");
+  // control panel form (persisted: survive a refresh with the same inputs)
+  const [episodes, setEpisodes] = usePersistentState("agentcanvas.coding.episodes", "0-9");
+  const [split, setSplit] = usePersistentState("agentcanvas.coding.split", "rand100");
+  const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 200);
+  const [model, setModel] = usePersistentState("agentcanvas.coding.model", "");
   const [startError, setStartError] = useState<string | null>(null);
 
   // live state
   const [status, setStatus] = useState<RunStatus | null>(null);
-  const [viewEpisode, setViewEpisode] = useState<number | null>(null); // null = follow active
+  // which episode's log/frames are shown (null = follow active). Persisted so a
+  // refresh keeps you on the same episode; in live mode the poll loop below
+  // resets it to null on a run change, so a stale index can't stick.
+  const [viewEpisode, setViewEpisode] = usePersistentState<number | null>(
+    "agentcanvas.coding.viewEpisode",
+    null,
+  );
   const [lines, setLines] = useState<LogLine[]>([]);
   const [frames, setFrames] = useState<string[]>([]);
   const [zoomFrame, setZoomFrame] = useState<string | null>(null); // lightbox overlay
 
   // log browser (any run under outputs/beta-coding-agent/, CLI-launched included)
-  const [mode, setMode] = useState<"live" | "browse">("live");
+  const [mode, setMode] = usePersistentState<"live" | "browse">(
+    "agentcanvas.coding.mode",
+    "live",
+  );
   // which harness's runs to browse: Agent SDK (beta-coding-agent) vs
   // mini-swe-agent (beta-react-harness) vs OpenAI Codex CLI
   // (beta-codex-agent). Live mode is SDK-runner-only.
-  const [harness, setHarness] = useState<"claude-sdk" | "mini-swe" | "codex">("claude-sdk");
+  const [harness, setHarness] = usePersistentState<"claude-sdk" | "mini-swe" | "codex">(
+    "agentcanvas.coding.harness",
+    "claude-sdk",
+  );
   const [runsList, setRunsList] = useState<RunInfo[]>([]);
-  const [browseRun, setBrowseRun] = useState<string | null>(null);
+  const [browseRun, setBrowseRun] = usePersistentState<string | null>(
+    "agentcanvas.coding.browseRun",
+    null,
+  );
   const [browseEpisodes, setBrowseEpisodes] = useState<EpisodeSummary[]>([]);
   const [browseStarted, setBrowseStarted] = useState<number[]>([]);
 
@@ -215,6 +231,14 @@ export default function CodingAgentPage() {
       /* backend unreachable */
     }
   };
+
+  // On mount, if a persisted refresh landed us back in browse mode, repopulate
+  // the run list (loadRuns keeps the restored browseRun via its `r ?? …` guard).
+  // Live mode needs nothing here — the status poll below drives it.
+  useEffect(() => {
+    if (mode === "browse") loadRuns(harness);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // per-run episode outcomes for the browse selector badges
   useEffect(() => {
@@ -620,6 +644,30 @@ export default function CodingAgentPage() {
                   (l.texts as string[] | undefined) ?? [];
               }
             }
+            // Pair each tool_use to its result. Unified-driver logs carry
+            // id/tool_use_id; legacy runs (e.g. fable50_bare) emit neither, so
+            // fall back to positional pairing — the next tool_result after this
+            // tool_use, consumed once (legacy logs strictly alternate use/result).
+            const resultByLineIdx: Record<number, string[]> = {};
+            const orderedResults: { idx: number; texts: string[] }[] = [];
+            lines.forEach((l, idx) => {
+              if (l.kind === "tool_result")
+                orderedResults.push({ idx, texts: (l.texts as string[] | undefined) ?? [] });
+            });
+            let resPtr = 0;
+            lines.forEach((l, idx) => {
+              if (l.kind !== "tool_use") return;
+              const byId =
+                typeof l.id === "string" ? resultByToolUse[l.id] : undefined;
+              if (byId) {
+                resultByLineIdx[idx] = byId;
+                return;
+              }
+              while (resPtr < orderedResults.length && orderedResults[resPtr].idx <= idx)
+                resPtr++;
+              if (resPtr < orderedResults.length)
+                resultByLineIdx[idx] = orderedResults[resPtr++].texts;
+            });
             const groups: { rgb: string | null; depth: string | null }[] = [];
             const groupAt: Record<string, number> = {};
             for (const f of frames) {
@@ -645,7 +693,7 @@ export default function CodingAgentPage() {
               const tiles: { url: string | null; label: string | null }[] = [];
               let nViews = 0;
               if (line.kind === "tool_use") {
-                const res = resultByToolUse[String(line.id ?? "")];
+                const res = resultByLineIdx[i];
                 if (res) {
                   const labels: string[] = [];
                   for (let j = 0; j < res.length; j++) {
@@ -821,7 +869,12 @@ export default function CodingAgentPage() {
                     <div className="mt-1 flex flex-wrap items-end gap-1">
                       {tiles.map((tile, k) => {
                         const frame = tile.url;
-                        const sizeCls = nViews <= 1 ? "h-56 w-56" : "h-32 w-32";
+                        // height is the only fixed dimension: frames keep
+                        // their native aspect ratio (egocentric obs are
+                        // square; wp panorama strips are ~4:1 and must not
+                        // be squashed). max-w-full + object-contain degrade
+                        // gracefully when a strip outgrows the log pane.
+                        const heightCls = nViews <= 1 ? "h-56" : "h-32";
                         const label = tile.label;
                         return (
                           <div key={k} className="flex flex-col items-center">
@@ -837,15 +890,16 @@ export default function CodingAgentPage() {
                                 title={`${frame} — click to enlarge`}
                                 onClick={() => setZoomFrame(frame)}
                                 className={clsx(
-                                  "block cursor-zoom-in rounded border border-gray-800",
-                                  sizeCls,
+                                  "block w-auto max-w-full object-contain cursor-zoom-in rounded border border-gray-800",
+                                  heightCls,
                                 )}
                               />
                             ) : (
                               <div
                                 className={clsx(
                                   "flex items-center justify-center rounded border border-dashed border-gray-800 text-gray-600",
-                                  sizeCls,
+                                  heightCls,
+                                  nViews <= 1 ? "w-56" : "w-32",
                                 )}
                               >
                                 frame pending…

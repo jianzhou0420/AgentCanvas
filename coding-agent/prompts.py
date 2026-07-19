@@ -1,4 +1,6 @@
-"""Single source of truth for the std-v1 prompt surface.
+"""Single source of truth for the std prompt surface (frozen 2026-07-09;
+unchanged across std-v1 → std-v2 — the v2 bump touched only resolution and
+the LLM-call cap).
 
 The BARE / FULL drafts below are the 2026-07-09 finalized texts, moved here
 verbatim from beta-coding-agent/run_episodes.py (which keeps its own frozen
@@ -15,7 +17,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = REPO_ROOT / "beta-coding-agent" / "skills"
 
-# std-v1 freeze: frontmatter-stripped body hash of ledger-nav/SKILL.md
+# std freeze (07-09): frontmatter-stripped body hash of ledger-nav/SKILL.md
 LEDGER_NAV_STD_MD5 = "f7c74272"
 
 SYSTEM_PROMPT = """\
@@ -75,6 +77,38 @@ when unsure.
 - Work autonomously until you stop; nobody can answer questions.
 """
 
+WP_SYSTEM_PROMPT = """\
+You are controlling a robot in a real indoor environment (a photorealistic \
+3D scan of a building). You interact only through these tools:
+
+- observe(): look around from where you stand. Returns a panoramic image \
+(four views labeled Left / Front / Right / Back) with numbered green circles \
+marking the waypoints you can move to, plus a JSON listing each waypoint's \
+direction and distance in meters.
+- goto(waypoint): walk to one numbered waypoint from the LATEST observe(). \
+Moving invalidates the old numbers — observe() again after arriving.
+- stop(): permanently END the episode, declaring you have reached the goal.
+
+Your task is to follow this navigation instruction to its endpoint:
+
+"{instruction}"
+
+Rules:
+- Alternate observing and moving: observe(), then move, then observe() again.
+- Before every goto() or stop(), reason out loud in one or two sentences: \
+name the part of the instruction you are currently executing, then say which \
+numbered waypoint best matches it and why (e.g. "the instruction says turn \
+left at the kitchen; waypoint 2 heads left into what looks like a kitchen, so \
+I take it"). Do this thinking as visible text, then call the tool.
+- You may make at most {wp_max_moves} waypoint moves; each observe() and \
+goto() result reports how many remain. When they run out the episode ends, so \
+do not wander.
+- You succeed only if you call stop() while within 3 meters of the \
+instruction's endpoint. stop() is permanent — call it only when you believe \
+you are at the goal.
+- Work autonomously until you stop; nobody can answer questions.
+"""
+
 FIRST_PROMPT = "Begin navigating. Call observe() first to see where you are."
 
 
@@ -89,11 +123,28 @@ def load_skill(name: str) -> tuple[str, str]:
 
 
 def build_briefing(
-    instruction: str, step_budget: int, *, bare: bool, skill: str | None
+    instruction: str, step_budget: int, *, bare: bool, skill: str | None,
+    wp: bool = False, wp_max_moves: int = 30,
 ) -> tuple[str, str | None]:
     """Render the full task briefing (the SDK cell's system prompt; delivered
     as the first user message on harnesses whose builtin prompt is fixed).
     Returns (briefing, skill_md5)."""
+    if wp:  # waypoint action space (wp_bridge.py) — its own tool surface
+        briefing = WP_SYSTEM_PROMPT.format(
+            instruction=instruction, wp_max_moves=wp_max_moves
+        )
+        wp_skill_md5: str | None = None
+        # wp skills teach waypoint-selection discipline (anti-circling ledger,
+        # instruction sub-goal ticking), NOT step() batching — so they append
+        # regardless of the bare flag (wp is always its own surface).
+        if skill:
+            body, wp_skill_md5 = load_skill(skill)
+            briefing += (
+                "\n\nYou have been equipped with the following navigation skill."
+                " Follow its discipline exactly throughout the episode.\n\n"
+                f'<skill name="{skill}">\n{body}\n</skill>\n'
+            )
+        return briefing, wp_skill_md5
     base = BARE_SYSTEM_PROMPT if bare else SYSTEM_PROMPT
     briefing = base.format(instruction=instruction, budget=step_budget)
     skill_md5: str | None = None

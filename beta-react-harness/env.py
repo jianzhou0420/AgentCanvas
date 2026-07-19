@@ -17,7 +17,7 @@ from typing import Any
 from minisweagent.exceptions import Submitted
 from pydantic import BaseModel
 
-from toolset import HabitatToolSet
+from toolset import HabitatToolSet, WaypointToolSet
 
 
 class HabitatEnvironmentConfig(BaseModel):
@@ -25,21 +25,39 @@ class HabitatEnvironmentConfig(BaseModel):
     bare: bool = False
     step_budget: int = 500
     turn_budget: int = 0
-    pano_view_px: int = 384
+    pano_view_px: int = 0  # 0 = native render resolution, same as observe()
     live_dir: str = ""
+    # waypoint action space (wp condition): a second auto_host (the predictor)
+    # and its own decision-step budget replace the step()/clearance surface.
+    wp: bool = False
+    wp_server_url: str = ""
+    wp_max_moves: int = 40
+    wp_predict_fn: str = "smartway_waypoint__predict"
 
 
 class HabitatEnvironment:
     def __init__(self, *, config_class: type = HabitatEnvironmentConfig, **kwargs: Any) -> None:
         self.config = config_class(**kwargs)
-        self.toolset = HabitatToolSet(
-            self.config.server_url,
-            bare=self.config.bare,
-            step_budget=self.config.step_budget,
-            turn_budget=self.config.turn_budget,
-            pano_view_px=self.config.pano_view_px,
-            live_dir=Path(self.config.live_dir) if self.config.live_dir else None,
-        )
+        live_dir = Path(self.config.live_dir) if self.config.live_dir else None
+        if self.config.wp:
+            self.toolset = WaypointToolSet(
+                self.config.server_url,
+                wp_server_url=self.config.wp_server_url,
+                wp_max_moves=self.config.wp_max_moves,
+                predict_fn=self.config.wp_predict_fn,
+                turn_budget=self.config.turn_budget,
+                pano_view_px=self.config.pano_view_px,
+                live_dir=live_dir,
+            )
+        else:
+            self.toolset = HabitatToolSet(
+                self.config.server_url,
+                bare=self.config.bare,
+                step_budget=self.config.step_budget,
+                turn_budget=self.config.turn_budget,
+                pano_view_px=self.config.pano_view_px,
+                live_dir=live_dir,
+            )
 
     def execute(self, action: dict[str, Any], cwd: str = "") -> dict[str, Any]:
         """Run one parsed tool call; raise Submitted when the episode ends."""
