@@ -34,7 +34,7 @@ SOURCE_ROOTS = {
 class StartRequest(BaseModel):
     episodes: str = "0-9"
     split: str = "rand100"
-    max_turns: int = 80
+    max_turns: int = 200
     model: str | None = None
 
 
@@ -53,7 +53,9 @@ def _source_root(source: str):
 
 
 def _run_dir(source: str, run_name: str):
-    if not run_name or not all(c.isalnum() or c in "_-" for c in run_name):
+    # "." is legal in run names (std_sdk_opus-4.8_bare); ".." stays forbidden
+    if (not run_name or ".." in run_name
+            or not all(c.isalnum() or c in "_-." for c in run_name)):
         raise HTTPException(400, f"bad run name: {run_name!r}")
     run_dir = _source_root(source) / run_name
     if not run_dir.exists():

@@ -94,7 +94,7 @@ export default function CodingAgentPage() {
   // control panel form
   const [episodes, setEpisodes] = useState("0-9");
   const [split, setSplit] = useState("rand100");
-  const [maxTurns, setMaxTurns] = useState(80);
+  const [maxTurns, setMaxTurns] = useState(200);
   const [model, setModel] = useState("");
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -620,6 +620,30 @@ export default function CodingAgentPage() {
                   (l.texts as string[] | undefined) ?? [];
               }
             }
+            // Pair each tool_use to its result. Unified-driver logs carry
+            // id/tool_use_id; legacy runs (e.g. fable50_bare) emit neither, so
+            // fall back to positional pairing — the next tool_result after this
+            // tool_use, consumed once (legacy logs strictly alternate use/result).
+            const resultByLineIdx: Record<number, string[]> = {};
+            const orderedResults: { idx: number; texts: string[] }[] = [];
+            lines.forEach((l, idx) => {
+              if (l.kind === "tool_result")
+                orderedResults.push({ idx, texts: (l.texts as string[] | undefined) ?? [] });
+            });
+            let resPtr = 0;
+            lines.forEach((l, idx) => {
+              if (l.kind !== "tool_use") return;
+              const byId =
+                typeof l.id === "string" ? resultByToolUse[l.id] : undefined;
+              if (byId) {
+                resultByLineIdx[idx] = byId;
+                return;
+              }
+              while (resPtr < orderedResults.length && orderedResults[resPtr].idx <= idx)
+                resPtr++;
+              if (resPtr < orderedResults.length)
+                resultByLineIdx[idx] = orderedResults[resPtr++].texts;
+            });
             const groups: { rgb: string | null; depth: string | null }[] = [];
             const groupAt: Record<string, number> = {};
             for (const f of frames) {
@@ -645,7 +669,7 @@ export default function CodingAgentPage() {
               const tiles: { url: string | null; label: string | null }[] = [];
               let nViews = 0;
               if (line.kind === "tool_use") {
-                const res = resultByToolUse[String(line.id ?? "")];
+                const res = resultByLineIdx[i];
                 if (res) {
                   const labels: string[] = [];
                   for (let j = 0; j < res.length; j++) {
