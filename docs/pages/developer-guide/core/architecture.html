@@ -46,6 +46,7 @@
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>
@@ -92,7 +93,7 @@
 
 <h2 id="overview"><span class="num">§1</span>System Overview</h2>
 
-<p>Three-tier system: <strong>frontend</strong> (React canvas) ↔ <strong>backend</strong> (FastAPI + GraphExecutor) ↔ <strong>workspace</strong> (user-authored Python components + simulators).</p>
+<p>Three-tier system: <strong>frontend</strong> (React canvas) ↔ <strong>backend</strong> (FastAPI + GraphExecutor) ↔ <strong>workspace</strong> (user-authored Python components + simulators). The React canvas is not the only way in: the <strong>Graph SDK</strong> (<code>from agentcanvas import Graph</code>) builds and runs the same <code>GraphDefinition</code> against the same executor entirely in-process — no FastAPI, no browser (§4.3) — and coding agents drive the REST surface directly.</p>
 
 <svg class="rxsvg" viewBox="0 0 720 360" role="img" aria-label="Three-tier system. Frontend (React 18 + Vite): Canvas Editor, Output Panels, Node Library, all over a Zustand store. It talks to the Backend over REST and WebSocket. Backend (FastAPI, Python 3.10+ agentcanvas env): API routes, Component Registry, and the Loop Runner driving the Graph Executor that fires nodes. The backend loads user code from workspace/ (nodesets, nodes, graphs, graph_nodes) and drives simulators on the GPU — Habitat, MatterSim, SIMPLER, LIBERO, and more via env nodesets.">
   <!-- Frontend tier -->
@@ -219,7 +220,7 @@
 
 <h2 id="execution"><span class="num">§4</span>Execution Engine</h2>
 
-<p>One engine — the <strong>Graph Executor</strong> — handles every graph regardless of topology. DAG-shaped workflows are just cyclic graphs that fire each node exactly once; iterative agent loops are the same engine with <code>iterIn</code>/<code>iterOut</code> gates added. There is no separate "DAG executor" path (see <a href="../../../pages/developer-guide/core/glossary.html#s6">Glossary §6</a>).</p>
+<p>One engine — the <strong>Graph Executor</strong> — handles every graph regardless of topology. DAG-shaped workflows are just acyclic graphs that fire each node exactly once; loops are the same engine with <code>iterIn</code>/<code>iterOut</code> gates added. There is no separate "DAG executor" path (see <a href="../../../pages/developer-guide/core/glossary.html#s6">Glossary §6</a>).</p>
 
 <div class="cards cols-1">
   <div class="card architecture">
@@ -241,12 +242,24 @@
     <p style="font-size:.9rem;">The same engine, driven without the canvas — the platform's primary path for producing numbers. §2's interactive Play runs one episode; this runs hundreds.</p>
     <ol class="numbered-list" style="font-size:.9rem;">
       <li><code>POST /api/eval/v2/start</code> enqueues a job on the backend-owned <code>JobScheduler</code> (<code>services/job_scheduler.py</code>)</li>
-      <li>A per-second <code>tick()</code> admits queued jobs when the declared <code>marginal_vram_mb</code> fits the shared VRAM budget and canvas Play isn't holding the <code>ExecutionGuard</code> lock (<code>state.py</code> — canvas/eval mutual exclusion)</li>
+      <li>A per-second <code>tick()</code> admits queued jobs when their calibrated per-resource estimates (VRAM + RAM) fit measured free minus reservations (declared <code>marginal_vram_mb</code> as fallback) and canvas Play isn't holding the <code>ExecutionGuard</code> lock (<code>state.py</code> — canvas/eval mutual exclusion)</li>
       <li>Each admitted run is its own subprocess — <code>python -m app.eval_subprocess_main --run-dir …</code>, kernel-tied to the backend by <code>PR_SET_PDEATHSIG</code>. It re-scans <code>workspace/</code> from disk (fresh code per launch) and attaches to parent-owned shared singletons via <code>register_remote_nodeset</code> — no duplicate VRAM</li>
       <li>Inside the subprocess, <code>BatchEvalRunner</code> (<code>agent_loop/eval_batch.py</code>) iterates the episode list through fresh <code>LoopRunner</code> instances; at <code>worker_count&gt;1</code> an <code>EnvWorkerPool</code> leases tagged env subprocesses per episode</li>
       <li>Results land self-contained under <code>outputs/eval_runs/{run_id}/episodes/ep{NNNN}/</code> (<code>log.jsonl</code>, assets, <code>episode.json</code>); <code>spec.json</code> / <code>shared_urls.json</code> / <code>_DONE</code> form the parent↔subprocess file protocol (<code>services/run_state_io.py</code>)</li>
     </ol>
     <p class="muted" style="font-size:.85rem;">Governed by ADR-eval-001…004 + ADR-server-003 — see the <a href="../design-docs/graph/batch-eval.html">Batch Eval design-doc</a>.</p>
+  </div>
+
+  <div class="card architecture">
+    <h3>4.3 Programmatic Path (Graph SDK)</h3>
+    <p style="font-size:.9rem;">The same engine, driven as a Python library — no FastAPI, no canvas. <code>app/graph_sdk.py</code> (public namespace <code>agentcanvas</code>) wraps the <code>GraphDefinition</code> dataclass model and calls the real <code>GraphExecutor</code> in-process, so loop semantics are identical to canvas Play.</p>
+    <ul class="numbered-list" style="font-size:.9rem;">
+      <li><code>Graph.add()</code> / <code>connect()</code> / <code>graph_out()</code> assemble the same <code>NodeDef</code> / <code>EdgeDef</code> / <code>ContainerDef</code> the canvas emits; <code>catalog()</code> / <code>describe()</code> introspect the live node catalog and <code>generate_node_stubs()</code> emits typed authoring stubs</li>
+      <li>Validation runs before execution (<code>GraphValidationError</code>); <code>run()</code> returns a <code>RunResult</code>, <code>on_event</code> streams <code>RunEvent</code>s, <code>eval()</code> drives batch evaluation</li>
+      <li>Cassette record/replay (<code>graph_sdk_replay.py</code>) captures server-node HTTP round-trips, so GPU-nodeset graphs replay as hermetic tests; <code>graph_to_code()</code> compiles any existing graph back into a builder script</li>
+      <li>Distributed as <code>pip install agentcanvas</code> (repo-root <code>pyproject.toml</code>, tiered extras <code>[server]</code> / <code>[llm]</code> / <code>[backend]</code>)</li>
+    </ul>
+    <p class="muted" style="font-size:.85rem;">See the <a href="../capabilities/graph-sdk.html">Graph SDK capability page</a> for the full walkthrough.</p>
   </div>
 </div>
 
@@ -400,7 +413,7 @@
   <tr><td>State management</td><td>Zustand (dual store)</td><td>Lightweight, no boilerplate, works with React Flow</td></tr>
   <tr><td>Styling</td><td>Tailwind CSS</td><td>Utility-first, fast iteration</td></tr>
   <tr><td>Build tool</td><td>Vite</td><td>Fast HMR for frontend dev</td></tr>
-  <tr><td>Config (eval)</td><td>Hydra + OmegaConf</td><td>Composable config groups for eval harness</td></tr>
+  <tr><td>Packaging</td><td>Root <code>pyproject.toml</code> → <code>pip install agentcanvas</code></td><td>Stdlib-light Graph SDK core; tiered extras <code>[server]</code> / <code>[llm]</code> / <code>[backend]</code> keep the base install small</td></tr>
   <tr><td>Docs</td><td>Hand-authored HTML + stdlib dev server (<code>docs/run_dev.sh</code>)</td><td>Full HTML expressivity; live reload via SSE on mtime change. MkDocs retired 2026-05-18.</td></tr>
 </table>
 

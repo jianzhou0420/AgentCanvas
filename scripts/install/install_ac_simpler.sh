@@ -5,7 +5,7 @@
 # Creates the `ac-simpler` conda env (Python 3.10) for the SIMPLER
 # VLA evaluation benchmark (https://github.com/simpler-env/SimplerEnv).
 # Used in server mode by `env_simpler` nodeset at
-# `workspace/nodesets/server/simpler.py` (server_python points here).
+# `workspace/nodesets/env/env_simpler/` (server_python points here).
 #
 # Why a separate env:
 #   SIMPLER depends on SAPIEN 2.x (Vulkan-rendered) + ManiSkill2_real2sim +
@@ -111,6 +111,13 @@ echo "=== Step 3: Installing SIMPLER + runtime deps ==="
 # Pin setuptools<81 to keep the import path working.
 "$SIMPLER_PYTHON" -m pip install 'setuptools<81'
 
+# ruckig (transitive dep of mani_skill2_real2sim) ships only sdists past 0.12.x,
+# and the latest (0.17.x) uses a `cmake.targets` config that scikit-build-core
+# >= 0.10 rejects ("Use build.targets instead of cmake.targets") — so building
+# it from source fails during the ManiSkill editable install below. Pre-install
+# the last version with a cp310 wheel so pip never builds ruckig from source.
+"$SIMPLER_PYTHON" -m pip install --only-binary :all: 'ruckig==0.12.2'
+
 # ManiSkill2_real2sim brings sapien, mani_skill2_real2sim, gymnasium, etc.
 "$SIMPLER_PYTHON" -m pip install -e "$MANISKILL_REPO"
 "$SIMPLER_PYTHON" -m pip install -e "$SIMPLERENV_REPO"
@@ -193,7 +200,7 @@ PY
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "The $ENV_NAME env is used by workspace/nodesets/server/simpler.py in server mode."
+echo "The $ENV_NAME env is used by workspace/nodesets/env/env_simpler/ in server mode."
 echo "To set it explicitly:  export SIMPLER_PYTHON=$SIMPLER_PYTHON"
 echo "To activate manually:  conda activate $ENV_NAME"
 echo ""

@@ -110,12 +110,13 @@ check_prerequisites() {
         fi
     fi
 
-    # cmake
+    # cmake — the ac-mp3d env yaml provides cmake>=3.10 and build_mattersim uses
+    # the env's cmake, so a MISSING system cmake is only a warning (the build no
+    # longer depends on a system-wide cmake, which may be absent on fresh hosts).
     if check_command cmake; then
         print_success "cmake found: $(cmake --version | head -1)"
     else
-        print_error "cmake is not installed. Install it with: sudo apt-get install cmake"
-        ok=false
+        print_warning "system cmake not found — build will use the ac-mp3d env's cmake (from the env yaml)."
     fi
 
     # make
@@ -228,7 +229,9 @@ build_mattersim() {
     # -I conda include: GLM headers (glm/glm.hpp)
     # -DCV_LOAD_IMAGE_ANYDEPTH: OpenCV 4.x removed the old C constant
     # System jsoncpp (libjsoncpp-dev) is used for ABI compatibility
-    CMAKE_PREFIX_PATH="$conda_prefix" cmake -S "$MP3D_DIR" -B "$build_dir" \
+    # Use the ac-mp3d env's cmake (from the env yaml) so the build does not
+    # depend on a system-wide cmake (which may be absent on fresh hosts).
+    CMAKE_PREFIX_PATH="$conda_prefix" "$conda_prefix/bin/cmake" -S "$MP3D_DIR" -B "$build_dir" \
         "$render_flag" \
         -DPYTHON_EXECUTABLE="$conda_prefix/bin/python" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -280,6 +283,11 @@ setup_pythonpath() {
 export _OLD_PYTHONPATH_MP3D="\${PYTHONPATH:-}"
 export PYTHONPATH="${MP3D_DIR}/build:\${PYTHONPATH:-}"
 export MATTERPORT_DATA_DIR="\${MATTERPORT_DATA_DIR:-${REPO_ROOT}/data/mp3d/v1/scans}"
+# MatterSim's link chain (libicuuc -> libstdc++) needs GLIBCXX_3.4.30 from the
+# env's libstdc++ (libstdcxx-ng); stock Ubuntu 20.04's system libstdc++ is too
+# old. Prepend the env lib/ so it wins — same hook pattern as vlnce/hmeqa/smartway.
+export _OLD_LD_LIBRARY_PATH_MP3D="\${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}"
 ACTIVATE
 
     cat > "$deactivate_script" <<DEACTIVATE
@@ -288,6 +296,8 @@ ACTIVATE
 export PYTHONPATH="\${_OLD_PYTHONPATH_MP3D}"
 unset _OLD_PYTHONPATH_MP3D
 unset MATTERPORT_DATA_DIR
+export LD_LIBRARY_PATH="\${_OLD_LD_LIBRARY_PATH_MP3D}"
+unset _OLD_LD_LIBRARY_PATH_MP3D
 DEACTIVATE
 
     chmod +x "$activate_script" "$deactivate_script"
@@ -341,7 +351,16 @@ validate_installation() {
     print_info "Running import test inside '$ENV_NAME' environment ..."
 
     local result
-    result=$(conda run -n "$ENV_NAME" python - <<'PYEOF' 2>&1
+    # `conda run` runs the ac-mp3d activate.d hook (setup_pythonpath), which now
+    # exports both LD_LIBRARY_PATH (env lib/ — MatterSim's libicuuc->libstdc++
+    # chain needs GLIBCXX_3.4.30 that stock 20.04 lacks) and PYTHONPATH (build/),
+    # so a plain conda run finds and imports MatterSim.
+    #
+    # The test code is passed via `python -c "$(cat …)"` (an ARGUMENT), NOT
+    # `python - <<HEREDOC` (stdin): `conda run` does not forward stdin to the
+    # child, so the heredoc form silently ran an EMPTY program and this check
+    # ALWAYS reported FAILED regardless of whether MatterSim actually imports.
+    result=$(conda run -n "$ENV_NAME" python -c "$(cat <<'PYEOF'
 import sys, os
 build_dir = os.environ.get("_MP3D_BUILD_DIR", "")
 if build_dir:
@@ -356,7 +375,7 @@ except ImportError as e:
     print("IMPORT_FAILED:", e)
     sys.exit(1)
 PYEOF
-)
+)" 2>&1)
 
     if echo "$result" | grep -q "MatterSim imported successfully"; then
         print_success "MatterSim import test passed."

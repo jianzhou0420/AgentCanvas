@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from .job_scheduler import JobScheduler, _RunningJob
 from .run_state_io import atomic_write_json, is_done, read_summary, touch_done
 
@@ -79,13 +81,23 @@ def test_admit_respects_canvas_lock(tmp_path: Path) -> None:
     assert len(sched._queue) == 1
 
 
-def test_admit_respects_vram_budget(tmp_path: Path) -> None:
+def test_submit_rejects_impossible_declaration(tmp_path: Path) -> None:
+    """P3: a declaration beyond the physical ceiling can never admit —
+    reject at submit instead of the old silent forever-pending."""
     sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=10000)
-    sched.submit(_spec(run_id="big", marginal_vram_mb=15000))  # too big
+    with pytest.raises(ValueError, match="ceiling"):
+        sched.submit(_spec(run_id="impossible", marginal_vram_mb=15000))
+    assert sched.list_active()["queued"] == []
+
+
+def test_admit_respects_vram_budget(tmp_path: Path) -> None:
+    """Legacy declared-ledger path (no sampler in unit tests)."""
+    sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=10000)
+    sched.submit(_spec(run_id="big", marginal_vram_mb=8000))
     sched.submit(_spec(run_id="ok", marginal_vram_mb=5000))
     spawned: list[str] = []
 
-    def _fake_spawn(q, ephem_tag=None):
+    def _fake_spawn(q, ephem_tag=None, **kw):
         spawned.append(q.run_id)
         sched._running[q.run_id] = _RunningJob(
             run_id=q.run_id,
@@ -98,8 +110,144 @@ def test_admit_respects_vram_budget(tmp_path: Path) -> None:
 
     with patch.object(sched, "_spawn", side_effect=_fake_spawn):
         asyncio.run(sched._admit())
-    assert spawned == ["ok"]  # big stays queued
-    assert [q.run_id for q in sched._queue] == ["big"]
+    # FIFO: big (8000) fits 10000 and admits; ok (5000) > remaining 2000.
+    assert spawned == ["big"]
+    assert [q.run_id for q in sched._queue] == ["ok"]
+
+
+def _fake_running(run_id: str, admit_charges: dict[str, int] | None = None) -> _RunningJob:
+    return _RunningJob(
+        run_id=run_id,
+        proc=type("P", (), {"pid": 1, "poll": lambda self=None: None})(),
+        pgid=1,
+        marginal_vram_mb=0,
+        exclusive_gpu=False,
+        started_at=time.time(),
+        admit_charges=admit_charges or {},
+    )
+
+
+def test_admit_measured_gate(tmp_path: Path) -> None:
+    """With a sampler, admission runs on estimate vs measured free."""
+    sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=10000)
+    sched.submit(_spec(run_id="j1", marginal_vram_mb=0))
+    with (
+        patch.object(sched._resource_stats, "measured_free_mb", return_value=4000),
+        patch.object(sched, "_resolve_estimate", return_value=({"vram": 4500}, "calibrated")),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_not_called()  # 4500 > 4000 free
+    with (
+        patch.object(sched._resource_stats, "measured_free_mb", return_value=6000),
+        patch.object(sched, "_resolve_estimate", return_value=({"vram": 4500}, "calibrated")),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_called_once()
+        assert spawn.call_args.kwargs["admit_charges"] == {"vram": 4500}
+        assert spawn.call_args.kwargs["admit_basis"] == "calibrated"
+
+
+def test_admit_gates_each_resource(tmp_path: Path) -> None:
+    """The RAM dimension alone can block admission (and unblock it)."""
+    sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=20000)
+    sched.submit(_spec(run_id="j1", marginal_vram_mb=0))
+    free = {"vram": 10000, "ram": 2000}
+    with (
+        patch.object(
+            sched._resource_stats, "measured_free_mb", side_effect=lambda r="vram": free[r]
+        ),
+        patch.object(
+            sched,
+            "_resolve_estimate",
+            return_value=({"vram": 4000, "ram": 3000}, "calibrated"),
+        ),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_not_called()  # ram 3000 > 2000 free
+        free["ram"] = 8000
+        asyncio.run(sched._admit())
+        spawn.assert_called_once()
+
+
+def test_admit_skips_unmeasurable_resource(tmp_path: Path) -> None:
+    """CPU-only box: vram free is None → that dimension is ungated while
+    the measurable ram dimension still gates."""
+    sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=0)
+    sched.submit(_spec(run_id="j1", marginal_vram_mb=0))
+    free = {"vram": None, "ram": 8000}
+    with (
+        patch.object(
+            sched._resource_stats, "measured_free_mb", side_effect=lambda r="vram": free[r]
+        ),
+        patch.object(
+            sched,
+            "_resolve_estimate",
+            return_value=({"vram": 99999, "ram": 3000}, "calibrated"),
+        ),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_called_once()  # vram unmeasurable → skipped; ram fits
+
+
+def test_admit_reservation_decay(tmp_path: Path) -> None:
+    """A running job's reservation = estimate - measured tree; it shrinks
+    as the sampler sees the real allocation, unblocking the queue."""
+    sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=20000)
+    sched._running["r1"] = _fake_running("r1", admit_charges={"vram": 5000})
+    sched.submit(_spec(run_id="j2", marginal_vram_mb=0))
+    # r1 measured only 1000 of its 5000 → pending 4000 → 3000 > 6000-4000.
+    with (
+        patch.object(sched._resource_stats, "measured_free_mb", return_value=6000),
+        patch.object(
+            sched._resource_stats,
+            "snapshot",
+            return_value={"resources": {"vram": {"jobs_mb": {"r1": 1000}}}},
+        ),
+        patch.object(sched, "_resolve_estimate", return_value=({"vram": 3000}, "calibrated")),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_not_called()
+    # r1's allocation fully materialized → pending 0 → j2 fits.
+    with (
+        patch.object(sched._resource_stats, "measured_free_mb", return_value=6000),
+        patch.object(
+            sched._resource_stats,
+            "snapshot",
+            return_value={"resources": {"vram": {"jobs_mb": {"r1": 5000}}}},
+        ),
+        patch.object(sched, "_resolve_estimate", return_value=({"vram": 3000}, "calibrated")),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_called_once()
+
+
+def test_admit_cold_start_only_alone(tmp_path: Path) -> None:
+    """No calibration + no declaration → admit only on an idle scheduler."""
+    sched = JobScheduler(eval_runs_dir=tmp_path, usable_vram_mb=20000)
+    sched._running["r1"] = _fake_running("r1")
+    sched.submit(_spec(run_id="cold", marginal_vram_mb=0))
+    with (
+        patch.object(sched._resource_stats, "measured_free_mb", return_value=20000),
+        patch.object(sched, "_resolve_estimate", return_value=(None, "unknown")),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_not_called()  # something else is running
+    sched._running.clear()
+    with (
+        patch.object(sched._resource_stats, "measured_free_mb", return_value=20000),
+        patch.object(sched, "_resolve_estimate", return_value=(None, "unknown")),
+        patch.object(sched, "_spawn") as spawn,
+    ):
+        asyncio.run(sched._admit())
+        spawn.assert_called_once()
+        assert spawn.call_args.kwargs["admit_basis"] == "cold-start"
 
 
 def test_exclusive_gpu_blocks_others(tmp_path: Path) -> None:
@@ -108,7 +256,7 @@ def test_exclusive_gpu_blocks_others(tmp_path: Path) -> None:
     sched.submit(_spec(run_id="small", marginal_vram_mb=500))
     with patch.object(sched, "_spawn") as spawn:
 
-        def fake(q, ephem_tag=None):
+        def fake(q, ephem_tag=None, **kw):
             sched._running[q.run_id] = _RunningJob(
                 run_id=q.run_id,
                 proc=type("P", (), {"pid": 1, "poll": lambda self=None: None})(),
@@ -152,7 +300,7 @@ def test_real_popen_smoke(tmp_path: Path) -> None:
     run_id = sched.submit(_spec(marginal_vram_mb=0))
     run_dir = tmp_path / run_id
 
-    def _fake_spawn(q, ephem_tag=None):
+    def _fake_spawn(q, ephem_tag=None, **kw):
         # Write a minimal succeeded summary + _DONE; mimics what
         # eval_subprocess_main does on completion.
         bash_script = (
@@ -299,7 +447,7 @@ def test_admit_spawns_ephemeral_on_overlay_diff(tmp_path: Path) -> None:
 
     with patch.object(sched, "_spawn") as spawn:
 
-        def fake(q, ephem_tag=None):
+        def fake(q, ephem_tag=None, **kw):
             sched._running[q.run_id] = _RunningJob(
                 run_id=q.run_id,
                 proc=type("P", (), {"pid": 1, "poll": lambda self=None: None})(),
@@ -353,7 +501,7 @@ def test_admit_skips_ephemeral_on_byte_identical_overlay(tmp_path: Path) -> None
     run_id = sched.submit(spec)
 
     with patch.object(sched, "_spawn") as spawn:
-        spawn.side_effect = lambda q, ephem_tag=None: sched._running.setdefault(
+        spawn.side_effect = lambda q, ephem_tag=None, **kw: sched._running.setdefault(
             q.run_id,
             _RunningJob(
                 run_id=q.run_id,
@@ -437,7 +585,7 @@ def test_admit_no_overlay_skips_ephemeral(tmp_path: Path) -> None:
     sched.submit(spec)
 
     with patch.object(sched, "_spawn") as spawn:
-        spawn.side_effect = lambda q, ephem_tag=None: sched._running.setdefault(
+        spawn.side_effect = lambda q, ephem_tag=None, **kw: sched._running.setdefault(
             q.run_id,
             _RunningJob(
                 run_id=q.run_id,

@@ -6,14 +6,14 @@ build ``ServerFunction`` entries.  No manual port re-declaration needed.
 Usage::
 
     from app.server.auto_server_app import AutoServerApp
-    from workspace.nodesets.sam import SamNodeSet
+    from workspace.nodesets.model.model_sam import SamNodeSet
 
     app = AutoServerApp(SamNodeSet)
     app.serve()
 
 Or via the CLI entry point::
 
-    python -m app.server.auto_host --file workspace/nodesets/sam.py \\
+    python -m app.server.auto_host --file workspace/nodesets/model/model_sam.py \\
         --class SamNodeSet --port 9200
 """
 
@@ -245,7 +245,14 @@ class AutoServerApp(ServerApp):
                 )
 
     async def on_startup(self) -> None:
-        self._nodeset = self._nodeset_cls()
+        # Reuse the instance get_functions() may have created for the manifest:
+        # the /call handlers close over ITS tools (self._nodeset back-refs), so
+        # constructing a second instance here would initialize an object the
+        # handlers never see — session-type nodesets (state on the nodeset
+        # instance, e.g. model_vggt_slam2) then serve every call from the
+        # never-initialized throwaway. Caught 2026-07-14.
+        if self._nodeset is None:
+            self._nodeset = self._nodeset_cls()
         await self._nodeset.initialize()
         self._ensure_containers()
         log.info("AutoServerApp: initialized nodeset %s", self.name)

@@ -25,7 +25,7 @@ class HabitatEnvironmentConfig(BaseModel):
     bare: bool = False
     step_budget: int = 500
     turn_budget: int = 0
-    pano_view_px: int = 384
+    pano_view_px: int = 0  # 0 = native render resolution, same as observe()
     live_dir: str = ""
     # waypoint action space (wp condition): a second auto_host (the predictor)
     # and its own decision-step budget replace the step()/clearance surface.

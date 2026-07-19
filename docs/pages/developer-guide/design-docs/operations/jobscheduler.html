@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JobScheduler — AgentCanvas</title>
+<meta name="description" content="Decides when an eval run may start: measure what is free, estimate what the job needs (from its past runs), admit only if it fits — for GPU and system memory alike.">
+<meta property="og:title" content="JobScheduler — AgentCanvas">
+<meta property="og:description" content="Decides when an eval run may start: measure what is free, estimate what the job needs (from its past runs), admit only if it fits — for GPU and system memory alike.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/jobscheduler.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="JobScheduler">
+<style id="js-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#jsa); }
+  .rxsvg .edge-dash { stroke: var(--muted); stroke-width:1.2; fill:none; stroke-dasharray:4 4; marker-end:url(#jsa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/jobscheduler.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">JobScheduler</span>
+  </div>
+  <div class="last-updated">2026-07-05</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>JobScheduler</h1>
+  <p class="tagline">Decides when an eval run may start: measure what is free, estimate what the job needs (from its past runs), admit only if it fits — for GPU and system memory alike.</p>
+</header>
+
+<p class="lede">The <code>JobScheduler</code> answers one question: <em>is it safe to start this eval run right now?</em> When you submit a run, nothing executes yet — the job waits in a queue. Once a second, the scheduler looks at how much GPU and system memory is actually free, estimates how much this job will need (learned from watching its previous runs), and starts it only if it fits. Everything it used to make that call is visible in one API response (<code>GET /api/eval/v2/queue</code>), so when a job doesn't start, you can always see why. For what happens <em>inside</em> a run, see <a href="../graph/batch-eval.html">batch-eval</a>; for how model server processes work, see <a href="server-mode.html">server-mode</a>.</p>
+
+<p class="diagram-label"><strong>The whole system is one loop.</strong> A submitted job waits in the queue until the gate says it fits. While it runs, its memory is measured; when it ends, the measurements are saved (<em>sediment</em>). The saved measurements are where the gate's <em>estimate</em> comes from — and the live measurements are where <em>free</em> comes from.</p>
+<svg class="rxsvg" viewBox="0 0 720 340" role="img" aria-label="The scheduling loop. You submit a run; it waits in a queue. The gate checks once a second, per resource, whether the estimate fits into measured free minus reservations. A job that fits becomes a running process; one that does not stays queued and is retried next second. The running job's memory is measured every second. The measurements answer two questions: how much is free right now, which feeds the gate directly, and what did this graph use, which is sedimented into resource_calibration.json when the job ends and becomes the gate's estimate for the next run.">
+  <defs>
+    <marker id="jsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+
+  <rect class="box" x="20" y="36" width="150" height="52" rx="6"/>
+  <text class="mono" x="95" y="58" text-anchor="middle">POST /start</text>
+  <text class="dim" x="95" y="76" text-anchor="middle">you submit a run</text>
+
+  <rect class="box" x="210" y="36" width="120" height="52" rx="6"/>
+  <text class="mono" x="270" y="58" text-anchor="middle">queue</text>
+  <text class="dim" x="270" y="76" text-anchor="middle">waits here</text>
+  <text class="dim" x="270" y="112" text-anchor="middle">doesn't fit → stays here,</text>
+  <text class="dim" x="270" y="126" text-anchor="middle">retried next second</text>
+
+  <rect class="accent" x="370" y="26" width="180" height="72" rx="8"/>
+  <text class="at" x="460" y="48" text-anchor="middle">the gate</text>
+  <text class="mono" x="460" y="66" text-anchor="middle">est ≤ free − reservations</text>
+  <text class="dim" x="460" y="84" text-anchor="middle">every second, per resource</text>
+
+  <rect class="box" x="570" y="36" width="130" height="52" rx="6"/>
+  <text class="mono" x="635" y="58" text-anchor="middle">running job</text>
+  <text class="dim" x="635" y="76" text-anchor="middle">own process</text>
+
+  <path class="edge" d="M170 62 H206"/>
+  <path class="edge" d="M330 62 H366"/>
+  <path class="edge" d="M550 62 H566"/>
+  <text class="dim" x="558" y="50" text-anchor="middle">fits</text>
+
+  <path class="edge" d="M635 88 V246"/>
+  <text class="dim" x="643" y="160">measured</text>
+  <text class="dim" x="643" y="175">every second</text>
+
+  <rect class="box" x="480" y="250" width="220" height="64" rx="6"/>
+  <text class="mono" x="590" y="272" text-anchor="middle">measurement</text>
+  <text class="dim" x="590" y="288" text-anchor="middle">whose memory is whose</text>
+  <text class="mono" x="590" y="304" text-anchor="middle">resource_stats.py</text>
+
+  <rect class="ghost" x="150" y="250" width="240" height="64" rx="6"/>
+  <text class="mono" x="270" y="272" text-anchor="middle">resource_calibration.json</text>
+  <text class="dim" x="270" y="290" text-anchor="middle">what each graph used</text>
+  <text class="dim" x="270" y="305" text-anchor="middle">in past runs</text>
+
+  <path class="edge" d="M476 296 H394"/>
+  <text class="dim" x="435" y="288" text-anchor="middle">sediment</text>
+
+  <path class="edge" d="M270 250 V160 H405 V102"/>
+  <text class="dim" x="330" y="152" text-anchor="middle">the estimate for next time</text>
+
+  <path class="edge" d="M560 250 V160 H485 V102"/>
+  <text class="dim" x="530" y="152" text-anchor="middle">free, right now</text>
+</svg>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+
+<p>One machine runs many eval jobs at once, and none of them know about each other. If two big jobs start together, the GPU runs out of memory and both crash. The scheduler is the single place where every job must ask permission first.</p>
+
+<p>An earlier version asked each job to <em>declare</em> how much GPU memory it would use — and trusted the number. Declarations were routinely wrong (the default was 0), so the gate protected nothing. The current version measures instead: every second, each process's GPU memory and RAM is read and attributed to an owner (§4.1), and admission checks per resource: <em>does this job's estimated need fit into what is actually free?</em> A machine without a GPU has no VRAM dimension to check — it gates on RAM alone.</p>
+
+<p>The estimates are learned, not configured (<code>resource_stats.py · CalibrationStore</code>): the first time a graph runs, the scheduler just watches it, and writes what it saw into a calibration file when the job finishes — we call this <em>sedimenting</em>. From the second run on, admission uses the measured numbers, keyed to a hash of the nodeset's source code so edits retire stale statistics.</p>
+
+<p>An admitted run executes in its own OS process (<code>app/eval_subprocess_main.py</code>) and its own process group: cancelling it is one signal to the group, and a crash cannot take the backend down. As a backstop, the subprocess also caps its own torch allocator at the admitted VRAM amount (<code>AGENTCANVAS_VRAM_CAP_MB</code>) — a job that badly exceeds its estimate crashes itself instead of its neighbours. This cap exists only for VRAM; RAM is checked at admission but not enforced afterwards (§6).</p>
+
+<h3 id="11-smallest-run"><span class="num">1.1</span> The smallest run</h3>
+
+<p>A graph name and an episode count; everything else defaults. The response is immediate — the run is queued, not started:</p>
+
+<pre class="hl">
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/api/eval/v2/start<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#x27;{&quot;graph_name&quot;: &quot;straightforward&quot;, &quot;episode_count&quot;: 1}&#x27;</span>
+<span class="c1"># → {&quot;run_id&quot;: &quot;20260704_200243&quot;, &quot;status&quot;: &quot;queued&quot;, &quot;via_subprocess&quot;: true}</span>
+</pre>
+
+<p>The response comes back immediately: the run is <em>queued</em>, not started. A second or two later the scheduler admits it — this graph has run before, so the charge is what was measured last time, not what any profile declared. The subprocess runs its episode, writes <code>summary.json</code> and a <code>_DONE</code> marker, and is reaped — leaving one more layer of measurements in the calibration file.</p>
+
+<h2 id="2-lifecycle"><span class="num">2.</span> Lifecycle of one job</h2>
+
+<p>A job moves through four states, and every transition is written to disk as it happens — restart the backend and the completed history is still there.</p>
+
+<p class="diagram-label"><strong>Four states, everything on disk.</strong> The two dashed exits are the only ways off the happy path.</p>
+<svg class="rxsvg" viewBox="0 0 720 240" role="img" aria-label="Job lifecycle. Four boxes left to right: submit (eval.py start_eval_v2), queued (FIFO), running (own process group, highlighted), reaped (status plus sediment). Arrows between them labelled: fits, per section 3; child exits. Two dashed exits: from submit, an impossible declaration is rejected with HTTP 400; from queued, cancel marks the job cancelled. A disk panel shows outputs/eval_runs/run_id accumulating spec.json and a pending summary at submit, stdout.log and a running summary at spawn, and the final summary plus _DONE at reap.">
+  <rect class="box" x="20" y="36" width="140" height="48" rx="6"/>
+  <text class="mono" x="90" y="56" text-anchor="middle">submit</text>
+  <text class="dim" x="90" y="72" text-anchor="middle">eval.py · start_eval_v2</text>
+  <rect class="box" x="200" y="36" width="130" height="48" rx="6"/>
+  <text class="mono" x="265" y="56" text-anchor="middle">queued</text>
+  <text class="dim" x="265" y="72" text-anchor="middle">FIFO</text>
+  <rect class="accent" x="370" y="36" width="140" height="48" rx="6"/>
+  <text class="at" x="440" y="56" text-anchor="middle">running</text>
+  <text class="dim" x="440" y="72" text-anchor="middle">own process group</text>
+  <rect class="box" x="550" y="36" width="150" height="48" rx="6"/>
+  <text class="mono" x="625" y="56" text-anchor="middle">reaped</text>
+  <text class="dim" x="625" y="72" text-anchor="middle">status + sediment</text>
+  <path class="edge" d="M160 60 H196"/>
+  <path class="edge" d="M330 60 H366"/>
+  <text class="dim" x="348" y="30" text-anchor="middle">fits? (§3)</text>
+  <path class="edge" d="M510 60 H546"/>
+  <text class="dim" x="528" y="30" text-anchor="middle">child exits</text>
+  <path class="edge-dash" d="M90 84 V116"/>
+  <text class="dim" x="90" y="132" text-anchor="middle">impossible declaration</text>
+  <text class="dim" x="90" y="146" text-anchor="middle">→ HTTP 400</text>
+  <path class="edge-dash" d="M265 84 V116"/>
+  <text class="dim" x="265" y="132" text-anchor="middle">cancel</text>
+  <text class="dim" x="265" y="146" text-anchor="middle">→ cancelled</text>
+  <path class="edge-dash" d="M440 84 V106"/>
+  <rect class="ghost" x="370" y="110" width="330" height="112" rx="8"/>
+  <text class="dim" x="690" y="130" text-anchor="end">outputs/eval_runs/{run_id}/</text>
+  <text class="mono" x="386" y="154">spec.json · summary: pending</text>
+  <text class="dim" x="690" y="154" text-anchor="end">← submit</text>
+  <text class="mono" x="386" y="176">stdout.log · summary: running</text>
+  <text class="dim" x="690" y="176" text-anchor="end">← spawn</text>
+  <text class="mono" x="386" y="198">summary: final · _DONE</text>
+  <text class="dim" x="690" y="198" text-anchor="end">← reap</text>
+</svg>
+
+<ul>
+<li><strong>submit</strong> (<code>job_scheduler.py · JobScheduler.submit</code>) — reject impossible declarations on the spot; write <code>spec.json</code> + a <code>pending</code> summary; enqueue. The models the graph needs were already loaded by the API handler — so at admit time they cost the job almost nothing.</li>
+<li><strong>admitted</strong> (<code>JobScheduler._admit</code>, §3) — picked FIFO when the gates clear.</li>
+<li><strong>running</strong> (<code>JobScheduler._spawn</code>) — own process group, output teed to the run dir, the admitted VRAM amount passed in as the allocator cap; an <em>observation window</em> opens and tracks the job's memory peaks until it ends (<code>resource_stats.py · note_job_started</code>).</li>
+<li><strong>reaped</strong> (<code>JobScheduler._reap</code>) — final status from the table below; model servers nobody uses any more are unloaded; the window sediments into the calibration file (<code>resource_stats.py · note_job_finished</code>).</li>
+</ul>
+
+<table>
+<thead><tr><th>child exit</th><th><code>_DONE</code> on disk</th><th>terminal status</th></tr></thead>
+<tbody>
+<tr><td>any <code>rc</code></td><td>present</td><td>whatever <code>summary.json</code> says (<code>completed</code> / <code>error</code> / <code>cancelled</code>)</td></tr>
+<tr><td>any <code>rc</code></td><td>absent</td><td><code>aborted</code> (external kill or crash mid-run; <code>rc=-15</code> = SIGTERM)</td></tr>
+</tbody>
+</table>
+
+<h2 id="3-admission"><span class="num">3.</span> The measured admission gate</h2>
+
+<p>Admission guards against two failures at once: starting a job that doesn't fit (an OOM can kill several runs), and holding back a job that would fit (an idle GPU). Every second, <code>JobScheduler._admit</code> walks the queue in submission order and applies four checks:</p>
+
+<ol>
+<li><strong>canvas lock</strong> — someone is using canvas Play; the GPU is theirs, nothing admits.</li>
+<li><strong>exclusive</strong> — a job marked <code>exclusive_gpu</code> waits for an empty machine, and blocks everything else while it runs.</li>
+<li><strong>the fit check</strong> — for each resource the machine can measure (VRAM, RAM): estimated need ≤ measured free − standing reservations. A job that doesn't fit is <em>skipped</em>, not blocking — smaller jobs behind it may start first.</li>
+<li><strong>fallback</strong> — a machine with no sampler at all (unit tests) falls back to the old declared bookkeeping: <code>marginal_vram_mb ≤ usable − Σ declared</code>.</li>
+</ol>
+
+<p class="diagram-label"><strong>The trust ladder.</strong> Admission takes the highest rung that has a number (<code>JobScheduler._resolve_estimate</code>); the rung is recorded on the job as <code>admit_basis</code>.</p>
+<svg class="rxsvg" viewBox="0 0 720 190" role="img" aria-label="The admission trust ladder. Four boxes left to right, each tried in turn: calibrated (everything measured, highlighted), hint (author preset fills the gap), declared (profile number, VRAM only), cold-start (admit only alone). Arrows labelled else connect them. Below, a dashed box: no sampler at all, as in unit tests, falls back to legacy, the old declared ledger.">
+  <rect class="accent" x="20" y="36" width="150" height="52" rx="6"/>
+  <text class="at" x="95" y="58" text-anchor="middle">calibrated</text>
+  <text class="dim" x="95" y="76" text-anchor="middle">everything measured</text>
+  <rect class="box" x="200" y="36" width="150" height="52" rx="6"/>
+  <text class="mono" x="275" y="58" text-anchor="middle">hint</text>
+  <text class="dim" x="275" y="76" text-anchor="middle">author preset fills gap</text>
+  <rect class="box" x="380" y="36" width="150" height="52" rx="6"/>
+  <text class="mono" x="455" y="58" text-anchor="middle">declared</text>
+  <text class="dim" x="455" y="76" text-anchor="middle">profile no. · VRAM only</text>
+  <rect class="box" x="560" y="36" width="140" height="52" rx="6"/>
+  <text class="mono" x="630" y="58" text-anchor="middle">cold-start</text>
+  <text class="dim" x="630" y="76" text-anchor="middle">admit only alone</text>
+  <path class="edge" d="M170 62 H196"/>
+  <text class="dim" x="183" y="30" text-anchor="middle">else</text>
+  <path class="edge" d="M350 62 H376"/>
+  <text class="dim" x="363" y="30" text-anchor="middle">else</text>
+  <path class="edge" d="M530 62 H556"/>
+  <text class="dim" x="543" y="30" text-anchor="middle">else</text>
+  <rect class="ghost" x="170" y="122" width="380" height="38" rx="6"/>
+  <text class="dim" x="360" y="145" text-anchor="middle">no sampler at all (unit tests) → legacy: the old declared ledger</text>
+</svg>
+
+<table>
+<thead><tr><th><code>admit_basis</code></th><th>when</th><th>charge</th></tr></thead>
+<tbody>
+<tr><td><code>calibrated</code></td><td>this graph and every model it needs have been measured before, on every resource</td><td>the measured estimate (§4) plus a safety margin (1500&nbsp;MB VRAM / 1024&nbsp;MB RAM); already-loaded models count ~0</td></tr>
+<tr><td><code>hint</code></td><td>no measurement for some model, but its author shipped an expected size (<code>expected_vram_mb</code> / <code>expected_ram_mb</code>)</td><td>same formula, with the preset standing in for the missing measurement</td></tr>
+<tr><td><code>declared</code></td><td>no calibration; the profile declared <code>marginal_vram_mb</code></td><td>the declared number — VRAM only; nothing ever declared RAM, so RAM is not checked on this rung</td></tr>
+<tr><td><code>cold-start</code></td><td>nothing to go on at all</td><td>0 — admitted only when nothing else is running; the first run becomes the measurement</td></tr>
+<tr><td><code>legacy</code></td><td>no sampler on this machine</td><td>the declared number against the old static budget</td></tr>
+</tbody>
+</table>
+
+<p>One race needs closing: a just-admitted job hasn't allocated its memory yet (models take a minute to load), so it holds a <strong>reservation</strong> — its admitted amount minus what it has actually been measured using (<code>JobScheduler._pending_reservations</code>). As the real allocation appears in the samples, the reservation decays to zero on its own:</p>
+
+<svg class="rxsvg" viewBox="0 0 720 216" role="img" aria-label="Reservation decay timeline. Four stacked bars over time. At admit, the reservation equals the full estimate and nothing is measured. During model loading the measured tree usage grows and the reservation shrinks by the same amount. By the first episode most of the estimate is measured. At steady state the reservation is zero and admission runs purely on measured values.">
+  <path d="M60 46 H660" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="5 4"/>
+  <text class="dim" x="664" y="50">estimate</text>
+  <rect x="80" y="46" width="90" height="114" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <rect x="230" y="46" width="90" height="72" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <rect x="230" y="118" width="90" height="42" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <rect x="380" y="46" width="90" height="20" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <rect x="380" y="66" width="90" height="94" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <rect x="530" y="48" width="90" height="112" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <path d="M60 160 H660" stroke="var(--muted)" stroke-width="1.4"/>
+  <g font-size="12">
+    <text class="dim" x="125" y="180" text-anchor="middle">admit</text>
+    <text class="dim" x="275" y="180" text-anchor="middle">models loading</text>
+    <text class="dim" x="425" y="180" text-anchor="middle">first episode</text>
+    <text class="dim" x="575" y="180" text-anchor="middle">steady state</text>
+  </g>
+  <rect x="80" y="196" width="11" height="11" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text class="dim" x="98" y="206">reservation = max(0, estimate − measured)</text>
+  <rect x="360" y="196" width="11" height="11" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.2"/>
+  <text class="dim" x="378" y="206">measured tree usage (sampler)</text>
+</svg>
+
+<h2 id="4-calibration"><span class="num">4.</span> Measurement, calibration, estimation</h2>
+
+<p>Everything measurement-related lives in one module, <code>services/resource_stats.py</code>. It has three jobs: work out <em>whose</em> memory each megabyte is (attribution, §4.1), remember what each graph and each model actually used (calibration, §4.2), and turn those records into the number the gate needs (estimation, §4.3).</p>
+
+<h3 id="41-attribution"><span class="num">4.1</span> Attribution — whose memory is this?</h3>
+
+<p>Two per-PID lists arrive every second — GPU memory from <code>nvidia-smi pmon</code> (<code>resource_sampler.py · _gpu_processes</code>; this variant also sees the EGL graphics contexts habitat and MatterSim render through) and RAM from one /proc walk (<code>resource_stats.py · _proc_table</code>). Ownership is decided by walking up each process's parent chain (<code>resource_stats.py · _attribute_pid</code>):</p>
+
+<p class="diagram-label"><strong>Whose memory is this?</strong> Walk up the parent chain until an owner is found.</p>
+<svg class="rxsvg" viewBox="0 0 720 310" role="img" aria-label="Attribution by ancestor walk. A process tree on the left: the backend has two children, a model server (pid 113, registry-owned) and an eval subprocess (pid 300, the job root, highlighted); the eval subprocess has a child env worker (pid 500, in its own process group). Xorg (pid 999) stands apart. Dashed arrows on the right assign owners: the model server maps to the shared bucket; the eval subprocess maps to the job bucket; the env worker walks up its parents and also lands in the job bucket; Xorg finds no owner and lands in external.">
+  <rect class="box" x="30" y="30" width="150" height="40" rx="6"/>
+  <text class="mono" x="105" y="55" text-anchor="middle">backend</text>
+  <rect class="box" x="240" y="30" width="170" height="44" rx="6"/>
+  <text class="mono" x="325" y="48" text-anchor="middle">model server</text>
+  <text class="dim" x="325" y="64" text-anchor="middle">pid 113 · registry-owned</text>
+  <rect class="accent" x="240" y="110" width="170" height="44" rx="6"/>
+  <text class="at" x="325" y="128" text-anchor="middle">eval subprocess</text>
+  <text class="dim" x="325" y="144" text-anchor="middle">pid 300 · job root</text>
+  <rect class="box" x="240" y="190" width="170" height="44" rx="6"/>
+  <text class="mono" x="325" y="208" text-anchor="middle">env worker</text>
+  <text class="dim" x="325" y="224" text-anchor="middle">pid 500 · own pgid</text>
+  <rect class="ghost" x="30" y="250" width="150" height="36" rx="6"/>
+  <text class="dim" x="105" y="273" text-anchor="middle">Xorg · pid 999</text>
+  <path d="M180 50 H236" stroke="var(--muted)" stroke-width="1.4" fill="none"/>
+  <path d="M105 70 V132 H236" stroke="var(--muted)" stroke-width="1.4" fill="none"/>
+  <path d="M325 154 V186" stroke="var(--muted)" stroke-width="1.4" fill="none"/>
+  <rect class="box" x="520" y="36" width="180" height="40" rx="6"/>
+  <text class="mono" x="610" y="54" text-anchor="middle">shared</text>
+  <text class="dim" x="610" y="68" text-anchor="middle">charged to the server</text>
+  <rect class="accent" x="520" y="110" width="180" height="44" rx="6"/>
+  <text class="at" x="610" y="128" text-anchor="middle">job</text>
+  <text class="dim" x="610" y="144" text-anchor="middle">charged to run 20260705_…</text>
+  <rect class="ghost" x="520" y="216" width="180" height="40" rx="6"/>
+  <text class="dim" x="610" y="240" text-anchor="middle">external · charged to nobody</text>
+  <path class="edge-dash" d="M410 52 H516"/>
+  <path class="edge-dash" d="M410 132 H516"/>
+  <path class="edge-dash" d="M410 212 C 470 212, 480 150, 516 138"/>
+  <text class="dim" x="452" y="186">walk up parents</text>
+  <path class="edge-dash" d="M180 268 C 360 268, 450 244, 516 238"/>
+  <text class="dim" x="330" y="284">no owner found</text>
+</svg>
+
+<ol>
+<li><strong>shared model server</strong> — the process or an ancestor is a server the registry started;</li>
+<li><strong>running job</strong> — the chain reaches a job's subprocess (parent links survive workers moving into their own process groups);</li>
+<li><strong>external</strong> — everything else; charged to nobody, but the gate still feels it through "measured free".</li>
+</ol>
+
+<h3 id="42-sediment"><span class="num">4.2</span> Sedimentation — writing the calibration store</h3>
+
+<p>While a job runs, its window keeps the peak of everything it owns, per resource; on reap it is written into <code>outputs/system/resource_calibration.json</code> (running average + observed max). Two guards keep the data honest: a window that never got a sample writes nothing (a sampler outage must not record fake zeros), and a running server that used 0&nbsp;MB is recorded as a real zero — "measured zero" ≠ "never measured". Entries are keyed to the nodeset's source hash (<code>content_hash.py · hash_nodeset_tree</code>); pre-RAM calibration files migrate automatically (<code>resource_stats.py · _migrate_v1</code>).</p>
+
+<h3 id="43-estimator"><span class="num">4.3</span> Estimation — <code>GET /api/eval/v2/estimate</code></h3>
+
+<p class="diagram-label"><strong>How the number is assembled</strong> — and what it must fit into.</p>
+<svg class="rxsvg" viewBox="0 0 720 240" role="img" aria-label="Estimate composition. A stacked bar: the base of a not-yet-loaded model (basis measured or fitted), a second model priced by its author preset (basis hint), the job's own process tree at the requested worker count (basis scaled), and a fixed safety margin; together they equal estimate_mb. Below, a wider bar labelled measured free minus standing reservations. The job admits if the estimate bar fits inside the free bar, checked separately for VRAM and RAM. Note: already-loaded models cost about zero, since their memory is already inside used.">
+  <text class="dim" x="40" y="34">one job's estimate, per resource:</text>
+  <rect x="40" y="46" width="170" height="34" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.4"/>
+  <rect x="210" y="46" width="100" height="34" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.4" stroke-dasharray="4 3"/>
+  <rect x="310" y="46" width="180" height="34" fill="var(--designdoc-bg)" stroke="var(--designdoc)" stroke-width="1.4"/>
+  <rect x="490" y="46" width="60" height="34" fill="none" stroke="var(--designdoc)" stroke-width="1.4" stroke-dasharray="2 3"/>
+  <text class="dim" x="125" y="67" text-anchor="middle">unloaded model</text>
+  <text class="dim" x="260" y="67" text-anchor="middle">model B</text>
+  <text class="dim" x="400" y="67" text-anchor="middle">job tree × workers</text>
+  <text class="dim" x="520" y="67" text-anchor="middle">margin</text>
+  <text class="mono" x="125" y="98" text-anchor="middle">measured | fitted</text>
+  <text class="mono" x="260" y="98" text-anchor="middle">hint</text>
+  <text class="mono" x="400" y="98" text-anchor="middle">scaled</text>
+  <text class="mono" x="520" y="98" text-anchor="middle">fixed</text>
+  <text class="at" x="562" y="67">= estimate_mb</text>
+  <text class="dim" x="360" y="128" text-anchor="middle">admit iff it fits below — checked separately for VRAM and for RAM</text>
+  <rect x="40" y="140" width="620" height="34" fill="var(--bg-alt)" stroke="var(--fg-dim)" stroke-width="1.4"/>
+  <text class="dim" x="350" y="161" text-anchor="middle">measured free − standing reservations</text>
+  <text class="dim" x="40" y="200">already-loaded models cost ≈0 — their memory is already inside "used".</text>
+</svg>
+
+<p>Each block states its origin (<code>resource_stats.py · estimate_tree_mb / estimate_shared_mb</code>): <code>measured</code> (this worker count was seen before), <code>fitted</code> (a line through ≥2 worker counts), <code>scaled</code> (one observation, scaled), or <code>hint</code> — the author preset <code>expected_vram_mb</code> / <code>expected_ram_mb</code> (<code>bases.py · BaseNodeSet</code>), used when nothing was measured; presets survive code edits because a model's footprint is its weights, and a real measurement replaces them once one exists. One honesty rule: if <em>any</em> component has no number, the total is <code>null</code> — a partial sum pretending to be a total is worse than no answer. Ask without running anything: <code>GET /api/eval/v2/estimate</code> (<code>eval.py · estimate_eval_v2</code>) returns the breakdown and <code>max_workers</code>.</p>
+
+<h2 id="5-observability"><span class="num">5.</span> Observability — one snapshot explains the decision</h2>
+
+<p>When a job sits in the queue and you want to know why, one call answers it: <code>GET /api/eval/v2/queue</code> (<code>JobScheduler.list_active</code>). Below is a real snapshot, taken a few seconds after a job was admitted. Reading it: the job was charged 2049&nbsp;MB of VRAM and 3515&nbsp;MB of RAM, both measured numbers (<code>"admit_basis": "calibrated"</code>). The sampler has already watched 543&nbsp;MB / 2480&nbsp;MB of that actually materialize, so the job's outstanding reservations have decayed to 1506&nbsp;/&nbsp;1035:</p>
+
+<pre class="hl">
+<span class="p">{</span>
+  <span class="nt">&quot;running&quot;</span><span class="p">:</span> <span class="p">[</span><span class="p">{</span><span class="nt">&quot;run_id&quot;</span><span class="p">:</span> <span class="s2">&quot;20260705_140954&quot;</span><span class="p">,</span>
+               <span class="nt">&quot;admit_charges&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="mi">2049</span><span class="p">,</span> <span class="nt">&quot;ram&quot;</span><span class="p">:</span> <span class="mi">3515</span><span class="p">}</span><span class="p">,</span>
+               <span class="nt">&quot;admit_basis&quot;</span><span class="p">:</span> <span class="s2">&quot;calibrated&quot;</span><span class="p">,</span> <span class="nt">&quot;marginal_vram_mb&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span><span class="p">]</span><span class="p">,</span>
+  <span class="nt">&quot;queued&quot;</span><span class="p">:</span> <span class="p">[</span><span class="p">]</span><span class="p">,</span>
+  <span class="nt">&quot;measured_free_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="mi">23811</span><span class="p">,</span> <span class="nt">&quot;ram&quot;</span><span class="p">:</span> <span class="mi">46346</span><span class="p">}</span><span class="p">,</span>
+  <span class="nt">&quot;pending_reservation_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="mi">1506</span><span class="p">,</span> <span class="nt">&quot;ram&quot;</span><span class="p">:</span> <span class="mi">1035</span><span class="p">}</span><span class="p">,</span>
+  <span class="nt">&quot;attribution&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;resources&quot;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="nt">&quot;vram&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;used_total_mb&quot;</span><span class="p">:</span> <span class="mi">765</span><span class="p">,</span> <span class="nt">&quot;attributed_mb&quot;</span><span class="p">:</span> <span class="mi">543</span><span class="p">,</span> <span class="nt">&quot;external_mb&quot;</span><span class="p">:</span> <span class="mi">222</span><span class="p">,</span>
+             <span class="nt">&quot;shared_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="p">}</span><span class="p">,</span> <span class="nt">&quot;jobs_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;20260705_140954&quot;</span><span class="p">:</span> <span class="mi">543</span><span class="p">}</span><span class="p">}</span><span class="p">,</span>
+    <span class="nt">&quot;ram&quot;</span><span class="p">:</span>  <span class="p">{</span><span class="nt">&quot;used_total_mb&quot;</span><span class="p">:</span> <span class="mi">13540</span><span class="p">,</span> <span class="nt">&quot;attributed_mb&quot;</span><span class="p">:</span> <span class="mi">4154</span><span class="p">,</span> <span class="nt">&quot;external_mb&quot;</span><span class="p">:</span> <span class="mi">9386</span><span class="p">,</span>
+             <span class="nt">&quot;shared_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;policy_adapter_vlnce&quot;</span><span class="p">:</span> <span class="mi">1674</span><span class="p">}</span><span class="p">,</span>
+             <span class="nt">&quot;jobs_mb&quot;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&quot;20260705_140954&quot;</span><span class="p">:</span> <span class="mi">2480</span><span class="p">}</span><span class="p">}</span><span class="p">}</span><span class="p">}</span>
+<span class="p">}</span>
+</pre>
+
+<p>Two older fields, <code>usable_vram_mb</code> / <code>reserved_vram_mb</code> (not shown above), still exist for the no-sampler fallback. The fields a decision actually uses are <code>measured_free_mb</code>, <code>pending_reservation_mb</code>, and each job's <code>admit_charges</code> + <code>admit_basis</code>. To cancel a run: <code>POST /runs/{run_id}/cancel</code> — a queued job is cancelled on the spot; a running one gets a <code>SIGTERM</code> to its whole process group.</p>
+
+<h2 id="6-deviations"><span class="num">6.</span> Boundaries — trade-offs, scope cuts, physics</h2>
+
+<p>Nothing in this table is an accident discovered after the fact. Each row is a decision with its reasoning attached: a <strong>trade-off</strong> (the alternative was considered and rejected), a <strong>scope cut</strong> (deliberately not built yet, with the revisit trigger named), or <strong>physics</strong> (what a once-per-second sampler simply cannot see). They are written down so nobody has to rediscover them the hard way.</p>
+
+<table>
+<thead><tr><th></th><th>boundary</th><th>why it is this way</th></tr></thead>
+<tbody>
+<tr><td>trade-off</td><td><strong>RAM is checked at admission, never enforced afterwards</strong> — there is no RAM sibling of the VRAM allocator cap.</td><td><code>RLIMIT_AS</code> counts virtual address space and would kill mmap-heavy simulators; cgroup limits need privileges the backend doesn't assume. The gate plus a permanent 4&nbsp;GB floor (<code>resource_stats.py · RAM_FLOOR_MB</code>) does the protecting instead.</td></tr>
+<tr><td>trade-off</td><td><strong>Job-tree RAM is summed as RSS</strong>, which double-counts copy-on-write pages across forked workers.</td><td>Over-counting errs toward admitting <em>less</em> — the safe direction. Exact numbers (PSS) would cost a <code>smaps_rollup</code> read per process per second.</td></tr>
+<tr><td>trade-off</td><td><strong>Local in-process nodesets are charged 0 by definition</strong>, not by measurement (<code>resource_stats.py · _is_loaded_local</code>).</td><td>They have no PID of their own, so per-PID attribution cannot see them; charging 0 keeps estimates complete. A local nodeset that loads a big model is the real problem — server mode is the sanctioned home for models.</td></tr>
+<tr><td>trade-off</td><td><strong>The VRAM cap is a backstop, not a sandbox</strong> — it binds the eval subprocess's own torch allocator (<code>eval_subprocess_main.py · _apply_vram_cap</code>); child servers and EGL contexts are uncapped.</td><td>A hard per-process GPU sandbox doesn't exist in userspace. The measured gate is the actual defense; the cap just makes a runaway job crash itself before it crashes its neighbours.</td></tr>
+<tr><td>scope cut</td><td><strong>Queued jobs do not survive a backend restart</strong> — at startup <code>reconcile_aborted_runs</code> marks <code>pending</code> runs <code>aborted</code>; the spec stays on disk but nothing re-enqueues it.</td><td>Queue durability is deferred until something actually needs it — resubmitting is one API call. Revisit when jobs are submitted by systems rather than people.</td></tr>
+<tr><td>scope cut</td><td><strong>A declared job's RAM is not gated</strong> — the <code>declared</code> rung carries a VRAM number only.</td><td>Profiles never declared RAM, and inventing a number would be false precision. The gap closes by itself: the job's first run calibrates both resources.</td></tr>
+<tr><td>scope cut</td><td><strong>FIFO can starve a large job</strong> — a job that doesn't fit is skipped, and <code>priority</code> is accepted but ignored.</td><td>With today's workloads (few, similar-sized jobs) priority logic would be dead code. The field is already in the schema for when that changes.</td></tr>
+<tr><td>scope cut</td><td><strong>All GPUs are treated as one pool</strong> — totals are summed (<code>detect_total_vram_mb</code>); there is no per-GPU placement.</td><td>Correct on a single-GPU machine; wrong in both directions on a multi-GPU one. Per-GPU accounting is a named input for the next scheduler iteration.</td></tr>
+<tr><td>physics</td><td><strong>Attribution lags reality by up to ~5&nbsp;s</strong> — per-PID GPU data refreshes on the sampler's slow cadence (<code>resource_sampler.py</code>).</td><td>The lag only delays reservation decay, which errs conservative. A sub-5-second job may see no samples at all; the <code>samples_seen</code> guard makes it sediment nothing rather than fake zeros.</td></tr>
+<tr><td>physics</td><td><strong>Unseen worker counts are extrapolated</strong> — a single calibration point scales proportionally (basis <code>scaled</code>).</td><td>The safety margin absorbs the error, and the basis upgrades itself to <code>fitted</code> the first time a different worker count actually runs.</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h3" href="#11-smallest-run">1.1 The smallest run</a>
+      <a class="toc-h2" href="#2-lifecycle">2. Lifecycle of one job</a>
+      <a class="toc-h2" href="#3-admission">3. The measured admission gate</a>
+      <a class="toc-h2" href="#4-calibration">4. Measurement, calibration, estimation</a>
+      <a class="toc-h3" href="#41-attribution">4.1 Attribution — whose memory is this?</a>
+      <a class="toc-h3" href="#42-sediment">4.2 Sedimentation — writing the calibration store</a>
+      <a class="toc-h3" href="#43-estimator">4.3 Estimation — GET /api/eval/v2/estimate</a>
+      <a class="toc-h2" href="#5-observability">5. Observability — one snapshot explains the decision</a>
+      <a class="toc-h2" href="#6-deviations">6. Boundaries — trade-offs, scope cuts, physics</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

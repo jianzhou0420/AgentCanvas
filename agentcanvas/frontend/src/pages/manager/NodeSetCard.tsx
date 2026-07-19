@@ -15,6 +15,8 @@ interface NodeSetCardProps {
   loaded: boolean;
   tools: string[];
   variant?: "resource" | "active";
+  /** Show a "server" pill when the nodeset runs in a separate Python env. */
+  requiresServer?: boolean;
   onLoad: () => Promise<void>;
   onUnload: () => Promise<void>;
 }
@@ -25,6 +27,7 @@ export default function NodeSetCard({
   loaded,
   tools,
   variant,
+  requiresServer,
   onLoad,
   onUnload,
 }: NodeSetCardProps) {
@@ -73,6 +76,11 @@ export default function NodeSetCard({
               <span className="text-xs text-gray-500">
                 {loaded ? `Loaded (${tools.length} tools)` : "Not loaded"}
               </span>
+              {requiresServer && (
+                <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-300">
+                  server
+                </span>
+              )}
             </div>
             <div className="text-sm text-gray-400">{description}</div>
           </div>

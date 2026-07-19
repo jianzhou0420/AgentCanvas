@@ -73,6 +73,32 @@ def _set_pdeathsig() -> None:
         log.warning("PR_SET_PDEATHSIG unavailable; orphan-on-parent-crash possible")
 
 
+def _apply_vram_cap() -> None:
+    """P3 quota teeth: cap this process's torch allocator at the admission
+    charge (``AGENTCANVAS_VRAM_CAP_MB``, set by JobScheduler._spawn), so a
+    run that blows past its estimate OOMs itself instead of its neighbors.
+
+    Best-effort by design: only torch allocations in THIS process are
+    capped — EGL render contexts and child auto_host servers (separate
+    processes with their own allocators) are not. The measured admission
+    gate remains the primary defense; this is the backstop.
+    """
+    cap_mb = int(os.environ.get("AGENTCANVAS_VRAM_CAP_MB", "0") or 0)
+    if cap_mb <= 0:
+        return
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        total = torch.cuda.get_device_properties(0).total_memory
+        fraction = min(1.0, cap_mb * 1024 * 1024 / total)
+        torch.cuda.set_per_process_memory_fraction(fraction, 0)
+        log.info("vram cap: %d MB (fraction %.3f) via AGENTCANVAS_VRAM_CAP_MB", cap_mb, fraction)
+    except Exception:
+        log.warning("vram cap requested (%d MB) but could not be applied", cap_mb)
+
+
 def _write_initial_summary(run_dir: Path, spec: dict) -> None:
     """Mark status='running' the moment the subprocess is up."""
     atomic_write_json(
@@ -303,6 +329,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    _apply_vram_cap()
 
     parser = argparse.ArgumentParser(prog="app.eval_subprocess_main")
     parser.add_argument(

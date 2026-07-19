@@ -6,9 +6,11 @@
  */
 
 import AccessGrantEdge from "./edges/AccessGrantEdge";
+import RoutedEdge from "./edges/RoutedEdge";
 
 export const customEdgeTypes = {
   accessGrant: AccessGrantEdge,
+  routed: RoutedEdge,
 };
 
 // Edge colors by handle type (used in defaultGraph edge styling)

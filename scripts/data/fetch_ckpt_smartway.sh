@@ -28,6 +28,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$PROJECT_ROOT/data/smartway"
 
+# Interpreter for gdown. Honor $PYTHON (install_ac_smartway.sh passes
+# SMARTWAY_PYTHON so this resolves under non-interactive spawn where no env is
+# activated and a bare `python` is off PATH); fall back to system python3.
+PY="${PYTHON:-python3}"
+
 # Upstream README points at this Google Drive file id for the waypoint ckpt.
 WAYPOINT_GDRIVE_ID="1TsKqtdR1oir4UFIGhq15ffETz6r8-P2Q"
 # RAM+ HF release; switch to a mirror if HF rate-limits.
@@ -46,11 +51,11 @@ if [[ -f "$WAYP_CKPT" ]]; then
     echo "  [skip] waypoint_ckpt/best.pth ($(du -h "$WAYP_CKPT" | cut -f1))"
 else
     echo "  [get]  waypoint_ckpt/best.pth via gdown ($WAYPOINT_GDRIVE_ID)"
-    if ! command -v gdown >/dev/null 2>&1; then
-        echo "    Installing gdown into current pip env..."
-        python -m pip install --quiet gdown
+    if ! "$PY" -c "import gdown" >/dev/null 2>&1; then
+        echo "    Installing gdown into $PY ..."
+        "$PY" -m pip install --quiet gdown
     fi
-    gdown --id "$WAYPOINT_GDRIVE_ID" -O "$WAYP_CKPT" || {
+    "$PY" -m gdown --id "$WAYPOINT_GDRIVE_ID" -O "$WAYP_CKPT" || {
         echo "    [WARN] gdown failed — manually download from"
         echo "    https://drive.google.com/file/d/$WAYPOINT_GDRIVE_ID/view"
         echo "    and place at $WAYP_CKPT"

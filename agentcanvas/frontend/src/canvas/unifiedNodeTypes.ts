@@ -46,6 +46,8 @@ export const OUTPUT_NODE_TYPES = new Set([
   "textScroll",
   "actionLog",
   "metrics",
+  "trajectoryViewer",
+  "pointCloudViewer",
 ]);
 
 /** Annotation node types — free-floating canvas commentary, never participate

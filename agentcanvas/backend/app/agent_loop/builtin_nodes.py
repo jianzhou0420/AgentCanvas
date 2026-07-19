@@ -38,6 +38,10 @@ Node groupings in this file:
     ``viewer_data`` WS events, one per viewer instance. ``TextViewerSink``
     shows the latest TEXT; ``TextScrollSink`` accumulates TEXT into a
     scrollable history.
+  - ``TrajectoryViewerSink`` — top-down camera trajectory (est vs GT) that
+    grows live from per-step poses (SVG ``trajectory`` layout).
+  - ``PointCloudViewerSink`` — 3-D orbit view of a fused point-cloud handle
+    (three.js ``pointcloud`` layout); base64 typed-array payload.
 """
 
 from __future__ import annotations
@@ -1463,6 +1467,227 @@ class TextViewerSink(_SinkBase):
     ]
 
 
+class TrajectoryViewerSink(BaseCanvasNode):
+    """Bird's-eye camera-trajectory viewer (2-D SVG — estimated vs ground truth).
+
+    Generic geometry sink: any nodeset that emits per-step camera poses (pySLAM
+    ``track`` being the first) can wire them here. Each firing accumulates the
+    latest ``pose`` (and optional ground-truth ``gt_pose``) into per-node history
+    and re-emits the growing top-down polylines, so the path draws live as the
+    agent walks. A ``map_handle`` (a sparse/dense-map ``.npz`` path, delivered
+    after the loop) adds a faint projected map-point scatter. Heavy geometry
+    stays on disk — only the 2-D projection rides the wire.
+    """
+
+    node_type = "trajectoryViewer"
+    display_name = "Trajectory Viewer"
+    description = "Top-down camera trajectory (estimated vs GT) + map-point scatter"
+    category = "output"
+    icon = "Route"
+    kind = "block"
+    input_ports = [
+        PortDef("pose", "POSE", "Estimated camera pose this step (4x4 or POSE dict)", optional=True),
+        PortDef("gt_pose", "ANY", "Ground-truth pose this step (optional overlay)", optional=True),
+        PortDef("map_handle", "TEXT", "Map .npz handle → projected point scatter", optional=True),
+    ]
+    output_ports: list[PortDef] = []
+    ui_config = NodeUIConfig(
+        color="orange",
+        layout="trajectory",
+        config_fields=[
+            ConfigField(
+                "axes", "select", label="Plane", default="auto",
+                options=[
+                    {"value": "auto", "label": "Auto (drop vertical axis)"},
+                    {"value": "XZ", "label": "X-Z"},
+                    {"value": "XY", "label": "X-Y"},
+                    {"value": "YZ", "label": "Y-Z"},
+                ],
+            ),
+            ConfigField(
+                "align", "select", label="Align est→GT", default="on",
+                options=[
+                    {"value": "on", "label": "On (SE3-fit estimate onto GT)"},
+                    {"value": "off", "label": "Off (raw frames)"},
+                ],
+            ),
+            ConfigField("max_points", "text", label="Max map points", default="5000"),
+        ],
+    )
+
+    # Points before the top-down plane is trusted. Below this, all three axes
+    # sit at noise-level spread so the vertical (min-variance) axis is undefined
+    # and _auto_plane's <3-point "XZ" fallback would otherwise get locked in.
+    _AXES_MIN_PTS = 8
+
+    @staticmethod
+    def _resolve_axes(ctx: Any, axes_cfg: str, est_hist: list, gt_hist: list):
+        """Resolve the top-down plane once it is trustworthy, else ``None``.
+
+        ``auto`` recomputed per frame flips XZ/YZ/XY while the trajectory is
+        near-stationary — every axis at noise-level spread, so the argmin
+        vertical is unstable and _auto_plane even hands back a bare ``XZ`` under
+        three points. Locking naively then freezes that meaningless early pick
+        (observed: it latched ``XZ`` — a side view — by frame 4). Instead we wait
+        until the GT path has real extent (``_AXES_MIN_PTS``), then lock the first
+        plane that repeats a few frames and hold it for the run. Returns ``None``
+        while still settling so the caller can hold the trajectory back rather
+        than flash a wrong plane. State rides ``ctx`` (``vacc_*``) like the pose
+        history."""
+        if axes_cfg != "auto":
+            return axes_cfg
+        locked = getattr(ctx, "vacc_axes", None)
+        if locked:
+            return locked
+        src = gt_hist or est_hist  # GT is the frame the estimate is aligned into
+        if len(src) < TrajectoryViewerSink._AXES_MIN_PTS:
+            return None
+        from ..standard.wire_types import _auto_plane
+
+        pick = _auto_plane(src)
+        if pick == getattr(ctx, "vacc_axes_cand", None):
+            run = (getattr(ctx, "vacc_axes_run", None) or 0) + 1
+        else:
+            run = 1
+        ctx.vacc_axes_cand = pick
+        ctx.vacc_axes_run = run
+        if run >= 3:
+            ctx.vacc_axes = pick
+            return pick
+        return None
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        from ..standard.wire_types import (
+            pose_translation,
+            project_pointcloud_2d,
+            serialize_trajectory_for_viewer,
+        )
+
+        axes_cfg = self.config.get("axes") or "XZ"
+        fields: dict[str, Any] = {}
+
+        # Accumulate est / gt centres in persistent node state (``vacc_*`` avoids
+        # the leading-underscore block in ``_NodeStateProxy``; same channel the
+        # ``_SinkBase`` history path uses).
+        for port, hist_key in (("pose", "vacc_est"), ("gt_pose", "vacc_gt")):
+            val = inputs.get(port)
+            if val is None:
+                continue
+            centre = pose_translation(val)
+            if centre is not None:
+                hist = getattr(ctx, hist_key, None) or []
+                hist.append(centre)
+                setattr(ctx, hist_key, hist)
+
+        est_hist = getattr(ctx, "vacc_est", None) or []
+        gt_hist = getattr(ctx, "vacc_gt", None) or []
+        # One resolved plane for both the trajectory and the map scatter, locked
+        # once stable (see _resolve_axes). ``None`` = still settling: hold the
+        # trajectory back for a beat rather than draw it in a wrong plane that
+        # then snaps — the path is barely a dot at that point anyway.
+        axes = self._resolve_axes(ctx, axes_cfg, est_hist, gt_hist)
+        if axes is not None and (est_hist or gt_hist):
+            align = (self.config.get("align") or "on") != "off"
+            fields.update(
+                serialize_trajectory_for_viewer(est_hist, gt_hist, axes=axes, align=align)
+            )
+
+        handle = inputs.get("map_handle")
+        if isinstance(handle, str) and handle and not handle.startswith("ERROR"):
+            plane = axes or getattr(ctx, "vacc_axes", None) or "XZ"
+            pts2d = project_pointcloud_2d(
+                handle, axes=plane, cap=int(self.config.get("max_points") or 5000)
+            )
+            if pts2d:
+                fields["points"] = pts2d
+
+        if fields and getattr(ctx, "session", None):
+            await broadcast(
+                ctx.session._ws(
+                    "viewer_data",
+                    {
+                        "node_id": self.node_id,
+                        "step": getattr(ctx, "step", 0),
+                        "fields": fields,
+                    },
+                )
+            )
+
+        self._self_log("trajectory", [f"est={len(est_hist)}", f"gt={len(gt_hist)}"])
+        return {}
+
+
+class PointCloudViewerSink(BaseCanvasNode):
+    """3-D orbit viewer for a fused point cloud (three.js frontend layout).
+
+    Generic geometry sink: accepts a point-cloud ``.npz`` handle path (pySLAM's
+    get_map / get_dense_map / reconstruct output) or an inline ``Nx3``/``Nx6``
+    array. The heavy cloud is loaded, uniformly subsampled to ``max_points`` and
+    packed as base64 typed arrays for the WebSocket. Fires only when a cloud
+    arrives (not per-step), so a 30k-point cloud never streams every frame.
+    Optional ``camera_poses`` add per-view camera markers.
+    """
+
+    node_type = "pointCloudViewer"
+    display_name = "Point Cloud Viewer"
+    description = "3-D orbit view of a fused point cloud (sparse / dense / multi-view)"
+    category = "output"
+    icon = "Box"
+    kind = "block"
+    input_ports = [
+        PortDef("cloud", "ANY", "Point-cloud .npz handle path, or inline Nx3/Nx6 array", optional=True),
+        PortDef("camera_poses", "ANY", "Per-view 4x4 poses → camera markers (optional)", optional=True),
+    ]
+    output_ports: list[PortDef] = []
+    ui_config = NodeUIConfig(
+        color="orange",
+        layout="pointcloud",
+        config_fields=[
+            ConfigField("max_points", "text", label="Max points", default="30000"),
+            ConfigField("point_size", "text", label="Point size (px)", default="1.5"),
+        ],
+    )
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        from ..standard.wire_types import pose_translation, serialize_pointcloud_for_viewer
+
+        fields: dict[str, Any] = {}
+        cloud = inputs.get("cloud")
+        if cloud is not None and not (
+            isinstance(cloud, str) and (not cloud or cloud.startswith("ERROR"))
+        ):
+            pc = serialize_pointcloud_for_viewer(
+                cloud, cap=int(self.config.get("max_points") or 30000)
+            )
+            if pc.get("count"):
+                fields.update(pc)
+
+        cposes = inputs.get("camera_poses")
+        if cposes is not None:
+            try:
+                centres = [pose_translation(p) for p in cposes]
+                centres = [c for c in centres if c is not None]
+                if centres:
+                    fields["camera_centres"] = centres
+            except TypeError:
+                pass  # not iterable → no camera markers
+
+        if fields and getattr(ctx, "session", None):
+            await broadcast(
+                ctx.session._ws(
+                    "viewer_data",
+                    {
+                        "node_id": self.node_id,
+                        "step": getattr(ctx, "step", 0),
+                        "fields": fields,
+                    },
+                )
+            )
+
+        self._self_log("pointcloud", [f"count={fields.get('count', 0)}"])
+        return {}
+
+
 # ── Handler Registry ──
 
 
@@ -1482,6 +1707,8 @@ _BUILTIN_NODES: list[type[BaseCanvasNode]] = [
     TextScrollSink,
     ActionLogSink,
     MetricsViewerSink,
+    TrajectoryViewerSink,
+    PointCloudViewerSink,
 ]
 
 NODE_HANDLERS: dict[str, type[BaseCanvasNode]] = {cls.node_type: cls for cls in _BUILTIN_NODES}

@@ -336,13 +336,17 @@ def _scan_dir(current: Path) -> list[dict]:
         else:
             label = _default_label(d.name)
             href = None
+        children = _scan_dir(d)
+        # Asset-only dirs (img/, media/) have no index, no pages — no group.
+        if href is None and not children:
+            continue
         nodes.append(
             {
                 "kind": "group",
                 "label": label,
                 "href": href,
                 "key": d.relative_to(V2).as_posix(),
-                "children": _scan_dir(d),
+                "children": children,
             }
         )
     return nodes
@@ -370,13 +374,17 @@ def _scan_root(tab_dir: Path) -> list[dict]:
         else:
             label = _default_label(d.name)
             href = None
+        children = _scan_dir(d)
+        # Asset-only dirs (img/, media/) have no index, no pages — no group.
+        if href is None and not children:
+            continue
         nodes.append(
             {
                 "kind": "group",
                 "label": label,
                 "href": href,
                 "key": d.relative_to(V2).as_posix(),
-                "children": _scan_dir(d),
+                "children": children,
             }
         )
     return nodes
@@ -450,13 +458,17 @@ def _discover_tree(section: dict) -> list[dict]:
         else:
             label = d.name.replace("-", " ").replace("_", " ").title()
             href = None
+        children = _scan_dir(d)
+        # Asset-only dirs (img/, media/) have no index, no pages — no group.
+        if href is None and not children:
+            continue
         nodes.append(
             {
                 "kind": "group",
                 "label": label,
                 "href": href,
                 "key": d.relative_to(V2).as_posix(),
-                "children": _scan_dir(d),
+                "children": children,
             }
         )
     _DISCOVER_CACHE[cache_key] = nodes
@@ -481,6 +493,7 @@ def render_top_header(active_tab: str, page_rel: str) -> str:
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>

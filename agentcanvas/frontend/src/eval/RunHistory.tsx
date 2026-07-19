@@ -6,6 +6,9 @@ import type { EvalRunSummary, EvalStatus } from "./types";
 
 interface Props {
   onSelectRun: (run: EvalRunSummary) => void;
+  // While a run is active, poll so a newly-started run appears and updates to
+  // its terminal state without a manual Refresh.
+  active?: boolean;
 }
 
 function statusColor(status: EvalStatus): string {
@@ -24,7 +27,7 @@ function statusColor(status: EvalStatus): string {
   }
 }
 
-export default function RunHistory({ onSelectRun }: Props) {
+export default function RunHistory({ onSelectRun, active }: Props) {
   const [runs, setRuns] = useState<EvalRunSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +43,13 @@ export default function RunHistory({ onSelectRun }: Props) {
 
   useEffect(() => {
     load();
-  }, []);
+    if (!active) return;
+    // Re-runs when `active` flips false → one final load catches the just-
+    // finished run's terminal state after the scheduler reaps it.
+    const id = setInterval(load, 3000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   async function handleDelete(runId: string, e: React.MouseEvent) {
     e.stopPropagation();
@@ -62,7 +71,11 @@ export default function RunHistory({ onSelectRun }: Props) {
         </button>
       </div>
 
-      {loading && <div className="text-xs text-gray-500">Loading...</div>}
+      {/* Only on the first load (empty list). Showing it on every 3s poll
+          inserts/removes this line and makes the run list jump. */}
+      {loading && runs.length === 0 && (
+        <div className="text-xs text-gray-500">Loading...</div>
+      )}
       {error && <div className="text-xs text-red-400">{error}</div>}
 
       {!loading && runs.length === 0 && (

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matching NodeSet — AgentCanvas</title>
+<meta name="description" content="The Matching NodeSet ( MatchingNodeSet , workspace/nodesets/model/model_matching.py ) is the sparse counterpart to VGGT : where VGGT regresses dense geometry in one feed-forward pass, this nodeset…">
+<meta property="og:title" content="Matching NodeSet — AgentCanvas">
+<meta property="og:description" content="The Matching NodeSet ( MatchingNodeSet , workspace/nodesets/model/model_matching.py ) is the sparse counterpart to VGGT : where VGGT regresses dense geometry in one feed-forward pass, this nodeset…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-matching.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-matching.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Matching NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>Matching NodeSet</h1>
+</header>
+
+<p>The <strong>Matching NodeSet</strong> (<code>MatchingNodeSet</code>, <code>workspace/nodesets/model/model_matching.py</code>) is the <strong>sparse</strong> counterpart to <a href="model-vggt.html">VGGT</a>: where VGGT regresses <em>dense</em> geometry in one feed-forward pass, this nodeset exposes the classic sparse front-end — detect repeatable keypoints in one image, match them across two — that SLAM, relocalization, and loop-closure front-ends consume. It feeds the pySLAM nodeset's correspondence stage and any two-view geometry step. Both primitives ride Hugging&nbsp;Face <code>transformers</code> keypoint task heads, so the whole thing lives in the shared <a href="model-clip.html">ac-fm</a> env — no dedicated env, no external repo.</p>
+<p>env: <code>ac-fm</code> (shared) · backend: <code>transformers</code> (<code>AutoModelForKeypointDetection</code> / <code>AutoModelForKeypointMatching</code>) · default <code>model_id</code>: <a href="https://huggingface.co/magic-leap-community/superpoint"><code>magic-leap-community/superpoint</code></a> (detect) · <a href="https://huggingface.co/ETH-CVG/lightglue_superpoint"><code>ETH-CVG/lightglue_superpoint</code></a> (match)</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_matching__detect_keypoints</code></td>
+<td>One image → <code>keypoints</code> (a base64-npy JSON envelope of <code>keypoints</code> / <code>scores</code> / <code>descriptors</code>) via SuperPoint.</td>
+</tr>
+<tr>
+<td><code>model_matching__match</code></td>
+<td>Two images → <code>matches</code> (JSON envelope of <code>keypoints0</code> / <code>keypoints1</code> / <code>matching_scores</code>) — the mutually matched pairs, via LightGlue.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-two-primitives"><span class="num">1.</span> Two primitives: detect, then match</h2>
+<p>Keypoint detection and matching are split into two nodes because they are two distinct capabilities with different arities. <code>detect_keypoints</code> is a one-image primitive — useful on its own (a descriptor bank for a place database, a keypoint overlay). <code>match</code> is the two-image primitive that answers "where does image A land in image B". A graph wires whichever it needs; matching does not require a prior detect call (the transformers matcher runs its own SuperPoint front-end internally over the pair).</p>
+<hr>
+<h2 id="2-detect"><span class="num">2.</span> Detect — SuperPoint</h2>
+<p><code>detect_keypoints</code> wraps <code>SuperPointForKeypointDetection</code> (variant as <code>model_id</code>). The image is preprocessed by the model's own <code>AutoImageProcessor</code>; <code>post_process_keypoint_detection(outputs, target_sizes=[(H, W)])</code> rescales the keypoints back to the <em>original</em> image resolution, so the returned coordinates are directly usable against the source pixels. The port carries three arrays: <code>keypoints</code> <code>(N, 2)</code>, <code>scores</code> <code>(N,)</code>, and <code>descriptors</code> <code>(N, D)</code> (SuperPoint's <code>D = 256</code>). <code>N</code> varies per image with the detector's response.</p>
+<hr>
+<h2 id="3-match"><span class="num">3.</span> Match — LightGlue over an image pair</h2>
+<p><code>match</code> wraps the <code>AutoModelForKeypointMatching</code> family. The transformers matcher takes an image <strong>pair</strong>, which its processor expects nested as <code>[[image_a, image_b]]</code>; <code>post_process_keypoint_matching</code> rescales to original pixels and returns only the <em>mutually matched</em> keypoints above <code>threshold</code>:</p>
+<pre class="hl">
+<span class="c1"># LightGlue takes an image *pair* — the processor nests it as [[a, b]].</span>
+<span class="n">inputs</span> <span class="o">=</span> <span class="n">processor</span><span class="p">(</span><span class="p">[</span><span class="p">[</span><span class="n">image_a</span><span class="p">,</span> <span class="n">image_b</span><span class="p">]</span><span class="p">]</span><span class="p">,</span> <span class="n">return_tensors</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">pt</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">(</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="o">*</span><span class="o">*</span><span class="n">inputs</span><span class="p">)</span>              <span class="c1"># AutoModelForKeypointMatching</span>
+<span class="c1"># rescale to original px, keep only mutual matches above threshold</span>
+<span class="n">res</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">post_process_keypoint_matching</span><span class="p">(</span>
+    <span class="n">outputs</span><span class="p">,</span> <span class="n">target_sizes</span><span class="o">=</span><span class="p">[</span><span class="p">[</span><span class="p">(</span><span class="n">Ha</span><span class="p">,</span> <span class="n">Wa</span><span class="p">)</span><span class="p">,</span> <span class="p">(</span><span class="n">Hb</span><span class="p">,</span> <span class="n">Wb</span><span class="p">)</span><span class="p">]</span><span class="p">]</span><span class="p">,</span> <span class="n">threshold</span><span class="o">=</span><span class="n">threshold</span><span class="p">)</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">kpt0</span><span class="p">,</span> <span class="n">kpt1</span><span class="p">,</span> <span class="n">scores</span> <span class="o">=</span> <span class="n">res</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">keypoints0</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="n">res</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">keypoints1</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span> <span class="n">res</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">matching_scores</span><span class="s2">&quot;</span><span class="p">]</span>
+
+</pre>
+<p>Because the whole family shares one processor and the same <code>post_process_keypoint_matching</code> contract, swapping <code>model_id</code> alone gives the other matchers for free — <code>SuperGlue</code> (<code>magic-leap-community/superglue_*</code>) and detector-free <code>EfficientLoFTR</code>. <code>keypoints0[i]</code> and <code>keypoints1[i]</code> are corresponding points in image A and image B; the arrays share length <code>M</code> (the match count) and collapse to shape <code>(0, 2)</code> when nothing matches.</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Multi-array envelope</h2>
+<p>Each port is a TEXT JSON envelope — several named arrays, each the raw C-contiguous float32 buffer base64-encoded (byte-exact across the server-mode HTTP boundary, ~4× smaller than a JSON float list), alongside <code>model_id</code> and the image size(s). Coordinates are absolute to the original image (<code>image_hw</code> = <code>[H, W]</code>; <code>match</code> also records <code>image_hw_b</code> for the second image):</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;model_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ETH-CVG/lightglue_superpoint&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;image_hw&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">520</span><span class="p">,</span><span class="w"> </span><span class="mi">779</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;image_hw_b&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">520</span><span class="p">,</span><span class="w"> </span><span class="mi">779</span><span class="p">],</span>
+<span class="w"> </span><span class="nt">&quot;keypoints0&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">60</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;C-contiguous float32 buffer&gt;&quot;</span><span class="p">},</span>
+<span class="w"> </span><span class="nt">&quot;keypoints1&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">60</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">},</span>
+<span class="w"> </span><span class="nt">&quot;matching_scores&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">60</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">}}</span>
+
+</pre>
+<p>Consumers read <code>env["keypoints0"]["b64"]</code> etc. and <code>np.frombuffer(...).reshape(shape)</code>. The <code>detect_keypoints</code> port carries <code>keypoints</code> <code>(N,2)</code> + <code>scores</code> <code>(N,)</code> + <code>descriptors</code> <code>(N,D)</code>.</p>
+<hr>
+<h2 id="5-canvas-nodes"><span class="num">5.</span> Canvas Nodes</h2>
+<h3 id="model_matching__detect_keypoints"><code>model_matching__detect_keypoints</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>image</code> (ANY — one <code>{rgb_base64}</code> dict or raw base64 string; a 1-element list is unwrapped)</td></tr>
+<tr><td>Outputs</td><td><code>keypoints</code> (TEXT — the §4 envelope <code>{keypoints, scores, descriptors}</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — SuperPoint official/mirror)</td></tr>
+<tr><td>Backend call</td><td><code>processor(image)</code> → <code>model(**inputs)</code> under <code>no_grad</code> → <code>post_process_keypoint_detection</code> (fp32, original-px coords)</td></tr>
+</tbody>
+</table>
+<h3 id="model_matching__match"><code>model_matching__match</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>image_a</code>, <code>image_b</code> (ANY — each a <code>{rgb_base64}</code> dict or raw base64 string)</td></tr>
+<tr><td>Outputs</td><td><code>matches</code> (TEXT — JSON envelope <code>{keypoints0, keypoints1, matching_scores}</code>; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>model_id</code> (select — LightGlue SuperPoint/DISK) · <code>threshold</code> (text, default <code>0.0</code>)</td></tr>
+<tr><td>Backend call</td><td><code>processor([[a, b]])</code> → <code>model(**inputs)</code> → <code>post_process_keypoint_matching(threshold=…)</code> → mutual matches, original px</td></tr>
+</tbody>
+</table>
+<p>Engines are lazy singletons in a registry keyed by <code>(kind, model_id)</code> — <code>detect</code> and <code>match</code> load independently, so a graph using only one never pays for the other. These heads run fp32 (keypoint coordinates are precision-sensitive and the nets are tiny — no autocast); GPU inference is single-flight per engine.</p>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (stateless perception primitives — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "MATCHING_PYTHON")</code>. Unlike <a href="model-vggt.html">VGGT</a>, matching needs <strong>no dedicated env</strong>: its models are transformers keypoint task heads, so it shares the <code>ac-fm</code> stack with <a href="model-clip.html">CLIP</a> / <a href="model-sam.html">SAM</a> / <a href="model-depth-anything.html">Depth&nbsp;Anything</a>. Weights (SuperPoint / LightGlue checkpoints) download lazily to the HF cache on first use — none are fetched at load. The file stays Python-3.8-parseable (an override may point at another env). Load: <code>POST /api/components/nodesets/model_matching/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>MATCHING_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>MATCHING_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded models</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, or an image entry missing/malformed base64, yields <code>""</code> on the node's output. An empty envelope is a clean "no keypoints / no matches this step" signal; consumers keep their own fallback and never receive fabricated correspondences.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-two-primitives">1. Two primitives: detect, then match</a>
+      <a class="toc-h2" href="#2-detect">2. Detect — SuperPoint</a>
+      <a class="toc-h2" href="#3-match">3. Match — LightGlue over an image pair</a>
+      <a class="toc-h2" href="#4-envelope">4. Multi-array envelope</a>
+      <a class="toc-h2" href="#5-canvas-nodes">5. Canvas Nodes</a>
+      <a class="toc-h3" href="#model_matching__detect_keypoints">model_matching__detect_keypoints</a>
+      <a class="toc-h3" href="#model_matching__match">model_matching__match</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

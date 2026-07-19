@@ -13,122 +13,144 @@ standard server-mode HTTP route (NOT in-process), so heavy deps (torch,
 transformers, qwen_vl_utils) live behind lazy imports and only load inside
 the server subprocess.
 
-Server mode under the dedicated ``ac-qwenvl`` env (Python 3.10 +
-transformers 4.50.2 + qwen-vl-utils). Weights load once per subprocess on
-first ``initialize()`` and live until teardown.
+FM-template alignment (2026-07-05, second pass): model identity is node
+config — ``model_dir`` (default Qwen2.5-VL-3B-Instruct), engines in a lazy
+registry keyed by the resolved id (the old
+module-global bundle ignored a changed dir), load-failure latch (empty text
++ ``degraded`` self-log), generation knobs on the node UI. The single-flight
+generate lock is per-engine now (one in-flight generate bounds peak VRAM
+under K eval workers; KV-cache memory balloons under concurrent generate).
+
+Server mode under the shared ``ac-fm`` FM env (Python 3.11 + torch
+2.8.0+cu126 + transformers 5.13.0 + qwen-vl-utils) since 2026-07-05 —
+greedy generations verified byte-identical to the previous ``ac-qwenvl``
+hosting under matched sdpa attention. On hosts whose glibc is too old for
+the flash-attn wheel (<2.32) the loader falls back to sdpa; inside a
+newer-glibc Docker base flash-attention re-activates. Weights load once
+per subprocess on first ``initialize()`` and live until teardown.
 
 Model: Qwen2.5-VL-3B-Instruct (single-3090 budget; co-hosts with DetAny3D +
-Habitat — see scripts/install/install_ac_qwenvl.sh for the 3B rationale).
-Override ``$QWENVL_MODEL_DIR`` to point at a 7B checkout on a bigger GPU.
+Habitat, so 3B not 7B; config/react-eqa.yaml specifies 3B).
+Point ``model_dir`` at a 7B / 32B / 72B checkpoint on a bigger
+GPU.
+
+last updated: 2026-07-05
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Any, ClassVar
 
-from app.components.bases import (
+from app.components import (
     BaseCanvasNode,
     BaseNodeSet,
     ConfigField,
     NodeUIConfig,
     PortDef,
+    conda_env_python,
 )
 
 log = logging.getLogger("agentcanvas.vlm_qwen2_5_vl")
 
-_DEFAULT_MODEL_DIR = os.environ.get(
-    "QWENVL_MODEL_DIR",
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "..",
-        "..",
-        "data",
-        "qwen2_5_vl",
-        "Qwen2.5-VL-3B-Instruct",
-    ),
-)
 
-# Subprocess-local singleton (model, processor). Mirrors vlm_prismatic.py.
-_VLM_BUNDLE: dict | None = None
-_VLM_LOAD_LOCK = threading.Lock()
+_DEFAULT_MODEL_DIR = "Qwen/Qwen2.5-VL-3B-Instruct"
 
-# Serialise generate() across concurrent callers. One shared 3B model is NOT
-# safe for concurrent torch.generate (KV-cache/activation memory balloons and
-# can CUDA-OOM under K eval workers each issuing ReAct + go_next LSV/GSV calls).
-# A single in-flight generate bounds peak VRAM and avoids cross-call corruption;
-# workers' habitat/TSDF still parallelise. Lazily created so it binds to the
-# server's running event loop (a module-import-time asyncio.Lock has no loop).
-_GENERATE_LOCK: Any = None
+# Curated Qwen2.5-VL Instruct sizes (HF ids; from_pretrained downloads on first
+# use, or resolves a local dir if model_dir is set to a path).
+_MODEL_OPTIONS = [
+    {"value": "Qwen/Qwen2.5-VL-3B-Instruct", "label": "Qwen2.5-VL 3B Instruct"},
+    {"value": "Qwen/Qwen2.5-VL-7B-Instruct", "label": "Qwen2.5-VL 7B Instruct"},
+    {"value": "Qwen/Qwen2.5-VL-32B-Instruct", "label": "Qwen2.5-VL 32B Instruct"},
+    {"value": "Qwen/Qwen2.5-VL-72B-Instruct", "label": "Qwen2.5-VL 72B Instruct"},
+]
 
 
-def _generate_lock():
-    import asyncio
+class _QwenEngine:
+    """Lazy registry: one loaded Qwen2.5-VL per resolved ``model_dir``."""
 
-    global _GENERATE_LOCK
-    if _GENERATE_LOCK is None:
-        _GENERATE_LOCK = asyncio.Lock()
-    return _GENERATE_LOCK
+    _instances: ClassVar[dict] = {}
+    _registry_lock = threading.Lock()
 
+    def __init__(self, model_dir: str) -> None:
+        self.model_dir = model_dir
+        self.model = None
+        self.processor = None
+        self.device = None
+        self._loaded = False
+        self._load_failed = False
+        # Single in-flight generate per engine: concurrent torch.generate
+        # KV-cache/activation memory balloons and can CUDA-OOM under K eval
+        # workers each issuing ReAct + go_next LSV/GSV calls.
+        self._lock = threading.Lock()
 
-def _ensure_loaded(model_dir: str | None = None) -> dict | None:
-    """Load Qwen2.5-VL on first call; cache (model, processor) thereafter.
+    @classmethod
+    def get(cls, model_dir: str = "") -> "_QwenEngine":
+        resolved = model_dir or _DEFAULT_MODEL_DIR
+        key = (resolved,)
+        with cls._registry_lock:
+            if key not in cls._instances:
+                cls._instances[key] = cls(resolved)
+            return cls._instances[key]
 
-    Blocking — call from a thread. Lock serialises first-touch loaders so
-    weights are read once even under racing callers.
-    """
-    global _VLM_BUNDLE
-    if _VLM_BUNDLE is not None:
-        return _VLM_BUNDLE
-    with _VLM_LOAD_LOCK:
-        if _VLM_BUNDLE is not None:
-            return _VLM_BUNDLE
-        try:
-            import torch
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-        except Exception:
-            log.exception("Qwen2.5-VL import failed — is the ac-qwenvl env active?")
-            return None
-
-        mdir = os.path.normpath(model_dir or _DEFAULT_MODEL_DIR)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info("Loading Qwen2.5-VL model_dir=%s on %s", mdir, device)
-
-        if device == "cuda":
-            # device_map MUST carry an index ("cuda:0", not "cuda") — transformers
-            # 4.50's caching_allocator_warmup calls torch.cuda.mem_get_info(device)
-            # which rejects the bare "cuda" string. bfloat16 explicit (flash-attn
-            # warns + can misbehave under torch_dtype="auto").
-            model_kwargs: dict[str, Any] = {
-                "torch_dtype": torch.bfloat16,
-                "device_map": "cuda:0",
-            }
-            # Best-effort flash-attn; fall back to sdpa if the wheel is absent.
+    def ensure(self) -> bool:
+        if self._loaded:
+            return True
+        if self._load_failed:
+            return False
+        with self._lock:
+            if self._loaded:
+                return True
+            if self._load_failed:
+                return False
             try:
-                import flash_attn  # noqa: F401
-
-                model_kwargs["attn_implementation"] = "flash_attention_2"
+                import torch
+                from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
             except Exception:
-                model_kwargs["attn_implementation"] = "sdpa"
-        else:
-            model_kwargs = {"torch_dtype": torch.float32, "device_map": "cpu"}
+                log.exception("Qwen2.5-VL import failed — is the ac-fm env active?")
+                self._load_failed = True
+                return False
 
-        try:
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(mdir, **model_kwargs)
-            processor = AutoProcessor.from_pretrained(mdir)
-        except Exception:
-            log.exception("Qwen2.5-VL load failed")
-            return None
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info("Loading Qwen2.5-VL model_dir=%s on %s", self.model_dir, device)
 
-        _VLM_BUNDLE = {"model": model, "processor": processor, "device": device, "model_dir": mdir}
-        log.info("Qwen2.5-VL ready (model_dir=%s)", mdir)
-        return _VLM_BUNDLE
+            if device == "cuda":
+                # device_map MUST carry an index ("cuda:0", not "cuda") — transformers
+                # 4.50's caching_allocator_warmup calls torch.cuda.mem_get_info(device)
+                # which rejects the bare "cuda" string. bfloat16 explicit (flash-attn
+                # warns + can misbehave under torch_dtype="auto").
+                model_kwargs: dict = {
+                    "torch_dtype": torch.bfloat16,
+                    "device_map": "cuda:0",
+                }
+                # Best-effort flash-attn; fall back to sdpa if the wheel is absent.
+                try:
+                    import flash_attn  # noqa: F401
+
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                except Exception:
+                    model_kwargs["attn_implementation"] = "sdpa"
+            else:
+                model_kwargs = {"torch_dtype": torch.float32, "device_map": "cpu"}
+
+            try:
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    self.model_dir, **model_kwargs
+                )
+                processor = AutoProcessor.from_pretrained(self.model_dir)
+            except Exception:
+                log.exception("Qwen2.5-VL load failed")
+                self._load_failed = True
+                return False
+
+            self.model, self.processor, self.device = model, processor, device
+            self._loaded = True
+            log.info("Qwen2.5-VL ready (model_dir=%s)", self.model_dir)
+            return True
 
 
-def _coerce_messages(messages: Any, prompt: str) -> list[dict]:
+def _coerce_messages(messages: Any, prompt: str) -> list:
     """Normalise into a chat message list. Accepts a pre-built list, a JSON
     string, or falls back to a single user turn built from ``prompt``."""
     if isinstance(messages, list) and messages:
@@ -145,7 +167,7 @@ def _coerce_messages(messages: Any, prompt: str) -> list[dict]:
     return [{"role": "user", "content": prompt or ""}]
 
 
-def _coerce_str_list(val: Any) -> list[str]:
+def _coerce_str_list(val: Any) -> list:
     if val is None:
         return []
     if isinstance(val, str):
@@ -164,7 +186,7 @@ def _coerce_str_list(val: Any) -> list[str]:
     return [str(x) for x in val]
 
 
-def _inject_images(messages: list[dict], image_paths: list[str]) -> list[dict]:
+def _inject_images(messages: list, image_paths: list) -> list:
     """Replace the LAST user turn's content with [image blocks…, text block].
 
     Verbatim port of upstream ``QwenEngine.call_vlm`` image handling — the
@@ -207,15 +229,23 @@ class GenerateNode(BaseCanvasNode):
     )
     category: ClassVar[str] = "reasoning"
     icon: ClassVar[str] = "MessageSquare"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="violet")
-
-    config_schema: ClassVar[list[ConfigField]] = [
-        ConfigField("max_new_tokens", "integer", default=2048),
-        ConfigField("temperature", "number", default=0.7),
-        ConfigField("top_p", "number", default=0.8),
-        ConfigField("top_k", "integer", default=100),
-        ConfigField("repetition_penalty", "number", default=1.05),
-    ]
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet",
+        config_fields=[
+            ConfigField(
+                "model_dir", "select", label="Model",
+                options=list(_MODEL_OPTIONS), default=_DEFAULT_MODEL_DIR,
+            ),
+            ConfigField(
+                "max_new_tokens", "slider", "Max new tokens",
+                default=2048, min=128, max=4096, step=128,
+            ),
+            ConfigField("temperature", "slider", "Temperature (0 = greedy)", default=0.7, min=0.0, max=2.0, step=0.05),
+            ConfigField("top_p", "slider", "Top-p", default=0.8, min=0.0, max=1.0, step=0.05),
+            ConfigField("top_k", "slider", "Top-k", default=100, min=0, max=200, step=1),
+            ConfigField("repetition_penalty", "slider", "Repetition penalty", default=1.05, min=1.0, max=2.0, step=0.05),
+        ],
+    )
 
     input_ports: ClassVar[list] = [
         PortDef("messages", "ANY", "Chat message list [{role, content}] (preferred)"),
@@ -235,50 +265,50 @@ class GenerateNode(BaseCanvasNode):
         image_paths = _coerce_str_list(inputs.get("image_paths"))
         stops = _coerce_str_list(inputs.get("stop_sequences"))
 
-        bundle = _ensure_loaded()
-        if bundle is None:
-            self._self_log("error", "Qwen2.5-VL unavailable")
-            return {"text": ""}
-        model, processor = bundle["model"], bundle["processor"]
+        engine = _QwenEngine.get(str(cfg.get("model_dir", "") or "").strip())
 
-        def _gen() -> str:
+        def _gen() -> "str | None":
+            if not engine.ensure():
+                return None
             import torch
             from qwen_vl_utils import process_vision_info
 
-            torch.cuda.empty_cache()
-            msgs = _inject_images([dict(m) for m in messages], image_paths)
-            text = processor.apply_chat_template(
-                msgs,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            image_inputs, video_inputs = process_vision_info(msgs)
-            model_inputs = processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            ).to(model.device)
+            model, processor = engine.model, engine.processor
+            with engine._lock:
+                torch.cuda.empty_cache()
+                msgs = _inject_images([dict(m) for m in messages], image_paths)
+                text = processor.apply_chat_template(
+                    msgs,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                image_inputs, video_inputs = process_vision_info(msgs)
+                model_inputs = processor(
+                    text=[text],
+                    images=image_inputs,
+                    videos=video_inputs,
+                    padding=True,
+                    return_tensors="pt",
+                ).to(model.device)
 
-            do_sample = float(cfg.get("temperature", 0.7)) > 0
-            gen_ids = model.generate(
-                **model_inputs,
-                max_new_tokens=int(cfg.get("max_new_tokens", 2048)),
-                temperature=float(cfg.get("temperature", 0.7)),
-                top_p=float(cfg.get("top_p", 0.8)),
-                top_k=int(cfg.get("top_k", 100)),
-                do_sample=do_sample,
-                repetition_penalty=float(cfg.get("repetition_penalty", 1.05)),
-            )
-            trimmed = [
-                out[len(inp) :] for inp, out in zip(model_inputs.input_ids, gen_ids, strict=False)
-            ]
-            out = processor.batch_decode(
-                trimmed,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )[0]
+                do_sample = float(cfg.get("temperature", 0.7)) > 0
+                gen_ids = model.generate(
+                    **model_inputs,
+                    max_new_tokens=int(cfg.get("max_new_tokens", 2048)),
+                    temperature=float(cfg.get("temperature", 0.7)),
+                    top_p=float(cfg.get("top_p", 0.8)),
+                    top_k=int(cfg.get("top_k", 100)),
+                    do_sample=do_sample,
+                    repetition_penalty=float(cfg.get("repetition_penalty", 1.05)),
+                )
+                trimmed = [
+                    out[len(inp):] for inp, out in zip(model_inputs.input_ids, gen_ids)
+                ]
+                out = processor.batch_decode(
+                    trimmed,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )[0]
             for stop in stops:
                 idx = out.find(stop)
                 if idx != -1:
@@ -286,13 +316,15 @@ class GenerateNode(BaseCanvasNode):
             return out
 
         try:
-            async with _generate_lock():
-                text = await asyncio.to_thread(_gen)
+            text = await asyncio.to_thread(_gen)
         except Exception as exc:
             log.exception("Qwen2.5-VL generate failed")
             self._self_log("error", str(exc))
             return {"text": ""}
 
+        if text is None:
+            self._self_log("degraded", "Qwen2.5-VL engine failed to load")
+            return {"text": ""}
         self._self_log("text_len", len(text))
         return {"text": str(text)}
 
@@ -305,29 +337,31 @@ class GenerateNode(BaseCanvasNode):
 class VLMQwen25VLNodeSet(BaseNodeSet):
     """Generic Qwen2.5-VL foundation-model nodeset.
 
-    Loads Qwen2.5-VL in a dedicated subprocess (``ac-qwenvl`` env)
+    Loads Qwen2.5-VL in its own subprocess (shared ``ac-fm`` FM env)
     and exposes ``generate`` as a canvas-wirable primitive. Stateless across
-    calls — default ``parallelism="shared"`` is correct (K callers coalesce
-    through one hosted copy; no per-call state).
+    calls — engines hold loaded weights only.
     """
 
     name: ClassVar[str] = "vlm_qwen2_5_vl"
     description: ClassVar[str] = (
         "Qwen2.5-VL — generic generate(messages|prompt, image_paths) primitive"
     )
-    server_python: ClassVar[str] = os.environ.get(
-        "QWENVL_PYTHON",
-        os.path.expanduser("~/miniforge3/envs/ac-qwenvl/bin/python"),
-    )
+    # K callers coalesce through one hosted copy; no per-call state.
+    parallelism = "shared"
+    # Default env: ac-fm (shared FM env) — greedy output byte-identical vs the
+    # retired ac-qwenvl hosting (parity gate 2026-07-05). $QWENVL_PYTHON overrides.
+    server_python: ClassVar[str] = conda_env_python("ac-fm", "QWENVL_PYTHON")
 
     def get_tools(self) -> list:
         return [GenerateNode()]
 
     async def initialize(self, **kwargs: Any) -> None:
+        # Eager warmup of the default engine: ToolEQA's first ReAct call lands
+        # within a per-step budget; loading lazily there would eat it.
         import asyncio
 
-        await asyncio.to_thread(_ensure_loaded)
+        await asyncio.to_thread(_QwenEngine.get("").ensure)
 
     async def shutdown(self) -> None:
-        # Retain bundle across reloads; freed only on subprocess teardown.
+        # Retain engines across reloads; freed only on subprocess teardown.
         pass

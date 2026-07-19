@@ -1,5 +1,3 @@
-**English** | [中文](docs-md/README_zh.md) | [Espanol](docs-md/README_es.md) | [日本語](docs-md/README_ja.md) | [한국어](docs-md/README_ko.md)
-
 <div align="center">
 
 # AgentCanvas
@@ -43,6 +41,14 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 ## What's NEW!
 
+- [2026/07] 🎥 **[VGGT-SLAM 2](https://github.com/MIT-SPARK/VGGT-SLAM)** ([RSS 2026](https://arxiv.org/abs/2601.19887)) — dense feed-forward RGB SLAM by Dominic Maggio & Luca Carlone (MIT-SPARK, BSD-2-Clause), ported to AgentCanvas as a nodeset. On TUM RGB-D, RGB-only — no depth, no intrinsics: keyframes batch into submaps, one VGGT feed-forward pass reconstructs each, and a GTSAM SL(4) projective pose-graph fuses them. The clip orbits the finished ~9.3M-point dense map, then shows the live in-canvas build — the camera trajectory arriving in submap bursts and the dense map growing chunk-by-chunk. Full walkthrough on the [VGGT-SLAM 2 nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt-slam2.html).
+
+  [![VGGT-SLAM 2 dense feed-forward SLAM on TUM RGB-D — a full-resolution orbit of the finished dense point-cloud map, then the live in-canvas build with the camera trajectory in submap bursts and the map growing chunk-by-chunk](docs/assets/videos/vggt-slam2-tum-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt-slam2.html)
+- [2026/07] 🚀 **Graph SDK — build & run agents in Python** — the same canvas graphs, now an importable library: `from agentcanvas import Graph`, add/connect nodes, run and batch-eval in-process, or compile a graph back into a standalone builder script. Same `GraphDefinition`, fully reversible with canvas + JSON. See the [Graph SDK docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/graph-sdk.html).
+- [2026/07] 🎥 **[pySLAM](https://github.com/luigifreda/pyslam)** — classic feature-based visual SLAM by Luigi Freda (GPL-3.0), wrapped in AgentCanvas as a nodeset behind a container bridge. On TUM RGB-D: a streaming-replay env feeds a benchmark sequence frame-by-frame into a live SLAM session — the estimated camera trajectory fitted onto ground truth top-down and a sparse 3-D map densifying in real time, no simulator or policy, CPU-only. Full walkthrough on the [pySLAM nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html).
+
+  [![pySLAM streaming SLAM on TUM RGB-D — live camera trajectory vs ground truth, a 3-D map densifying in real time, then an orbit of the finished map](docs/assets/videos/pyslam-tum-slam-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pyslam.html)
+- [2026/07] 🔥 **Broader foundation-model support** — 29 foundation models are now wired as thin server-mode shells (transformers-native + other sources), available to both hand-built graphs and the AAS optimizer: recent VLMs (Qwen3-VL, InternVL3, Gemma 3, SmolVLM2), open-vocabulary perception (SigLIP2, OWLv2, Grounding DINO), and geometry / depth backbones. See the [foundation-model coverage](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/index.html) and per-model [Credits](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html).
 - [2026/07] 🔥 **Edit node source from the canvas** — the new Source tab shows the selected node's scoped slice of its nodeset source (globals, referenced functions, the class itself) and splices edits back with syntax-checked hot-reload. PR: [#5](https://github.com/jianzhou0420/AgentCanvas/pull/5).
 - [2026/07] 🎉 **First public release** — AgentCanvas is open-sourced as a research preview (pre-1.0). Docs: [jianzhou0420.github.io/AgentCanvas](https://jianzhou0420.github.io/AgentCanvas/).
 
@@ -148,6 +154,8 @@ The engine then runs that graph: nodes fire when their inputs arrive, not in a f
 - **Bounded multi-agent** — fixed-N or `K_max`-bounded fan-out (e.g., DiscussNav-style debate, AutoGen-style fixed roles)
 - **Plan-and-Execute** — over a bounded tool pool, dispatched by router
 
+The engine is also extensible without touching graph nodes: shell hooks fire before/after each node execution and at graph lifecycle boundaries — log outputs, validate inputs, block nodes, or modify data — and travel with saved graphs.
+
 ### 2.3 Isolated Runtime Environments
 
 Research tools often need conflicting Python environments (Habitat needs Python 3.8, SLAM needs ROS). Any `BaseNodeSet` can run in **server mode** — the framework auto-generates an HTTP server from the nodeset's port definitions, running in its own interpreter. Zero extra code:
@@ -201,15 +209,11 @@ class MeasureDistanceNode(BaseCanvasNode):
 
 The node then appears in the canvas sidebar and wires to any other node with matching port types. Its appearance is Python-driven too: `GenericBlockRenderer` renders any node automatically from `NodeUIConfig` — colors, layout, inline config controls (sliders, dropdowns, text fields), and display widgets — so no custom React component is needed.
 
-### 2.7 Hook System
+### 2.7 Batch Evaluation & Job Queue
 
-Shell commands fire before/after each node execution and at graph lifecycle boundaries. Hooks can log outputs, validate inputs, block nodes, or modify data — all without changing graph nodes. Hooks travel with saved graphs.
+The same graph that runs on the canvas can be submitted as an eval job that scores it over hundreds of episodes. A backend-owned `JobScheduler` gates admission against a VRAM budget shared across all sessions (ADR-eval-003); each admitted run is its own subprocess whose lifetime is tied to the backend (`PR_SET_PDEATHSIG`) — no orphaned GPU processes, and every finished episode persists on disk. Per-episode logs land in a self-contained layout (ADR-eval-004) so a teammate can replay any single episode without re-running.
 
-### 2.8 Batch Evaluation & Job Queue
-
-The same graph that runs on the canvas can be submitted as an eval job that scores it over hundreds of episodes. A backend-owned `JobScheduler` gates admission against a VRAM budget shared across all sessions (ADR-eval-003); each admitted run is its own subprocess, so backend restarts don't kill in-flight evals. Per-episode logs land in a self-contained layout (ADR-eval-004) so a teammate can replay any single episode without re-running.
-
-### 2.9 Real-Time Observability
+### 2.8 Execution Logs & Live Views
 
 Every step streams observations, reasoning, actions, and metrics via WebSocket, routed by `execution_id` so concurrent runs don't cross streams. Errors from any source — node exceptions, server-mode subprocess crashes, and HTTP failures — flow through a unified `ErrorBus` and surface as Report-tab entries + toasts (ADR-observability-004). (React render errors are caught by a client-side error boundary.)
 
@@ -266,7 +270,7 @@ There are two ways to use AgentCanvas, both over the same typed-graph substrate:
 
 - Python 3.10+ with Conda (the default `agentcanvas` env — ADR-platform-004)
 - Node.js 18+
-- *(Optional, for Habitat-Sim)* a separate Python 3.8 env — `habitat-sim 0.1.7` only runs here; AgentCanvas talks to it via server mode, see [INSTALL.md](docs-md/INSTALL.md)
+- *(Optional, for Habitat-Sim)* a separate Python 3.8 env — `habitat-sim 0.1.7` only runs here; AgentCanvas talks to it via server mode, see [INSTALL.md](INSTALL.md)
 
 ### 4.2 Run the Web Dashboard
 
@@ -371,7 +375,7 @@ Two kinds of contribution, both welcome — see [CONTRIBUTING.md](CONTRIBUTING.m
 - **Content — nodesets & graphs.** Write a nodeset that wraps a tool / simulator / model (e.g. real-time 3D Gaussian Splatting, a voxel-based SLAM system) or encodes a method (e.g. NavGPT, MapGPT), or compose a graph that wires existing nodesets into a complete agent. Open a PR into `workspace/`; review is light.
 - **Core — UI, backend, framework.** Bug fixes, new features, even refactors are welcome. The one ask: if a change is big enough to cost real time, open a [Discussion](https://github.com/jianzhou0420/AgentCanvas/discussions) first so we can align before you build.
 
-Every nodeset and graph is credited to its author/maintainer on the board below — with a citation link if it has an associated paper — so contributing here doesn't cost you authorship. The **AgentCanvas framework and all first-release components** are by **AC-Team**. The board is names-only by design: the **canonical inventory** with per-graph verification detail lives on the [doc-site Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html) and the [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) support-status pages.
+Every nodeset and graph is credited to its author/maintainer on the board below — with a citation link if it has an associated paper — so contributing here doesn't cost you authorship. The **AgentCanvas framework** and the first-release **methods, graphs, and environment integrations** are by **AC-Team**. The **foundation models and policies** below are **third-party** — AgentCanvas ships only a thin server-mode wrapper so each plugs into the graph (for human users and the AAS optimizer alike); credit for every model belongs to its original authors — the foundation models are pulled into a **separate table below**, split by source (transformers-native vs. `torch.hub` / `torchvision` / vendored upstream repo), with full per-model attribution on the Credits page. The board is names-only by design: the **canonical inventory** with per-graph verification detail lives on the [doc-site Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html) and the [VLN](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vln-support-status.html) / [EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/eqa-support-status.html) / [VLA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/status/vla-support-status.html) support-status pages.
 
 ### Credits
 
@@ -436,21 +440,65 @@ Every nodeset and graph is credited to its author/maintainer on the board below 
               <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/method/policy-adapters.html">R2R-CE policy registry (12 variants)</a> 🚧</li>
             </ul>
           </li>
-          <li><b>Perception &amp; foundation models</b>
+          <li><b>Mapping</b> <sub><i>(AgentCanvas-authored)</i></sub>
             <ul>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/tools/sam.html">SAM</a> ✅</li>
-              <li>BLIP-2 + Faster R-CNN ✅</li>
-              <li>InstructBLIP ✅</li>
-              <li>RAM ✅</li>
-              <li>Grounding DINO ✅</li>
-              <li>SpatialBot ✅</li>
-              <li>Qwen2.5-VL ✅</li>
-              <li>DetAny3D ✅</li>
-              <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/common/foundation-models/vlm-prismatic.html">Prismatic VLM</a> ✅</li>
               <li>TSDF mapping ✅</li>
               <li>Semantic scene graph ✅</li>
             </ul>
           </li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+**Foundation models** — third-party models wrapped behind **one thin nodeset shell** (lazy load · single-flight GPU · base64-npy dataflow envelope) so each is a uniform building block for both **human users** and the **AAS optimizer**. *We do not author these — we ship only the shell; credit belongs to the original authors* (full per-model attribution + papers on the [Credits page](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/community/credits.html)). Split by source:
+
+<table>
+  <thead align="center">
+    <tr>
+      <th>transformers-native <sub>(thin wrapper over <code>AutoModel</code> / <code>pipeline</code>)</sub></th>
+      <th>Other sources <sub>(<code>torch.hub</code> / <code>torchvision</code> / vendored upstream repo)</sub></th>
+    </tr>
+  </thead>
+  <tbody valign="top">
+    <tr>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-clip.html">CLIP</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-siglip2.html">SigLIP 2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-aimv2.html">AIMv2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-owlv2.html">OWLv2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam.html">SAM</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-sam-video.html">SAM Video</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-segmentation.html">Segmentation (Mask2Former)</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-florence2.html">Florence-2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depth-anything.html">Depth Anything V2</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-depthpro.html">DepthPro</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-normal.html">Surface Normals (Sapiens)</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-pointmap.html">Pointmap (Sapiens 3D)</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-matching.html">SuperPoint + LightGlue</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-blip2.html">BLIP-2</a> + Faster R-CNN</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-instructblip.html">InstructBLIP</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen2-5-vl.html">Qwen2.5-VL</a></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-qwen3-vl.html">Qwen3-VL</a> <sub>(image + video)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-internvl3.html">InternVL3</a> <sub>(image + video)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-gemma3.html">Gemma 3</a> <sub>(gated)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-smolvlm2.html">SmolVLM2</a> <sub>(image + video)</sub></li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-dinov2.html">DINOv2 / DINOv3</a> <sub>(torch.hub + transformers hf)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-grounding-dino.html">Grounding DINO</a> <sub>(groundingdino-py + transformers hf_tiny)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-opticalflow.html">Optical Flow (RAFT)</a> <sub>(torchvision)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt.html">VGGT</a> <sub>(upstream repo)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt-slam2.html">VGGT-SLAM 2.0</a> <sub>(upstream repo, SLAM session)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-cotracker.html">CoTracker</a> <sub>(upstream repo)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-detany3d.html">DetAny3D</a> <sub>(vendored)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-ram.html">RAM / RAM++</a> <sub>(recognize-anything)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-spatialbot.html">SpatialBot</a> <sub>(Bunny remote code)</sub></li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/vlm-prismatic.html">Prismatic VLM</a> <sub>(upstream repo)</sub></li>
         </ul>
       </td>
     </tr>

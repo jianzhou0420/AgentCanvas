@@ -1,0 +1,103 @@
+# Lean CUDA layer over the CPU pySLAM image — adds the multiview scene-from-views
+# backends (MASt3R / DUSt3R / MV-DUSt3R / VGGT / VGGT-Robust / Fast3r /
+# Depth-Anything-V3) that upstream install_thirdparty.sh only builds when CUDA is
+# present at build time.
+#
+# Design (per the external-weights decision, 2026-07-08):
+#   * CODE + compiled CUDA kernels (curope) go in the image — a compiled CUDA
+#     extension can only be built here, in an env matching the container's
+#     torch/python, so nvcc must be present at build time.
+#   * WEIGHTS do NOT go in the image. Every `wget <checkpoint>.pth` /
+#     download_models.py step from upstream is intentionally STRIPPED; the .pth
+#     files live in data/models/pyslam/ on the host and mount in read-only at
+#     runtime (see that folder's README + model_pyslam/_client.py). HF-runtime
+#     backends (VGGT / VGGT-Robust / Depth-Anything-V3 / Fast3r / pure DUSt3R)
+#     download into a mounted hf_cache on first use.
+#
+# Each backend is its own RUN, trailing `|| echo WARN` so one backend's failure
+# leaves the rest of the image intact (its node just errors at runtime, exactly
+# the pre-rebuild state) — verify per-backend after the build with an import probe.
+#
+# Build (rootless docker; ~1-2h, mostly clones + curope nvcc compile):
+#   bash build.sh agentcanvas/pyslam:cuda -f Dockerfile.cuda
+
+FROM agentcanvas/pyslam:cpu-fixed
+
+# ── CUDA toolkit (nvcc) — matches the image's torch 2.8 cu128 ──────────────────
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+        -O /tmp/cuda-keyring.deb \
+    && dpkg -i /tmp/cuda-keyring.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-libraries-dev-12-8 cuda-nvtx-12-8 \
+    && rm -rf /var/lib/apt/lists/* /tmp/cuda-keyring.deb \
+    && ln -sfn /usr/local/cuda-12.8 /usr/local/cuda
+
+# nvcc on PATH + a broad arch list so the curope kernels run on unknown GPUs
+# (3090=8.6, plus 8.0/8.9/9.0 for portability — the env is Docker-distributed).
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:${PATH}
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+
+USER slam
+WORKDIR /home/slam/pyslam
+SHELL ["/bin/bash", "-lc"]
+
+# ── MV-DUSt3R — curope compiled, download_models.py STRIPPED ───────────────────
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && cd thirdparty \
+    && git clone https://github.com/facebookresearch/mvdust3r.git mvdust3r \
+    && cd mvdust3r && git checkout 430ca6630b07567cfb2447a4dcee9747b132d5c7 \
+    && git apply ../mvdust3r.patch \
+    && ( cd croco/models/curope/ && python setup.py build_ext --inplace ) \
+    && mkdir -p checkpoints \
+    || echo "WARN: mvdust3r build failed"
+
+# ── VGGT + VGGT-Robust — clone only (weights are HF-runtime) ───────────────────
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && cd thirdparty \
+    && ( [ -d vggt ] || git clone https://github.com/facebookresearch/vggt.git vggt ) \
+    || echo "WARN: vggt clone failed"
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && cd thirdparty \
+    && git clone https://github.com/cvlab-kaist/RobustVGGT.git vggt_robust \
+    && cd vggt_robust && git checkout 0763ed6484b1e91a2b8bd5072d317745743492cc \
+    || echo "WARN: vggt_robust clone failed"
+
+# ── Fast3r — upstream script (git clone + pip, weights HF-runtime, no wget) ─────
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && ./scripts/install_fast3r.sh \
+    || echo "WARN: fast3r install failed"
+
+# ── Depth-Anything-V3 — upstream script (needs detectron2; weights HF-runtime) ──
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && ./scripts/install_depth_anything_v3.sh \
+    || echo "WARN: depth_anything_v3 install failed"
+
+# ── MASt3R (+ bundled dust3r + croco) — LAST so its patch iterations are cheap ──
+# pyslam's three mast3r patches drift against the pinned commit e06b0093 (an
+# upstream pyslam bug: patches authored for a different mast3r version). `git
+# apply` has zero fuzz tolerance so it aborts; GNU `patch --fuzz=3` absorbs the
+# context drift and cleanly applies the dust3r + croco patches — including the
+# compile-critical croco changes (kernels.cu tokens.type()->scalar_type() for
+# torch 2.8, and setup.py's TORCH_CUDA_ARCH_LIST-aware arch selection). Only the
+# catmlp import hunk truly mismatches (the file has one import line, the patch
+# expects two), so that one line is rewritten with sed to the patch's intent.
+# Placed last: it is the one backend still being iterated, and being the final
+# layer means a re-run doesn't invalidate the heavier mvdust3r/dav3 layers above.
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && cd thirdparty \
+    && git clone --recursive https://github.com/naver/mast3r mast3r \
+    && cd mast3r && git checkout e06b0093ddacfd8267cdafe5387954a650af0d3b \
+    && git submodule update --init --recursive \
+    && sed -i 's|^from models\.blocks import Mlp|from croco.models.blocks import Mlp|' mast3r/catmlp_dpt_head.py \
+    && ( cd dust3r && patch -p1 --fuzz=3 --forward < ../../mast3r-dust3r.patch || true ) \
+    && ( cd dust3r/croco && patch -p1 --fuzz=3 --forward < ../../../mast3r-dust3r-croco.patch ) \
+    && ( cd dust3r/croco/models/curope/ && python setup.py build_ext --inplace ) \
+    && mkdir -p checkpoints \
+    || echo "WARN: mast3r build failed"
+
+SHELL ["/bin/sh", "-c"]
+WORKDIR /home/slam/pyslam

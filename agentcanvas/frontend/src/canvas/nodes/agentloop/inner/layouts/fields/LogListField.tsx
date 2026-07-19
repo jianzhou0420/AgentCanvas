@@ -20,6 +20,17 @@ const ACTION_COLOR: Record<number, string> = {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function renderLogEntry(entry: any, index: number): React.ReactNode {
+  // Scalar entry (plain TEXT wired into the action port)
+  if (typeof entry !== "object" || entry === null) {
+    return (
+      <div key={index} className="flex items-center gap-1.5 text-[10px]">
+        <span className="w-4 text-right font-mono text-gray-500">{index}</span>
+        <span className="rounded bg-gray-800 px-1 py-0.5 font-mono text-gray-300">
+          {String(entry)}
+        </span>
+      </div>
+    );
+  }
   // Navigation action format: { action, action_name, step?, done? }
   if (entry.action_name !== undefined) {
     return (

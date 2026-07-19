@@ -75,6 +75,20 @@ export const UNIFIED_STATIC_CATALOG: CatalogEntry[] = [
   },
   { type: "metrics", label: "Metrics", icon: "BarChart3", category: "Output" },
   {
+    type: "trajectoryViewer",
+    label: "Trajectory",
+    icon: "Route",
+    category: "Output",
+    data: { axes: "XZ", max_points: "5000" },
+  },
+  {
+    type: "pointCloudViewer",
+    label: "Point Cloud",
+    icon: "Box",
+    category: "Output",
+    data: { max_points: "30000", point_size: "1.5" },
+  },
+  {
     type: "stateContainer",
     label: "State Container",
     icon: "Database",

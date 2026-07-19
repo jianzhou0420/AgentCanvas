@@ -1,17 +1,36 @@
-"""Prismatic VLM as a generic foundation-model nodeset.
+"""Prismatic VLM — generic foundation-model nodeset (score_tokens + generate).
 
-Exposes domain-agnostic primitives that any method nodeset can wire in:
+Two capability primitives over one resident Prismatic VLM (default
+``prism-dinosiglip+7b``, the Explore-EQA checkpoint):
 
-  vlm_prismatic__score_tokens   — (image, prompt, tokens) → softmax probs
-  vlm_prismatic__generate       — (image, prompt) → generated text
+    vlm_prismatic__score_tokens  (image, prompt, tokens) → probs
+    vlm_prismatic__generate      (image, prompt) → text
 
-Server mode under the dedicated ``hmeqa`` env (Python 3.9 + Prismatic).
-Method nodesets (e.g. ``explore_eqa``, future EQA / VLN methods) consume
-these primitives via canvas wires — Prismatic stays out of method code,
-the foundation-model boundary is a one-class swap.
+``score_tokens`` is the building block for multi-choice answer scoring,
+frontier visual-prompt evaluation (Explore-EQA's LSV/GSV), and calibrated
+confidence estimation: Prismatic's ``get_loss(..., return_string_probabilities
+=tokens)`` gives per-token likelihoods which we softmax with optional
+temperature. NOTE: the checkpoint's ``string2idx`` registry covers a fixed
+token set (``A``–``D``, ``Yes``/``No``); unregistered tokens raise inside
+prismatic and the node reports an error.
 
-Singleton: weights load once per subprocess on first
-``initialize()`` and live until subprocess teardown.
+FM-template alignment (2026-07-05): model identity is node config —
+``model_id`` (default prism-dinosiglip+7b), engines
+in a lazy registry keyed by the resolved id, load-failure latch, single-flight
+GPU lock, config fields on the node UI. The former degraded path that
+**fabricated a uniform distribution** is gone (mock output is not a
+capability — house ruling): degraded/no-image/error now return empty ``probs``
+with a ``degraded``/``error`` self-log, and the consumer decides.
+
+Weights are HF-gated (TRI-ML) — set ``$HF_TOKEN`` for first download; the HF
+cache works without it thereafter.
+
+Runs **server mode** in the ``ac-hmeqa`` env (the Explore-EQA env whose
+prismatic install matches the checkpoint). Override with $HMEQA_PYTHON.
+
+Load: POST /api/components/nodesets/vlm_prismatic/load?mode=server
+
+last updated: 2026-07-05
 """
 
 from __future__ import annotations
@@ -23,21 +42,30 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from app.components.bases import (
+from app.components import (
     BaseCanvasNode,
     BaseNodeSet,
     ConfigField,
     NodeUIConfig,
     PortDef,
+    conda_env_python,
 )
 
 log = logging.getLogger("agentcanvas.vlm_prismatic")
 
 _DEFAULT_MODEL_ID = "prism-dinosiglip+7b"
 
-# Subprocess-local singleton. Pattern mirrors policy_adapter_vlnce.
-_VLM_BUNDLE: dict | None = None
-_VLM_LOAD_LOCK = threading.Lock()
+# Curated prismatic-vlms registry ids (internal keys, not HF repos).
+_MODEL_OPTIONS = [
+    {"value": "prism-dinosiglip+7b", "label": "Prism DINOSigLIP 7B"},
+    {"value": "prism-dinosiglip+13b", "label": "Prism DINOSigLIP 13B"},
+    {"value": "prism-clip+7b", "label": "Prism CLIP 7B"},
+    {"value": "prism-clip+13b", "label": "Prism CLIP 13B"},
+    {"value": "prism-siglip+7b", "label": "Prism SigLIP 7B"},
+    {"value": "prism-siglip+13b", "label": "Prism SigLIP 13B"},
+    {"value": "reproduction-llava-v15+7b", "label": "LLaVa-v1.5 repro 7B"},
+    {"value": "reproduction-llava-v15+13b", "label": "LLaVa-v1.5 repro 13B"},
+]
 
 
 def _to_pil_rgb(img):
@@ -56,44 +84,65 @@ def _to_pil_rgb(img):
     return Image.fromarray(arr).convert("RGB")
 
 
-def _ensure_loaded(model_id: str | None = None) -> dict | None:
-    """Load Prismatic on first call; cache the bundle thereafter.
+class _PrismaticEngine:
+    """Lazy registry: one resident Prismatic per ``model_id``; weights only."""
 
-    Blocking — call from a thread (`asyncio.to_thread`). Lock serialises
-    first-touch loaders so weights are read once even under racing
-    callers.
-    """
-    global _VLM_BUNDLE
-    if _VLM_BUNDLE is not None:
-        return _VLM_BUNDLE
-    with _VLM_LOAD_LOCK:
-        if _VLM_BUNDLE is not None:
-            return _VLM_BUNDLE
-        try:
-            import torch
-            from prismatic import load
-        except Exception:
-            log.exception("Prismatic import failed — is the hmeqa env active?")
-            return None
+    _instances: ClassVar[dict] = {}
+    _registry_lock = threading.Lock()
 
-        mid = model_id or os.environ.get("VLM_PRISMATIC_MODEL_ID", _DEFAULT_MODEL_ID)
-        hf_token = os.environ.get("HF_TOKEN", "")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    def __init__(self, model_id: str) -> None:
+        self.model_id = model_id
+        self.model = None
+        self.device = None
+        self._loaded = False
+        self._load_failed = False
+        self._lock = threading.Lock()  # guards load AND single-flight inference
 
-        log.info("Loading Prismatic VLM model_id=%s on %s", mid, device)
-        try:
-            model = load(mid, hf_token=hf_token) if hf_token else load(mid)
-            model.to(device, dtype=torch.bfloat16 if device == "cuda" else torch.float32)
-        except Exception:
-            log.exception("Prismatic load failed")
-            return None
+    @classmethod
+    def get(cls, model_id: str = "") -> "_PrismaticEngine":
+        resolved = model_id or _DEFAULT_MODEL_ID
+        key = (resolved,)
+        with cls._registry_lock:
+            if key not in cls._instances:
+                cls._instances[key] = cls(resolved)
+            return cls._instances[key]
 
-        _VLM_BUNDLE = {"model": model, "device": device, "model_id": mid}
-        log.info("Prismatic VLM ready (model_id=%s)", mid)
-        return _VLM_BUNDLE
+    def ensure(self) -> bool:
+        if self._loaded:
+            return True
+        if self._load_failed:
+            return False
+        with self._lock:
+            if self._loaded:
+                return True
+            if self._load_failed:
+                return False
+            try:
+                import torch
+                from prismatic import load
+            except Exception:
+                log.exception("Prismatic import failed — is the hmeqa env active?")
+                self._load_failed = True
+                return False
+
+            hf_token = os.environ.get("HF_TOKEN", "")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info("Loading Prismatic VLM model_id=%s on %s", self.model_id, device)
+            try:
+                model = load(self.model_id, hf_token=hf_token) if hf_token else load(self.model_id)
+                model.to(device, dtype=torch.bfloat16 if device == "cuda" else torch.float32)
+            except Exception:
+                log.exception("Prismatic load failed")
+                self._load_failed = True
+                return False
+
+            self.model, self.device = model, device
+            self._loaded = True
+            log.info("Prismatic VLM ready (model_id=%s)", self.model_id)
+            return True
 
 
-def _coerce_token_list(tokens) -> list[str]:
+def _coerce_token_list(tokens) -> list:
     if tokens is None:
         return []
     if isinstance(tokens, str):
@@ -110,6 +159,12 @@ def _coerce_token_list(tokens) -> list[str]:
             pass
         return [t.strip() for t in s.split(",") if t.strip()]
     return [str(t) for t in tokens]
+
+
+_MODEL_ID_FIELD = ConfigField(
+    "model_id", "select", label="Prismatic model",
+    options=list(_MODEL_OPTIONS), default=_DEFAULT_MODEL_ID,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -131,9 +186,8 @@ class ScoreTokensNode(BaseCanvasNode):
 
     Edge cases:
       - empty tokens list → empty probs array
-      - missing image / VLM unavailable → uniform distribution
-        (degraded mode, lets the graph keep running for structural
-        testing without the full env)
+      - missing image / VLM unavailable / scoring error → empty probs
+        + ``degraded``/``error`` self-log (never a fabricated uniform)
     """
 
     node_type: ClassVar[str] = "vlm_prismatic__score_tokens"
@@ -143,11 +197,13 @@ class ScoreTokensNode(BaseCanvasNode):
     )
     category: ClassVar[str] = "reasoning"
     icon: ClassVar[str] = "Sparkles"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="violet")
-
-    config_schema: ClassVar[list[ConfigField]] = [
-        ConfigField("temperature", "number", default=1.0),
-    ]
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet",
+        config_fields=[
+            _MODEL_ID_FIELD,
+            ConfigField("temperature", "slider", label="Softmax temperature", default=1.0, min=0.0, max=2.0, step=0.05),
+        ],
+    )
 
     input_ports: ClassVar[list] = [
         PortDef("image", "IMAGE", "Image to condition on"),
@@ -174,20 +230,20 @@ class ScoreTokensNode(BaseCanvasNode):
 
         pil = _to_pil_rgb(image)
         if pil is None:
-            self._self_log("error", "no image — uniform")
-            return {"probs": [1.0 / n] * n}
+            self._self_log("error", "no image")
+            return {"probs": []}
 
-        bundle = _ensure_loaded()
-        if bundle is None:
-            self._self_log("error", "VLM unavailable — uniform")
-            return {"probs": [1.0 / n] * n}
-        model = bundle["model"]
+        engine = _PrismaticEngine.get(str(cfg.get("model_id", "") or "").strip())
 
         def _score():
-            pb = model.get_prompt_builder()
-            pb.add_turn(role="human", message=prompt)
-            prompt_text = pb.get_prompt()
-            losses = model.get_loss(pil, prompt_text, return_string_probabilities=tokens)[0]
+            if not engine.ensure():
+                return None
+            model = engine.model
+            with engine._lock:
+                pb = model.get_prompt_builder()
+                pb.add_turn(role="human", message=prompt)
+                prompt_text = pb.get_prompt()
+                losses = model.get_loss(pil, prompt_text, return_string_probabilities=tokens)[0]
             losses = np.array(losses)
             return np.exp(-losses / T) / np.sum(np.exp(-losses / T))
 
@@ -196,8 +252,11 @@ class ScoreTokensNode(BaseCanvasNode):
         except Exception as exc:
             log.exception("score_tokens failed")
             self._self_log("error", str(exc))
-            return {"probs": [1.0 / n] * n}
+            return {"probs": []}
 
+        if probs is None:
+            self._self_log("degraded", "Prismatic engine failed to load")
+            return {"probs": []}
         probs_list = [float(x) for x in np.asarray(probs).ravel().tolist()]
         self._self_log("probs", probs_list)
         return {"probs": probs_list}
@@ -216,12 +275,17 @@ class GenerateNode(BaseCanvasNode):
     description: ClassVar[str] = "Free-form text generation given an image and prompt"
     category: ClassVar[str] = "reasoning"
     icon: ClassVar[str] = "MessageSquare"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="violet")
-
-    config_schema: ClassVar[list[ConfigField]] = [
-        ConfigField("max_new_tokens", "integer", default=128),
-        ConfigField("temperature", "number", default=0.2),
-    ]
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
+        color="violet",
+        config_fields=[
+            _MODEL_ID_FIELD,
+            ConfigField(
+                "max_new_tokens", "slider", label="Max new tokens",
+                default=128, min=16, max=1024, step=16,
+            ),
+            ConfigField("temperature", "slider", label="Temperature (0 = greedy)", default=0.2, min=0.0, max=2.0, step=0.05),
+        ],
+    )
 
     input_ports: ClassVar[list] = [
         PortDef("image", "IMAGE", "Image to condition on"),
@@ -246,23 +310,23 @@ class GenerateNode(BaseCanvasNode):
             self._self_log("error", "no image")
             return {"text": ""}
 
-        bundle = _ensure_loaded()
-        if bundle is None:
-            self._self_log("error", "VLM unavailable")
-            return {"text": ""}
-        model = bundle["model"]
+        engine = _PrismaticEngine.get(str(cfg.get("model_id", "") or "").strip())
 
         def _gen():
-            pb = model.get_prompt_builder()
-            pb.add_turn(role="human", message=prompt)
-            prompt_text = pb.get_prompt()
-            return model.generate(
-                pil,
-                prompt_text,
-                do_sample=T > 0,
-                temperature=T if T > 0 else 1.0,
-                max_new_tokens=max_new,
-            )
+            if not engine.ensure():
+                return None
+            model = engine.model
+            with engine._lock:
+                pb = model.get_prompt_builder()
+                pb.add_turn(role="human", message=prompt)
+                prompt_text = pb.get_prompt()
+                return model.generate(
+                    pil,
+                    prompt_text,
+                    do_sample=T > 0,
+                    temperature=T if T > 0 else 1.0,
+                    max_new_tokens=max_new,
+                )
 
         try:
             text = await asyncio.to_thread(_gen)
@@ -271,6 +335,9 @@ class GenerateNode(BaseCanvasNode):
             self._self_log("error", str(exc))
             return {"text": ""}
 
+        if text is None:
+            self._self_log("degraded", "Prismatic engine failed to load")
+            return {"text": ""}
         text = str(text)
         self._self_log("text_len", len(text))
         return {"text": text}
@@ -284,31 +351,30 @@ class GenerateNode(BaseCanvasNode):
 class VLMPrismaticNodeSet(BaseNodeSet):
     """Generic Prismatic VLM foundation-model nodeset.
 
-    Loads Prismatic in a dedicated subprocess (under the ``hmeqa`` env)
+    Loads Prismatic in a dedicated subprocess (under the ``ac-hmeqa`` env)
     and exposes ``score_tokens`` + ``generate`` as canvas-wirable
     primitives. Method nodesets consume these via canvas wires — there
     is no Python-level coupling to any specific method.
-
-    Override ``$VLM_PRISMATIC_MODEL_ID`` (or the per-instance config
-    if/when added) to swap the underlying weights.
     """
 
     name: ClassVar[str] = "vlm_prismatic"
     description: ClassVar[str] = (
         "Prismatic VLM — generic primitives (score_tokens, generate) wired by method nodesets"
     )
-    server_python: ClassVar[str] = os.environ.get(
-        "HMEQA_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-hmeqa/bin/python")
-    )
+    # Stateless VLM — one shared server, K eval workers coalesce onto it.
+    parallelism = "shared"
+    server_python: ClassVar[str] = conda_env_python("ac-hmeqa", "HMEQA_PYTHON")
 
     def get_tools(self) -> list:
         return [ScoreTokensNode(), GenerateNode()]
 
     async def initialize(self, **kwargs: Any) -> None:
+        # Eager warmup of the default engine — explore_eqa's first score call
+        # lands within a per-step budget; loading lazily there would eat it.
         import asyncio
 
-        await asyncio.to_thread(_ensure_loaded)
+        await asyncio.to_thread(_PrismaticEngine.get("").ensure)
 
     async def shutdown(self) -> None:
-        # Retain bundle across reloads; freed only on subprocess teardown.
+        # Retain engines across reloads; freed only on subprocess teardown.
         pass

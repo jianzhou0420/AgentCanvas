@@ -123,4 +123,20 @@ apply_patch \
     "$PATCH_DIR/libero_venv_gymnasium.patch"
 
 echo ""
+echo "[extra] libero package-root __init__.py"
+# LIBERO upstream forgets to ship libero/__init__.py — without it,
+# find_packages() in its setup.py finds nothing and `pip install -e` registers
+# no package, so `import libero` fails. Centralized here (idempotent) so BOTH
+# install_ac_libero.sh and install_ac_vla_policy.sh get it via this applier.
+LIBERO_INIT="$PROJECT_ROOT/third_party/libero/libero/__init__.py"
+if [ ! -d "$PROJECT_ROOT/third_party/libero" ]; then
+    echo "  [skip] third_party/libero not fetched"
+elif [ -f "$LIBERO_INIT" ]; then
+    echo "  [ok]   third_party/libero/libero/__init__.py (present)"
+else
+    touch "$LIBERO_INIT"
+    echo "  [done] third_party/libero/libero/__init__.py (touched)"
+fi
+
+echo ""
 echo "=== Done ==="

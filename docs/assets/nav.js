@@ -27,6 +27,118 @@
     });
   }
 
+  // ----- share menu (baked button; menu is JS-built so adding share methods
+  //        never re-bakes every page). Methods: Save as PDF (A4 paginated) and
+  //        Save as long image (one continuous page). -----
+  var shareBtn = document.querySelector('.share-btn');
+  if (shareBtn) {
+    var shareMenu = null;
+    function closeShareMenu() {
+      if (shareMenu) { shareMenu.remove(); shareMenu = null; }
+      shareBtn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', onShareDocClick);
+      document.removeEventListener('keydown', onShareEsc);
+    }
+    function onShareDocClick(e) {
+      if (shareMenu && !shareMenu.contains(e.target) && e.target !== shareBtn) closeShareMenu();
+    }
+    function onShareEsc(e) { if (e.key === 'Escape') { closeShareMenu(); shareBtn.focus(); } }
+    function addShareItem(icon, label, onClick) {
+      var item = document.createElement('button');
+      item.className = 'share-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = '<span class="share-menu-icon">' + icon + '</span>' + label;
+      item.addEventListener('click', function () { closeShareMenu(); onClick(); });
+      shareMenu.appendChild(item);
+    }
+    // Single continuous "long image" page: reuse the @media print transform but
+    // override @page so Chrome emits ONE tall page (width × full content height)
+    // instead of A4 pagination — the 长图 / long-screenshot feel, still a PDF file.
+    function printLongImage() {
+      var main = document.querySelector('main.doc-body');
+      if (!main) { window.print(); return; }          // no article → plain A4 print
+      var root = document.documentElement;
+      var layout = main.closest('.site-layout');
+      var CONTENT_W = 800, PAD = 24;                   // px @96dpi: reading width + page margin
+      // Measure height AS IT WILL PRINT: the print CSS wraps wide code/tables, so
+      // they get TALLER than on screen. Force main to CONTENT_W and add a class
+      // mirroring the height-affecting print rules, read scrollHeight, then revert
+      // — all synchronously, so the intermediate layout is never painted (no flicker).
+      var savedMain = main.getAttribute('style');
+      var savedLayout = layout ? layout.getAttribute('style') : null;
+      if (layout) layout.style.display = 'block';
+      main.style.width = main.style.maxWidth = CONTENT_W + 'px';
+      main.style.margin = main.style.padding = '0';
+      main.style.display = 'flow-root';   // BFC: fold trailing child margins into scrollHeight
+      root.classList.add('longimg-measure');
+      var hPx = Math.ceil(main.scrollHeight);
+      root.classList.remove('longimg-measure');
+      if (savedMain === null) main.removeAttribute('style'); else main.setAttribute('style', savedMain);
+      if (layout) { if (savedLayout === null) layout.removeAttribute('style'); else layout.setAttribute('style', savedLayout); }
+      // Bias TALL (1% + 24px slack) so measurement drift can never spill a thin,
+      // near-blank second page. A little empty tail on one long page is invisible.
+      var pxToMm = function (px) { return (px / 96 * 25.4).toFixed(2); };
+      var pageW = pxToMm(CONTENT_W + 2 * PAD);
+      var pageH = pxToMm(Math.ceil(hPx * 1.01) + 2 * PAD + 24);
+      var old = document.getElementById('longimg-page');
+      if (old) old.remove();
+      var style = document.createElement('style');
+      style.id = 'longimg-page';
+      style.textContent = '@media print { @page { size: ' + pageW + 'mm ' + pageH +
+        'mm; margin: ' + pxToMm(PAD) + 'mm; } }';
+      document.head.appendChild(style);
+      // Neutralise break-avoidance for this print so a sub-pixel bottom-edge
+      // overshoot can't bump a whole protected block onto a near-blank page 2.
+      root.classList.add('longimg-print');
+      function cleanup() {
+        root.classList.remove('longimg-print');
+        var el = document.getElementById('longimg-page');
+        if (el) el.remove();
+        window.removeEventListener('afterprint', cleanup);
+      }
+      window.addEventListener('afterprint', cleanup);
+      window.print();
+    }
+    function openShareMenu() {
+      shareMenu = document.createElement('div');
+      shareMenu.className = 'share-menu';
+      shareMenu.setAttribute('role', 'menu');
+      // Future share methods (copy link, etc.) drop in as extra addShareItem calls.
+      addShareItem('📄', 'Save as PDF', function () { window.print(); });
+      addShareItem('📜', 'Save as long image', printLongImage);
+      document.body.appendChild(shareMenu);
+      var r = shareBtn.getBoundingClientRect();
+      shareMenu.style.top = (r.bottom + 6) + 'px';
+      shareMenu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      shareBtn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('click', onShareDocClick);
+      document.addEventListener('keydown', onShareEsc);
+    }
+    shareBtn.addEventListener('click', function (e) {
+      e.stopPropagation();  // keep this opening click from reaching onShareDocClick
+      if (shareMenu) closeShareMenu(); else openShareMenu();
+    });
+  }
+
+  // ----- force the light palette while printing (Save-as-PDF) -----
+  // Dark-theme pages print with large blocks of invisible text: theme-adaptive
+  // SVG (fill:currentColor) and dark-tuned colors vanish on white paper. The
+  // light theme prints cleanly, so we swap data-theme -> light for the duration
+  // of the print and restore after. beforeprint/afterprint fire for BOTH the
+  // share menu's window.print() AND a direct Ctrl/Cmd+P.
+  (function () {
+    var root = document.documentElement, savedTheme = null;
+    window.addEventListener('beforeprint', function () {
+      savedTheme = root.getAttribute('data-theme');
+      root.setAttribute('data-theme', 'light');
+    });
+    window.addEventListener('afterprint', function () {
+      if (savedTheme === null) root.removeAttribute('data-theme');
+      else root.setAttribute('data-theme', savedTheme);
+      savedTheme = null;
+    });
+  })();
+
   // ----- client-rendered navigation (top tabs + left sidebar) -----
   // The nav tree is fetched from assets/nav.json (built by _wrap_handwritten.py
   // from _nav.build_nav_data) and rendered here, so adding/removing/renaming a

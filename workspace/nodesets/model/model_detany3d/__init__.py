@@ -1,57 +1,42 @@
-"""ModelDetAny3DNodeSet — DetAny3D 3D detection as a server-mode NodeSet.
+"""ModelDetAny3DNodeSet — DetAny3D promptable 3D detection, server-mode.
 
 Wraps DetAny3D (Zhai 2025; ToolEQA dependency) as a canvas server-mode
-nodeset. Exposes 2D detection, 3D detection, and SAM-prompted
-segmentation as canvas tool nodes — the `tooleqa` method-side nodeset
-calls these via the standard server-mode HTTP route (NOT via DetAny3D's
-posix_ipc IPC, which is replaced here).
+nodeset. DetAny3D is a **promptable** 3D detector — like SAM, its native
+input is 2D box prompts — so the nodeset exposes exactly that native
+capability (FM-boundary reshape 2026-07-05):
 
-Workspace-standalone: the DetAny3D source we depend on is **copied into
-``_vendor/``** under this folder; we never import from
-``third_party/``. GroundingDINO + UniDepth + SAM are pip-installed at
-env-create time (`scripts/install/install_ac_detany3d.sh`).
+    model_detany3d__locate_3d   — image + boxes_2d prompts → 3D centers/
+                                  sizes + rotation (DetAny3D WrapModel)
 
-Architecture — mirrors `hmeqa.py`:
+Text→box generation is a *composition* and lives outside: the upstream
+demo bolts a GroundingDINO Swin-B in front, which callers now reach via
+``model_grounding_dino__detect`` (variant native, Swin-B ckpt @
+0.37/0.25 — DetAny3D's exact first stage, same env, same int rounding);
+ToolEQA's toolbox does exactly that. The former ``locate_2d`` (pure
+GroundingDINO — GDINO's capability, not DetAny3D's) and ``segment``
+(GDINO+SAM union; zero consumers) nodes were removed in the same
+reshape, dropping the standalone GroundingDINO and SAM ViT-H loads
+(~4 GB resident) — the manager now holds only WrapModel. The GDINO
+image *features* inside WrapModel are part of DetAny3D's architecture
+and stay, of course.
 
-1. `DetAny3DEnvManager` (singleton)
-     Holds the loaded model triple — DetAny3D's WrapModel (3D head),
-     GroundingDINO (open-vocab 2D detector), and SAM ViT-H predictor.
-     Models load lazily on first call (~10 GB of weights). Pinned to
-     a single ThreadPoolExecutor for GPU thread affinity.
+The `tooleqa` method-side nodeset calls this via the standard
+server-mode HTTP route (NOT via DetAny3D's posix_ipc IPC, which is
+replaced here). Workspace-standalone: the DetAny3D source we depend on
+is **copied into ``_vendor/``** under this folder; we never import from
+``third_party/``. UniDepth etc. are pip-installed at env-create time
+(`scripts/install/install_ac_detany3d.sh`).
 
-2. Canvas tool nodes (`BaseCanvasNode` adapters)
-     model_detany3d__locate_2d   — text → 2D bboxes via GroundingDINO
-     model_detany3d__locate_3d   — text → 3D centers + sizes (DetAny3D)
-     model_detany3d__segment     — text → masks (SAM prompted by DINO bboxes)
-
-3. `EnvDetAny3DNodeSet` (collection + lifecycle)
-     server_python defaults to `$DETANY3D_PYTHON` so the framework
-     auto-hosts this in the dedicated `detany3d` conda env subprocess.
-
-Why we re-load models in this nodeset rather than IPC into upstream's
-`app_mp.py`:
-
-  Upstream uses POSIX shared memory (`utils/shared_memory.py`) to ferry
-  images + prompts across process boundaries. AgentCanvas already has
-  HTTP server-mode (auto_host) for cross-subprocess calls. Replacing
-  posix_ipc with our HTTP route keeps one IPC mechanism. Model load is
-  identical to upstream's `app_mp.py:init_models`.
-
-Status: SCAFFOLD — the model-loading + predict bodies mirror upstream
-verbatim but require:
-  1. `$DETANY3D_PYTHON` pointing at the `detany3d` conda env
-     (see `scripts/install/install_ac_detany3d.sh`).
+Requirements:
+  1. `$DETANY3D_PYTHON` pointing at the `ac-detany3d` conda env.
   2. Model weights under `data/detany3d/weights/` (or `DETANY3D_DATA_ROOT`):
-       - GroundingDINO Swin-B  (`groundingdino_swinb_cogcoor.pth`)
-       - SAM ViT-H             (`sam_vit_h_4b8939.pth`)
        - DetAny3D checkpoint   (see `_vendor/UPSTREAM_README.md`)
-  3. DetAny3D demo config at `_vendor/detect_anything/configs/demo.yaml`
-     (shipped in the vendored copy; verify `cfg.resume` +
-     `cfg.model.checkpoint` resolve correctly — adjust paths to point at
-     `data/detany3d/weights/...` in this conda env).
+       - SAM ViT-H             (`sam_vit_h_4b8939.pth` — WrapModel's
+                                backbone init via cfg.model.checkpoint)
+  3. DetAny3D demo config at `_vendor/detect_anything/configs/demo.yaml`.
 
-last updated: 2026-07-04 (moved env/ -> model/ per nodeset-layout role test;
-renamed model_detany3d; node_types re-prefixed)
+last updated: 2026-07-05 (promptable reshape: locate_3d takes boxes_2d
+prompts; locate_2d + segment removed; standalone GDINO/SAM loads dropped)
 """
 
 from __future__ import annotations
@@ -97,7 +82,6 @@ _DETANY3D_CONFIG = os.path.join(_VENDOR_ROOT, "detect_anything", "configs", "dem
 _REPO_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", "..", ".."))
 _DATA_ROOT = os.environ.get("DETANY3D_DATA_ROOT", os.path.join(_REPO_ROOT, "data", "detany3d"))
 _WEIGHTS_DIR = os.path.join(_DATA_ROOT, "weights")
-_GROUNDINGDINO_WEIGHTS = os.path.join(_WEIGHTS_DIR, "groundingdino_swinb_cogcoor.pth")
 
 
 def _ensure_vendor_on_path() -> None:
@@ -111,31 +95,6 @@ def _ensure_vendor_on_path() -> None:
         sys.path.insert(0, _VENDOR_ROOT)
 
 
-def _resolve_groundingdino_config() -> str:
-    """Locate ``GroundingDINO_SwinB_cfg.py`` in the pip-installed groundingdino package."""
-    try:
-        import groundingdino  # type: ignore[import-not-found]
-
-        gd_pkg = os.path.dirname(os.path.abspath(groundingdino.__file__))
-        candidate = os.path.join(gd_pkg, "config", "GroundingDINO_SwinB_cfg.py")
-        if os.path.isfile(candidate):
-            return candidate
-    except ImportError:
-        pass
-    raise FileNotFoundError(
-        "GroundingDINO_SwinB_cfg.py not found in installed groundingdino package. "
-        "Run scripts/install/install_ac_detany3d.sh to install groundingdino-py."
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Defaults — verbatim from DetAny3D/app_mp.py:75-76
-# ══════════════════════════════════════════════════════════════════════
-
-_DEFAULTS = {
-    "box_threshold": 0.37,
-    "text_threshold": 0.25,
-}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -163,8 +122,6 @@ class DetAny3DEnvManager:
 
         # Models — populated by initialize()
         self._sam_model: Any = None  # DetAny3D's WrapModel
-        self._dino_model: Any = None  # GroundingDINO
-        self._sam_predictor: Any = None  # segment-anything SamPredictor
         self._sam_trans: Any = None  # ResizeLongestSide
 
         self._initialized: bool = False
@@ -199,8 +156,6 @@ class DetAny3DEnvManager:
             import torch
             import yaml
             from box import Box  # python-box, used by DetAny3D
-            from groundingdino.util.inference import load_model as load_dino
-            from segment_anything import SamPredictor, sam_model_registry
             from train_utils import ResizeLongestSide  # type: ignore[import-not-found]
             from wrap_model import WrapModel  # type: ignore[import-not-found]
 
@@ -258,17 +213,10 @@ class DetAny3DEnvManager:
             sam_model.eval()
             self._sam_model = sam_model
 
-            log.info("DetAny3D: loading GroundingDINO Swin-B")
-            dino = load_dino(_resolve_groundingdino_config(), _GROUNDINGDINO_WEIGHTS)
-            dino.to(f"cuda:{self._gpu_id}")
-            dino.eval()
-            self._dino_model = dino
-
-            log.info("DetAny3D: loading SAM ViT-H predictor")
-            sam = sam_model_registry["vit_h"](checkpoint=self._cfg.model.checkpoint)
-            sam.to(f"cuda:{self._gpu_id}")
-            self._sam_predictor = SamPredictor(sam)
-
+            # The standalone GroundingDINO detector + SAM ViT-H predictor
+            # loads are gone (2026-07-05 promptable reshape): text→box is a
+            # composition served by model_grounding_dino; segmentation was
+            # dead code. WrapModel is the whole resident surface.
             self._sam_trans = ResizeLongestSide(self._cfg.model.pad)
 
             self._initialized = True
@@ -277,82 +225,23 @@ class DetAny3DEnvManager:
     def shutdown(self) -> None:
         with self._lock:
             self._sam_model = None
-            self._dino_model = None
-            self._sam_predictor = None
             self._sam_trans = None
             self._cfg = None
             self._initialized = False
 
     # ── Inference helpers (verbatim port from app_mp.py predict_*) ──
 
-    def _convert_dino_image(self, img: np.ndarray) -> tuple[np.ndarray, Any]:
-        """Mirror of app_mp.py:94-105 (`convert_image`)."""
-        import groundingdino.datasets.transforms as T  # type: ignore[import-not-found]
-        from PIL import Image
+    def predict_3d(self, image: np.ndarray, bbox_2d_list: list) -> dict[str, Any]:
+        """Promptable 3D detection — port of app_mp.py:190-295, with the 2D
+        box prompts supplied by the caller instead of an internal detector.
 
-        transform = T.Compose(
-            [
-                T.RandomResize([800], max_size=1333),
-                T.ToTensor(),
-                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ]
-        )
-        image_source = Image.fromarray(img, "RGB")
-        image_np = np.asarray(image_source)
-        image_transformed, _ = transform(image_source, None)
-        return image_np, image_transformed
-
-    def _dino_predict(self, img: np.ndarray, text: str) -> tuple[list, list]:
-        """Run GroundingDINO and return ``(bboxes_xyxy, labels)``.
-
-        Verbatim from app_mp.py:171-187 (the open-vocab 2D detection
-        branch shared by all three predict_* functions).
-        """
-        import torch
-        from groundingdino.util.inference import predict as dino_predict
-        from torchvision.ops import box_convert
-
-        image_source_dino, image_dino = self._convert_dino_image(img)
-        # remove_combined omitted — not in the groundingdino-py 0.4.0
-        # signature installed in ac-detany3d (upstream default is False, so
-        # semantics are unchanged). Same fix as model_grounding_dino (2026-06-16);
-        # this SCAFFOLD-era copy kept the upstream-verbatim kwarg and the
-        # locate path had never been exercised end-to-end until 2026-07-04.
-        boxes, _logits, phrases = dino_predict(
-            model=self._dino_model,
-            image=image_dino,
-            caption=text,
-            box_threshold=_DEFAULTS["box_threshold"],
-            text_threshold=_DEFAULTS["text_threshold"],
-        )
-        h, w, _ = image_source_dino.shape
-        boxes = boxes * torch.Tensor([w, h, w, h])
-        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy")
-        bbox_2d_list: list = []
-        label_list: list = []
-        for i, box in enumerate(xyxy):
-            bbox_2d_list.append(box.to(torch.int).cpu().numpy().tolist())
-            label_list.append(phrases[i])
-        return bbox_2d_list, label_list
-
-    def predict_2d(self, image: np.ndarray, text: str) -> dict[str, Any]:
-        """Open-vocab 2D detection — port of app_mp.py:161-188."""
-        with self._lock:
-            if not self._initialized:
-                return {"error": "DetAny3D not initialized — call initialize() first"}
-            try:
-                bbox_2d_list, label_list = self._dino_predict(image, text)
-            except Exception as e:
-                return {"error": str(e)}
-            return {"bboxes_2d": bbox_2d_list, "labels": label_list, "text": text}
-
-    def predict_3d(self, image: np.ndarray, text: str) -> dict[str, Any]:
-        """3D detection — port of app_mp.py:190-295.
-
-        Returns ``{bboxes_3d, rot_mat, text}``. Bboxes_3d is a list of
-        ``[cx, cy, cz, sx, sy, sz, yaw]`` rows; centers are first 3 cols,
-        sizes are next 3 cols. Caller (ToolEQA's location_3d.py:63-66)
-        rounds to 2 decimal places.
+        ``bbox_2d_list`` is a list of integer ``[x1, y1, x2, y2]`` rows —
+        exactly what the upstream GroundingDINO stage produced (int-rounded);
+        ``model_grounding_dino__detect`` (native, Swin-B @ 0.37/0.25) emits
+        the identical format. Returns ``{bboxes_3d, rot_mat}``: bboxes_3d is
+        a list of ``[cx, cy, cz, sx, sy, sz, yaw]`` rows; centers are first
+        3 cols, sizes next 3. Caller (ToolEQA's location_3d.py:63-66) rounds
+        to 2 decimal places.
         """
         with self._lock:
             if not self._initialized:
@@ -366,9 +255,8 @@ class DetAny3DEnvManager:
                     rotation_6d_to_matrix,
                 )
 
-                bbox_2d_list, _ = self._dino_predict(image, text)
                 if not bbox_2d_list:
-                    return {"error": f"No objects matching '{text}' found in the image."}
+                    return {"error": "no boxes_2d prompts provided"}
 
                 # Pre-process for SAM (app_mp.py:248-289)
                 original_size = tuple(image.shape[:-1])
@@ -422,35 +310,11 @@ class DetAny3DEnvManager:
                     if hasattr(decoded_3d, "cpu")
                     else decoded_3d,
                     "rot_mat": rot_mat.cpu().tolist() if hasattr(rot_mat, "cpu") else rot_mat,
-                    "text": text,
                 }
             except Exception as e:
                 import traceback
 
                 traceback.print_exc()
-                return {"error": str(e)}
-
-    def predict_seg(self, image: np.ndarray, text: str) -> dict[str, Any]:
-        """SAM-prompted segmentation — port of app_mp.py:297-337."""
-        with self._lock:
-            if not self._initialized:
-                return {"error": "DetAny3D not initialized — call initialize() first"}
-            try:
-                bbox_2d_list, _ = self._dino_predict(image, text)
-                if not bbox_2d_list:
-                    return {"error": f"No objects matching '{text}' found."}
-
-                image_source_dino, _ = self._convert_dino_image(image)
-                self._sam_predictor.set_image(image_source_dino)
-                masks_result: list = []
-                for bbox in bbox_2d_list:
-                    masks, _, _ = self._sam_predictor.predict(box=np.array(bbox))
-                    mask = np.zeros_like(masks[0])
-                    for i in range(masks.shape[0]):
-                        mask = mask | masks[i]
-                    masks_result.append((mask.astype(np.uint8) * 255).tolist())
-                return {"masks": masks_result, "text": text}
-            except Exception as e:
                 return {"error": str(e)}
 
     # ── Internal preprocessing helpers (verbatim from app_mp.py) ──
@@ -525,67 +389,55 @@ def _decode_image_input(value: Any) -> np.ndarray:
 # ══════════════════════════════════════════════════════════════════════
 
 
-class Locate2DTool(BaseCanvasNode):
-    node_type = "model_detany3d__locate_2d"
-    display_name = "DetAny3D: Locate 2D"
-    description = (
-        "Open-vocab 2D detection via GroundingDINO. Input image + text prompt; output 2D bboxes."
-    )
-    category = "tool"
-    icon = "Square"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="amber")
-    input_ports = [
-        PortDef("image", "ANY", "RGB image (np.ndarray) or path string"),
-        PortDef("text", "TEXT", "Object name(s) to localize, dot-separated for multi-class"),
-    ]
-    output_ports = [
-        PortDef("bboxes_2d", "ANY", "List of [x1, y1, x2, y2] integer bboxes"),
-        PortDef("labels", "ANY", "List of label strings, 1:1 with bboxes_2d"),
-        PortDef("error", "TEXT", "Empty on success; error message otherwise"),
-    ]
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        try:
-            image = _decode_image_input(inputs["image"])
-        except Exception as e:
-            return {"bboxes_2d": [], "labels": [], "error": str(e)}
-        text = str(inputs.get("text", ""))
-        result = await _run_sync(_get_mgr().predict_2d, image, text)
-        if "error" in result:
-            self._self_log("error", result["error"])
-            return {"bboxes_2d": [], "labels": [], "error": result["error"]}
-        return {
-            "bboxes_2d": result.get("bboxes_2d", []),
-            "labels": result.get("labels", []),
-            "error": "",
-        }
-
-
 class Locate3DTool(BaseCanvasNode):
+    """Promptable 3D detection — image + 2D box prompts → 3D boxes.
+
+    DetAny3D's native surface (like SAM, it consumes box prompts). Feed it
+    boxes from ``model_grounding_dino__detect`` (or any box source); the
+    text→box stage is a graph/caller-level composition since 2026-07-05.
+    """
+
     node_type = "model_detany3d__locate_3d"
     display_name = "DetAny3D: Locate 3D"
-    description = "3D detection — returns 3D bboxes (centers + sizes) and rotation matrix."
+    description = (
+        "Promptable 3D detection — image + [x1,y1,x2,y2] box prompts → "
+        "3D bboxes (centers + sizes) and rotation matrix."
+    )
     category = "tool"
     icon = "Box"
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="amber")
     input_ports = [
         PortDef("image", "ANY", "RGB image (np.ndarray) or path string"),
-        PortDef("text", "TEXT", "Object name to localize"),
+        PortDef("boxes_2d", "ANY", "List of [x1, y1, x2, y2] integer box prompts (or JSON string)"),
     ]
     output_ports = [
-        PortDef("centers_3d", "ANY", "List of [cx, cy, cz] per detected object"),
-        PortDef("sizes_3d", "ANY", "List of [sx, sy, sz] per detected object"),
-        PortDef("rot_mat", "ANY", "Rotation matrix (3x3 list) per detected object"),
+        PortDef("centers_3d", "ANY", "List of [cx, cy, cz] per prompted box"),
+        PortDef("sizes_3d", "ANY", "List of [sx, sy, sz] per prompted box"),
+        PortDef("rot_mat", "ANY", "Rotation matrix (3x3 list) per prompted box"),
         PortDef("error", "TEXT", "Empty on success; error message otherwise"),
     ]
+
+    @staticmethod
+    def _coerce_boxes(val: Any) -> list:
+        if val is None:
+            return []
+        if isinstance(val, str):
+            import json
+
+            s = val.strip()
+            if not s:
+                return []
+            val = json.loads(s)
+        boxes = [list(b) for b in np.asarray(val, dtype=int).reshape(-1, 4).tolist()]
+        return boxes
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
         try:
             image = _decode_image_input(inputs["image"])
+            boxes_2d = self._coerce_boxes(inputs.get("boxes_2d"))
         except Exception as e:
             return {"centers_3d": [], "sizes_3d": [], "rot_mat": [], "error": str(e)}
-        text = str(inputs.get("text", ""))
-        result = await _run_sync(_get_mgr().predict_3d, image, text)
+        result = await _run_sync(_get_mgr().predict_3d, image, boxes_2d)
         if "error" in result:
             self._self_log("error", result["error"])
             return {"centers_3d": [], "sizes_3d": [], "rot_mat": [], "error": result["error"]}
@@ -599,35 +451,6 @@ class Locate3DTool(BaseCanvasNode):
             "rot_mat": result.get("rot_mat", []),
             "error": "",
         }
-
-
-class SegmentTool(BaseCanvasNode):
-    node_type = "model_detany3d__segment"
-    display_name = "DetAny3D: Segment"
-    description = "GroundingDINO + SAM open-vocab instance segmentation."
-    category = "tool"
-    icon = "Scissors"
-    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="amber")
-    input_ports = [
-        PortDef("image", "ANY", "RGB image (np.ndarray) or path string"),
-        PortDef("text", "TEXT", "Object name(s) to segment, dot-separated for multi-class"),
-    ]
-    output_ports = [
-        PortDef("masks", "ANY", "List of HxW uint8 masks (255 = object, 0 = background)"),
-        PortDef("error", "TEXT", "Empty on success; error message otherwise"),
-    ]
-
-    async def forward(self, inputs: dict, ctx: Any) -> dict:
-        try:
-            image = _decode_image_input(inputs["image"])
-        except Exception as e:
-            return {"masks": [], "error": str(e)}
-        text = str(inputs.get("text", ""))
-        result = await _run_sync(_get_mgr().predict_seg, image, text)
-        if "error" in result:
-            self._self_log("error", result["error"])
-            return {"masks": [], "error": result["error"]}
-        return {"masks": result.get("masks", []), "error": ""}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -725,11 +548,7 @@ class ModelDetAny3DNodeSet(BaseNodeSet):
         self._mgr = DetAny3DEnvManager.get()
 
     def get_tools(self) -> list:
-        return [
-            Locate2DTool(),
-            Locate3DTool(),
-            SegmentTool(),
-        ]
+        return [Locate3DTool()]
 
     async def initialize(self, **kwargs: Any) -> None:
         gpu_id = int(kwargs.get("gpu_id", 0))

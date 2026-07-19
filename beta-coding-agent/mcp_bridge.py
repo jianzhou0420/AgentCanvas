@@ -49,7 +49,9 @@ from PIL import Image as PILImage
 SERVER_URL = os.environ.get("HABITAT_SERVER_URL", "http://127.0.0.1:9200")
 STEP_BUDGET = int(os.environ.get("HABITAT_STEP_BUDGET", "500"))
 TURN_BUDGET = int(os.environ.get("HABITAT_TURN_BUDGET", "0"))
-PANO_VIEW_PX = int(os.environ.get("HABITAT_PANO_VIEW_PX", "384"))
+# 0 = no downscale: pano views ride at the native render resolution, same
+# as observe() (std-v2 decision 2026-07-15; was 384)
+PANO_VIEW_PX = int(os.environ.get("HABITAT_PANO_VIEW_PX", "0"))
 LIVE_DIR = Path(os.environ["HABITAT_LIVE_DIR"]) if os.environ.get("HABITAT_LIVE_DIR") else None
 MAX_ACTIONS_PER_CALL = 50
 # Vanilla-baseline switch: strip every tuned mechanism so the agent sees
@@ -162,9 +164,10 @@ def _clearance_m(depth_field: dict[str, Any] | None) -> dict[str, float] | None:
 
 
 def _downscale(png: bytes, side: int) -> bytes:
-    """Shrink a PNG so four panorama views fit one MCP message comfortably."""
+    """Shrink a PNG so four panorama views fit one MCP message comfortably.
+    side=0 disables the shrink (views stay at native render resolution)."""
     img = PILImage.open(BytesIO(png))
-    if max(img.size) <= side:
+    if not side or max(img.size) <= side:
         return png
     img = img.resize((side, side), PILImage.LANCZOS)
     buf = BytesIO()

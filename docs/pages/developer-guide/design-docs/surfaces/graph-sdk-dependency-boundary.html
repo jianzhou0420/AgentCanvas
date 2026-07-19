@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph SDK Dependency Boundary — AgentCanvas</title>
+<meta name="description" content="dependency tiers (core / server / llm / backend ) · three lazy-import seams · app.standard.telemetry · the active guard test">
+<meta property="og:title" content="Graph SDK Dependency Boundary — AgentCanvas">
+<meta property="og:description" content="dependency tiers (core / server / llm / backend ) · three lazy-import seams · app.standard.telemetry · the active guard test">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/surfaces/graph-sdk-dependency-boundary.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="SDK Dependency Boundary">
+<style id="db-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:880px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:10.5px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent-t { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#dba); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/surfaces/graph-sdk-dependency-boundary.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Surfaces</a>
+    <span class="sep">/</span>
+    <span class="here">SDK Dependency Boundary</span>
+  </div>
+  <div class="last-updated">2026-07-12</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Graph SDK Dependency Boundary</h1>
+  <p class="tagline">dependency tiers (core / <code>server</code> / <code>llm</code> / <code>backend</code>) · three lazy-import seams · <code>app.standard.telemetry</code> · the active guard test</p>
+</header>
+
+<p class="lede">The installable package (root <code>pyproject.toml</code>) promises a tiered contract: <code>import agentcanvas</code> pulls <strong>nothing third-party at all</strong>, a pure-local <code>g.run()</code> needs only the declared core dependency (<code>pydantic-settings</code>), and everything heavier — litellm, FastAPI, httpx, msgpack, numpy — belongs to an opt-in extra. Nothing in the language enforces this: one eager top-level import added anywhere in the transitive graph silently breaks the core tier, and only a user in a clean venv would ever notice. This page names the three seams that hold the boundary and the guard test that fails CI when someone breaks one. Feature-level install story: <a href="../../capabilities/graph-sdk.html">Graph SDK capability page §10</a>; the record/replay machinery living behind the <code>server</code> extra: <a href="graph-sdk-record-replay.html">SDK Record / Replay</a>.</p>
+
+<svg class="rxsvg" viewBox="0 0 880 440" role="img" aria-label="Left: four stacked dependency tiers — import agentcanvas (stdlib only), pure-local g.run (+pydantic-settings), the server extra (+httpx, msgpack, numpy: proxy and cassettes), and the llm and backend extras (litellm, pyyaml, FastAPI stack). Right: the three lazy-import seams that keep the tier boundaries — app/replay/__init__ getattr keeps httpx out of the registry import, app/server/__init__ getattr keeps FastAPI out of serialization imports, and app/standard/telemetry hosts the two accounting ContextVars so the executor never imports litellm or numpy. Bottom: test_dependency_boundary.py actively blocks the heavy imports and runs tiers 0 and 1 in CI.">
+  <defs>
+    <marker id="dba" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  </defs>
+
+  <text x="30" y="30" class="accent-t">Dependency tiers (each includes the one above)</text>
+
+  <rect class="accent" x="30" y="44" width="420" height="56" rx="8"/>
+  <text x="240" y="66" text-anchor="middle"><tspan class="mono">import agentcanvas</tspan> — stdlib only</text>
+  <text x="240" y="84" text-anchor="middle" class="dim">Graph builder · to_code · RunEvent — zero third-party</text>
+
+  <rect class="box" x="30" y="112" width="420" height="56" rx="8"/>
+  <text x="240" y="134" text-anchor="middle">pure-local <tspan class="mono">g.run()</tspan> — + pydantic-settings</text>
+  <text x="240" y="152" text-anchor="middle" class="dim">executor + builtin nodes + Settings (workspace discovery)</text>
+
+  <rect class="box" x="30" y="180" width="420" height="56" rx="8"/>
+  <text x="240" y="202" text-anchor="middle"><tspan class="mono">[server]</tspan> — + httpx · msgpack · numpy</text>
+  <text x="240" y="220" text-anchor="middle" class="dim">server-node proxy · cassette record / replay</text>
+
+  <rect class="box" x="30" y="248" width="420" height="56" rx="8"/>
+  <text x="240" y="270" text-anchor="middle"><tspan class="mono">[llm]</tspan> + litellm · pyyaml&#160;&#160;·&#160;&#160;<tspan class="mono">[backend]</tspan> + FastAPI stack</text>
+  <text x="240" y="288" text-anchor="middle" class="dim">llmCall builtin · the full canvas backend</text>
+
+  <text x="530" y="30" class="accent-t">The seams that hold the boundaries</text>
+
+  <rect class="accent" x="530" y="44" width="320" height="52" rx="8"/>
+  <text x="690" y="64" text-anchor="middle" class="mono">app/standard/telemetry.py</text>
+  <text x="690" y="82" text-anchor="middle" class="dim">accounting ContextVars — executor never imports litellm / numpy</text>
+
+  <rect class="accent" x="530" y="112" width="320" height="52" rx="8"/>
+  <text x="690" y="132" text-anchor="middle" class="mono">app/server/__init__.py · __getattr__</text>
+  <text x="690" y="150" text-anchor="middle" class="dim">importing serialization no longer drags FastAPI in</text>
+
+  <rect class="accent" x="530" y="180" width="320" height="52" rx="8"/>
+  <text x="690" y="200" text-anchor="middle" class="mono">app/replay/__init__.py · __getattr__</text>
+  <text x="690" y="218" text-anchor="middle" class="dim">registry import no longer drags httpx in</text>
+
+  <path class="edge" d="M530,70 L470,138"/>
+  <path class="edge" d="M530,138 L470,196"/>
+  <path class="edge" d="M530,206 L470,150"/>
+
+  <rect class="ghost" x="30" y="344" width="820" height="56" rx="8"/>
+  <text x="440" y="366" text-anchor="middle">guard: <tspan class="mono">app/test_dependency_boundary.py</tspan> — meta-path blocker raises on every heavy import,</text>
+  <text x="440" y="384" text-anchor="middle" class="dim">then imports agentcanvas (tier 0) and runs a pure-local graph (tier 1) — clean-venv semantics, in CI, on every push</text>
+  <path class="edge" d="M240,304 L240,344"/>
+</svg>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>The package always ships <em>all</em> the code — extras add third-party libraries, never files. So the real contract is about <strong>imports</strong>: which third-party modules become load-bearing at which usage tier. The tiers, as declared in the root <code>pyproject.toml</code>:</p>
+<table>
+<thead><tr><th>Tier</th><th>Requires</th><th>Unlocks</th></tr></thead>
+<tbody>
+<tr><td><code>import agentcanvas</code></td><td>stdlib only</td><td>build graphs, <code>to_code()</code>, <code>RunEvent</code>, serialise to JSON</td></tr>
+<tr><td>core install (<code>pip install -e .</code>)</td><td><code>pydantic-settings</code> (brings pydantic, dotenv)</td><td>pure-local <code>g.run()</code>, catalog scan, workspace discovery</td></tr>
+<tr><td><code>[server]</code></td><td>httpx · msgpack · numpy</td><td>server-node proxy calls, cassette <a href="graph-sdk-record-replay.html">record / replay</a></td></tr>
+<tr><td><code>[llm]</code></td><td>litellm · pyyaml</td><td>the <code>llmCall</code> builtin node</td></tr>
+<tr><td><code>[backend]</code></td><td>FastAPI · uvicorn · websockets · psutil · mcp · dotenv</td><td>the full canvas backend (superset of <code>requirements.txt</code>)</td></tr>
+</tbody>
+</table>
+<p>A tier boundary holds only if no module on the cheap side eagerly imports a module from the expensive side. Python's import rules make that fragile: importing any module executes every top-level <code>import</code> in it, and importing any <em>submodule</em> first executes its package's <code>__init__.py</code>. The boundary therefore lives in three specific seams (§3–§4) plus one test (§5).</p>
+
+<h2 id="2-smallest"><span class="num">2.</span> The smallest demonstration</h2>
+<p>A clean venv is the contract made visible — eight packages in total at the core tier, and each extra widens what runs, never what imports:</p>
+<pre class="hl">
+python<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>v<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>v/bin/pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w">        </span><span class="c1"># core tier: 8 packages total</span>
+v/bin/python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;from agentcanvas import Graph&quot;</span><span class="w">   </span><span class="c1"># stdlib-only import surface</span>
+v/bin/pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[server]&quot;</span><span class="w">                  </span><span class="c1"># + httpx msgpack numpy → proxy + cassettes</span>
+</pre>
+
+<h2 id="3-seams"><span class="num">3.</span> The two package-init seams (PEP 562)</h2>
+<p><strong>A package <code>__init__.py</code> taxes every submodule import, so the two taxing inits became lazy.</strong> Both use module-level <code>__getattr__</code>: re-exports still work by name, but nothing is imported until the name is actually touched.</p>
+<table>
+<thead><tr><th>Seam</th><th>Was dragging in</th><th>Via</th></tr></thead>
+<tbody>
+<tr><td><code>app/replay/__init__.py · __getattr__</code></td><td>httpx</td><td><code>components/registry.py</code> imports <code>app.replay.interface</code> (stdlib) — but importing the submodule executes the package init, which eagerly imported <code>renderer_client</code> (httpx). Every registry import — hence every run — paid it.</td></tr>
+<tr><td><code>app/server/__init__.py · __getattr__</code></td><td>FastAPI (+ pydantic)</td><td><code>graph_sdk_replay.py</code> imports <code>app.server.serialization</code> (msgpack + numpy — correctly <code>[server]</code>-tier) — but the package init eagerly imported <code>server_app</code>, so cassette replay was paying for FastAPI.</td></tr>
+</tbody>
+</table>
+<pre class="hl">
+<span class="k">def</span><span class="w"> </span><span class="fm">__getattr__</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="n">Any</span><span class="p">:</span>        <span class="c1"># app/server/__init__.py — PEP 562</span>
+    <span class="n">submodule</span> <span class="o">=</span> <span class="n">_EXPORTS</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">submodule</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">AttributeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">module </span><span class="si">{</span><span class="vm">__name__</span><span class="si">!r}</span><span class="s2"> has no attribute </span><span class="si">{</span><span class="n">name</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">importlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">import_module</span>
+
+    <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">import_module</span><span class="p">(</span><span class="n">submodule</span><span class="p">,</span> <span class="vm">__name__</span><span class="p">)</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
+</pre>
+
+<h2 id="4-telemetry"><span class="num">4.</span> The telemetry seam — shared ContextVars, relocated</h2>
+<p><strong>The executor and the heavy producer modules share two per-node accounting buckets; the ContextVars had to live somewhere both can import cheaply.</strong> <code>GraphExecutor</code> sets <code>_current_node_usage</code> (LLM token accounting) and <code>_current_node_transport</code> (proxy round-trip accounting) around every node firing. They were <em>defined</em> in their producer modules — <code>app/llm/call.py</code> (imports litellm at top level) and <code>app/server/serialization.py</code> (imports numpy) — which made litellm and numpy load-bearing for <em>every</em> run, including pure-local ones, through the executor's module-level imports.</p>
+<p>The fix is a home with no dependencies: <code>app/standard/telemetry.py</code> defines both ContextVars (stdlib only); the executor imports them from there (<code>graph_executor.py</code> top-of-file), and the producers re-export them so their own accumulation code is untouched. Identity is the load-bearing property — executor and producer must reference the <em>same</em> ContextVar object — and two details protect it:</p>
+<ul>
+<li><code>app/llm/call.py</code> re-imports it plainly (the module already requires litellm, no extra cost).</li>
+<li><code>app/server/serialization.py</code> re-imports it inside <code>try/except ImportError</code> with a local fallback — the module documents itself as standalone-loadable outside the <code>app</code> package (server-side use), and the fallback preserves that contract. Inside the package the import succeeds, so identity holds where the executor is present.</li>
+</ul>
+<p>One constraint worth naming: <code>serialization.py</code> and therefore <code>telemetry.py</code> are imported by server subprocesses running <strong>foreign conda envs down to Python 3.8</strong> (<code>ac-vlnce</code>), so <code>telemetry.py</code> must stay 3.8-importable (<code>from __future__ import annotations</code>; no runtime-evaluated new syntax).</p>
+
+<h2 id="5-guard"><span class="num">5.</span> The guard test — active blocking, not passive inspection</h2>
+<p><strong><code>app/test_dependency_boundary.py</code> recreates clean-venv semantics inside the dev env, so the boundary is CI-enforced.</strong> A passive check ("assert litellm not in <code>sys.modules</code>") cannot tell a <em>soft</em> import from a <em>hard</em> one — in the dev env everything is installed, so <code>standard/wire_types.py</code>'s guarded <code>try: import numpy</code> would land numpy in <code>sys.modules</code> and false-positive. The guard instead installs a meta-path finder that <em>raises</em> <code>ModuleNotFoundError</code> for every forbidden top-level package: soft imports degrade exactly as they would in a bare venv, hard imports crash the subprocess and fail the test. Two tiers are asserted: tier&nbsp;0 blocks even the core dependency chain and does <code>import agentcanvas</code>; tier&nbsp;1 unblocks only <code>pydantic-settings</code>'s chain and runs a full pure-local graph with <code>on_event</code> and <code>to_code</code>. Same shape as the framework's <code>test_import_boundary.py</code> (which guards against simulator imports); this one guards against dependency-tier erosion. The same file also carries <code>test_backend_extra_matches_requirements_txt</code>: the <code>[backend]</code> extra and <code>requirements.txt</code> declare the same stack in two hand-maintained lists, and this check fails CI when they drift.</p>
+
+<h2 id="6-deviations"><span class="num">6.</span> Where it deviates from the mental model</h2>
+<div class="callout warn">
+<strong>Extras gate dependencies, not code.</strong> The wheel always contains the entire backend — <code>app/api</code>, <code>app/services</code>, <code>app/main.py</code>, and 33 <code>test_*.py</code> modules ship to every core-tier user as dead files (importable only once <code>[backend]</code> is installed). Harmless bulk today (~500&nbsp;KB); a true slim SDK would need the package boundary redrawn, which is deferred to the top-level <code>app</code> rename.</div>
+<div class="callout warn">
+<strong>The top-level <code>app</code> import name squats <code>site-packages</code>.</strong> The wheel installs two import names, <code>agentcanvas</code> and <code>app</code> — the latter generic enough to collide with anything else called <code>app</code> in the same environment. Deliberate, known, and the reason PyPI publication is deferred; editable / git installs into a dedicated env are the supported channels meanwhile.</div>
+
+<div class="callout warn">
+<strong>The workspace only travels with the source tree.</strong> An editable install resolves <code>workspace/</code> through the clone (<code>config.py</code> derives the default from <code>__file__</code>), so graphs / nodesets / cassettes work with zero configuration — but a <em>wheel</em> install has no workspace at all: building graphs, local nodes, and cassette replay work; nodeset runs need a clone (or <code>WORKSPACE_DIR</code>).</div>
+
+<h2 id="7-key-files"><span class="num">7.</span> Key files</h2>
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td>root <code>pyproject.toml</code></td><td>the declared contract — core dependency + the <code>server</code> / <code>llm</code> / <code>backend</code> / <code>all</code> extras; packages mapped from <code>agentcanvas/backend</code></td></tr>
+<tr><td><code>app/standard/telemetry.py</code></td><td>the stdlib-only home of both accounting ContextVars</td></tr>
+<tr><td><code>app/replay/__init__.py</code> · <code>app/server/__init__.py</code></td><td>the two PEP 562 lazy package inits</td></tr>
+<tr><td><code>app/agent_loop/graph_executor.py</code></td><td>imports the ContextVars from <code>standard.telemetry</code> — the executor's import graph is what the core tier ultimately pays for</td></tr>
+<tr><td><code>app/test_dependency_boundary.py</code></td><td>the CI guard — active import blocking, tiers 0 + 1</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-smallest">2. The smallest demonstration</a>
+      <a class="toc-h2" href="#3-seams">3. The two package-init seams (PEP 562)</a>
+      <a class="toc-h2" href="#4-telemetry">4. The telemetry seam — shared ContextVars, relocated</a>
+      <a class="toc-h2" href="#5-guard">5. The guard test — active blocking, not passive inspection</a>
+      <a class="toc-h2" href="#6-deviations">6. Where it deviates from the mental model</a>
+      <a class="toc-h2" href="#7-key-files">7. Key files</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

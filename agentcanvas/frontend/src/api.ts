@@ -473,6 +473,7 @@ export const api = {
     containers?: unknown[];
     access_grants?: unknown[];
     step_budget?: number | null;
+    eval_graph?: boolean;
     kind?: "graph" | "node";
     group?: string;
     folder?: string;
@@ -488,6 +489,7 @@ export const api = {
       containers?: unknown[];
       access_grants?: unknown[];
       step_budget?: number | null;
+      eval_graph?: boolean;
     },
   ) =>
     putJ<{ id: string; path: string }>(
@@ -527,9 +529,13 @@ export const api = {
       `${API_BASE}/api/graphs/folders?kind=${encodeURIComponent(kind)}&path=${encodeURIComponent(path)}&recursive=${recursive}`,
     ),
 
-  // Layout
-  layoutGraph: (graph: Record<string, unknown>) =>
-    postJ<SavedGraph>(`${API_BASE}/api/graphs/layout`, graph),
+  // Layout. `dimensions` carries canvas-measured node sizes so columns are
+  // spaced by real width and rows by real height (avoids overlap on wide nodes).
+  layoutGraph: (
+    graph: Record<string, unknown>,
+    dimensions?: Record<string, { width: number; height: number }>,
+  ) =>
+    postJ<SavedGraph>(`${API_BASE}/api/graphs/layout`, { ...graph, dimensions }),
 
   // Nodeset env panels (canvas control panel — replaces /api/env)
   envPanelList: () => fetchJ<EnvPanelInfo[]>(`${API_BASE}/api/env-panels`),

@@ -440,6 +440,7 @@ function useGraphData() {
             access_grants: (graph.access_grants ||
               []) as GraphDefinition["access_grants"],
             step_budget: graph.step_budget,
+            eval_graph: graph.eval_graph,
           },
           schemas,
         );
@@ -504,6 +505,7 @@ function useGraphData() {
           access_grants: (graph.access_grants ||
             []) as GraphDefinition["access_grants"],
           step_budget: graph.step_budget,
+          eval_graph: graph.eval_graph,
         },
         schemas,
       );

@@ -123,6 +123,15 @@ fi
 echo ""
 echo "=== Step 2: Creating conda env '$ENV_NAME' ==="
 cd "$PROJECT_ROOT"
+# CONDA_OVERRIDE_CUDA pins the __cuda virtual package so the solver targets the
+# conda-forge CUDA 12.6 build set (pytorch-gpu / jaxlib cuda126) directly. On a
+# box whose driver advertises a newer CUDA (e.g. __cuda=12.8), the solver would
+# otherwise explore every 12.6–12.9 build variant of the whole cuda stack, and
+# mamba 2.x's libsolv thrashes for ~25 min into an integer-overflow OOM ("Out of
+# memory allocating 18446744071562067973*4 bytes"). Fixing __cuda to 12.6
+# collapses that search. 12.6 is a floor any 12.6+ driver satisfies (CUDA minor
+# versions are forward-compatible).
+export CONDA_OVERRIDE_CUDA="${CONDA_OVERRIDE_CUDA:-12.6}"
 if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
     echo "  exists — updating in place via 'env update'"
     $CONDA_CMD env update -f "$ENV_YAML" -n "$ENV_NAME"
@@ -135,6 +144,37 @@ if [ ! -f "$VLA_PYTHON" ]; then
     VLA_PYTHON="$(conda run -n "$ENV_NAME" which python)"
 fi
 echo "VLA Python: $VLA_PYTHON"
+
+# ── Step 2a2: Activation hook (LD_LIBRARY_PATH + legacy Keras) ──
+#
+# Mirrors the policy_adapter_vla nodeset's server_env so `conda activate
+# ac-vla-policy` (and `conda run -n ac-vla-policy`) reproduce server-mode
+# conditions:
+#   - LD_LIBRARY_PATH=$CONDA_PREFIX/lib — the conda libstdcxx-ng>=12 supplies
+#     GLIBCXX_3.4.29/3.4.30 that stock Ubuntu 20.04's libstdc++ lacks; the CUDA
+#     torch build + the RT-1 import chain (PIL -> libLerc.so.4, tf_agents) fail
+#     to load against the system libstdc++ without it.
+#   - TF_USE_LEGACY_KERAS=1 — route tf.keras to tf-keras (Keras 2) for
+#     tensorflow-probability 0.23 / tf-agents 0.19 (see Step 2c).
+# The `zz_` prefix orders this after conda's own package activate hooks so our
+# LD_LIBRARY_PATH prepend wins.
+VLA_ENV_PREFIX="$(dirname "$(dirname "$VLA_PYTHON")")"
+mkdir -p "$VLA_ENV_PREFIX/etc/conda/activate.d" "$VLA_ENV_PREFIX/etc/conda/deactivate.d"
+cat > "$VLA_ENV_PREFIX/etc/conda/activate.d/zz_agentcanvas_vla.sh" << 'HOOK'
+#!/bin/bash
+export OLD_LD_LIBRARY_PATH_ACVLA="${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+export TF_USE_LEGACY_KERAS=1
+export TF_FORCE_GPU_ALLOW_GROWTH=true
+HOOK
+cat > "$VLA_ENV_PREFIX/etc/conda/deactivate.d/zz_agentcanvas_vla.sh" << 'HOOK'
+#!/bin/bash
+export LD_LIBRARY_PATH="${OLD_LD_LIBRARY_PATH_ACVLA:-}"
+unset OLD_LD_LIBRARY_PATH_ACVLA
+unset TF_USE_LEGACY_KERAS
+unset TF_FORCE_GPU_ALLOW_GROWTH
+HOOK
+echo "  activation hook written (LD_LIBRARY_PATH + TF_USE_LEGACY_KERAS)"
 
 # ── Step 2b: AgentCanvas server-mode deps (uvicorn / fastapi worker) ──
 
@@ -184,11 +224,19 @@ echo "=== Step 2b: AgentCanvas backend deps (server-mode) ==="
 
 echo ""
 echo "=== Step 2c: RT-1-X TF stack ==="
+# tf-keras + TF_USE_LEGACY_KERAS=1 (exported by the activation hook in Step 2h and
+# the policy_adapter_vla nodeset's server_env): tf 2.16+ defaults to Keras 3, but
+# tensorflow-probability 0.23 / tf-agents 0.19 call `tf.keras.__internal__`, which
+# only exists in Keras 2. The tf-keras package supplies Keras 2; the env flag
+# re-routes tf.keras to it. Without this package the RT-1 import chain
+# (tf_agents -> tensorflow_probability) crashes with
+# `module 'keras._tf_keras.keras' has no attribute '__internal__'`.
 "$VLA_PYTHON" -m pip install \
     'tensorflow[and-cuda]==2.19.1' \
     'tensorflow-hub==0.16.0' \
     'tensorflow-datasets==4.9.4' \
     'tensorflow-probability==0.23.0' \
+    'tf-keras==2.19.0' \
     'transforms3d' \
     'mediapy'
 
@@ -228,6 +276,11 @@ echo "=== Step 2e: Editable install of lerobot / libero / openpi-client (--no-de
     -e "$LIBERO_DIR" \
     -e "$OPENPI_CLIENT_DIR"
 
+# Initialize LIBERO's dataset-path config non-interactively — first `import
+# libero` otherwise prompts ("custom path? Y/N") and fails under a
+# non-interactive install. Same fix as install_ac_libero.sh.
+echo "N" | "$VLA_PYTHON" -c "import libero" >/dev/null 2>&1 || true
+
 # ── Step 2f: lerobot transitive deps that --no-deps skipped ──
 #
 # These are lerobot 0.4.1's pyproject.toml deps NOT covered by the
@@ -262,11 +315,20 @@ echo "=== Step 2g: Pin numpy<2.0 (jax/jaxlib/TF compiled against 1.x) ==="
 "$VLA_PYTHON" -m pip install --upgrade 'numpy<2.0'
 
 # ── Step 3: Verify ──
+#
+# Export the same runtime env the activation hook / nodeset server_env set, so
+# these bare-python checks reflect real conditions: LD_LIBRARY_PATH for the
+# conda libstdc++ (CUDA torch + PIL/tf_agents load), TF_USE_LEGACY_KERAS for the
+# RT-1 import chain. Without these the torch check reports cuda=False and the
+# tf_agents check FAILs even on a correct install.
+export LD_LIBRARY_PATH="$VLA_ENV_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+export TF_USE_LEGACY_KERAS=1
+export TF_FORCE_GPU_ALLOW_GROWTH=true
 
 echo ""
 echo "=== Step 3: Verifying installation ==="
 echo -n "  numpy:        "; "$VLA_PYTHON" -c "import numpy; print(numpy.__version__)" 2>&1
-echo -n "  torch:        "; "$VLA_PYTHON" -c "import torch; print(torch.__version__, 'cuda', torch.cuda.is_available())" 2>&1 || echo "FAIL"
+echo -n "  torch:        "; "$VLA_PYTHON" -c "import torch; assert torch.cuda.is_available(), 'CUDA NOT available — CPU-build regression (check yaml =cuda* pins)'; print(torch.__version__, 'cuda', torch.version.cuda, 'avail', torch.cuda.is_available())" 2>&1 || echo "FAIL"
 echo -n "  transformers: "; "$VLA_PYTHON" -c "import transformers; print(transformers.__version__)" 2>&1 || echo "FAIL"
 echo -n "  diffusers:    "; "$VLA_PYTHON" -c "import diffusers; print(diffusers.__version__)" 2>&1 || echo "FAIL"
 echo -n "  hf_hub:       "; "$VLA_PYTHON" -c "import huggingface_hub; print(huggingface_hub.__version__)" 2>&1 || echo "FAIL"

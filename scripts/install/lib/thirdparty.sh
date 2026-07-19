@@ -38,7 +38,18 @@ TP_DIR="$TP_PROJECT_ROOT/third_party"
 _thirdparty_spec() {
     case "$1" in
         VLN-CE)
-            echo "https://github.com/jianzhou0420/VLN-CE.git|26c05ba72247f38a8f36052c0799a727b5dc4218|" ;;
+            # Upstream jacobkrantz/VLN-CE @ 5344526 — the exact commit the former
+            # personal fork (jianzhou0420/VLN-CE) branched from. The fork's delta was
+            # entirely inert/dead for AgentCanvas: vlnce_server/ + vlnce_baselines/rdp/
+            # (never imported here; rdp is InternNav-derived → also a redistribution
+            # concern) and ~60 lines of np.float / tensorflow compat shims that are
+            # no-ops under this env's pinned numpy 1.23.5 + tensorflow-cpu 2.9.0.
+            # The one genuinely-needed piece — a setup.py making vlnce_baselines /
+            # habitat_extensions pip-installable — is injected by
+            # apply_thirdparty_patches.sh (upstream's pyproject.toml is black config
+            # only, no build-system). Verified 2026-07-09: every module / symbol /
+            # config AgentCanvas imports exists at this commit.
+            echo "https://github.com/jacobkrantz/VLN-CE.git|5344526b26aa59212117c8ac864deaaf58e930ef|" ;;
         habitat-lab)
             echo "https://github.com/facebookresearch/habitat-lab.git|d6ed1c0a0e786f16f261de2beafe347f4186d0d8|" ;;
         Matterport3DSimulator)

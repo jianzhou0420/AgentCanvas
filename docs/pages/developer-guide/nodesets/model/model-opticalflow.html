@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optical Flow NodeSet — AgentCanvas</title>
+<meta name="description" content="The Optical Flow NodeSet ( OpticalFlowNodeSet , workspace/nodesets/model/model_opticalflow.py ) wraps RAFT (Recurrent All-Pairs Field Transforms, shipped in torchvision.models.optical_flow ) as a…">
+<meta property="og:title" content="Optical Flow NodeSet — AgentCanvas">
+<meta property="og:description" content="The Optical Flow NodeSet ( OpticalFlowNodeSet , workspace/nodesets/model/model_opticalflow.py ) wraps RAFT (Recurrent All-Pairs Field Transforms, shipped in torchvision.models.optical_flow ) as a…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-opticalflow.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/model/model-opticalflow.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Model</a>
+    <span class="sep">/</span>
+    <span class="here">Optical Flow NodeSet</span>
+  </div>
+  <div class="last-updated">2026-07-07</div>
+</div>
+  <header class="page-header guide">
+  <h1>Optical Flow NodeSet</h1>
+</header>
+
+<p>The <strong>Optical Flow NodeSet</strong> (<code>OpticalFlowNodeSet</code>, <code>workspace/nodesets/model/model_opticalflow.py</code>) wraps <a href="https://pytorch.org/vision/stable/models/raft.html">RAFT</a> (Recurrent All-Pairs Field Transforms, shipped in <code>torchvision.models.optical_flow</code>) as a <strong>dense motion primitive</strong>: a pair of consecutive RGB frames in, a per-pixel displacement field out. It fills the <em>optical-flow</em> coverage gap — the frame-to-frame motion cue that ego-motion estimation, moving-object detection, and short-horizon dynamics all build on, without a hand-tuned pyramid.</p>
+<p>env: <code>ac-fm</code> (shared FM env) · backend: <code>torchvision</code> RAFT (<strong>no HF download</strong> — weights ship with torchvision) · variants: <code>raft_large</code> (default) / <code>raft_small</code></p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_opticalflow__estimate_flow</code></td>
+<td>Dense RAFT flow between two same-resolution frames → <code>flow</code> (JSON envelope of an <code>(H, W, 2)</code> pixel-displacement field).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1-primitive"><span class="num">1.</span> One primitive: flow A → B</h2>
+<p>The tool takes exactly two frames — <code>image_a</code> and <code>image_b</code>, the "before" and "after" — and returns the motion carrying each pixel of A to its match in B. This is the atomic optical-flow operation; a graph that wants flow over a clip loops it across consecutive pairs. Keeping the node to a single pair (rather than a whole video) mirrors the house "one pure primitive" style and keeps peak memory bounded to one frame pair.</p>
+<hr>
+<h2 id="2-frames-in"><span class="num">2.</span> Frames in — same resolution, uint8</h2>
+<p>Each port accepts a <code>{rgb_base64}</code> dict (or a raw base64 string). Both frames are decoded to HWC <code>uint8</code> RGB arrays and must share one resolution — a size mismatch or a malformed frame degrades the node to an empty output rather than guessing. The checkpoint's own preprocessing transform (<code>weights.transforms()</code>) converts to float and normalizes to <code>[-1, 1]</code>; it does <em>not</em> resize.</p>
+<hr>
+<h2 id="3-weights"><span class="num">3.</span> Weights &amp; the divisible-by-8 rule</h2>
+<p>RAFT requires spatial dims divisible by 8, so each frame is zero-padded up to the next multiple of 8, run, then the flow is cropped back to the original <code>(H, W)</code> — preserving true pixel scale (no resize-and-rescale). The model returns its iterative-refinement list; the <strong>last</strong> entry is the final flow:</p>
+<pre class="hl">
+<span class="c1"># weights ship with torchvision — no HF download, offline-friendly.</span>
+<span class="n">weights</span> <span class="o">=</span> <span class="n">Raft_Large_Weights</span><span class="o">.</span><span class="n">DEFAULT</span>          <span class="c1"># or Raft_Small_Weights</span>
+<span class="n">net</span> <span class="o">=</span> <span class="n">raft_large</span><span class="p">(</span><span class="n">weights</span><span class="o">=</span><span class="n">weights</span><span class="p">)</span><span class="o">.</span><span class="n">eval</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+<span class="n">transform</span> <span class="o">=</span> <span class="n">weights</span><span class="o">.</span><span class="n">transforms</span><span class="p">(</span><span class="p">)</span>          <span class="c1"># normalize to [-1,1], no resize</span>
+<span class="c1"># … pad both frames to a multiple of 8 …</span>
+<span class="n">flow</span> <span class="o">=</span> <span class="n">net</span><span class="p">(</span><span class="n">frame_a</span><span class="p">,</span> <span class="n">frame_b</span><span class="p">)</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>       <span class="c1"># final iterate, (1, 2, Hpad, Wpad)</span>
+<span class="n">flow</span> <span class="o">=</span> <span class="n">flow</span><span class="p">[</span><span class="p">:</span><span class="p">,</span> <span class="p">:</span><span class="p">,</span> <span class="p">:</span><span class="n">H</span><span class="p">,</span> <span class="p">:</span><span class="n">W</span><span class="p">]</span>              <span class="c1"># crop padding back</span>
+</pre>
+<p><code>raft_large</code> is the accurate default; <code>raft_small</code> is ~10× smaller and faster (coarser). Each variant is a lazy singleton in a registry, frozen and moved to the device once; inference is single-flight per engine.</p>
+<hr>
+<h2 id="4-envelope"><span class="num">4.</span> Flow envelope</h2>
+<p>The output is a TEXT JSON envelope — the flow as a raw C-contiguous float32 buffer, base64-encoded (byte-exact across the server-mode HTTP boundary, ~4× smaller than a JSON float list):</p>
+<pre class="hl">
+<span class="p">{</span><span class="nt">&quot;shape&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="mi">640</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dtype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;float32&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;C-contiguous float32 buffer&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;variant&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;raft_large&quot;</span><span class="p">}</span>
+</pre>
+<p><code>flow[y, x]</code> is the displacement in <strong>pixels</strong> carrying pixel <code>(x, y)</code> of frame A to its match in frame B: channel 0 = <code>dx</code> (+ right), channel 1 = <code>dy</code> (+ down). The field is at the <strong>original input resolution</strong>.</p>
+<hr>
+<h2 id="5-canvas-node"><span class="num">5.</span> Canvas Node</h2>
+<h3 id="model_opticalflow__estimate_flow"><code>model_opticalflow__estimate_flow</code></h3>
+<table>
+<thead><tr><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Inputs</td><td><code>image_a</code> (ANY — <code>{rgb_base64}</code> dict or raw base64), <code>image_b</code> (ANY — same size as A)</td></tr>
+<tr><td>Outputs</td><td><code>flow</code> (TEXT — the §4 envelope; <code>""</code> on degraded)</td></tr>
+<tr><td>Config</td><td><code>variant</code> (select <code>raft_large</code> | <code>raft_small</code>, default <code>raft_large</code>)</td></tr>
+<tr><td>Backend call</td><td>pad to /8 → <code>model(a, b)[-1]</code> under <code>no_grad</code> → crop → <code>(H, W, 2)</code></td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-server-mode"><span class="num">6.</span> Server Mode</h2>
+<p><code>parallelism = "shared"</code> (a stateless flow estimator — one server across eval workers); <code>server_python = conda_env_python("ac-fm", "OPTICAL_FLOW_PYTHON")</code>. Optical flow runs in the <strong>shared <code>ac-fm</code> env</strong> — torchvision RAFT is native there and needs no external install or extra weights download. The file stays Python-3.8-parseable. Load: <code>POST /api/components/nodesets/model_opticalflow/load?mode=server</code>.</p>
+<hr>
+<h2 id="7-environment-variables"><span class="num">7.</span> Environment Variables</h2>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>OPTICAL_FLOW_PYTHON</code></td><td><code>ac-fm</code> env python</td><td>Interpreter for the server subprocess</td></tr>
+<tr><td><code>OPTICAL_FLOW_DEVICE</code></td><td><code>auto</code> (→ cuda when available)</td><td>Torch device for the loaded model</td></tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-degraded-mode"><span class="num">8.</span> Degraded Mode</h2>
+<p>A weight-load failure latches (<code>_load_failed</code> — no retry storm); that, a missing/malformed frame, or a resolution mismatch between A and B yields <code>""</code> on the node's output. An empty envelope is a clean "no flow this step" signal; consumers keep their own fallback and never receive a fabricated motion field.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-primitive">1. One primitive: flow A → B</a>
+      <a class="toc-h2" href="#2-frames-in">2. Frames in — same resolution, uint8</a>
+      <a class="toc-h2" href="#3-weights">3. Weights &amp; the divisible-by-8 rule</a>
+      <a class="toc-h2" href="#4-envelope">4. Flow envelope</a>
+      <a class="toc-h2" href="#5-canvas-node">5. Canvas Node</a>
+      <a class="toc-h3" href="#model_opticalflow__estimate_flow">model_opticalflow__estimate_flow</a>
+      <a class="toc-h2" href="#6-server-mode">6. Server Mode</a>
+      <a class="toc-h2" href="#7-environment-variables">7. Environment Variables</a>
+      <a class="toc-h2" href="#8-degraded-mode">8. Degraded Mode</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,36 @@
+# Incremental helper: add MASt3R on top of an already-built agentcanvas/pyslam:cuda.
+#
+# The canonical from-scratch recipe is Dockerfile.cuda (which has this same MASt3R
+# step as its LAST layer). This thin FROM-:cuda layer exists only to iterate on the
+# MASt3R build fast — it reuses the 5 already-built backends (incl. dav3's ~9-min
+# gsplat compile) instead of re-running them. Same final content as Dockerfile.cuda.
+#
+# Build (rootless docker):  docker build -t agentcanvas/pyslam:cuda -f Dockerfile.mast3r .
+
+FROM agentcanvas/pyslam:cuda
+
+USER slam
+WORKDIR /home/slam/pyslam
+SHELL ["/bin/bash", "-lc"]
+
+# pyslam's three mast3r patches drift against the pinned commit e06b0093 (an
+# upstream pyslam bug). `git apply` has zero fuzz tolerance so it aborts; GNU
+# `patch --fuzz=3` absorbs the drift and cleanly applies the dust3r + croco
+# patches — including the compile-critical croco changes (kernels.cu
+# tokens.type()->scalar_type() for torch 2.8, setup.py's TORCH_CUDA_ARCH_LIST
+# arch selection). Only the catmlp import hunk truly mismatches (file has one
+# import line, patch expects two), so that line is rewritten with sed.
+RUN source /home/slam/pyslam/pyenv-activate.sh \
+    && cd thirdparty \
+    && ( [ -d mast3r ] || git clone --recursive https://github.com/naver/mast3r mast3r ) \
+    && cd mast3r && git checkout e06b0093ddacfd8267cdafe5387954a650af0d3b \
+    && git submodule update --init --recursive \
+    && sed -i 's|^from models\.blocks import Mlp|from croco.models.blocks import Mlp|' mast3r/catmlp_dpt_head.py \
+    && ( cd dust3r && patch -p1 --fuzz=3 --forward < ../../mast3r-dust3r.patch || true ) \
+    && ( cd dust3r/croco && patch -p1 --fuzz=3 --forward < ../../../mast3r-dust3r-croco.patch ) \
+    && ( cd dust3r/croco/models/curope/ && python setup.py build_ext --inplace ) \
+    && mkdir -p checkpoints \
+    || echo "WARN: mast3r build failed"
+
+SHELL ["/bin/sh", "-c"]
+WORKDIR /home/slam/pyslam

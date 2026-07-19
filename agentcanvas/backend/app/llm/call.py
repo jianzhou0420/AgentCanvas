@@ -11,13 +11,13 @@ Public API:
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import logging
 import os
 from dataclasses import dataclass
 
 import litellm
 
+from ..standard.telemetry import _current_node_usage
 from .profiles import LLMProfile, get_profile_store
 from .providers import resolve_provider_config
 from .rulebook import finalize_params
@@ -39,15 +39,12 @@ def _strict_errors_enabled() -> bool:
 
 
 # ── Per-node usage hook ────────────────────────────────────────────────
-# The graph executor sets this contextvar to a fresh accumulator dict
-# before invoking ``BaseCanvasNode.execute()``. Every ``llm_complete``
-# / ``llm_complete_n`` / ``vlm_complete`` call reached during that
-# ``execute()`` writes its usage stats into the bucket. The executor
-# reads + emits the bucket as one log entry per node — nodesets never
-# need to plumb usage themselves.
-_current_node_usage: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "_current_node_usage", default=None
-)
+# The graph executor sets ``_current_node_usage`` (re-exported above from
+# ``app.standard.telemetry``) to a fresh accumulator dict before invoking
+# ``BaseCanvasNode.execute()``. Every ``llm_complete`` / ``llm_complete_n``
+# / ``vlm_complete`` call reached during that ``execute()`` writes its usage
+# stats into the bucket. The executor reads + emits the bucket as one log
+# entry per node — nodesets never need to plumb usage themselves.
 
 
 def _accumulate_usage(response: object) -> None:
