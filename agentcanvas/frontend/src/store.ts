@@ -25,6 +25,7 @@ const APP_MODES = [
   "replay",
   "monitor",
   "coding",
+  "human",
 ] as const;
 export type AppMode = (typeof APP_MODES)[number];
 const APP_MODE_KEY = "agentcanvas.appMode";
