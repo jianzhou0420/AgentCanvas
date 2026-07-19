@@ -34,13 +34,23 @@ def _jinja_raw(text: str) -> str:
     return "{% raw %}" + text + "{% endraw %}"
 
 
+def _unlock_claude_effort_max() -> None:
+    """litellm 1.83.4 client-gates output_config.effort="max" to Opus 4.6 —
+    stale: the API accepts max on all three board Claude-5 models
+    (raw-probed 2026-07-14). Neutralize only that gate; the server stays
+    the authority on what a model supports."""
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+    AnthropicConfig._is_opus_4_6_model = staticmethod(lambda model: True)
+
+
 class MiniSweAdapter:
     name = "mini-swe"
 
     def __init__(self) -> None:
         self.inherent: dict[str, Any] = {
             "auth": "provider API key (litellm billing)",
-            "thinking": "not configured (plain completion)",
+            "thinking": "per-cell extra (claude: adaptive+effort via "
+                        "output_config; gpt: reasoning_effort)",
             "turn_cap": "hard (agent step_limit)",
         }
 
@@ -83,8 +93,26 @@ class MiniSweAdapter:
         model_kwargs: dict[str, Any] = {"drop_params": True}
         if ctx.extra.get("api_base"):
             model_kwargs["api_base"] = ctx.extra["api_base"]
+        if ctx.extra.get("reasoning_effort"):
+            model_kwargs["reasoning_effort"] = ctx.extra["reasoning_effort"]
+        if ctx.extra.get("thinking") == "adaptive":
+            # display=summarized returns readable thinking summaries (raw
+            # blocks are signature-only shells); the interleaved beta permits
+            # thinking on tool-result continuation turns — which is every
+            # turn of the nav loop (probed 2026-07-14, same config as sdk)
+            model_kwargs["thinking"] = {"type": "adaptive",
+                                        "display": "summarized"}
+            betas = ["interleaved-thinking-2025-05-14"]
+            if ctx.extra.get("effort"):
+                # effort rides the Messages API as output_config + beta
+                # header (top-level "effort" is rejected)
+                model_kwargs["output_config"] = {"effort": ctx.extra["effort"]}
+                model_kwargs["allowed_openai_params"] = ["output_config"]
+                betas.append("effort-2025-11-24")
+                _unlock_claude_effort_max()
+            model_kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
         return {
-            "cost_limit": ctx.extra.get("cost_limit", 5.0),
+            "cost_limit": ctx.extra.get("cost_limit", 10.0),
             "image_window": ctx.extra.get("image_window", 0),
             "set_cache_control": set_cache_control,
             "model_kwargs": model_kwargs,

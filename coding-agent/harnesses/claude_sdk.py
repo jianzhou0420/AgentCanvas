@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from driver import BRIDGE_PATH, EpisodeContext, EventSink, SessionOutcome, json_safe
+from driver import (
+    BRIDGE_PATH, EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe,
+)
 
 
 def _tool_result_texts(block: Any) -> list[str]:
@@ -40,12 +42,22 @@ class ClaudeSdkAdapter:
     def __init__(self) -> None:
         self.inherent: dict[str, Any] = {
             "auth": "claude subscription",
-            "thinking": "adaptive+summarized (4.6+/5) / enabled+budget (haiku)",
+            "thinking": "adaptive+summarized (4.6+/5) / enabled+budget (haiku); "
+                        "effort per cell extra",
             "turn_cap": "hard (SDK max_turns)",
         }
 
     def prepare(self) -> None:
-        if os.environ.pop("ANTHROPIC_API_KEY", None):
+        # Default: strip ANTHROPIC_API_KEY so sessions use the logged-in
+        # subscription (a stray key silently switches billing to the metered API
+        # in headless mode). Opt-in escape hatch: STD_SDK_USE_API=1 KEEPS the key
+        # so the SDK runs on metered API billing — used to sidestep the
+        # subscription's 5h window / peak throttle (same model + harness + effort,
+        # only the auth/billing path differs). Records the path into `inherent`.
+        if os.environ.get("STD_SDK_USE_API") == "1" and os.environ.get("ANTHROPIC_API_KEY"):
+            self.inherent["auth"] = "anthropic API key (metered billing, STD_SDK_USE_API=1)"
+            print("[sdk] STD_SDK_USE_API=1 — keeping ANTHROPIC_API_KEY; sessions use METERED API billing")
+        elif os.environ.pop("ANTHROPIC_API_KEY", None):
             print("[sdk] ANTHROPIC_API_KEY was set — removed so sessions use subscription auth")
         try:
             import claude_agent_sdk
@@ -88,6 +100,7 @@ class ClaudeSdkAdapter:
             # and injects the repo CLAUDE.md into every session.
             setting_sources=[],
             thinking=self._thinking_config(ctx),
+            effort=ctx.extra.get("effort"),
             betas=ctx.extra.get("betas", []),
             # ONLY our bridge — never the user's global MCP config.
             strict_mcp_config=True,
@@ -180,10 +193,31 @@ class ClaudeSdkAdapter:
                     elif isinstance(message, ResultMessage):
                         result_msg = message
 
+        # The Agent SDK sets is_error=True even on a clean subtype="success"
+        # result — the flag tracks the session, not the navigation outcome, so
+        # an episode that called stop and reached the goal still comes back
+        # is_error=True (observed: fable ep40). is_error alone therefore
+        # over-flags. Score by the ENV terminal instead: both "success" (normal
+        # return, whatever the nav result) and "error_max_turns" (clean
+        # truncation, like mini's step_limit) are scored outcomes — only a
+        # genuine execution error (error_during_execution, or a missing
+        # subtype) is a broken session that propagates as error.
+        subtype = getattr(result_msg, "subtype", None)
+        result_text = str(getattr(result_msg, "result", "") or "")
+        error = None
+        if is_rate_limited(result_text):
+            # subscription throttle returns subtype="success" is_error=True with a
+            # "temporarily limiting requests" result — tag retryable so the driver
+            # backs off and re-runs it, never scoring it as a navigation failure.
+            error = "rate_limited"
+        elif (getattr(result_msg, "is_error", False)
+                and subtype not in ("error_max_turns", "success")):
+            error = f"sdk result {subtype or 'is_error'}"
         return SessionOutcome(
             usage=json_safe(getattr(result_msg, "usage", None)),
             cost_usd=getattr(result_msg, "total_cost_usd", None),
             turns=getattr(result_msg, "num_turns", None),
-            error=("sdk result is_error" if getattr(result_msg, "is_error", False) else None),
-            extra={"duration_ms": getattr(result_msg, "duration_ms", None)},
+            error=error,
+            extra={"duration_ms": getattr(result_msg, "duration_ms", None),
+                   "result_subtype": subtype},
         )

@@ -1,4 +1,6 @@
-"""Single source of truth for the std-v1 prompt surface.
+"""Single source of truth for the std prompt surface (frozen 2026-07-09;
+unchanged across std-v1 → std-v2 — the v2 bump touched only resolution and
+the LLM-call cap).
 
 The BARE / FULL drafts below are the 2026-07-09 finalized texts, moved here
 verbatim from beta-coding-agent/run_episodes.py (which keeps its own frozen
@@ -15,7 +17,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = REPO_ROOT / "beta-coding-agent" / "skills"
 
-# std-v1 freeze: frontmatter-stripped body hash of ledger-nav/SKILL.md
+# std freeze (07-09): frontmatter-stripped body hash of ledger-nav/SKILL.md
 LEDGER_NAV_STD_MD5 = "f7c74272"
 
 SYSTEM_PROMPT = """\

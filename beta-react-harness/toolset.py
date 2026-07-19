@@ -170,7 +170,7 @@ class HabitatToolSet(NodesetToolSet):
         bare: bool = False,
         step_budget: int = 500,
         turn_budget: int = 0,
-        pano_view_px: int = 384,
+        pano_view_px: int = 0,
         live_dir: Path | None = None,
     ) -> None:
         super().__init__(server_url)
@@ -414,9 +414,10 @@ class HabitatToolSet(NodesetToolSet):
 
     @staticmethod
     def _downscale(png: bytes, side: int) -> bytes:
-        """Shrink a PNG so four panorama views stay context-friendly."""
+        """Shrink a PNG so four panorama views stay context-friendly.
+        side=0 disables the shrink (views stay at native render resolution)."""
         img = PILImage.open(BytesIO(png))
-        if max(img.size) <= side:
+        if not side or max(img.size) <= side:
             return png
         img = img.resize((side, side), PILImage.LANCZOS)
         buf = BytesIO()
