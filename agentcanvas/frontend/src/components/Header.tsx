@@ -1,13 +1,21 @@
 import { useState, useEffect } from "react";
-import { useStore } from "../store";
+import { useStore, PAGES, categoryOf } from "../store";
+import type { AppCategory } from "../store";
 import { Navigation, Settings } from "lucide-react";
 import clsx from "clsx";
 import SettingsModal from "./SettingsModal";
+
+const CATEGORIES: { id: AppCategory; label: string }[] = [
+  { id: "workflow", label: "Workflow" },
+  { id: "model", label: "Model" },
+];
 
 export default function Header() {
   const connected = useStore((s) => s.connected);
   const appMode = useStore((s) => s.appMode);
   const setAppMode = useStore((s) => s.setAppMode);
+  const setCategory = useStore((s) => s.setCategory);
+  const category = categoryOf(appMode);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [execMode, setExecMode] = useState<string>("idle");
 
@@ -37,94 +45,37 @@ export default function Header() {
         </div>
 
         <div className="flex items-center overflow-hidden rounded border border-gray-700">
-          <button
-            onClick={() => setAppMode("nav")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "nav"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Canvas
-          </button>
-          <button
-            onClick={() => setAppMode("manager")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "manager"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Manager
-          </button>
-          <button
-            onClick={() => setAppMode("eval")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "eval"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Evaluate
-          </button>
-          <button
-            onClick={() => setAppMode("logs")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "logs"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Logs
-          </button>
-          <button
-            onClick={() => setAppMode("replay")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "replay"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Replay
-          </button>
-          <button
-            onClick={() => setAppMode("monitor")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "monitor"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Monitor
-          </button>
-          <button
-            onClick={() => setAppMode("coding")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "coding"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Coding Agent
-          </button>
-          <button
-            onClick={() => setAppMode("human")}
-            className={clsx(
-              "px-3 py-1 text-sm font-medium",
-              appMode === "human"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:text-gray-200",
-            )}
-          >
-            Human
-          </button>
+          {CATEGORIES.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setCategory(c.id)}
+              className={clsx(
+                "px-3 py-1 text-sm font-semibold",
+                category === c.id
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-800 text-gray-400 hover:text-gray-200",
+              )}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center overflow-hidden rounded border border-gray-700">
+          {PAGES.filter((p) => p.category === category).map((p) => (
+            <button
+              key={p.mode}
+              onClick={() => setAppMode(p.mode)}
+              className={clsx(
+                "px-3 py-1 text-sm font-medium",
+                appMode === p.mode
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-800 text-gray-400 hover:text-gray-200",
+              )}
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
 
         <div className="flex-1" />
