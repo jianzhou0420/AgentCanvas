@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coding-Agent Runner — AgentCanvas</title>
+<meta name="description" content="run_cell core · EventSink vocabulary · HarnessAdapter protocol · CellSpec registry · two entries: stdrun / uirun">
+<meta property="og:title" content="Coding-Agent Runner — AgentCanvas">
+<meta property="og:description" content="run_cell core · EventSink vocabulary · HarnessAdapter protocol · CellSpec registry · two entries: stdrun / uirun">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/coding-agent-runner.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="car-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#cara); }
+  .rxsvg .gedge { stroke: var(--muted); stroke-width:1.1; fill:none; stroke-dasharray:5 4; marker-end:url(#cara); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/coding-agent-runner.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <span class="here">Coding-Agent Runner</span>
+  </div>
+  <div class="last-updated">2026-07-20</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Coding-Agent Runner</h1>
+  <p class="tagline">run_cell core · EventSink vocabulary · HarnessAdapter protocol · CellSpec registry · two entries: stdrun / uirun</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="cara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">The coding-agent runner is the machinery behind the <a href="../capabilities/coding-agent-harness.html">Coding-Agent Harness</a>: one shared core (<code>coding-agent/driver.py</code>) that runs any harness × model × condition cell of the standard board. Its hard promise is that <strong>the harness is the only moved variable</strong> — episode placement, prompts, the tool surface, evaluation, retry policy, and the artifact layout are one implementation shared by all three harnesses and both entry points, so two cells differ in nothing but what their names say. For what the experiment measures, read the capability page; for the frontend windows onto the artifacts, the <a href="monitors/index.html">Monitors</a> group; for run recipes, <code>coding-agent/README.md</code>.</p>
+
+<p class="diagram-label"><strong>One core, two entries, three adapters.</strong> Both entries resolve to <code>run_cell</code>; every adapter runs one clean session per episode against the same tool surface; only <code>EventSink</code> writes the log vocabulary. The frozen legacy drivers gate the live surface from below.</p>
+<svg class="rxsvg" viewBox="0 0 720 380" role="img" aria-label="Coding-agent runner architecture. Two entry points on the left: stdrun.py, the CLI with run, batch, board, compare, and drain subcommands, and uirun.py, spawned by the Monitor's Run button for off-board ui_* runs. Both call driver.py run_cell, the shared core, which contains the cells.py registry (CellSpec and the frozen STD_FROZEN knobs), prompts.py (briefing rendering plus the skill md5 gate), and EventSink, the single writer of the episode JSONL vocabulary; the core also owns parallel workers with per-index resume, DRAIN, rate-limit retry with a paused clock, and driver-side env_habitat__evaluate. The core hands one clean session per episode to one of three harness adapters: claude_sdk.py, mini_swe.py, or codex_cli.py. All adapters reach the environment through one tool surface — bridges/mcp_bridge.py spawned as a stdio MCP server by the sdk and codex harnesses, or mini/toolset.py, its byte-equivalent in-process mirror — which forwards to the env_habitat auto_host over HTTP POST /call/{fn}. EventSink flushes per event into outputs/<harness root>/<run>/ episode JSONL, raw dumps, live frames, and summary.json. A dashed box, coding-agent/legacy/, holds the frozen pre-unification drivers that mini/check_equivalence.py uses as fixtures to assert the live prompts and tool schemas stay byte-equal.">
+  <rect class="box" x="6" y="16" width="182" height="48" rx="6"/>
+  <text x="97" y="36" text-anchor="middle">stdrun.py — CLI</text>
+  <text class="dim" x="97" y="53" text-anchor="middle">run·batch·board·compare·drain</text>
+  <rect class="box" x="10" y="96" width="170" height="48" rx="6"/>
+  <text x="95" y="116" text-anchor="middle">uirun.py</text>
+  <text class="dim" x="95" y="133" text-anchor="middle">Monitor Run button (ui_*)</text>
+  <path class="edge" d="M188,40 C208,50 208,70 216,80"/>
+  <path class="edge" d="M180,120 C200,120 205,110 216,100"/>
+
+  <rect class="accent" x="220" y="16" width="250" height="230" rx="8"/>
+  <text class="at" x="345" y="38" text-anchor="middle">driver.py · run_cell</text>
+  <rect class="box" x="236" y="52" width="218" height="34" rx="5"/>
+  <text class="mono" x="345" y="73" text-anchor="middle">cells.py — CellSpec · STD_FROZEN</text>
+  <rect class="box" x="236" y="94" width="218" height="34" rx="5"/>
+  <text class="mono" x="345" y="115" text-anchor="middle">prompts.py — briefing · md5 gate</text>
+  <rect class="box" x="236" y="136" width="218" height="34" rx="5"/>
+  <text class="mono" x="345" y="157" text-anchor="middle">EventSink — episode_i.jsonl vocab</text>
+  <text class="dim" x="345" y="192" text-anchor="middle">N workers · per-index resume · DRAIN</text>
+  <text class="dim" x="345" y="208" text-anchor="middle">rate-limit retry (paused clock)</text>
+  <text class="dim" x="345" y="224" text-anchor="middle">driver-side env_habitat__evaluate</text>
+
+  <rect class="box" x="500" y="16" width="210" height="40" rx="6"/>
+  <text class="mono" x="605" y="40" text-anchor="middle">harnesses/claude_sdk.py</text>
+  <rect class="box" x="500" y="66" width="210" height="40" rx="6"/>
+  <text class="mono" x="605" y="90" text-anchor="middle">harnesses/mini_swe.py</text>
+  <rect class="box" x="500" y="116" width="210" height="40" rx="6"/>
+  <text class="mono" x="605" y="140" text-anchor="middle">harnesses/codex_cli.py</text>
+  <path class="edge" d="M470,60 L496,44"/>
+  <path class="edge" d="M470,86 L496,86"/>
+  <path class="edge" d="M470,112 L496,130"/>
+  <text class="dim" x="710" y="11" text-anchor="end">core → adapter: 1 clean session per episode</text>
+
+  <rect class="box" x="486" y="196" width="224" height="60" rx="6"/>
+  <text x="598" y="216" text-anchor="middle" font-size="12">one tool surface</text>
+  <text class="mono" x="598" y="233" text-anchor="middle">bridges/mcp_bridge.py — MCP stdio</text>
+  <text class="mono" x="598" y="248" text-anchor="middle">mini/toolset.py — in-process</text>
+  <path class="edge" d="M605,156 L605,192"/>
+  <text class="dim" x="600" y="172" text-anchor="end">sdk·codex spawn it</text>
+  <text class="dim" x="600" y="186" text-anchor="end">tools: mcp__env__*</text>
+  <rect class="box" x="500" y="300" width="210" height="44" rx="6"/>
+  <text x="605" y="319" text-anchor="middle">env_habitat auto_host</text>
+  <text class="dim" x="605" y="336" text-anchor="middle">HTTP POST /call/{fn}</text>
+  <path class="edge" d="M605,256 L605,296"/>
+
+  <rect class="box" x="220" y="290" width="250" height="64" rx="6"/>
+  <text class="mono" x="345" y="312" text-anchor="middle">outputs/&lt;harness root&gt;/&lt;run&gt;/</text>
+  <text class="mono" x="345" y="330" text-anchor="middle">episode_i.jsonl · raw/ · live_i/</text>
+  <text class="mono" x="345" y="346" text-anchor="middle">summary.json (aggregate 口径)</text>
+  <path class="edge" d="M345,246 L345,286"/><text class="dim" x="392" y="270">flush per event</text>
+
+  <rect class="ghost" x="10" y="290" width="170" height="64" rx="6"/>
+  <text x="95" y="312" text-anchor="middle" font-size="12">legacy/ — frozen drivers</text>
+  <text class="dim" x="95" y="330" text-anchor="middle">check_equivalence fixtures</text>
+  <text class="dim" x="95" y="346" text-anchor="middle">(provenance; never edited)</text>
+  <path class="gedge" d="M180,310 C210,290 214,160 232,122"/>
+  <text class="dim" x="95" y="276" text-anchor="middle">byte-equal gates</text>
+</svg>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>It runs one <em>cell</em> — a (harness × model × condition × effort-tier) point of the standard board — end to end: place episodes on an <code>env_habitat</code> auto_host, render the frozen briefing, hand each episode to the harness adapter for one clean agent session, score it with habitat's own <code>env_habitat__evaluate</code>, and write the uniform artifact set the <a href="monitors/coding-agent-monitor.html">Monitor</a> renders. Before unification (2026-07-20) each harness carried its own full driver; the shared 90% now lives here once, and each harness is a ~100-line adapter. The smallest use is one command — a cell name pins every protocol knob:</p>
+<pre class="hl">
+<span class="c1"># a cell name pins everything; the only free choices are which cell, which servers</span>
+python<span class="w"> </span>coding-agent/stdrun.py<span class="w"> </span>run<span class="w"> </span>std_sdk_fable-5_bare_default
+python<span class="w"> </span>coding-agent/stdrun.py<span class="w"> </span>run<span class="w"> </span>E17<span class="w">            </span><span class="c1"># paper E-numbers resolve to cells</span>
+python<span class="w"> </span>coding-agent/stdrun.py<span class="w"> </span>board<span class="w">             </span><span class="c1"># protocol truth lives on disk, not in names</span>
+</pre>
+
+<h2 id="2-episode-through-core"><span class="num">2.</span> One episode through the core</h2>
+<p><strong><code>run_cell</code> owns everything an episode needs except the agent loop itself</strong> (<code>driver.py · run_cell / run_episode</code>):</p>
+<ol>
+  <li><strong>Placement</strong> — dataset + split pushed once per server, then per episode: <code>episode_index</code> field + <code>play</code> + <code>env_habitat__reset</code> (carrying the frozen <code>rgb_resolution</code>). All env HTTP rides <code>asyncio.to_thread</code> so parallel workers never stall the loop.</li>
+  <li><strong>Briefing</strong> — <code>prompts.py · build_briefing</code> renders the frozen 07-09 drafts (BARE / FULL / WP) with the instruction and budget; a nav cell first passes <code>assert_std_skill_freeze</code>, which refuses to run if the skill body's md5 drifted from <code>f7c74272</code>.</li>
+  <li><strong>Session</strong> — a fresh <code>EpisodeContext</code> (instruction, briefing, budgets, bridge env vars, live/raw dirs) goes to <code>adapter.run(ctx, sink)</code>; the adapter may emit only through the <code>EventSink</code>, which enforces the log vocabulary by construction and derives tool-call counts + the last <code>step()</code> result uniformly.</li>
+  <li><strong>Scoring</strong> — the driver (never the agent) calls <code>env_habitat__evaluate</code> while the trajectory file is still open, so metrics land inside the log; <code>summary.json</code> is rewritten after every episode with <code>aggregate</code> applying the board 口径 (an evaluated episode scores as-is; an unevaluated timeout scores 0; <code>rate_limited</code> and non-engaged infra errors are excluded, <code>driver.py · aggregate</code>).</li>
+  <li><strong>Batch management</strong> — N workers pull from one index queue (one env server each, staggered cold loads); <code>--episodes</code> reruns/resumes specific indices into the same run dir; a <code>DRAIN</code> sentinel / SIGUSR1 finishes in-flight episodes and prints the ready-to-paste resume spec; subscription throttling backs off <em>outside</em> the episode's timed scope (the "paused countdown") for up to 6 attempts; a <code>VramSampler</code> records the GPU peak.</li>
+</ol>
+
+<h2 id="3-interface-map"><span class="num">3.</span> Who calls what — one door, two clients, one translator</h2>
+<p><strong>Everything reaches the environment through a single HTTP door — the auto_host surface — but its two clients hold different vocabularies.</strong> The driver talks to the door directly and owns the full vocabulary: episode selection and <code>play</code> on the env panel, then <code>env_habitat__reset</code> before the session and <code>env_habitat__evaluate</code> after it (<code>driver.py · run_episode</code>, signing its calls with a literal <code>{"trigger": "driver"}</code>). The agent never sees that door. It speaks MCP to the bridge, and the bridge — itself just another HTTP client of the same door (<code>mcp_bridge.py · _call</code>) — translates exactly two node types: <code>env_habitat__observe_egocentric</code> and <code>env_habitat__step_discrete</code> (<code>look_around</code> is composed from them: spin-in-place turns, one frame per stop). <code>reset</code> and <code>evaluate</code> are not blocked by permission — they simply do not exist in the translated vocabulary, so no harness can reset mid-episode or peek at its score. mini takes the same subset through an in-process shortcut instead of MCP (<code>mini/toolset.py</code>, byte-equal gated in §6). Inside the server, state lives in exactly one place: the per-process <code>HabitatEnvManager</code> singleton (<code>env_habitat.py · HabitatEnvManager.get</code>), whose single-thread executor pins habitat's GL context. The worker structure is what makes this safe: <code>run_cell</code> spawns one worker per env server, workers pull episode indices from one shared queue, and each worker runs its episodes <em>serially</em> against the one auto_host it owns exclusively for the whole run (<code>driver.py · run_cell</code>) — so a manager never faces two live sessions, without any locking. Parallelism is process replication (N workers ⇒ N auto_host processes, one manager each); the agent session and its bridge/toolset are born fresh per episode under their worker and die with it.</p>
+
+<p class="diagram-label"><strong>Entries → workers → the door.</strong> Both entries resolve to <code>run_cell</code>, which spawns one worker per env server off a shared episode queue; each dashed box below is one worker — serial episodes, exclusive owner of its auto_host. Inside a worker, the driver and the tool surface are both HTTP clients of that one auto_host door; the agent itself never touches HTTP — it speaks MCP to the bridge (or direct python to mini's toolset), and the translated vocabulary simply lacks <code>reset</code> and <code>evaluate</code>.</p>
+<svg class="rxsvg" viewBox="0 0 720 432" role="img" aria-label="Interface and dependency map with the worker structure. At the very top, the two entry points — stdrun.py, the CLI, and uirun.py, spawned by the Monitor's Run button — call driver.py run_cell, which holds the shared episode index queue 0 to 99 and spawns N workers, one per env server. A large dashed boundary labelled worker k — with a second dashed outline behind it suggesting the other workers — contains everything one worker does serially, one episode at a time: driver.py run_episode calls the auto_host door directly over HTTP with the full vocabulary (episode_index, play, reset before the session, evaluate after it — never the agent); beneath it, the per-episode agent stack: the sdk or codex agent session speaks MCP over stdio to bridges/mcp_bridge.py, a translator forwarding only observe_egocentric and step_discrete over HTTP to the same door, while the mini agent loop calls mini/toolset.py in-process for the same HTTP subset. A note inside the worker says the session and bridge or toolset are born fresh per episode and die with it. On the right, one env_habitat auto_host process — bound one-to-one to worker k for the whole run, with a ghost outline marking auto_host times N, one per worker — exposes the single HTTP door, POST /call/{fn} plus env-panel endpoints, behind which thin canvas tool nodes dispatch onto the HabitatEnvManager singleton holding all world state (pose, steps, scene) on a single-thread executor for GL affinity, never restarted between episodes. A bottom note states that reset and evaluate never enter the MCP vocabulary — the agent cannot say them.">
+  <rect class="ghost" x="428" y="54" width="284" height="352" rx="8"/>
+  <rect class="box" x="418" y="44" width="292" height="352" rx="8"/>
+  <text x="564" y="66" text-anchor="middle">env_habitat auto_host k</text>
+  <text class="dim" x="564" y="82" text-anchor="middle">bound 1:1 to worker k — exclusive</text>
+  <rect class="accent" x="434" y="94" width="260" height="48" rx="6"/>
+  <text class="at" x="564" y="113" text-anchor="middle">the one HTTP door</text>
+  <text class="mono" x="564" y="130" text-anchor="middle">POST /call/{fn} · /env-panel/…</text>
+  <rect class="box" x="434" y="170" width="260" height="38" rx="5"/>
+  <text class="mono" x="564" y="193" text-anchor="middle">canvas tool nodes — thin adapters</text>
+  <rect class="box" x="434" y="238" width="260" height="66" rx="6"/>
+  <text x="564" y="258" text-anchor="middle">HabitatEnvManager — singleton</text>
+  <text class="dim" x="564" y="274" text-anchor="middle">world state: pose · steps · scene</text>
+  <text class="dim" x="564" y="290" text-anchor="middle">single-thread executor (GL affinity)</text>
+  <path class="edge" d="M564,142 L564,166"/>
+  <path class="edge" d="M564,208 L564,234"/>
+  <text class="dim" x="564" y="330" text-anchor="middle">one manager per process — never two</text>
+  <text class="dim" x="564" y="346" text-anchor="middle">never restarted between episodes</text>
+  <text class="dim" x="712" y="420" text-anchor="end">auto_host × N — one per worker</text>
+
+  <rect class="box" x="256" y="4" width="150" height="26" rx="5"/>
+  <text class="mono" x="331" y="21" text-anchor="middle">stdrun.py — CLI</text>
+  <rect class="box" x="256" y="36" width="150" height="26" rx="5"/>
+  <text class="mono" x="331" y="53" text-anchor="middle">uirun.py — Monitor</text>
+  <path class="edge" d="M256,17 L244,22"/>
+  <path class="edge" d="M256,49 L244,42"/>
+
+  <rect class="accent" x="10" y="6" width="230" height="48" rx="6"/>
+  <text class="at" x="125" y="25" text-anchor="middle">driver.py · run_cell</text>
+  <text class="dim" x="125" y="42" text-anchor="middle">shared episode queue 0…99</text>
+  <path class="edge" d="M125,54 L125,74"/>
+  <text class="dim" x="136" y="70">spawns N workers</text>
+
+  <rect class="ghost" x="14" y="86" width="402" height="280" rx="8"/>
+  <rect class="ghost" x="4" y="78" width="402" height="280" rx="8"/>
+  <text x="16" y="98" font-size="12" font-weight="600">worker k</text>
+  <text class="dim" x="78" y="98">— serial: one episode at a time</text>
+
+  <rect class="accent" x="16" y="110" width="230" height="64" rx="6"/>
+  <text class="at" x="131" y="131" text-anchor="middle">driver.py · run_episode</text>
+  <text class="dim" x="131" y="148" text-anchor="middle">before: episode_index · play · reset</text>
+  <text class="dim" x="131" y="164" text-anchor="middle">after: evaluate — never the agent</text>
+  <path class="edge" d="M246,130 C330,124 380,116 430,110"/>
+  <text class="dim" x="340" y="104" text-anchor="middle">HTTP — full vocabulary</text>
+
+  <rect class="box" x="16" y="210" width="166" height="54" rx="6"/>
+  <text x="99" y="232" text-anchor="middle">agent session</text>
+  <text class="dim" x="99" y="249" text-anchor="middle">sdk · codex — speaks MCP</text>
+  <rect class="box" x="228" y="210" width="170" height="54" rx="6"/>
+  <text class="mono" x="313" y="231" text-anchor="middle">mcp_bridge.py</text>
+  <text class="dim" x="313" y="248" text-anchor="middle">translator — subset only</text>
+  <path class="edge" d="M182,237 L224,237"/>
+  <text class="dim" x="203" y="202" text-anchor="middle">MCP (stdio)</text>
+  <path class="edge" d="M398,226 C424,210 420,172 430,142"/>
+  <text class="dim" x="402" y="192" text-anchor="end">HTTP — observe · step only</text>
+
+  <rect class="box" x="16" y="284" width="166" height="54" rx="6"/>
+  <text x="99" y="306" text-anchor="middle">agent loop (mini)</text>
+  <text class="dim" x="99" y="323" text-anchor="middle">DefaultAgent — no MCP</text>
+  <rect class="box" x="228" y="284" width="170" height="54" rx="6"/>
+  <text class="mono" x="313" y="305" text-anchor="middle">mini/toolset.py</text>
+  <text class="dim" x="313" y="322" text-anchor="middle">in-process · byte-equal</text>
+  <path class="edge" d="M182,311 L224,311"/>
+  <text class="dim" x="203" y="276" text-anchor="middle">python</text>
+  <path class="edge" d="M398,300 C418,276 408,200 430,146"/>
+  <text class="dim" x="404" y="277" text-anchor="end">same HTTP subset</text>
+
+  <text class="dim" x="16" y="354">session + bridge/toolset: fresh per episode, die with it</text>
+
+  <text class="dim" x="10" y="392">reset · evaluate never enter the MCP vocabulary — the agent cannot say them</text>
+</svg>
+
+<table>
+<thead><tr><th>Caller</th><th>Callee</th><th>Interface</th><th>Vocabulary</th></tr></thead>
+<tbody>
+<tr><td><code>driver.py · run_episode</code></td><td>auto_host</td><td>HTTP</td><td>full — env-panel <code>episode_index</code> + <code>play</code> · <code>reset</code> · <code>evaluate</code></td></tr>
+<tr><td>agent session (sdk · codex)</td><td><code>bridges/mcp_bridge.py</code></td><td>MCP over stdio</td><td><code>observe</code> · <code>step</code> (+ <code>look_around</code> off-BARE)</td></tr>
+<tr><td><code>bridges/mcp_bridge.py</code></td><td>auto_host</td><td>HTTP (<code>_call</code>)</td><td><code>observe_egocentric</code> · <code>step_discrete</code> — nothing else</td></tr>
+<tr><td>agent loop (mini)</td><td><code>mini/toolset.py</code></td><td>in-process python</td><td>same subset, byte-equal gated (§6)</td></tr>
+<tr><td>canvas tool nodes</td><td><code>HabitatEnvManager</code></td><td><code>_run_sync</code> → single-thread executor</td><td>everything — all world state lives here</td></tr>
+</tbody>
+</table>
+
+<h2 id="4-adapter-contract"><span class="num">4.</span> The adapter contract</h2>
+<p><strong>An adapter is the harness-specific residue after the core took its 90%</strong> — the <code>HarnessAdapter</code> protocol is four methods (<code>driver.py · HarnessAdapter</code>): <code>prepare</code> (once per run: auth guards, version pins into the recorded <code>inherent</code> dict, any serving stack the harness owns — raising aborts the cell, because a silently degraded server is worse than no run), <code>describe</code> (the session-config block logged into <code>session_inputs</code>), <code>run</code> (one clean session, events through the sink only), and optional <code>finalize</code> (the audit only that harness can produce).</p>
+<table>
+<thead><tr><th>Adapter</th><th>Loop</th><th>Hard-won specifics it encapsulates</th></tr></thead>
+<tbody>
+<tr><td><code>claude_sdk.py</code></td><td>Claude Agent SDK (closed)</td><td>strips a stray <code>ANTHROPIC_API_KEY</code> (subscription auth; <code>STD_SDK_USE_API=1</code> opts back into metered billing); gates the first prompt on the bridge reporting MCP-connected; <code>strict_mcp_config</code> + <code>setting_sources=[]</code> so no user MCP servers or CLAUDE.md leak into sessions; 32 MiB stdout buffer for <code>look_around()</code></td></tr>
+<tr><td><code>mini_swe.py</code></td><td>mini-swe-agent ReAct (open)</td><td>in-process <code>NodesetToolSet</code> instead of a bridge subprocess; for local models it <em>owns</em> ollama — context pinned to 131072 (past it ollama truncates silently), sampling read back from <code>/api/show</code> and refused if not Modelfile-pinned; <code>finalize</code> slices the serve log for exact per-request prompt-token counts</td></tr>
+<tr><td><code>codex_cli.py</code></td><td>OpenAI Codex CLI (closed)</td><td><code>codex exec --json</code> per episode on the ChatGPT subscription; MCP approval mode pinned (v0.142 silently rejects the documented <code>"auto"</code>); reasoning is usage-counted but encrypted; no SDK-level turn cap exists (see §7)</td></tr>
+</tbody>
+</table>
+
+<h2 id="5-registry"><span class="num">5.</span> The registry — cells, not flags</h2>
+<p><strong>Comparability is enforced structurally: protocol knobs live in <code>cells.py</code>, not on the command line.</strong> <code>STD_FROZEN</code> pins std-v2 (R2R-CE rand100 eps 0–99 · 200 turns · 512 px · 500 actions · 2400 s); <code>CONDITIONS</code> defines <code>bare / nav / persona / wp / wp-nav</code>; <code>EFFORT_TIERS</code> runs each main cell at <code>default</code> and <code>max</code>, with <code>_tier_extra</code> resolving what each label concretely means per harness; <code>MODELS</code> + <code>MODEL_ID_OVERRIDE</code> map board columns to harness-facing slugs; <code>BATCHES</code> names sequential cell lists (treatment-before-control ordering for cuttable local batches); <code>EXPERIMENTS</code> maps the paper's E-numbers onto cells, and <code>resolve_cell</code> accepts either form. Any override requires <code>--nonstd</code>, which renames the run <code>nonstd_*</code> so it can never sit on the board (<code>stdrun.py · _run</code>); the Monitor's <code>uirun.py</code> gets the same treatment structurally — its free knobs make every UI run <code>ui_*</code>, off-board by name. <code>compare</code> runs an exact paired McNemar over same-episode successes, refusing pairs whose <code>episode_id</code>s diverge (<code>stdrun.py · _compare</code>).</p>
+
+<h2 id="6-freeze-gates"><span class="num">6.</span> Freeze &amp; equivalence gates</h2>
+<p><strong>"Same experiment across harnesses" is asserted, not assumed.</strong> Three gates: (a) the skill md5 freeze (§2); (b) <code>mini/check_equivalence.py</code> proves the mini in-process toolset byte-equal to the bridge — tool names, descriptions, schemas, clearance math, waypoint geometry, down to identical annotated-PNG bytes; (c) the same script asserts the live <code>prompts.py</code> texts byte-equal to the frozen legacy SDK driver they were moved from. The fixtures are the point of <code>coding-agent/legacy/</code>: the pre-unification drivers are kept unedited so the live surface can always be diffed against what produced the archived runs.</p>
+
+<h2 id="7-deviations"><span class="num">7.</span> Where it deviates from the mental model</h2>
+<div class="callout warn">
+<strong>Output roots still say <code>beta-*</code>.</strong> The package unified in <code>coding-agent/</code>, but runs land in the pre-unification roots (<code>outputs/beta-coding-agent</code> · <code>beta-react-harness</code> · <code>beta-codex-agent</code>, <code>cells.py · OUTPUT_ROOTS</code>) — deliberately, so the Monitor's source toggle, the board aggregation, and all run history survived the move unchanged.
+</div>
+<div class="callout warn">
+<strong>A cell name does not carry its protocol.</strong> Turns went 80→200 and rgb 224→512 under stable cell names; two runs of the same name can be different protocols. The board prints <code>turns</code>/<code>rgb</code> from each run's recorded config precisely because of this — read the board, never the name, before comparing (<code>stdrun.py · _board</code>).
+</div>
+<div class="callout warn">
+<strong>Cross-vendor effort tiers are labels, not equivalents.</strong> <code>default</code> resolves to "no effort param" on the SDK, <code>medium</code> on codex/mini-GPT — except codex + gpt-5.6, whose real CLI default is <code>low</code>; <code>max</code> means Claude <code>effort="max"</code> but GPT <code>xhigh</code>. The labels are policy; actual thinking spend lives in the per-call usage logs (<code>cells.py · _tier_extra</code>).
+</div>
+<div class="callout warn">
+<strong>The same board column can ride different slugs.</strong> codex reaches gpt-5.6 only as the ChatGPT-account variant <code>gpt-5.6-sol</code> (<code>MODEL_ID_OVERRIDE</code>); whether it is bit-identical to plain <code>gpt-5.6</code> is unverified, so the codex↔mini comparison on that column carries a recorded slug asymmetry.
+</div>
+<div class="callout warn">
+<strong>codex has no hard turn cap.</strong> <code>ctx.max_turns</code> feeds only the bridge's budget broadcast and STOP gate there; the binding limits are the 500-action step budget and the episode timeout. A recorded harness-inherent difference, not a bug (<code>codex_cli.py</code> docstring).
+</div>
+
+<h2 id="8-key-files"><span class="num">8.</span> Key files</h2>
+<table>
+<thead><tr><th>Piece</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Core</td><td><code>coding-agent/driver.py</code> — <code>run_cell</code> · <code>run_episode</code> · <code>EventSink</code> · <code>aggregate</code></td></tr>
+<tr><td>Registry</td><td><code>coding-agent/cells.py</code> — <code>CellSpec</code> · <code>STD_FROZEN</code> · <code>CONDITIONS</code> · <code>BATCHES</code> · <code>EXPERIMENTS</code></td></tr>
+<tr><td>Prompt surface</td><td><code>coding-agent/prompts.py</code> — frozen drafts · skill loader · md5 gate</td></tr>
+<tr><td>Adapters</td><td><code>coding-agent/harnesses/</code> — <code>claude_sdk.py</code> · <code>mini_swe.py</code> · <code>codex_cli.py</code></td></tr>
+<tr><td>Entries</td><td><code>coding-agent/stdrun.py</code> (CLI) · <code>coding-agent/uirun.py</code> (Monitor)</td></tr>
+<tr><td>Tool surface</td><td><code>coding-agent/bridges/</code> · <code>coding-agent/mini/toolset.py</code> (+ <code>check_equivalence.py</code>)</td></tr>
+<tr><td>Frozen fixtures</td><td><code>coding-agent/legacy/</code> — pre-unification drivers, never edited</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-episode-through-core">2. One episode through the core</a>
+      <a class="toc-h2" href="#3-interface-map">3. Who calls what — one door, two clients, one translator</a>
+      <a class="toc-h2" href="#4-adapter-contract">4. The adapter contract</a>
+      <a class="toc-h2" href="#5-registry">5. The registry — cells, not flags</a>
+      <a class="toc-h2" href="#6-freeze-gates">6. Freeze &amp; equivalence gates</a>
+      <a class="toc-h2" href="#7-deviations">7. Where it deviates from the mental model</a>
+      <a class="toc-h2" href="#8-key-files">8. Key files</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>
