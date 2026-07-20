@@ -35,8 +35,8 @@ from cells import STD_FROZEN, WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec
 from prompts import FIRST_PROMPT, assert_std_skill_freeze, build_briefing
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
-WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
+BRIDGE_PATH = Path(__file__).resolve().parent / "bridges" / "mcp_bridge.py"
+WP_BRIDGE_PATH = Path(__file__).resolve().parent / "bridges" / "wp_bridge.py"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -518,10 +518,16 @@ async def run_cell(
     adapter: HarnessAdapter, spec: CellSpec, servers: list[str],
     episodes_spec: str | None = None, run_name: str | None = None,
     extra: dict[str, Any] | None = None, wp_server: str | None = None,
+    cfg_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run (or resume) one cell. Existing episode records in the run dir's
-    summary are kept; requested indices are re-run and replace their records."""
+    summary are kept; requested indices are re-run and replace their records.
+    cfg_overrides patches STD_FROZEN knobs (split, rgb_resolution, …) for
+    off-board runs — the Monitor UI's free-knob path (uirun.py); stdrun's std
+    cells never pass it."""
     cfg = dict(STD_FROZEN)
+    if cfg_overrides:
+        cfg.update(cfg_overrides)
     if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
         cfg["max_turns"] = spec.max_turns
     cfg["extra"] = dict(extra or {})

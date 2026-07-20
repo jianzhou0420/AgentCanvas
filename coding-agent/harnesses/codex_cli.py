@@ -1,6 +1,7 @@
 """OpenAI Codex CLI adapter — OpenAI's closed scaffolding.
 
-Session block ported from beta-codex-agent/run_episodes.py. codex keeps its
+Session block ported from the legacy codex driver (frozen at
+legacy/beta-codex-agent/run_episodes.py). codex keeps its
 built-in system prompt (that closed scaffolding is the thing under test); the
 briefing rides as the one user prompt. Auth is the logged-in ChatGPT
 subscription. Codex-specific wiring that was hard-won (2026-07-13):

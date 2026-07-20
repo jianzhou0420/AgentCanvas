@@ -1,4 +1,4 @@
-"""Coding-Agent Monitor API — control + live-log surface for beta-coding-agent runs.
+"""Coding-Agent Monitor API — control + live-log surface for coding-agent runs.
 
 Thin shell over ``services.coding_agent_runner.CodingAgentRunner``. Live text
 comes from the driver's per-episode trajectory JSONL (flushed per event, so
@@ -25,7 +25,7 @@ router = APIRouter()
 # monitor surface serves both; only the root differs. The control endpoints
 # (start/stop/status) stay claude-sdk-only — mini runs are CLI-launched.
 SOURCE_ROOTS = {
-    "claude-sdk": OUTPUT_ROOT,                                # beta-coding-agent (Agent SDK)
+    "claude-sdk": OUTPUT_ROOT,                                # Agent SDK runs
     "mini-swe": OUTPUT_ROOT.parent / "beta-react-harness",    # mini-swe-agent harness
     "codex": OUTPUT_ROOT.parent / "beta-codex-agent",         # OpenAI Codex CLI harness
 }

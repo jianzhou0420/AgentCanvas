@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coding-Agent Monitor — AgentCanvas</title>
+<meta name="description" content="CodingAgentPage · /api/coding-agent · CodingAgentRunner · uirun.py over the shared driver · EventSink vocabulary · three browse roots">
+<meta property="og:title" content="Coding-Agent Monitor — AgentCanvas">
+<meta property="og:description" content="CodingAgentPage · /api/coding-agent · CodingAgentRunner · uirun.py over the shared driver · EventSink vocabulary · three browse roots">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/monitors/coding-agent-monitor.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="cam-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#cma); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/monitors/coding-agent-monitor.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Monitors</a>
+    <span class="sep">/</span>
+    <span class="here">Coding-Agent Monitor</span>
+  </div>
+  <div class="last-updated">2026-07-20</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Coding-Agent Monitor</h1>
+  <p class="tagline">CodingAgentPage · /api/coding-agent · CodingAgentRunner · uirun.py over the shared driver · EventSink vocabulary · three browse roots</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="cma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">The Coding-Agent Monitor is the frontend window onto <a href="../../capabilities/coding-agent-harness.html">coding-agent VLN runs</a>: a one-click host for a Claude-SDK run (env + driver spawned per click) plus a log browser over every run any of the three harnesses ever wrote. Its hard promise is that <strong>the monitor holds no run state of its own</strong> — everything it renders is re-derived from the driver's on-disk artifacts (<code>episode_{i}.jsonl</code> flushed per event, <code>summary.json</code> rewritten per episode), so a browser refresh, a backend restart, or a CLI-launched run all display identically. For what the harness experiment <em>is</em>, see the capability page; for the AAS-facing programmatic API, see <a href="../surfaces/coding-agent-backend-surface.html">Coding-Agent Backend Surface</a>; the human counterpart of this tab is <a href="human-performance.html">Human Performance Tab</a>.</p>
+
+<p class="diagram-label"><strong>One UI run, three processes.</strong> The Run button spawns a dedicated habitat env and the unified driver's UI entry; the SDK session reaches the world only through the stdio bridge. The router's read endpoints (right of the artifact box) also serve runs the runner never launched — the dashed browse roots.</p>
+<svg class="rxsvg" viewBox="0 0 720 300" role="img" aria-label="Coding-Agent Monitor pipeline. The frontend Coding Agent tab polls the /api/coding-agent router at 1 Hz. The router forwards control calls to CodingAgentRunner, which spawns two processes: the episode driver uirun.py (the unified coding-agent driver's UI entry, one Claude Agent SDK session per episode) and an env_habitat auto_host via BaseServer on a free port with PDEATHSIG. The SDK session reaches the world only through the stdio MCP bridge bridges/mcp_bridge.py, which forwards observe and step calls to the auto_host over HTTP POST /call/{fn}. The driver writes trajectory JSONL, live frames, and summary.json into outputs/beta-coding-agent/ui_*/, which the router reads back to serve the UI. The router's read endpoints also browse two more roots the runner never writes: outputs/beta-react-harness and outputs/beta-codex-agent, CLI-launched runs only.">
+  <rect class="box" x="10" y="16" width="150" height="34" rx="6"/><text x="85" y="37" text-anchor="middle">Coding Agent tab</text>
+  <rect class="box" x="220" y="16" width="170" height="34" rx="6"/><text class="mono" x="305" y="37" text-anchor="middle">/api/coding-agent</text>
+  <rect class="accent" x="450" y="16" width="180" height="34" rx="6"/><text class="at" x="540" y="37" text-anchor="middle">CodingAgentRunner</text>
+  <path class="edge" d="M160,33 L216,33"/><text class="dim" x="188" y="26" text-anchor="middle">1 Hz</text>
+  <path class="edge" d="M390,33 L446,33"/><text class="dim" x="418" y="26" text-anchor="middle">start/stop</text>
+
+  <rect class="box" x="450" y="92" width="180" height="34" rx="6"/><text class="mono" x="540" y="113" text-anchor="middle">uirun.py → run_cell</text>
+  <rect class="box" x="450" y="216" width="180" height="34" rx="6"/><text class="mono" x="540" y="237" text-anchor="middle">env_habitat auto_host</text>
+  <path class="edge" d="M540,50 L540,88"/><text class="dim" x="562" y="72">spawn</text>
+  <path class="edge" d="M632,42 C692,64 692,208 634,230"/><text class="dim" x="694" y="140" text-anchor="middle">spawn</text>
+
+  <rect class="box" x="220" y="92" width="170" height="34" rx="6"/><text x="305" y="113" text-anchor="middle">Agent SDK session</text>
+  <rect class="accent" x="220" y="216" width="170" height="34" rx="6"/><text class="at" x="305" y="237" text-anchor="middle">bridges/mcp_bridge.py</text>
+  <path class="edge" d="M446,109 L394,109"/><text class="dim" x="420" y="102" text-anchor="middle">1/ep</text>
+  <path class="edge" d="M305,126 L305,212"/><text class="dim" x="345" y="172">MCP stdio</text>
+  <path class="edge" d="M390,233 L446,233"/><text class="dim" x="418" y="226" text-anchor="middle">HTTP</text>
+
+  <rect class="box" x="10" y="139" width="150" height="46" rx="6"/>
+  <text class="mono" x="85" y="158" text-anchor="middle">outputs/beta-coding-</text>
+  <text class="mono" x="85" y="174" text-anchor="middle">agent/ui_*/</text>
+  <path class="edge" d="M450,100 C300,70 160,110 132,136"/><text class="dim" x="268" y="84" text-anchor="middle">JSONL + frames</text>
+  <path class="edge" d="M85,139 C85,80 140,60 216,42"/><text class="dim" x="118" y="96" text-anchor="middle">read</text>
+
+  <rect class="ghost" x="10" y="216" width="150" height="52" rx="6"/>
+  <text class="mono" x="85" y="236" text-anchor="middle">beta-react-harness/</text>
+  <text class="mono" x="85" y="252" text-anchor="middle">beta-codex-agent/</text>
+  <text class="dim" x="85" y="282" text-anchor="middle">browse-only roots (CLI runs)</text>
+  <path class="ghost" d="M160,242 C200,200 220,120 250,54" marker-end="url(#cma)"/><text class="dim" x="212" y="150">browse</text>
+</svg>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>The monitor has exactly two jobs, split across one page:</p>
+<ul>
+  <li><strong>Control</strong> — the Run panel starts and stops <em>one</em> Claude-SDK run at a time. A click on Run spawns a dedicated <code>env_habitat</code> auto_host and the unified driver's UI entry; a click on Stop tears both down. Control is deliberately narrow: episodes, split, max-turns, and model are the only knobs (<code>coding_agent.py · StartRequest</code>).</li>
+  <li><strong>Read</strong> — the log browser renders any run directory under the three harness output roots: the trajectory as a unified live log (thinking, tool calls, results), the agent's egocentric frames embedded inline at the exact <code>observe()</code> calls that produced them, per-episode metric badges, and a jsPDF export of the rendered log (<code>CodingAgentPage.tsx · exportPdf</code>).</li>
+</ul>
+<figure style="margin:1.5rem 0;text-align:center">
+  <img src="img/coding-agent-monitor.png" alt="The Coding Agent tab in browse mode: run form on top (split, episodes, max-turns, model, Run button, idle state), the harness source toggle on Claude SDK with the run std_sdk_fable-5_bare_default selected (SR 0.75, 100 eps), the 100-episode grid with green/red badges, and episode 0's log below — instruction, collapsed session inputs, bridge connected, an inline observe() frame, thinking lines, and a step call with its JSON result" loading="lazy" style="max-width:100%;border-radius:8px">
+  <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">The real thing, browse mode: <code>std_sdk_fable-5_bare_default</code> (SR 0.75 over 100 eps), episode 0. Top to bottom: the Run form (control path, idle), the source toggle + run picker, the per-episode ✅/❌ grid, and the rendered <code>episode_0.jsonl</code> — instruction, session inputs, an inline <code>observe()</code> frame, thinking, and a <code>step()</code> call with its result.</figcaption>
+</figure>
+<p>The smallest run is a single POST — one episode, everything else defaults:</p>
+<pre class="hl">
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/api/coding-agent/start<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">&#x27;Content-Type: application/json&#x27;</span><span class="w"> </span>-d<span class="w"> </span><span class="s1">&#x27;{&quot;episodes&quot;: &quot;0&quot;}&#x27;</span>
+<span class="c1"># → {&quot;run_name&quot;: &quot;ui_20260720_141530&quot;} — everything else defaults</span>
+<span class="c1">#   (split rand100, max-turns 80, model blank → SDK default); then poll:</span>
+curl<span class="w"> </span>http://127.0.0.1:8000/api/coding-agent/status
+</pre>
+
+<h2 id="2-run-path"><span class="num">2.</span> The run path — three processes per click</h2>
+<p><strong>One click on Run produces a runner state machine plus two child processes; run state beyond liveness is never stored, only re-derived from disk.</strong></p>
+<ol>
+  <li><code>coding_agent_runner.py · CodingAgentRunner.start</code> — the lifespan-owned singleton service. Refuses if a run is active (states: <code>idle | starting | running | stopping | stopped | finished | error</code>), stamps the run name <code>ui_%Y%m%d_%H%M%S</code>, then spawns.</li>
+  <li><code>CodingAgentRunner._spawn</code> — resolves the habitat interpreter and source file from the already-discovered <code>env_habitat</code> nodeset in the workspace registry (this module never imports habitat code — the framework import boundary), and starts the auto_host via <code>BaseServer</code> on a dynamically-free port, armed with <code>PR_SET_PDEATHSIG</code>. Then it launches <code>coding-agent/uirun.py</code> as a process-group child (<code>start_new_session=True</code>), stdout to <code>driver.log</code> in the run dir, so <code>stop()</code> can SIGTERM the driver together with its claude CLI + bridge children in one <code>killpg</code> (SIGKILL after 10 s).</li>
+  <li><code>uirun.py · main</code> — the Monitor's driver entry. It builds an off-board <code>CellSpec</code> (harness <code>sdk</code>, condition <code>"ui"</code>, <code>bare=False</code>, no skill, the request's max-turns; a blank model reaches the SDK as <code>None</code> = the CLI's default model, <code>claude_sdk.py · ClaudeSdkAdapter._options</code>) and calls the shared <code>driver.py · run_cell</code> with <code>cfg_overrides={"split": …}</code>. UI runs therefore ride the same core as the standard board — env-panel placement, briefing from <code>prompts.py</code>, one clean SDK session per episode through <code>bridges/mcp_bridge.py</code>, driver-side <code>env_habitat__evaluate</code>, rate-limit retry, DRAIN, VRAM sampling — while their <code>ui_*</code> names keep them permanently off the board.</li>
+</ol>
+<p>Status is artifact-derived: <code>CodingAgentRunner.status</code> reads <code>summary.json</code> for finished episodes and infers the active one as the first <code>episode_{i}.jsonl</code> present on disk but absent from the summary; <code>_reap</code> folds a self-exited driver into <code>finished</code> (rc 0) or <code>error</code> (rc≠0, pointing at <code>driver.log</code>).</p>
+
+<h2 id="3-artifact-contract"><span class="num">3.</span> The artifact contract — what the page renders</h2>
+<p><strong>The page is a renderer for the <code>EventSink</code> vocabulary; the driver flushes per event, so whole-file-with-offset polling is real-time</strong> (<code>coding_agent.py · textlog</code> returns lines after <code>offset</code> plus the next offset; the frontend polls it at 1 Hz).</p>
+<table>
+<thead><tr><th>Event kind</th><th>Written by</th><th>Rendered as</th></tr></thead>
+<tbody>
+<tr><td><code>episode_meta</code> · <code>session_inputs</code></td><td><code>driver.py · run_episode</code></td><td>Episode header; collapsible session-inputs block (system prompt, tool schemas, model config)</td></tr>
+<tr><td><code>system_init</code> · <code>bridge_status</code></td><td>harness adapter</td><td>"session up · model=…" status lines</td></tr>
+<tr><td><code>thinking</code> · <code>assistant_text</code></td><td>harness adapter</td><td>Reasoning summaries and visible text</td></tr>
+<tr><td><code>tool_use</code> / <code>tool_result</code></td><td>harness adapter via <code>EventSink.emit</code></td><td>Tool call + its result, matched by <code>tool_use_id</code>; <code>observe()</code> results get their frame from <code>live_{i}/obs_*.png</code> inlined at that position (lightbox zoom)</td></tr>
+<tr><td><code>result</code> · <code>episode_metrics</code></td><td><code>driver.py · run_episode</code></td><td>Usage/cost/turns block; the habitat metric table (SR / SPL / d2g …)</td></tr>
+<tr><td><code>driver_error</code> · <code>exit</code></td><td>driver / adapter</td><td>Error and session-exit lines</td></tr>
+</tbody>
+</table>
+<figure style="margin:1.5rem 0;text-align:center">
+  <img src="img/coding-agent-monitor-log.png" alt="Mid-episode log detail: an inline egocentric frame, a thinking line about aiming for the gap between the bar counter and the chairs, a step call with actions [2,1,1,1,1], its JSON tool result reporting steps_taken_total 25 and steps_remaining_approx 475, another observe() with the next frame showing the bar room" loading="lazy" style="max-width:100%;border-radius:8px">
+  <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">The vocabulary rendered mid-episode: <code>thinking</code> → <code>tool_use</code> (<code>step {"actions":[2,1,1,1,1]}</code>) → <code>tool_result</code> (the budget-bearing JSON) → <code>observe()</code> with its frame from <code>live_0/</code> inlined at the exact call that produced it.</figcaption>
+</figure>
+<p>Everything lands under <code>outputs/beta-coding-agent/{run}/</code>: <code>episode_{i}.jsonl</code> (the curated events above), <code>raw/episode_{i}.jsonl</code> (full SDK message dump, image blobs elided), <code>live_{i}/</code> frame PNGs dumped by the bridge, <code>workdir_{i}/</code> session cwd, and the incrementally rewritten <code>summary.json</code> whose <code>aggregate</code> block applies the board 口径 (<code>driver.py · aggregate</code>).</p>
+
+<h2 id="4-browse-path"><span class="num">4.</span> The browse path — one surface, three roots</h2>
+<p><strong>Both drivers of every harness write the same artifact layout, so one read surface serves them all; only the root differs</strong> (<code>coding_agent.py · SOURCE_ROOTS</code>):</p>
+<table>
+<thead><tr><th>Source toggle</th><th>Root</th><th>Runs come from</th></tr></thead>
+<tbody>
+<tr><td><code>claude-sdk</code></td><td><code>outputs/beta-coding-agent/</code></td><td>Monitor UI runs (<code>ui_*</code>) + CLI std cells (<code>std_sdk_*</code>)</td></tr>
+<tr><td><code>mini-swe</code></td><td><code>outputs/beta-react-harness/</code></td><td>CLI-launched only (<code>stdrun.py</code>)</td></tr>
+<tr><td><code>codex</code></td><td><code>outputs/beta-codex-agent/</code></td><td>CLI-launched only (<code>stdrun.py</code>)</td></tr>
+</tbody>
+</table>
+<p><code>GET /runs?source=…</code> lists every directory under the root that has episode JSONLs or a summary (auto_host log folders are skipped); <code>/runs/{run}/summary</code>, <code>/episode/{i}/textlog</code>, and the frame endpoints all take the same <code>source</code> parameter. Run names allow dots (every std cell name carries one — <code>opus-4.8</code>, <code>gpt-5.5</code>); traversal stays blocked by the character allowlist plus an outright <code>..</code> rejection (<code>coding_agent.py · _run_dir</code>).</p>
+
+<h2 id="5-deviations"><span class="num">5.</span> Where it deviates from the mental model</h2>
+<div class="callout warn">
+<strong>Control is claude-sdk-only.</strong> The model says "monitor for coding-agent runs", but the Run button drives exactly one harness: <code>CodingAgentRunner</code> spawns <code>uirun.py</code>, which is hard-wired to the <code>sdk</code> adapter. mini-swe and codex cells are CLI-launched (<code>coding-agent/stdrun.py</code>) and reach the page as browse-only history. Live mode is likewise SDK-runner-only (<code>CodingAgentPage.tsx</code>, mode toggle).
+</div>
+<div class="callout warn">
+<strong>The active-episode readout assumes a single worker.</strong> <code>status()</code> infers "active" as the first started-but-unsummarized episode index. The shared <code>run_cell</code> core supports N parallel env servers, but the runner passes exactly one URL — if you ever point the runner at multiple servers, the active-episode heuristic (and the v1 "one run at a time" guard) under-reports what is running.
+</div>
+<div class="callout warn">
+<strong>A backend restart kills the run but not the record.</strong> The auto_host dies with the backend (PDEATHSIG); the driver is torn down by the lifespan <code>shutdown()</code> hook. In-flight episodes are lost mid-session — but because state is artifact-derived, everything already flushed renders fine afterwards, and the run resumes from the CLI with <code>stdrun</code>-style <code>--episodes</code> reruns only for <code>std_*</code> cells, not <code>ui_*</code> runs (no resume endpoint on the router).
+</div>
+
+<h2 id="6-key-files"><span class="num">6.</span> Key files</h2>
+<table>
+<thead><tr><th>Piece</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Monitor page (tab)</td><td><code>agentcanvas/frontend/src/pages/coding/CodingAgentPage.tsx</code></td></tr>
+<tr><td>REST router</td><td><code>agentcanvas/backend/app/api/execution/coding_agent.py</code></td></tr>
+<tr><td>Runner service</td><td><code>agentcanvas/backend/app/services/coding_agent_runner.py</code></td></tr>
+<tr><td>UI driver entry</td><td><code>coding-agent/uirun.py</code> (over <code>coding-agent/driver.py · run_cell</code>)</td></tr>
+<tr><td>Tool surface</td><td><code>coding-agent/bridges/mcp_bridge.py</code> (stdio MCP; spawned per session)</td></tr>
+<tr><td>Artifacts</td><td><code>outputs/beta-coding-agent/</code> · <code>outputs/beta-react-harness/</code> · <code>outputs/beta-codex-agent/</code></td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-run-path">2. The run path — three processes per click</a>
+      <a class="toc-h2" href="#3-artifact-contract">3. The artifact contract — what the page renders</a>
+      <a class="toc-h2" href="#4-browse-path">4. The browse path — one surface, three roots</a>
+      <a class="toc-h2" href="#5-deviations">5. Where it deviates from the mental model</a>
+      <a class="toc-h2" href="#6-key-files">6. Key files</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

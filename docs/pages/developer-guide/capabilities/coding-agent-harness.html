@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coding-Agent Harness — AgentCanvas</title>
+<meta name="description" content="Stock coding agents — Claude Agent SDK, mini-swe-agent, Codex CLI — as VLN agents over one byte-equivalent tool surface.">
+<meta property="og:title" content="Coding-Agent Harness — AgentCanvas">
+<meta property="og:description" content="Stock coding agents — Claude Agent SDK, mini-swe-agent, Codex CLI — as VLN agents over one byte-equivalent tool surface.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/capabilities/coding-agent-harness.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/capabilities/coding-agent-harness.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body capability">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Capabilities</a>
+    <span class="sep">/</span>
+    <span class="here">Coding-Agent Harness</span>
+  </div>
+  <div class="last-updated">2026-07-20</div>
+</div>
+  <header class="page-header capability">
+  <h1><span class="capability-num">10</span>Coding-Agent Harness</h1>
+  <p class="tagline">Stock coding agents — Claude Agent SDK, mini-swe-agent, Codex CLI — as VLN agents over one byte-equivalent tool surface.</p>
+</header>
+
+<p>Every other capability on this list runs agents the platform authored — graphs, nodes, wires. This one runs agents the platform did <em>not</em> author: a stock coding agent (Anthropic's Claude Agent SDK, the open ~100-line mini-swe-agent ReAct loop, or OpenAI's Codex CLI), with zero embodied specialization, dropped into a photorealistic building and asked to follow an R2R-CE navigation instruction. The platform's contribution is the seat, not the pilot: the <code>env_habitat</code> nodeset serves the world over its auto_host HTTP surface, a stdio MCP bridge (or its in-process toolset mirror) exposes exactly <code>observe()</code> and <code>step()</code>, and habitat's own <code>env_habitat__evaluate</code> scores the result — the same ruler as the verified VLN graphs. Everything lives in the repo-root <code>coding-agent/</code> package.</p>
+<p><em>Design docs: <a href="../design-docs/monitors/coding-agent-monitor.html">Coding-Agent Monitor</a> · <a href="../design-docs/monitors/human-performance.html">Human Performance Tab</a> · <a href="../design-docs/surfaces/coding-agent-backend-surface.html">Coding-Agent Backend Surface</a> · builds on <a href="isolated-runtime-environments.html">Isolated Runtime Environments</a> (server mode) and the <a href="../nodesets/status/index.html">env_habitat nodeset</a></em></p>
+<hr>
+
+<h2 id="1-what-it-measures"><span class="num">1.</span> What it measures</h2>
+<p>The question is whether general agentic scaffolding — built for editing code — can navigate an embodied environment with nothing but a camera and four buttons. The agent sees only what its tools return: <code>observe()</code> (egocentric RGB) and <code>step(actions)</code> (0 = STOP, 1 = forward 0.25 m, 2/3 = turn 15°). No pose, no depth, no map, no metrics; episode placement and evaluation stay driver-side. Conditions layer mechanisms on top of that bare floor: <code>bare</code> (nothing), <code>nav</code> (clearance readout, turn-budget broadcast, STOP-confirmation gate, <code>look_around()</code>, optionally a navigation skill text), <code>persona</code> (keep the stock Claude Code system prompt), and <code>wp</code>/<code>wp-nav</code> (a waypoint action space: panoramic <code>observe()</code> with numbered candidates from a SmartWay waypoint predictor, <code>goto(waypoint)</code>, <code>stop()</code>).</p>
+
+<h2 id="2-one-surface"><span class="num">2.</span> One tool surface, three harnesses</h2>
+<p>The harness is the moved variable, so the tool surface must not move: <code>coding-agent/bridges/mcp_bridge.py</code> is the single implementation of the toolset, and every harness reaches it in whichever way that harness natively can.</p>
+<table>
+<thead><tr><th>Harness</th><th>Scaffolding</th><th>Reaches the env via</th><th>Auth / billing</th></tr></thead>
+<tbody>
+<tr><td><code>sdk</code></td><td>Claude Agent SDK (closed)</td><td>spawns the bridge as a stdio MCP server</td><td>Claude subscription (adapter strips a stray API key)</td></tr>
+<tr><td><code>mini</code></td><td>mini-swe-agent ReAct loop (open)</td><td><code>coding-agent/mini/toolset.py</code> — the bridge ported verbatim, in-process</td><td>provider API key via litellm; local models via a context-pinned ollama</td></tr>
+<tr><td><code>codex</code></td><td>OpenAI Codex CLI (closed)</td><td>mounts the same bridge file as a stdio MCP server</td><td>ChatGPT subscription (<code>codex login</code>)</td></tr>
+</tbody>
+</table>
+<p>Two gates keep "same experiment" honest: <code>coding-agent/mini/check_equivalence.py</code> asserts the mini port is byte-equal to the bridge (tool names, descriptions, schemas, clearance math, waypoint annotation — down to identical PNG bytes), and <code>coding-agent/prompts.py</code> refuses to run a nav cell whose skill text drifted from the frozen md5. The prompt drafts themselves are checked byte-equal against the frozen legacy driver they were moved from.</p>
+
+<h2 id="3-cells-not-flags"><span class="num">3.</span> Cells, not flags — the standard board</h2>
+<p>Comparability is enforced structurally: a standard run is a <em>cell</em> (harness × model × condition × effort tier) from the registry in <code>coding-agent/cells.py</code>, and every protocol knob — 200 turns, 512 px RGB, rand100 episodes 0–99, 500 movement actions, 2400 s per episode — is frozen there, not passed on a command line. Overriding anything requires <code>--nonstd</code>, which renames the run so it can never sit on the board.</p>
+<pre class="hl">
+<span class="c1"># one frozen cell of the standard board (habitat auto_host already up)</span>
+python<span class="w"> </span>coding-agent/stdrun.py<span class="w"> </span>run<span class="w"> </span>std_sdk_fable-5_bare_default
+python<span class="w"> </span>coding-agent/stdrun.py<span class="w"> </span>board<span class="w">      </span><span class="c1"># grid status from summaries on disk</span>
+python<span class="w"> </span>coding-agent/stdrun.py<span class="w"> </span>compare<span class="w"> </span>std_sdk_opus-4.8_bare_default<span class="w"> </span>std_sdk_fable-5_bare_default
+</pre>
+<p>The runner is built for long metered batches: workers resume per-index into the same run dir, a <code>DRAIN</code> sentinel (or <code>stdrun.py drain</code>) stops a batch at an episode boundary without cutting in-flight work, subscription throttling retries outside the episode's wall-clock budget, and <code>compare</code> runs an exact paired McNemar over same-episode successes. <code>stdrun.py experiments</code> maps the paper's E-numbered table onto cells and their live status.</p>
+
+<h2 id="4-watch"><span class="num">4.</span> Watch it, and baseline it against a human</h2>
+<p>Two frontend tabs sit on top of the artifacts. The <strong>Coding Agent</strong> tab hosts a Claude-SDK run with one click and renders any run from any harness as a unified live log — thinking, tool calls, and the agent's egocentric frames inlined at the exact <code>observe()</code> calls that produced them (<a href="../design-docs/monitors/coding-agent-monitor.html">design doc</a>). The <strong>Human</strong> tab puts a person in the same seat — same episodes, same discrete actions, same ruler — so human SR/SPL lands directly beside the agent cells (<a href="../design-docs/monitors/human-performance.html">design doc</a>).</p>
+
+<figure style="margin:1.5rem 0;text-align:center">
+  <img src="../design-docs/monitors/img/coding-agent-monitor.png" alt="The Coding Agent tab browsing std_sdk_fable-5_bare_default (SR 0.75, 100 episodes): run form, harness source toggle, per-episode success grid, and episode 0's unified log with an inline egocentric frame" loading="lazy" style="max-width:100%;border-radius:8px">
+  <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">The Coding Agent tab browsing a finished board cell — <code>std_sdk_fable-5_bare_default</code>, SR 0.75 over 100 episodes — with episode 0's trajectory rendered as a unified log, frames inlined at their <code>observe()</code> calls.</figcaption>
+</figure>
+<figure style="margin:1.5rem 0;text-align:center">
+  <img src="../design-docs/monitors/img/human-tab.png" alt="The Human tab mid-session on episode 0: the same instruction the agents get, the egocentric frame facing the pool room, a D-pad with STOP, and the 100-episode tested grid" loading="lazy" style="max-width:100%;border-radius:8px">
+  <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">The Human tab mid-session on the same episode 0 — same instruction, same discrete actions, same ruler.</figcaption>
+</figure>
+
+<h2 id="5-key-files"><span class="num">5.</span> Key files</h2>
+<table>
+<thead><tr><th>Piece</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Unified runner (CLI)</td><td><code>coding-agent/stdrun.py</code> · <code>cells.py</code> · <code>driver.py</code> · <code>prompts.py</code></td></tr>
+<tr><td>Harness adapters</td><td><code>coding-agent/harnesses/</code> — <code>claude_sdk.py</code> · <code>mini_swe.py</code> · <code>codex_cli.py</code></td></tr>
+<tr><td>Tool surface</td><td><code>coding-agent/bridges/</code> — <code>mcp_bridge.py</code> · <code>wp_bridge.py</code>; mini mirror in <code>coding-agent/mini/</code></td></tr>
+<tr><td>Skills + waypoint shim</td><td><code>coding-agent/skills/</code> · <code>coding-agent/wp_predictor_shim/</code></td></tr>
+<tr><td>Monitor UI entry</td><td><code>coding-agent/uirun.py</code> (spawned by <code>app/services/coding_agent_runner.py</code>)</td></tr>
+<tr><td>Frozen legacy drivers</td><td><code>coding-agent/legacy/</code> — provenance + equivalence fixtures, never edited</td></tr>
+<tr><td>Artifacts</td><td><code>outputs/beta-coding-agent/</code> · <code>outputs/beta-react-harness/</code> · <code>outputs/beta-codex-agent/</code> · <code>outputs/human/</code></td></tr>
+</tbody>
+</table>
+
+<h2 id="status">Status</h2>
+<p>Working; the std-v2 board is mid-flight on the <code>dev/coding-agent</code> branch (run <code>stdrun.py board</code> for the live grid — the board on disk, never a doc, is the source of truth for numbers). The three formerly separate harness directories were unified into <code>coding-agent/</code> on 2026-07-20.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-measures">1. What it measures</a>
+      <a class="toc-h2" href="#2-one-surface">2. One tool surface, three harnesses</a>
+      <a class="toc-h2" href="#3-cells-not-flags">3. Cells, not flags — the standard board</a>
+      <a class="toc-h2" href="#4-watch">4. Watch it, and baseline it against a human</a>
+      <a class="toc-h2" href="#5-key-files">5. Key files</a>
+      <a class="toc-h2" href="#status">Status</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

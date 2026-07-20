@@ -8,7 +8,7 @@ Adding another nodeset later = another subclass (or config-declared instance)
 plus a whitelist entry in the run condition; the invocation path stays this one.
 
 ``HabitatToolSet`` is the first instance: the agent-facing toolset of the
-claude-SDK path (``beta-coding-agent/mcp_bridge.py``) ported verbatim — same
+claude-SDK path (``coding-agent/bridges/mcp_bridge.py``) ported verbatim — same
 tool descriptions and input schemas, same clearance readout, same turn-budget
 broadcast, same STOP confirmation gate, same live-spectating artifacts — minus
 the MCP subprocess. Per-episode state that lived in bridge module globals
@@ -443,7 +443,7 @@ class HabitatToolSet(NodesetToolSet):
 
 # ── waypoint toolset — wp_bridge.py port ──
 #
-# In-process mirror of beta-coding-agent/wp_bridge.py's action space: a
+# In-process mirror of bridges/wp_bridge.py's action space: a
 # depth-based predictor proposes ≤5 candidate waypoints, they are drawn as
 # numbered circles on a [Left|Front|Right|Back] strip, and the agent picks one
 # by number (goto) or stops. Tool descriptions + input schemas are byte-

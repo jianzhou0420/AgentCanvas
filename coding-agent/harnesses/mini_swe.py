@@ -1,9 +1,9 @@
 """mini-swe-agent adapter — the open ReAct loop.
 
-Session block ported from beta-react-harness/run_episodes.py; the harness
-modules themselves (toolset / model / env / nav_agent) are imported from
-beta-react-harness — they stay the single implementation, still gated by
-check_equivalence.py. litellm bills through the provider API key.
+Session block ported from the legacy mini driver (frozen at
+legacy/beta-react-harness/run_episodes.py); the harness modules themselves
+(toolset / model / env / nav_agent) are imported from coding-agent/mini/ —
+they stay the single implementation, still gated by check_equivalence.py. litellm bills through the provider API key.
 
 Prompt delivery note: the shared driver hands us the RENDERED briefing;
 mini's DefaultAgent runs its templates through jinja, so we wrap the text in
@@ -29,7 +29,7 @@ from typing import Any
 from driver import EpisodeContext, EventSink, SessionOutcome
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MINI_DIR = REPO_ROOT / "beta-react-harness"
+MINI_DIR = Path(__file__).resolve().parents[1] / "mini"
 
 # Serving contract for locally-hosted models. ollama's default context is 4096:
 # every request past it is silently truncated, the run completes, the numbers

@@ -5,7 +5,7 @@ import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 import { usePersistentState } from "./usePersistentState";
 
-// Coding-Agent Monitor — control panel + live text/image logs for beta-coding-agent
+// Coding-Agent Monitor — control panel + live text/image logs for coding-agent
 // runs (vanilla coding agent driving env_habitat through the MCP bridge).
 // v1: single worker, one run at a time. Live data is 1 Hz polling against
 // /api/coding-agent (the trajectory JSONL is flushed per event backend-side).
@@ -75,7 +75,7 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
       const texts = (line.texts as string[] | undefined) ?? [];
       return { icon: "↩", text: texts.join(" ").slice(0, 300), dim: true };
     }
-    // mini-swe-agent event kinds (beta-react-harness runs)
+    // mini-swe-agent event kinds (mini-swe harness runs)
     case "user_text":
       return { icon: "👤", text: String(line.text ?? ""), dim: true };
     case "exit":
@@ -117,9 +117,8 @@ export default function CodingAgentPage() {
     "agentcanvas.coding.mode",
     "live",
   );
-  // which harness's runs to browse: Agent SDK (beta-coding-agent) vs
-  // mini-swe-agent (beta-react-harness) vs OpenAI Codex CLI
-  // (beta-codex-agent). Live mode is SDK-runner-only.
+  // which harness's runs to browse: Agent SDK vs mini-swe-agent vs OpenAI
+  // Codex CLI (output roots outputs/beta-*). Live mode is SDK-runner-only.
   const [harness, setHarness] = usePersistentState<"claude-sdk" | "mini-swe" | "codex">(
     "agentcanvas.coding.harness",
     "claude-sdk",
