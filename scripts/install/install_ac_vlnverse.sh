@@ -21,8 +21,9 @@
 #   - mamba or conda installed
 #   - Isaac Sim 5.1 installed manually (tens of GB), e.g. under ~/isaacsim5.1
 #     https://docs.isaacsim.omniverse.nvidia.com/ — workstation install
-#   - VLNVerse data: episodes (raw_data/) + scenes; scenes can be fetched with
-#     scripts/data/fetch_scenes_vlnverse.py if you have no local copy
+#   - VLNVerse data (fetched below if absent, or symlinked via VLNVERSE_DATA_ROOT):
+#       episodes → scripts/data/fetch_episodes_vlnverse.py  (HF Eyz/VLNVerse_data, ~few MB)
+#       scenes   → scripts/data/fetch_scenes_vlnverse.py    (HF Eyz/VLNVerse_scene, ~80 GB)
 # =============================================================================
 
 set -e
@@ -97,8 +98,9 @@ for subdir in raw_data scene; do
             echo "  [SKIP] scene (no source at $src — download with:"
             echo "         python3 scripts/data/fetch_scenes_vlnverse.py)"
         else
-            echo "  [SKIP] raw_data (no source at $src — set VLNVERSE_DATA_ROOT to a"
-            echo "         directory containing the VLNVerse raw_data/ episodes)"
+            echo "  [SKIP] raw_data (no source at $src — download episode splits with:"
+            echo "         python3 scripts/data/fetch_episodes_vlnverse.py"
+            echo "         or set VLNVERSE_DATA_ROOT to a dir holding raw_data/)"
         fi
         continue
     fi
@@ -159,5 +161,6 @@ echo "The ac-vlnverse env is used automatically by server-mode nodesets."
 echo "To set it explicitly:  export VLNVERSE_PYTHON=$VLNVERSE_PYTHON"
 echo "To activate manually:  conda activate ac-vlnverse"
 echo ""
-echo "Scenes not downloaded yet?  python3 scripts/data/fetch_scenes_vlnverse.py"
-echo "(rate-limit friendly loop:  bash scripts/data/fetch_scenes_vlnverse_loop.sh)"
+echo "Episodes not present?  python3 scripts/data/fetch_episodes_vlnverse.py   (~few MB)"
+echo "Scenes not downloaded?  python3 scripts/data/fetch_scenes_vlnverse.py    (~80 GB)"
+echo "(scene rate-limit loop:  bash scripts/data/fetch_scenes_vlnverse_loop.sh)"
