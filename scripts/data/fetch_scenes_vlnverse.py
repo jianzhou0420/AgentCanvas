@@ -138,8 +138,20 @@ def _retry_after_from(exc: BaseException) -> float | None:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPO_ID = "Eyz/VLNVerse_scene"
+# Single env-var contract with the installer + nodeset runtime:
+# VLNVERSE_SCENE_DIR wins; else derive from VLNVERSE_DATA_ROOT (the directory
+# holding raw_data/ + scene/ — the same variable install_ac_vlnverse.sh and
+# env_vlnverse's _data_root() read); else the repo-local data/vlnverse/scene.
+# Without the derivation, exporting only VLNVERSE_DATA_ROOT would make this
+# script create a REAL repo-local scene dir that the runtime never reads and
+# that permanently blocks the installer's symlink step.
 DEFAULT_OUTPUT_DIR = Path(
-    os.environ.get("VLNVERSE_SCENE_DIR", REPO_ROOT / "data" / "vlnverse" / "scene")
+    os.environ.get("VLNVERSE_SCENE_DIR")
+    or (
+        Path(os.environ["VLNVERSE_DATA_ROOT"]) / "scene"
+        if os.environ.get("VLNVERSE_DATA_ROOT")
+        else REPO_ROOT / "data" / "vlnverse" / "scene"
+    )
 )
 COMPLETE_MARKER = ".download_complete"
 
@@ -450,24 +462,13 @@ def download_files(
     args: argparse.Namespace,
     desc: str,
 ) -> None:
+    # max_workers == 1 rides the same executor path (a 1-worker pool is
+    # sequential by construction) — one failure-handling path, not two.
     max_workers = max(1, args.max_workers)
     failures: list[str] = []
 
     def record_failure(path: str, exc: BaseException) -> None:
         failures.append(f"{path}: {exc}")
-
-    if max_workers == 1:
-        progress = tqdm(files, desc=desc) if tqdm else files
-        for path in progress:
-            try:
-                download_one_file(repo_id, revision, output_dir, path, args)
-            except _RateLimitedAbort:
-                raise
-            except Exception as exc:  # noqa: BLE001 - report every failed file
-                record_failure(path, exc)
-        if failures:
-            raise RuntimeError("\n".join(failures[:20]))
-        return
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_path = {

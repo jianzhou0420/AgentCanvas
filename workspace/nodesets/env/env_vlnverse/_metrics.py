@@ -62,7 +62,7 @@ class EpisodeMetricsAccumulator:
     Usage (manager drives it):
         acc = EpisodeMetricsAccumulator(initial_distance=kin.current_dist_to_goal())
         # per env step — pre-action pose/dist, post-action collision:
-        acc.record_step(position, dist_to_goal, collided, moved_distance=d, is_move=True)
+        acc.record_step(position, dist_to_goal, collided, moved_distance=d)
         acc.mark_stop(); acc.set_end_reason("stop")
         metrics = acc.final_metrics(ep_id, kin.current_dist_to_goal(), ref_path)
     """
@@ -84,22 +84,20 @@ class EpisodeMetricsAccumulator:
         dist_to_goal: float,
         collided: bool,
         moved_distance: float = 0.0,
-        is_move: Optional[bool] = None,
     ) -> None:
         """Record one env step.
 
         ``position`` / ``dist_to_goal`` are the PRE-action values (upstream
         ``_record_pre``); ``collided`` is the step's outcome. ``moved_distance``
-        is the commanded distance (0 for STOP). ``is_move`` defaults to
-        ``moved_distance > 0`` — mirrors upstream counting forward/goto moves
-        but not STOPs.
+        is the commanded distance (0 for STOP) — a positive value counts as a
+        move, mirroring upstream counting forward/goto moves but not STOPs.
         """
         self.dists.append(float(dist_to_goal))
         self.traj.append(position.copy() if hasattr(position, "copy") else position)
         self.cols.append(bool(collided))
         self.path_length += float(moved_distance)
         self.steps += 1
-        if is_move if is_move is not None else moved_distance > 0:
+        if moved_distance > 0:
             self.moves += 1
 
     def mark_stop(self) -> None:

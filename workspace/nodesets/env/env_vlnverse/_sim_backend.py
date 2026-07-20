@@ -36,7 +36,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol
 
 import msgpack
 import msgpack_numpy
@@ -53,7 +53,14 @@ msgpack_numpy.patch()
 @dataclass
 class RenderedView:
     rgb: np.ndarray   # (H, W, 3) uint8
-    depth: np.ndarray  # (H, W) float32
+    depth: np.ndarray  # (H, W) float32, finite (see _DEPTH_FAR_CLIP_M)
+
+
+# Deterministic far clip for Isaac's non-finite depth: RTX renders +inf for
+# no-hit rays (sky / open windows) and habitat consumers assume finite depth.
+# A fixed constant (not the per-frame finite max) keeps the same no-hit pixel
+# at the same metric value across panorama views and episodes.
+_DEPTH_FAR_CLIP_M = 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +80,6 @@ class SimBackend(Protocol):
 
     def load_scene(self, scene_id: str, scene_usd_path: str) -> None:
         """Load or switch to a USD scene. Must clear any previously loaded one."""
-
-    def get_camera_resolution(self) -> Tuple[int, int]:
-        """Return ``(height, width)``."""
 
     def capture_panoramic(
         self,
@@ -210,10 +214,6 @@ class _FramedRPCMixin:
     def load_scene(self, scene_id: str, scene_usd_path: str) -> None:
         self._call('load_scene', scene_id=scene_id, scene_usd_path=scene_usd_path)
 
-    def get_camera_resolution(self) -> Tuple[int, int]:
-        h, w = self._call('get_camera_resolution')
-        return int(h), int(w)
-
     def capture_panoramic(
         self,
         position: np.ndarray,
@@ -228,7 +228,20 @@ class _FramedRPCMixin:
             num_views=int(num_views),
             warmup_steps=int(warmup_steps),
         )
-        return [RenderedView(rgb=item['rgb'], depth=item['depth']) for item in raw]
+        # Depth finiteness is enforced HERE, at the capture boundary, so every
+        # consumer (DEPTH ports, raw_obs, both base64 encoders) sees the same
+        # finite depth — habitat's sensor never produces non-finite values, and
+        # a per-consumer clamp with a data-dependent cap would encode the same
+        # no-hit sky pixel differently in every panorama view.
+        views: List[RenderedView] = []
+        for item in raw:
+            depth = np.asarray(item['depth'], dtype=np.float32)
+            if not np.isfinite(depth).all():
+                depth = np.nan_to_num(
+                    depth, nan=0.0, posinf=_DEPTH_FAR_CLIP_M, neginf=0.0
+                )
+            views.append(RenderedView(rgb=item['rgb'], depth=depth))
+        return views
 
 
 class SubprocessIsaacSimBackend(_FramedRPCMixin):
@@ -251,11 +264,13 @@ class SubprocessIsaacSimBackend(_FramedRPCMixin):
         # carries backend+workspace paths) so the Isaac 5.1 launcher sets up
         # its own paths cleanly.
         env.pop('PYTHONPATH', None)
-        # Strip conda context: with these set, Isaac's python.sh prints a
+        # Strip conda context: with it set, Isaac's python.sh prints a
         # "running in conda env" warning TO STDOUT before python starts,
         # poisoning the frame channel (see STDIO_MAGIC). The magic scan below
         # would survive it anyway — this just kills the noise at the source.
-        for k in ('CONDA_PREFIX', 'CONDA_DEFAULT_ENV', 'CONDA_SHLVL', 'CONDA_EXE'):
+        # By prefix, not an enumerated list: conda sets more vars than the
+        # obvious four and python.sh's trigger may key on any of them.
+        for k in [k for k in env if k.startswith('CONDA_') or k == '_CE_CONDA']:
             env.pop(k, None)
         if env_overrides:
             env.update(env_overrides)

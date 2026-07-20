@@ -1,5 +1,8 @@
 """Unit tests for env_vlnverse._metrics (numpy-only).
 
+Modules under test are imported through the synthetic package conftest.py
+registers (see conftest.py for the run recipe / rationale).
+
 Includes a parity test against the NavHarness original ``calc_ndtw`` —
 extracted from mllm_utils.py source via ast (that module imports cv2/torch/
 matplotlib at module level, far too heavy to import here) — skipped when the
@@ -9,38 +12,17 @@ NavHarness checkout is absent.
 from __future__ import annotations
 
 import ast
-import importlib.util
-import sys
-import types
+import importlib
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-PKG_DIR = Path(__file__).resolve().parent
-_PKG = "envvlnverse_under_test"
-
 NAVHARNESS_MLLM_UTILS = Path(
     "/home/xunyi/Desktop/Projects/NavHarness/navharness/model/basemodel/mllm/mllm_utils.py"
 )
 
-
-def _load(name: str):
-    if _PKG not in sys.modules:
-        pkg = types.ModuleType(_PKG)
-        pkg.__path__ = [str(PKG_DIR)]
-        sys.modules[_PKG] = pkg
-    full = f"{_PKG}.{name}"
-    if full in sys.modules:
-        return sys.modules[full]
-    spec = importlib.util.spec_from_file_location(full, PKG_DIR / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[full] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_metrics = _load("_metrics")
+_metrics = importlib.import_module("envvlnverse_under_test._metrics")
 calc_ndtw = _metrics.calc_ndtw
 EpisodeMetricsAccumulator = _metrics.EpisodeMetricsAccumulator
 

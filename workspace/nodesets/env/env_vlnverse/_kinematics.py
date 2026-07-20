@@ -2,11 +2,15 @@
 
 Vendored from:
     NavHarness navharness/projects/internutopia_vln_extension/envs/isaac_base_env.py
-    (class ``IsaacVLNBaseEnvironment``, movement/oracle subset)
+    (class ``IsaacVLNBaseEnvironment``, movement subset)
 
 The upstream class fuses episode management, Isaac observation capture, and
-pure-python motion. Only the motion + occupancy + oracle geometry lives here;
-episode selection and observation capture are manager-owned (``__init__.py``).
+pure-python motion. Only the motion + occupancy geometry lives here; episode
+selection and observation capture are manager-owned (``__init__.py``). The
+upstream oracle helpers (``_analyze_surrounding_occupancy`` :352,
+``cand_dist_to_goal`` :548, ``get_next_reference_waypoint`` :572) have no
+consumer in this nodeset and were dropped — re-vendor from those line refs
+if an oracle node ever lands.
 
 Deviations from upstream:
 
@@ -40,11 +44,11 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
-from ._quat import euler_angles_to_quat, quat_to_euler_angles
+from ._quat import _quat_mul, euler_angles_to_quat, quat_to_euler_angles
 
 log = logging.getLogger("agentcanvas.vlnverse.kinematics")
 
@@ -80,7 +84,6 @@ class VLNVerseKinematics:
         # Episode geometry (caller-set)
         self.goal_position: Optional[np.ndarray] = None
         self.reference_path: List[np.ndarray] = []
-        self.current_path_index = 0
 
         # Scene occupancy (load_freemap)
         self.occupancy: Optional[np.ndarray] = None
@@ -128,7 +131,6 @@ class VLNVerseKinematics:
             np.array([pt[0], pt[1], pt[2] + AGENT_HEIGHT_M])
             for pt in episode.get("reference_path", [])
         ]
-        self.current_path_index = 0
 
     def load_freemap(self, path: str) -> None:
         """Load the scene occupancy grid (``freemap.npy``)."""
@@ -163,7 +165,7 @@ class VLNVerseKinematics:
         """Quaternion-composed yaw update (no cumulative drift) — shared head
         of both upstream move paths."""
         delta_quat = euler_angles_to_quat(np.array([0, 0, angle]), degrees=False)
-        self.agent_rotation_quat = self._quat_multiply(self.agent_rotation_quat, delta_quat)
+        self.agent_rotation_quat = _quat_mul(self.agent_rotation_quat, delta_quat)
         self.agent_rotation_quat = self._normalize_quat(self.agent_rotation_quat)
         euler = quat_to_euler_angles(self.agent_rotation_quat, degrees=False)
         self.agent_heading = float(euler[2])
@@ -305,79 +307,12 @@ class VLNVerseKinematics:
 
         return None
 
-    def analyze_surrounding_occupancy(self, grid_radius: int = 25) -> Tuple[bool, bool]:
-        """Boundary/obstruction warnings around the agent — upstream lines
-        352-411 minus the prints. Returns ``(near_boundary, obstructed)``.
-        Cell legend: 0 obstacle · 1 reachable · 2 out-of-bounds.
-        """
-        occ = self.occupancy
-        if occ is None:
-            return False, False
-        agent_idx_x = int(np.argmin(np.abs(occ[0, :] - self.agent_position[0])))
-        agent_idx_y = int(np.argmin(np.abs(occ[:, 0] - self.agent_position[1])))
-        height, width = occ.shape
-        min_y = max(0, agent_idx_y - grid_radius)
-        max_y = min(height, agent_idx_y + grid_radius + 1)
-        min_x = max(0, agent_idx_x - grid_radius)
-        max_x = min(width, agent_idx_x + grid_radius + 1)
-        area = occ[min_y:max_y, min_x:max_x]
-        total = area.size
-        pct_obstacles = float(np.sum(area == 0)) / total * 100.0
-        pct_out_of_bounds = float(np.sum(area == 2)) / total * 100.0
-        bound = pct_out_of_bounds > 25.0
-        obstacle = pct_obstacles > 50.0
-        return bound, obstacle
-
-    # ==================== oracle helpers ====================
-
-    def cand_dist_to_goal(
-        self, angle: float, forward: float, elevation: float, use_oracle: bool
-    ) -> float:
-        """Distance-to-target of a hypothetical MOVE (upstream lines 548-562).
-        ``angle`` rad, ``elevation`` deg, ``forward`` m."""
-        new_heading = self.agent_heading + angle
-        hypo_pos = self.agent_position + self._movement_vector(new_heading, elevation, forward)
-        target = self.get_next_reference_waypoint() if use_oracle else self.goal_position
-        return float("inf") if target is None else float(np.linalg.norm(hypo_pos - target))
-
     def current_dist_to_goal(self) -> float:
         if self.goal_position is None:
             return float("inf")
         return float(np.linalg.norm(self.agent_position - self.goal_position))
 
-    def get_agent_heading(self) -> float:
-        return self.agent_heading
-
-    def get_next_reference_waypoint(self) -> Optional[np.ndarray]:
-        """Closest not-yet-passed reference-path point (upstream 572-584).
-        Stateful: advances ``current_path_index`` monotonically."""
-        if not self.reference_path:
-            return self.goal_position
-        min_dist, next_idx = float("inf"), len(self.reference_path) - 1
-        for i in range(self.current_path_index, len(self.reference_path)):
-            dist = np.linalg.norm(self.agent_position - self.reference_path[i])
-            if dist < min_dist:
-                min_dist, next_idx = dist, i
-        self.current_path_index = next_idx
-        if next_idx < len(self.reference_path):
-            return self.reference_path[next_idx]
-        return self.goal_position
-
-    # ==================== quaternion utils (upstream 597-611) ====================
-
-    @staticmethod
-    def _quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
-        """Quaternion product, [w,x,y,z]."""
-        w1, x1, y1, z1 = q1
-        w2, x2, y2, z2 = q2
-        return np.array(
-            [
-                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-            ]
-        )
+    # ==================== quaternion utils ====================
 
     @staticmethod
     def _normalize_quat(q: np.ndarray) -> np.ndarray:

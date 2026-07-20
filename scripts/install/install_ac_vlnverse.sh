@@ -118,15 +118,11 @@ for subdir in raw_data scene; do
 done
 
 # ── Step 4: Isaac worker smoke check ──
-# NOTE: _isaac_worker.py (with its --check flag) is created by port task A1;
-# A1/A2 run in parallel, so tolerate the file not existing yet.
 
 echo ""
 echo "=== Step 4: Isaac worker smoke check ==="
 WORKER="$PROJECT_ROOT/workspace/nodesets/env/env_vlnverse/_isaac_worker.py"
-if [ ! -f "$WORKER" ]; then
-    echo "  [SKIP] $WORKER not present yet."
-elif [ ! -f "$ISAAC_LAUNCHER" ]; then
+if [ ! -f "$ISAAC_LAUNCHER" ]; then
     echo "  [SKIP] Isaac launcher missing (see Step 2)."
 else
     echo "  Running: $ISAAC_LAUNCHER $WORKER --check  (first run may take a minute)"

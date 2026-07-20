@@ -1,42 +1,21 @@
 """Unit tests for env_vlnverse._quat / ._kinematics (numpy-only, no Isaac).
 
-Runs without the package __init__.py (B2 lands it later): modules are loaded
-by file path under a synthetic package so their relative imports resolve.
+Modules under test are imported through the synthetic package conftest.py
+registers — not the real package, whose ``__init__.py`` pulls the
+``app.components`` backend. Run with
+``PYTHONPATH=<repo>/agentcanvas/backend:<repo>`` (pytest imports the real
+package for conftest collection).
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
+import importlib
 
 import numpy as np
 import pytest
 
-PKG_DIR = Path(__file__).resolve().parent
-_PKG = "envvlnverse_under_test"
-
-
-def _load(name: str):
-    """Load a sibling module by path, registering it under a synthetic
-    package so `from ._quat import ...` works before __init__.py exists."""
-    if _PKG not in sys.modules:
-        pkg = types.ModuleType(_PKG)
-        pkg.__path__ = [str(PKG_DIR)]
-        sys.modules[_PKG] = pkg
-    full = f"{_PKG}.{name}"
-    if full in sys.modules:
-        return sys.modules[full]
-    spec = importlib.util.spec_from_file_location(full, PKG_DIR / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[full] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_quat = _load("_quat")
-_kinematics = _load("_kinematics")
+_quat = importlib.import_module("envvlnverse_under_test._quat")
+_kinematics = importlib.import_module("envvlnverse_under_test._kinematics")
 
 euler_angles_to_quat = _quat.euler_angles_to_quat
 quat_to_euler_angles = _quat.quat_to_euler_angles

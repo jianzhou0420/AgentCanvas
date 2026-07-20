@@ -118,24 +118,11 @@ log = logging.getLogger("agentcanvas.vlnverse")
 
 _DATASETS: list[str] = ["fine", "coarse"]
 
-# Split suffixes exposed in the panel/eval. The final_splits dir also holds
-# dialogue_subset / goalnav_subset / long_horizon* / interactive_subset
-# families (no fine_/coarse_ prefix, different task semantics) and
-# ``*.withheld`` challenge twins (goals=None, unscorable) — all excluded
-# (data audit 2026-07-20).
-_ALLOWED_SPLITS: set[str] = {
-    "train",
-    "val",
-    "val_unseen",
-    "test",
-    "challenge",
-    "human",
-    "subset",
-    "mini",
-    "subset_mini",
-}
-
-# Panel/display ordering — eval-relevant splits first.
+# Split suffixes exposed in the panel/eval, in display order (eval-relevant
+# first). The final_splits dir also holds dialogue_subset / goalnav_subset /
+# long_horizon* / interactive_subset families (different task semantics) and
+# ``*.withheld`` challenge twins (goals=None, unscorable) — everything not in
+# this list is out of contract (data audit 2026-07-20).
 _SPLIT_ORDER: list[str] = [
     "val_unseen",
     "val",
@@ -147,6 +134,7 @@ _SPLIT_ORDER: list[str] = [
     "test",
     "train",
 ]
+_ALLOWED_SPLITS: frozenset[str] = frozenset(_SPLIT_ORDER)
 
 # NavHarness MLLM eval step budget (macro actions — see module docstring).
 _DEFAULT_MAX_STEPS = 20
@@ -178,8 +166,20 @@ def _splits_dir() -> str:
     return os.path.join(_data_root(), "raw_data", "final_splits")
 
 
+# (dataset → (splits-dir mtime, splits)) — the split-file set only changes
+# when data is (re)installed, and the panel/eval paths re-enumerate often.
+_dataset_splits_cache: dict[str, tuple[float, list[str]]] = {}
+
+
 def _dataset_splits(dataset: str) -> list[str]:
     """Enumerate selectable splits for a dataset from the files on disk."""
+    try:
+        mtime = os.stat(_splits_dir()).st_mtime
+    except OSError:
+        return []  # data symlink not in place — nothing selectable, no cache
+    cached = _dataset_splits_cache.get(dataset)
+    if cached is not None and cached[0] == mtime:
+        return list(cached[1])
     found: set[str] = set()
     for path in glob.glob(os.path.join(_splits_dir(), f"{dataset}_*.json")) + glob.glob(
         os.path.join(_splits_dir(), f"{dataset}_*.json.gz")
@@ -190,7 +190,8 @@ def _dataset_splits(dataset: str) -> list[str]:
         if suffix in _ALLOWED_SPLITS:
             found.add(suffix)
     ordered = [s for s in _SPLIT_ORDER if s in found]
-    return ordered + sorted(found - set(ordered))
+    _dataset_splits_cache[dataset] = (mtime, ordered)
+    return list(ordered)
 
 
 def _split_file(dataset: str, split: str) -> str:
@@ -208,7 +209,53 @@ def _split_file(dataset: str, split: str) -> str:
     )
 
 
+def _normalize_episode(ep: dict) -> dict:
+    """Canonicalize the episode's goal schema at load time — the single seam
+    every consumer relies on afterwards.
+
+    ``goals`` becomes ``{"position": [...], "radius": float} | None``:
+      - dict with a position → kept (radius defaults to _SUCCESS_DISTANCE_M);
+      - None/absent (the ``.withheld`` challenge twins) → None — distance
+        metrics degrade to inf and are wire-sanitized by ``_finite_or_none``;
+      - anything else (habitat-style goal LISTS live in the excluded
+        long_horizon* family) → loud ValueError, never silent unscorability.
+    """
+    goals = ep.get("goals")
+    if goals is None:
+        ep["goals"] = None
+    elif isinstance(goals, dict) and "position" in goals:
+        ep["goals"] = {
+            "position": list(goals["position"]),
+            "radius": float(goals.get("radius") or _SUCCESS_DISTANCE_M),
+        }
+    else:
+        raise ValueError(
+            f"Unsupported goals schema in episode {ep.get('episode_id')!r}: "
+            f"{type(goals).__name__}"
+        )
+    return ep
+
+
+# (dataset, split) → normalized episode list. Safe to share: episodes are
+# read-only after _normalize_episode (the manager, panel, and kinematics only
+# read fields; replicated eval workers are separate processes anyway).
+_split_episodes_cache: dict[tuple[str, str], list[dict]] = {}
+
+
 def _load_split_episodes(dataset: str, split: str) -> list[dict]:
+    if split not in _ALLOWED_SPLITS:
+        # Closes the /call surface bypass: without this guard a caller could
+        # load e.g. "challenge.withheld" (goals=None → all-None metrics) that
+        # the panel/eval enumeration deliberately excludes.
+        raise ValueError(
+            f"Split {split!r} is not an allowed VLNVerse split "
+            f"(allowed: {_SPLIT_ORDER}) — the dialogue/goalnav/long_horizon/"
+            f"interactive families and .withheld twins are out of contract."
+        )
+    key = (dataset, split)
+    cached = _split_episodes_cache.get(key)
+    if cached is not None:
+        return cached
     path = _split_file(dataset, split)
     opener = gzip.open if path.endswith(".gz") else open
     with opener(path, "rt") as f:
@@ -216,10 +263,12 @@ def _load_split_episodes(dataset: str, split: str) -> list[dict]:
     episodes = payload["episodes"] if isinstance(payload, dict) else payload
     if not isinstance(episodes, list):
         raise ValueError(f"Malformed split file {path}: expected an episode list")
+    episodes = [_normalize_episode(ep) for ep in episodes]
+    _split_episodes_cache[key] = episodes
     return episodes
 
 
-def _instruction_text(ep: dict, dataset: str) -> str:
+def _instruction_text(ep: dict) -> str:
     """Normalize the instruction to a plain string.
 
     fine → ``instruction.instruction_text`` is a str; coarse → it is a dict
@@ -290,10 +339,14 @@ class VLNVerseEnvManager:
         self._gpu_id = 0
         self._sim_cfg: dict[str, Any] | None = None
         self._current_scene: str | None = None
-        # Frame cache: (RenderedView, pose_key). Moves invalidate it, so an
-        # observe after a move re-renders once and repeated observes are free.
+        # Per-episode success radius (goals.radius, canonicalized at load;
+        # module constant is the goals-absent fallback).
+        self._success_distance = _SUCCESS_DISTANCE_M
+        # Frame cache (RenderedView). Explicit invalidation is the single
+        # mechanism: every pose-changing action and every episode seat clears
+        # it, so an observe after a move re-renders once, repeated observes
+        # are free, and a post-STOP observe serves the cached terminal frame.
         self._current_view: Any = None
-        self._current_view_pose: tuple | None = None
         self._lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1,
@@ -399,7 +452,11 @@ class VLNVerseEnvManager:
                 split,
                 len(self._episodes),
             )
-            self._seat_episode_unlocked(0)
+            # Lazy seat: episode STATE only — the scene (20-30 s USD load
+            # when it differs) is deferred to the first action that needs
+            # the worker, so a panel cascade (dataset → split → episode →
+            # play) doesn't pay for scenes the user never runs.
+            self._seat_episode_unlocked(0, load_scene=False)
             return self._get_episode_info_unlocked()
 
     def shutdown(self) -> None:
@@ -415,7 +472,6 @@ class VLNVerseEnvManager:
                 finally:
                     self._backend = None
                 self._current_view = None
-                self._current_view_pose = None
 
     @property
     def initialized(self) -> bool:
@@ -459,12 +515,24 @@ class VLNVerseEnvManager:
         self._kin.load_freemap(freemap)
         self._current_scene = scan
 
-    def _seat_episode_unlocked(self, index: int) -> None:
+    def _seat_episode_unlocked(self, index: int, load_scene: bool = True) -> None:
         """Place the agent at episode ``index``'s start: scene, pose, goal,
-        fresh metrics accumulator. The only place episode state is (re)armed."""
+        fresh metrics accumulator. The only place episode state is (re)armed.
+
+        ``load_scene=False`` (split switching) defers the scene load to the
+        first action that needs the worker (``_ensure_episode_scene_unlocked``)
+        — a panel cascade otherwise pays up to two 20-30 s USD loads for
+        scenes the user never runs. Batch-eval placement
+        (``set_episode_by_index``) stays eager.
+        """
         ep = self._episodes[index]
-        self._ensure_scene_unlocked(ep["scan"])
+        if load_scene:
+            self._ensure_scene_unlocked(ep["scan"])
         self._kin.reset_from_episode(ep)
+        goals = ep.get("goals")
+        self._success_distance = (
+            goals["radius"] if goals else _SUCCESS_DISTANCE_M
+        )
         self._acc = EpisodeMetricsAccumulator(
             initial_distance=self._kin.current_dist_to_goal()
         )
@@ -475,43 +543,47 @@ class VLNVerseEnvManager:
         self._step_count = 0
         self._invalidate_view_unlocked()
 
-    # ── Frame cache ──
+    def _ensure_episode_scene_unlocked(self) -> None:
+        """Deferred half of a lazy (split-switch) seat: make sure the CURRENT
+        episode's scene + freemap are live before rendering or moving.
+        No-op when the scene is already current."""
+        if self._episodes:
+            self._ensure_scene_unlocked(self._episodes[self._episode_index]["scan"])
 
-    def _pose_key(self) -> tuple:
-        p = self._kin.agent_position
-        return (round(float(p[0]), 6), round(float(p[1]), 6), round(float(p[2]), 6),
-                round(float(self._kin.agent_heading), 6))
+    # ── Frame cache ──
 
     def _invalidate_view_unlocked(self) -> None:
         self._current_view = None
-        self._current_view_pose = None
 
     def _render_current_unlocked(self):
-        """Front view at the current pose, cached until the pose changes —
-        observe_* stays a pure idempotent read (env-template §5.3) while a
-        post-move observe re-renders exactly once."""
-        key = self._pose_key()
-        if self._current_view is not None and self._current_view_pose == key:
+        """Front view at the current pose, cached until explicitly invalidated
+        (every pose-changing action and episode seat clears it) — observe_*
+        stays a pure idempotent read (env-template §5.3) while a post-move
+        observe re-renders exactly once and a post-STOP observe serves the
+        cached terminal frame."""
+        if self._current_view is not None:
             return self._current_view
+        self._ensure_episode_scene_unlocked()
         views = self._backend.capture_panoramic(
             self._kin.agent_position, self._kin.agent_heading, num_views=1
         )
         self._current_view = views[0]
-        self._current_view_pose = key
         return self._current_view
 
     # ── Actions ──
 
-    def _finish_step_unlocked(self) -> None:
+    def _finish_step_unlocked(self, pose_changed: bool = True) -> None:
         """Post-action bookkeeping shared by both step families: count the
-        step, apply the budget cutoff (truncated), drop the frame cache."""
+        step, apply the budget cutoff (truncated), and drop the frame cache
+        when the pose moved (STOP keeps the terminal frame cached)."""
         self._step_count += 1
         if not self._episode_done and self._step_count >= self._max_steps:
             self._episode_done = True
             self._truncated = True
             if self._acc is not None:
                 self._acc.set_end_reason("budget")
-        self._invalidate_view_unlocked()
+        if pose_changed:
+            self._invalidate_view_unlocked()
 
     def _step_result_unlocked(self, extra: dict | None = None) -> dict:
         state = self._get_agent_state_unlocked()
@@ -530,6 +602,54 @@ class VLNVerseEnvManager:
             result["metrics"] = self._evaluate_unlocked()
         return result
 
+    def _move_unlocked(
+        self,
+        angle: float,
+        elevation: float,
+        distance: float,
+        extra: dict,
+        with_deviation: bool = True,
+    ) -> dict:
+        """Shared per-step body for both action families: guards, pre-action
+        capture, kinematic move, accumulator record, budget bookkeeping.
+        ``extra`` keys ride into the result verbatim; ``with_deviation``
+        keeps the discrete family's result shape deviation-free."""
+        if self._backend is None:
+            return {"error": "Environment not initialized"}
+        if self._episode_done:
+            return {"error": "Episode already done", "done": True}
+        self._ensure_episode_scene_unlocked()  # lazy split-switch seat
+        pre_pos = self._kin.agent_position.copy()
+        pre_dist = self._kin.current_dist_to_goal()
+        collision, deviation = self._kin.move(angle, elevation, distance)
+        self._acc.record_step(
+            pre_pos, pre_dist, collided=collision, moved_distance=distance
+        )
+        self._finish_step_unlocked(pose_changed=True)
+        extra = {**extra, "collision": collision}
+        if with_deviation:
+            extra["deviation_m"] = float(deviation)
+        return self._step_result_unlocked(extra)
+
+    def _stop_unlocked(self, extra: dict) -> dict:
+        """Terminal STOP: record the no-move step, mark the episode done."""
+        if self._backend is None:
+            return {"error": "Environment not initialized"}
+        if self._episode_done:
+            return {"error": "Episode already done", "done": True}
+        self._acc.record_step(
+            self._kin.agent_position.copy(),
+            self._kin.current_dist_to_goal(),
+            collided=False,
+            moved_distance=0.0,
+        )
+        self._acc.mark_stop()
+        self._acc.set_end_reason("stop")
+        self._episode_done = True
+        self._terminated = True
+        self._finish_step_unlocked(pose_changed=False)
+        return self._step_result_unlocked(extra)
+
     def step(self, action: int) -> dict:
         """Discrete step: 0=STOP · 1=FWD 0.25 m · 2=LEFT +15° · 3=RIGHT −15°.
 
@@ -537,34 +657,16 @@ class VLNVerseEnvManager:
         written against habitat's step_discrete transfer unchanged.
         """
         with self._lock:
-            if self._backend is None:
-                return {"error": "Environment not initialized"}
-            if self._episode_done:
-                return {"error": "Episode already done", "done": True}
-
             action = int(action)
-            pre_pos = self._kin.agent_position.copy()
-            pre_dist = self._kin.current_dist_to_goal()
-
             if action == 0:
-                self._acc.record_step(pre_pos, pre_dist, collided=False, moved_distance=0.0)
-                self._acc.mark_stop()
-                self._acc.set_end_reason("stop")
-                self._episode_done = True
-                self._terminated = True
-                collision = False
-            elif action in (1, 2, 3):
-                angle = {1: 0.0, 2: _TURN_ANGLE_RAD, 3: -_TURN_ANGLE_RAD}[action]
-                distance = _FORWARD_STEP_M if action == 1 else 0.0
-                collision, _dev = self._kin.move(angle, 0.0, distance)
-                self._acc.record_step(
-                    pre_pos, pre_dist, collided=collision, moved_distance=distance
-                )
-            else:
+                return self._stop_unlocked({"action": 0, "collision": False})
+            if action not in (1, 2, 3):
                 return {"error": f"Unknown discrete action {action} (expected 0-3)"}
-
-            self._finish_step_unlocked()
-            return self._step_result_unlocked({"action": action, "collision": collision})
+            angle = {1: 0.0, 2: _TURN_ANGLE_RAD, 3: -_TURN_ANGLE_RAD}[action]
+            distance = _FORWARD_STEP_M if action == 1 else 0.0
+            return self._move_unlocked(
+                angle, 0.0, distance, {"action": action}, with_deviation=False
+            )
 
     def step_hightolow(self, angle: float, distance: float, elevation: float = 0.0) -> dict:
         """MOVE macro: rotate ``angle`` rad, advance ``distance`` m at
@@ -578,28 +680,15 @@ class VLNVerseEnvManager:
             return self.step(0)
 
         with self._lock:
-            if self._backend is None:
-                return {"error": "Environment not initialized"}
-            if self._episode_done:
-                return {"error": "Episode already done", "done": True}
-
-            pre_pos = self._kin.agent_position.copy()
-            pre_dist = self._kin.current_dist_to_goal()
-            collision, deviation = self._kin.move(
-                float(angle), float(elevation), float(distance)
-            )
-            self._acc.record_step(
-                pre_pos, pre_dist, collided=collision, moved_distance=float(distance)
-            )
-            self._finish_step_unlocked()
-            return self._step_result_unlocked(
+            return self._move_unlocked(
+                float(angle),
+                float(elevation),
+                float(distance),
                 {
                     "angle": float(angle),
                     "distance": float(distance),
                     "elevation": float(elevation),
-                    "collision": collision,
-                    "deviation_m": float(deviation),
-                }
+                },
             )
 
     # ── Metrics ──
@@ -612,7 +701,7 @@ class VLNVerseEnvManager:
             episode_id=ep.get("episode_id"),
             current_dist_to_goal=self._kin.current_dist_to_goal(),
             reference_path=self._kin.reference_path,
-            success_distance=_SUCCESS_DISTANCE_M,
+            success_distance=self._success_distance,  # per-episode goals.radius
         )
         # goals=None episodes yield inf distances — JSON-sanitize (→ None)
         # rather than crash the wire (data audit: .withheld splits).
@@ -664,9 +753,14 @@ class VLNVerseEnvManager:
         with self._lock:
             if self._backend is None:
                 return {"error": "Environment not initialized"}
+            self._ensure_episode_scene_unlocked()
             rendered = self._backend.capture_panoramic(
                 self._kin.agent_position, self._kin.agent_heading, num_views=int(n_views)
             )
+            # Seed the front-view cache: dir 0 IS the current-heading view and
+            # rendering doesn't move the pose, so a following
+            # observe_egocentric is free.
+            self._current_view = rendered[0]
             views = []
             for i, view in enumerate(rendered):
                 rgb = np.asarray(view.rgb)
@@ -718,28 +812,27 @@ class VLNVerseEnvManager:
                 24: [f"{i * 15}°" for i in range(24)],
             }.get(n_views, [f"View_{i}" for i in range(n_views)])
 
+            self._ensure_episode_scene_unlocked()
             rendered = self._backend.capture_panoramic(
                 self._kin.agent_position, self._kin.agent_heading, num_views=int(n_views)
             )
-            views = []
-            rgb_arrays = []
-            for i, view in enumerate(rendered):
-                rgb = np.asarray(view.rgb, dtype=np.uint8)
-                rgb_arrays.append(rgb)
-                views.append(
-                    {
-                        "direction": direction_names[i],
-                        "heading_deg": round((i * 360.0 / len(rendered))) % 360,
-                        "rgb_base64": self.encode_rgb_base64(rgb),
-                    }
-                )
-
-            composite_b64 = ""
-            if rgb_arrays:
-                composite_b64 = self._build_composite(
-                    rgb_arrays, [v["direction"] for v in views]
-                )
-            return {"views": views, "composite_base64": composite_b64, "n_views": len(views)}
+            # Seed the front-view cache (dir 0 = current heading, pose
+            # unchanged) — same rationale as render_panorama_rgbd.
+            self._current_view = rendered[0]
+            # Composite mode's product is the single stitched image — per-view
+            # payloads carry only the labels (no 12× PNG encodes).
+            views = [
+                {
+                    "direction": direction_names[i],
+                    "heading_deg": round((i * 360.0 / len(rendered))) % 360,
+                }
+                for i in range(len(rendered))
+            ]
+            composite = self._build_composite(
+                [np.asarray(v.rgb, dtype=np.uint8) for v in rendered],
+                [v["direction"] for v in views],
+            )
+            return {"views": views, "composite": composite, "n_views": len(views)}
 
     # ── Queries ──
 
@@ -771,6 +864,8 @@ class VLNVerseEnvManager:
             return None
         h, w = (int(v) for v in cfg.get("camera_resolution", (1024, 1024)))
         focal = float(cfg.get("focal_length", 10.0))
+        # TODO(code-review): verify aperture default vs Isaac Camera actual
+        # (fx may be w*f/20.955, not w/2).
         aperture = float(cfg.get("aperture", 2 * focal))
         fx = w * focal / aperture
         fy = h * focal / aperture
@@ -782,7 +877,7 @@ class VLNVerseEnvManager:
         with self._lock:
             if not self._episodes:
                 return None
-            return _instruction_text(self._episodes[self._episode_index], self._dataset)
+            return _instruction_text(self._episodes[self._episode_index])
 
     def get_episode_info(self) -> dict:
         with self._lock:
@@ -792,18 +887,19 @@ class VLNVerseEnvManager:
         if not self._episodes:
             return {"error": "Environment not initialized"}
         ep = self._episodes[self._episode_index]
-        goals = ep.get("goals") or {}
         info: dict[str, Any] = {
             "episode_id": str(ep.get("episode_id", "")),
             "scene_id": str(ep.get("scan", "")),
             "step_count": self._step_count,
             "done": self._episode_done,
-            "instruction": _instruction_text(ep, self._dataset),
+            "instruction": _instruction_text(ep),
             "language": None,  # cross-nodeset schema parity (habitat/MP3D)
             "extras": _extract_episode_extras(ep, self._dataset),
         }
-        if isinstance(goals, dict) and "position" in goals:
-            info["goals"] = [{"position": goals.get("position"), "radius": goals.get("radius")}]
+        # goals is canonical dict-or-None after _normalize_episode; the wire
+        # shape stays a list-of-one (habitat parity).
+        if ep.get("goals"):
+            info["goals"] = [dict(ep["goals"])]
         return info
 
     def reset_episode(self) -> dict:
@@ -845,23 +941,30 @@ class VLNVerseEnvManager:
                 return None
             return self._episodes[self._episode_index]
 
-    def get_episodes_list(self, offset: int = 0, limit: int = 50) -> dict:
+    def get_episodes_list(self, offset: int = 0, limit: int = 50, light: bool = False) -> dict:
+        """Episode listing. ``light=True`` returns ids only — the panel's
+        episode dropdown labels need index + scene, not 10k instruction
+        payloads built under the env lock."""
         with self._lock:
             if not self._episodes:
                 return {"episodes": [], "total": 0}
             eps = self._episodes[int(offset) : int(offset) + int(limit)]
             result = []
             for i, ep in enumerate(eps):
-                result.append(
-                    {
-                        "index": int(offset) + i,
-                        "episode_id": str(ep.get("episode_id", "")),
-                        "scene_id": str(ep.get("scan", "")),
-                        "instruction": _instruction_text(ep, self._dataset),
-                        "language": None,
-                        "extras": _extract_episode_extras(ep, self._dataset),
-                    }
-                )
+                entry = {
+                    "index": int(offset) + i,
+                    "episode_id": str(ep.get("episode_id", "")),
+                    "scene_id": str(ep.get("scan", "")),
+                }
+                if not light:
+                    entry.update(
+                        {
+                            "instruction": _instruction_text(ep),
+                            "language": None,
+                            "extras": _extract_episode_extras(ep, self._dataset),
+                        }
+                    )
+                result.append(entry)
             return {"episodes": result, "total": len(self._episodes)}
 
     def get_episodes(self, offset: int = 0, limit: int = 50) -> dict:
@@ -890,28 +993,22 @@ class VLNVerseEnvManager:
     def encode_rgb_base64(rgb: np.ndarray) -> str:
         from PIL import Image
 
-        img = Image.fromarray(rgb.astype(np.uint8))
+        # asarray, not astype: copy-free when the input is already uint8.
+        img = Image.fromarray(np.asarray(rgb, dtype=np.uint8))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
-    @staticmethod
-    def _finite_depth(depth: np.ndarray) -> np.ndarray:
-        """Clamp Isaac's non-finite depth (+inf = no-hit/sky, habitat's sensor
-        never produces it — observed on G0 smoke 2026-07-20) to the finite max
-        so min/max normalization and mm-quantization stay defined."""
-        d = np.squeeze(depth).astype(np.float32)
-        finite = np.isfinite(d)
-        if not finite.all():
-            cap = float(d[finite].max()) if finite.any() else 0.0
-            d = np.nan_to_num(d, nan=0.0, posinf=cap, neginf=0.0)
-        return d
+    # Depth arrives FINITE from the capture boundary — _sim_backend clamps
+    # Isaac's non-finite no-hit pixels to a fixed far clip there, so every
+    # consumer (DEPTH port, raw_obs, both encoders) sees the same values and
+    # the min/max normalization below is safe.
 
     @staticmethod
     def encode_depth_base64(depth: np.ndarray) -> str:
         from PIL import Image
 
-        d = VLNVerseEnvManager._finite_depth(depth)
+        d = np.squeeze(depth)
         d_min, d_max = d.min(), d.max()
         if d_max - d_min > 1e-6:
             d_norm = ((d - d_min) / (d_max - d_min) * 255).astype(np.uint8)
@@ -929,7 +1026,7 @@ class VLNVerseEnvManager:
         # packers). Separate from encode_depth_base64's 8-bit viewer form.
         from PIL import Image
 
-        d = VLNVerseEnvManager._finite_depth(depth)
+        d = np.squeeze(depth).astype(np.float32)
         d_mm = np.clip(d * 1000.0, 0.0, 65535.0).astype(np.uint16)
         img = Image.fromarray(d_mm, mode="I;16")
         buf = io.BytesIO()
@@ -937,12 +1034,16 @@ class VLNVerseEnvManager:
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     @staticmethod
-    def _build_composite(images: list[np.ndarray], labels: list[str]) -> str:
+    def _build_composite(images: list[np.ndarray], labels: list[str]) -> np.ndarray | None:
+        """Stitched label-annotated grid as a numpy RGB array. Deviation from
+        habitat (which returns base64): the only local consumer is the node's
+        IMAGE port — encoding to PNG/b64 and decoding straight back in the
+        same process wasted ~1 s per composite call."""
         from PIL import Image, ImageDraw
 
         n = len(images)
         if n == 0:
-            return ""
+            return None
 
         h, w = images[0].shape[:2]
         label_h = 20
@@ -969,9 +1070,7 @@ class VLNVerseEnvManager:
             draw.text((x + w // 2 - len(label) * 3, y + 2), label, fill=(255, 255, 100))
             canvas.paste(Image.fromarray(img_arr), (x, y + label_h))
 
-        buf = io.BytesIO()
-        canvas.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode("ascii")
+        return np.asarray(canvas, dtype=np.uint8)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1263,21 +1362,10 @@ class ObservePanoramaVLNVerseTool(BaseCanvasNode):
             if "error" in result:
                 self._self_log("error", result["error"])
                 return {"views": [], "directions": "[]", "n_views": 0, "composite": None}
-            composite_arr = None
-            composite_b64 = result.get("composite_base64", "")
-            if composite_b64:
-                from PIL import Image
-
-                raw = base64.b64decode(composite_b64)
-                composite_arr = np.asarray(
-                    Image.open(io.BytesIO(raw)).convert("RGB"), dtype=np.uint8
-                )
-            directions = json.dumps(
-                [
-                    {"direction": v.get("direction"), "heading_deg": v.get("heading_deg")}
-                    for v in result.get("views", [])
-                ]
-            )
+            # Manager hands back the numpy canvas directly (no b64 round-trip);
+            # views carry labels only in composite mode.
+            composite_arr = result.get("composite")
+            directions = json.dumps(result.get("views", []))
             self._self_log("n_views", result.get("n_views", 0))
             self._self_log(
                 "composite_shape",
@@ -1553,7 +1641,7 @@ class VLNVerseEnvPanel(BaseEnvPanel):
         if field == "episode_index":
             if not mgr.initialized:
                 return []
-            data = await self._run(mgr.get_episodes_list, 0, 10000)
+            data = await self._run(mgr.get_episodes_list, 0, 10000, True)  # light
             episodes = data.get("episodes", []) if isinstance(data, dict) else []
             return [
                 {
@@ -1665,11 +1753,15 @@ class EnvVLNVerseNodeSet(BaseNodeSet):
         page can list every selectable option; episode_counts covers the
         currently-loaded split only.
         """
-        splits = list(dict.fromkeys(_dataset_splits("fine") + _dataset_splits("coarse")))
+        by_dataset = {d: _dataset_splits(d) for d in _DATASETS}
+        splits = list(dict.fromkeys(s for ds in by_dataset.values() for s in ds))
         metadata = {
             "env_name": "vlnverse_isaac",
             "datasets": list(_DATASETS),
             "splits": splits,
+            # Per-dataset lists so eval-page combinatorics can be validated up
+            # front — the flat union can pair ("coarse", <fine-only split>).
+            "splits_by_dataset": by_dataset,
             "episode_counts": {},
             "metrics": [
                 "success",
