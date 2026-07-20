@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ObjectNav NodeSet — AgentCanvas</title>
+<meta name="description" content="The ObjectNav NodeSet ( EnvObjnavNodeSet ) wraps habitat-lab 0.2.4 for object-goal navigation on HM3D: an episode names a category — chair, bed, plant, toilet, tv_monitor, sofa — and the agent must…">
+<meta property="og:title" content="ObjectNav NodeSet — AgentCanvas">
+<meta property="og:description" content="The ObjectNav NodeSet ( EnvObjnavNodeSet ) wraps habitat-lab 0.2.4 for object-goal navigation on HM3D: an episode names a category — chair, bed, plant, toilet, tv_monitor, sofa — and the agent must…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/objnav.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="ObjectNav">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/objnav.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">ObjectNav</span>
+  </div>
+  <div class="last-updated">2026-07-20 18:20</div>
+</div>
+  <header class="page-header guide">
+  <h1>ObjectNav NodeSet</h1>
+</header>
+
+<p class="lede">The <strong>ObjectNav NodeSet</strong> (<code>EnvObjnavNodeSet</code>) wraps <strong>habitat-lab 0.2.4</strong> for object-goal navigation on HM3D: an episode names a category — <em>chair, bed, plant, toilet, tv_monitor, sofa</em> — and the agent must reach any instance of it and call STOP within 1 m. Unlike the other nav envs here, the goal arrives as a bare noun, not a route description, so the whole task is search under semantic priors.</p>
+
+<p>Sibling of <a href="habitat.html">Habitat</a>, not an extension. Both wrap habitat, but they cannot share a process or an interpreter: Habitat pins <code>habitat-sim 0.1.7</code> + Python 3.8 for VLN-CE, while ObjectNav pins <code>habitat-sim 0.2.4</code> + <code>habitat-lab 0.2.420230405</code> + Python 3.9 in its own <code>ac-objnav</code> env. Different simulator generation, different config schema (<code>habitat.*</code> omegaconf vs VLN-CE's <code>TASK_CONFIG.*</code> yacs).</p>
+
+<hr>
+
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+
+<h3 id="benchmark-standard">Benchmark configuration is the paper standard, not the challenge</h3>
+
+<p>ObjectNav has two live configurations, and they are not comparable. The Habitat Challenge 2023 pins <code>challenge-2023</code> habitat-lab and a <strong>Stretch</strong> robot embodiment; the published literature — <a href="https://arxiv.org/abs/2312.03275">VLFM</a> (23.12), SG-Nav, and the RSS-2026 pair MVP-Nav / <a href="https://arxiv.org/abs/2603.05377">OpenFrontier</a> — instead uses habitat 0.2.4 with the <strong>classic cylindrical agent</strong> inherited from Challenge 2022. This nodeset implements the latter, because that is what every number in every comparison table was produced under:</p>
+
+<table>
+<thead><tr><th>Knob</th><th>Value</th><th>Source</th></tr></thead>
+<tbody>
+<tr><td>habitat-sim / habitat-lab</td><td><code>0.2.4</code> / <code>0.2.420230405</code></td><td>VLFM <code>pyproject.toml</code>; OpenFrontier states "Habitat 0.2.4"</td></tr>
+<tr><td>Forward step</td><td>0.25 m</td><td>Challenge-2022 agent</td></tr>
+<tr><td>Turn angle</td><td>30°</td><td>Challenge-2022 agent</td></tr>
+<tr><td>Sensors</td><td>640×480 RGB-D + GPS + compass</td><td>Challenge-2022 agent</td></tr>
+<tr><td>Step budget</td><td>500</td><td>Challenge-2022 agent</td></tr>
+<tr><td>Success radius</td><td>1.0 m from any goal instance</td><td><a href="https://arxiv.org/abs/2006.13171">ObjectNav Revisited</a> (20.06)</td></tr>
+<tr><td>Episodes</td><td><code>objectnav_hm3d_v1</code> val — 2000 episodes, 20 scenes, 6 categories</td><td>VLFM, MVP-Nav (v2 also selectable — OpenFrontier's choice)</td></tr>
+</tbody>
+</table>
+
+<h3 id="architecture">Architecture</h3>
+
+<p>The three-layer shape shared by every env nodeset:</p>
+
+<ol>
+<li><strong><code>ObjnavEnvManager</code></strong> (singleton) — owns one non-vectorized <code>habitat.Env</code>, a lock, and a single-thread executor pinning all simulator work to one OS thread (GL affinity). Blocking methods only; the nodes hop onto its executor.</li>
+<li><strong>Canvas nodes</strong> — the four gym verbs, thin adapters over the manager.</li>
+<li><strong><code>EnvObjnavNodeSet</code></strong> — <code>server_python = conda_env_python("ac-objnav", "OBJNAV_PYTHON")</code>, so the framework auto-hosts the nodeset in its own subprocess under <code>?mode=server</code>.</li>
+</ol>
+
+<p><strong>Server-mode only in practice</strong>: <code>habitat_sim</code> is not installed in the default <code>agentcanvas</code> env. Override the interpreter with <code>$OBJNAV_PYTHON</code> if your env lives elsewhere.</p>
+
+<hr>
+
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas nodes</h2>
+
+<p>Four nodes, exactly the <a href="template.html">gym contract</a>: <code>reset</code> carries metadata only, <code>step_*</code> returns control signals only, perception is pulled via <code>observe_*</code>, and <code>evaluate</code> is a thin sink for the after-loop band.</p>
+
+<table>
+<thead>
+<tr><th>Node type</th><th>Display name</th><th>Input ports</th><th>Output ports</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_objnav__reset</code></td>
+<td>ObjNav: Reset</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>object_category</code>, <code>episode_id</code>, <code>scene_id</code></td>
+<td>Ensure a live episode — re-arm in place if done, read untouched if live. Never chooses an episode (that is env-panel-owned). No observation ports.</td>
+</tr>
+<tr>
+<td><code>env_objnav__step_discrete</code></td>
+<td>ObjNav: Step (discrete)</td>
+<td><code>action</code> (ACTION, 0–5)</td>
+<td><code>reward</code>, <code>terminated</code>, <code>truncated</code>, <code>info</code></td>
+<td>Advance one tick. <code>reward</code> is always 0.0 — this is an eval task, habitat computes no shaped reward here.</td>
+</tr>
+<tr>
+<td><code>env_objnav__observe_egocentric</code></td>
+<td>ObjNav: Observe (egocentric)</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>rgb</code>, <code>depth</code>, <code>pose</code>, <code>intrinsics</code>, <code>gps</code>, <code>compass</code></td>
+<td>Idempotent read of the current frame; never advances the env, never auto-resets. <code>gps</code>/<code>compass</code> are the ObjectNav task sensors (position and heading relative to episode start) that VLFM-style methods integrate into a map.</td>
+</tr>
+<tr>
+<td><code>env_objnav__evaluate</code></td>
+<td>ObjNav: Evaluate</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>metrics</code>, <code>success</code>, <code>spl</code></td>
+<td>Pull task metrics on demand (<code>success</code>, <code>spl</code>, <code>soft_spl</code>, <code>distance_to_goal</code>). Independent of <code>done</code>, so it also works mid-episode.</td>
+</tr>
+</tbody>
+</table>
+
+<h3 id="action-space">Action space</h3>
+
+<p>habitat 0.2.4's ObjectNav defaults, in index order. The order matters: a <code>textParse</code> node configured with these six choices emits an <code>index</code> that <em>is</em> the action, so no mapper node is needed between reasoning and env.</p>
+
+<table>
+<thead><tr><th>Index</th><th>Action</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td>0</td><td><code>STOP</code></td><td>End the episode — the only way to score a success</td></tr>
+<tr><td>1</td><td><code>MOVE_FORWARD</code></td><td>0.25 m</td></tr>
+<tr><td>2</td><td><code>TURN_LEFT</code></td><td>30°</td></tr>
+<tr><td>3</td><td><code>TURN_RIGHT</code></td><td>30°</td></tr>
+<tr><td>4</td><td><code>LOOK_UP</code></td><td>Tilt camera up 30°</td></tr>
+<tr><td>5</td><td><code>LOOK_DOWN</code></td><td>Tilt camera down 30°</td></tr>
+</tbody>
+</table>
+
+<h3 id="terminated-vs-truncated">terminated vs truncated</h3>
+
+<p>habitat exposes a single <code>episode_over</code> flag; the manager splits it into the two gym signals by looking at what caused it. An explicit STOP (action 0) is <strong>terminated</strong> — the agent committed, and the metrics reflect its judgment. Running out of the step budget without ever calling STOP is <strong>truncated</strong>. Terminal metrics ride <code>info["metrics"]</code> in both cases, so a graph that ends on budget still harvests a verdict.</p>
+
+<hr>
+
+<h2 id="3-env-panel"><span class="num">3.</span> Env panel</h2>
+
+<p><code>ObjnavEnvPanel</code> owns episode placement — there are no split/episode canvas nodes. Its cascade is three deep:</p>
+
+<ul>
+<li><strong>dataset</strong> — <code>v1</code> (paper standard) or <code>v2</code> (Challenge-2023 episodes, OpenFrontier's choice). Changing it rebuilds the env.</li>
+<li><strong>split</strong> — <code>val</code> (2000 episodes) or <code>val_mini</code> (30, for smokes). <code>train</code> is deliberately absent: the train scenes are not staged, and zero-shot methods do not train.</li>
+<li><strong>episode_index</strong> — labelled <code>{index}: {scene} → {category}</code> so the goal is visible when picking.</li>
+</ul>
+
+<p>Field changes emit the <code>episode_reset</code> signal, clearing every <code>lifetime="episode"</code> state container. <code>play</code> re-seats the selected episode before starting the run.</p>
+
+<hr>
+
+<h2 id="4-data"><span class="num">4.</span> Data staging</h2>
+
+<p>Scenes come from the official Matterport distribution (login-gated; an API token works headlessly via <code>curl --user token-id:secret</code>). Episodes are public direct downloads from <code>dl.fbaipublicfiles.com</code>.</p>
+
+<table>
+<thead><tr><th>Path</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>data/scene_datasets/hm3d/val/</code></td><td>100 HM3D v0.2 val scenes (<code>.basis.glb</code> + <code>.basis.navmesh</code>), plus <code>.semantic.glb</code>/<code>.semantic.txt</code> for the 36 annotated ones</td></tr>
+<tr><td><code>data/datasets/objectnav/hm3d/v1/</code></td><td><code>objectnav_hm3d_v1</code> — val (2000 eps / 20 scenes), val_mini (30), train</td></tr>
+<tr><td><code>data/datasets/objectnav/hm3d/v2/</code></td><td><code>objectnav_hm3d_v2</code> — same split shape</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn"><strong>v1 and v2 disagree about where scenes live.</strong> Every episode bakes a <code>scene_id</code> path, and the two generations use different prefixes: v1 says <code>hm3d/val/…</code>, v2 says <code>hm3d_v0.2/val/…</code>, and v2's val_mini points at <code>hm3d_v0.2/minival/…</code> (its two scenes, 00800 and 00802, are a subset of the val download). Both v2 prefixes are served by compat symlinks into the single real scene tree — <code>data/scene_datasets/hm3d_v0.2/val → ../hm3d/val</code> and <code>…/minival → ../hm3d/val</code>. Without them habitat-sim aborts with <em>"Missing (at least) one of scene dataset attributes … Likely an invalid scene name"</em>.</div>
+
+<h3 id="semantics-not-required">Semantic meshes are not required for scoring</h3>
+
+<p>Success is judged against goal <strong>viewpoints embedded in the episode JSON</strong>, not against a runtime semantic lookup — verified by driving <code>ShortestPathFollower</code> to the nearest viewpoint and getting SR 1.00 with no semantic files present. The <code>.semantic.glb</code> files are staged anyway because habitat's <code>top_down_map</code> measure reads the semantic scene, and reference implementations (VLFM among them) enable it.</p>
+
+<hr>
+
+<h2 id="5-probe-graph"><span class="num">5.</span> Probe graph: <code>objnav_hm3d</code></h2>
+
+<p><code>workspace/graphs/vln/unverified/objnav_hm3d.json</code> — the ObjectNav analog of <a href="../../../../pages/developer-guide/nodesets/common/index.html">simple_navigator</a>, and the graph that exercises this nodeset end to end. Every reasoning node ships with the platform; there is no method-specific code anywhere in it.</p>
+
+<ul>
+<li><code>llmCall</code>, <code>textParse</code>, <code>historyLog</code> — built-in glue</li>
+<li><code>basic_agent__image_analyze</code>, <code>basic_agent__obs_to_text</code> — observation encoding</li>
+<li>the four verbs above — env side</li>
+</ul>
+
+<p>The loop is: observe → caption the frame → format an observation string → LLM picks one of the six actions → parse → step. The parse node's choice list is written in action-index order (<code>STOP,FORWARD,LEFT,RIGHT,LOOK_UP,LOOK_DOWN</code>), so its <code>index</code> output wires straight into <code>step_discrete.action</code>. <code>step_discrete.terminated</code> drives <code>iter_out.stop</code>; <code>evaluate</code> hangs off <code>iter_out.final_stop</code> in the after-loop band, which is what keeps the terminal STOP step inside the harvested metrics.</p>
+
+<div class="callout"><strong>Scope.</strong> This graph exists to prove the wiring, not to compete. Its success rate is not meaningful — the reference point on this benchmark is VLFM at SR 52.5 / SPL 30.4 on full val. Treat it the way you would a unit test with a printed number.</div>
+
+<hr>
+
+<h2 id="6-verification"><span class="num">6.</span> Verification evidence</h2>
+
+<p>All runs 2026-07-20, single RTX 3090, <code>ac-objnav</code> env, slot-b backend.</p>
+
+<table>
+<thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Bare-sim render (pre-nodeset)</td><td>habitat-sim opens <code>00800-TEEsavR23oF</code> headless</td><td>navmesh loaded, RGB 480×640 (99% non-zero), depth 0–4.9 m</td></tr>
+<tr><td>Dataset shape</td><td><code>objectnav_hm3d_v1</code> val via habitat-lab</td><td>exactly 2000 episodes / 20 scenes / 6 categories, goals carry viewpoints</td></tr>
+<tr><td>Scoring sanity</td><td>oracle <code>ShortestPathFollower</code> vs random agent, 5+3 episodes</td><td>oracle SR 1.00 (SPL 0.90–0.98, stop 0.02–0.08 m from goal); random SR 0.00 — metric is not vacuous</td></tr>
+<tr><td>Manager surface</td><td>init / observe / step / STOP / <code>ensure_live</code> / <code>set_episode</code> / episode list</td><td>all pass; STOP ⇒ <code>terminated=True, truncated=False</code> with metrics attached</td></tr>
+<tr><td>Budget exhaustion</td><td><code>max_steps=5</code>, forward-only, never STOP</td><td><code>terminated=False, truncated=True</code>, terminal metrics still attached</td></tr>
+<tr><td>LOOK_UP / LOOK_DOWN</td><td>actions 4 and 5 dispatched directly</td><td>accepted, step counter advances</td></tr>
+<tr><td>v2 dataset switch</td><td><code>switch_dataset_split("v2", "val_mini")</code></td><td>30 episodes load (after the symlink fix in §4)</td></tr>
+<tr><td>Server mode</td><td><code>load?mode=server</code> on the slot backend</td><td>auto_host subprocess up, 4 tools registered, env panel bridged via <code>RemoteEnvPanelProxy</code>, split change rebuilds val → val_mini</td></tr>
+<tr><td>Graph wiring</td><td><code>POST /api/graphs/validate</code></td><td>24/24 edges checked, zero wire errors</td></tr>
+<tr><td><strong>Graph run</strong></td><td>run <code>20260720_173306</code> (<code>/experiment:run objnav-hm3d objnav_hm3d</code>, 1 ep, budget 8)</td><td><strong>completed</strong> — reset×1 / observe×9 / step×8 / <strong>evaluate×1</strong>; metrics harvested into aggregate</td></tr>
+</tbody>
+</table>
+
+<p>The evaluate count is the load-bearing one. It confirms the after-loop band fires and this graph does <strong>not</strong> reproduce the harvest miss that affects several gym-migrated graphs (roadmap TODO #64), where a loop-body <code>evaluate</code> never sees the terminal STEP and records <code>success=0</code>.</p>
+
+<h3 id="budget-sizing">A sizing trap worth inheriting</h3>
+
+<p>The first probe run died at step 10 of 30 with <em>"timeout after 150.0s"</em>. ADR-eval-002 caps each episode at <code>step_budget × default_per_step_budget_sec</code>, and the nodeset originally declared <code>5.0</code> — correct for a bare habitat step, wildly wrong for a graph making two vision-LLM calls per step (~15 s). It is now <code>30.0</code>, matching <a href="habitat.html">Habitat</a>'s value and for the same reason. Any env destined for LLM-in-the-loop graphs needs the larger number, and the symptom of getting it wrong looks like an env bug rather than a budget one.</p>
+
+<hr>
+
+<h2 id="7-gaps"><span class="num">7.</span> Not yet verified</h2>
+
+<p>Stated plainly so nobody reads the table above as broader than it is:</p>
+
+<ul>
+<li><strong>Multi-worker eval.</strong> <code>parallelism = "replicated"</code> is declared per ADR-server-003 but has only ever run at <code>worker_count=1</code>, where both modes are bit-identical.</li>
+<li><strong>Canvas Play.</strong> Verified through the eval-batch path only; the viewer nodes (<code>imageViewer</code>, <code>textScroll</code>, <code>actionLog</code>, <code>metrics</code>) executed but were never watched in the GUI.</li>
+<li><strong>The STOP path through the graph.</strong> The probe loop ended on step budget, so the <code>terminated → iter_out.stop</code> wire has never been driven truthy in a real run. The env-side STOP itself is verified at manager level.</li>
+<li><strong>Full-val scale.</strong> The largest run so far is 1 episode. No SR number from this stack should be quoted yet.</li>
+<li><strong><code>vram_mb: 2500</code></strong> in the <code>objnav-hm3d</code> experiment profile is an estimate from habitat-sim's typical 640×480 footprint, not a measurement.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#benchmark-standard">Benchmark configuration is the paper standard, not the challenge</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas nodes</a>
+      <a class="toc-h3" href="#action-space">Action space</a>
+      <a class="toc-h3" href="#terminated-vs-truncated">terminated vs truncated</a>
+      <a class="toc-h2" href="#3-env-panel">3. Env panel</a>
+      <a class="toc-h2" href="#4-data">4. Data staging</a>
+      <a class="toc-h3" href="#semantics-not-required">Semantic meshes are not required for scoring</a>
+      <a class="toc-h2" href="#5-probe-graph">5. Probe graph: objnav_hm3d</a>
+      <a class="toc-h2" href="#6-verification">6. Verification evidence</a>
+      <a class="toc-h3" href="#budget-sizing">A sizing trap worth inheriting</a>
+      <a class="toc-h2" href="#7-gaps">7. Not yet verified</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
