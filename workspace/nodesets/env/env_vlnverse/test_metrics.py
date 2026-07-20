@@ -99,7 +99,7 @@ def test_success_with_stop():
     acc.record_step([4.0, 0.0, 1.2], 1.5, False, moved_distance=1.0)
     acc.record_step([4.8, 0.0, 1.2], 1.0, False, moved_distance=0.0)  # STOP
     acc.mark_stop()
-    acc.set_end_reason("stop")
+    acc.set_end_reason("stop_called")
     m = acc.final_metrics("ep1", current_dist_to_goal=1.0, reference_path=[[5.0, 0.0, 1.2]])
 
     assert m["success"] == 1
@@ -113,7 +113,7 @@ def test_success_with_stop():
     # first index with dist <= 3.0 is 2, total = 3
     assert np.isclose(m["success_efficiency"], 2.0 / 3.0)
     assert np.isclose(m["colrate"], 1.0 / 4.0)
-    assert m["end_reason"] == "stop"
+    assert m["end_reason"] == "stop_called"
     assert m["distance_to_goal"] == 1.0
     assert m["initial_distance"] == 5.0
     assert 0.0 < m["ndtw"] <= 1.0

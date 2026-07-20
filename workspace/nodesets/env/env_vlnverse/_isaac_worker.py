@@ -19,6 +19,12 @@ Deviations from upstream:
     failures to install time.
   - ``selftest`` scene lookup also tries the AgentCanvas data layout
     (``data/vlnverse/scene/…``) before NavHarness's ``data/scene/…``.
+  - Stdio frame-channel hygiene (see main()): fd1 is dup2-guarded and a
+    ``STDIO_MAGIC`` preamble is emitted so launcher/kit stdout noise cannot
+    poison the msgpack stream (observed hang 2026-07-20).
+  - ``serve()`` wraps its loop in try/finally calling ``world.shutdown()`` —
+    deterministic GPU release on parent death (EOF), instead of relying on
+    interpreter teardown of omni threads. ``shutdown`` is idempotent.
   - Everything else is faithful, including the ``--listen`` socket mode.
 """
 
@@ -267,37 +273,46 @@ class IsaacWorld:
 
 def serve(stdin: io.BufferedReader, stdout: io.BufferedWriter) -> None:
     world = IsaacWorld()
-    while True:
-        try:
-            raw = read_frame(stdin)
-        except EOFError:
-            log('stdin closed, exiting')
-            return
+    # try/finally (deviation from upstream): on parent death the EOF path used
+    # to return without world.shutdown(), leaving GPU release to interpreter
+    # teardown of omni threads — deterministic close is faster and can't wedge.
+    try:
+        while True:
+            try:
+                raw = read_frame(stdin)
+            except EOFError:
+                log('stdin closed, exiting')
+                return
 
-        msg = msgpack.unpackb(raw, raw=False)
-        req_id = msg.get('id')
-        op = msg.get('op')
-        args = msg.get('args', {}) or {}
+            msg = msgpack.unpackb(raw, raw=False)
+            req_id = msg.get('id')
+            op = msg.get('op')
+            args = msg.get('args', {}) or {}
 
+            try:
+                handler = getattr(world, op, None)
+                if handler is None:
+                    raise AttributeError(f'unknown op: {op}')
+                result = handler(**args)
+                resp = {'id': req_id, 'ok': True, 'data': result}
+            except SystemExit:
+                raise
+            except BaseException:
+                tb = traceback.format_exc()
+                log(f'op {op!r} failed:\n{tb}')
+                resp = {'id': req_id, 'ok': False, 'error': tb}
+
+            write_frame(stdout, msgpack.packb(resp, use_bin_type=True))
+            stdout.flush()
+
+            if op == 'shutdown' and resp['ok']:
+                log('shutdown acknowledged, exiting RPC loop')
+                return
+    finally:
         try:
-            handler = getattr(world, op, None)
-            if handler is None:
-                raise AttributeError(f'unknown op: {op}')
-            result = handler(**args)
-            resp = {'id': req_id, 'ok': True, 'data': result}
-        except SystemExit:
-            raise
+            world.shutdown()
         except BaseException:
-            tb = traceback.format_exc()
-            log(f'op {op!r} failed:\n{tb}')
-            resp = {'id': req_id, 'ok': False, 'error': tb}
-
-        write_frame(stdout, msgpack.packb(resp, use_bin_type=True))
-        stdout.flush()
-
-        if op == 'shutdown' and resp['ok']:
-            log('shutdown acknowledged, exiting RPC loop')
-            return
+            pass
 
 
 # ---------------------------------------------------------------------------

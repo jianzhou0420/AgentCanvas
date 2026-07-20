@@ -224,9 +224,11 @@ def _normalize_episode(ep: dict) -> dict:
     if goals is None:
         ep["goals"] = None
     elif isinstance(goals, dict) and "position" in goals:
+        radius = goals.get("radius")
         ep["goals"] = {
             "position": list(goals["position"]),
-            "radius": float(goals.get("radius") or _SUCCESS_DISTANCE_M),
+            # `is not None`, not `or`: a legitimate radius of 0 must survive.
+            "radius": float(radius) if radius is not None else _SUCCESS_DISTANCE_M,
         }
     else:
         raise ValueError(
@@ -375,6 +377,9 @@ class VLNVerseEnvManager:
             "denoiser": False,
             "camera_resolution": (1024, 1024),
             "focal_length": 10.0,
+            # Single source of truth: the worker's own default is 2*focal —
+            # this explicit value and that default must stay equal (90° FOV).
+            "aperture": 20.0,
         }
 
     def _make_backend(self) -> Any:
@@ -443,7 +448,13 @@ class VLNVerseEnvManager:
                 return {"error": "Environment not initialized"}
             if dataset not in _DATASETS:
                 return {"error": f"Unknown dataset {dataset!r}"}
-            self._episodes = _load_split_episodes(dataset, split)
+            try:
+                self._episodes = _load_split_episodes(dataset, split)
+            except ValueError as e:
+                # Banned/unknown split: same {"error"} contract as the other
+                # failure classes above — a /call client gets a clean payload,
+                # not a 500.
+                return {"error": str(e)}
             self._dataset = dataset
             self._split = split
             log.info(
@@ -472,6 +483,13 @@ class VLNVerseEnvManager:
                 finally:
                     self._backend = None
                 self._current_view = None
+                # A fresh worker boots with an EMPTY stage — forgetting this
+                # would make _ensure_scene_unlocked treat the old scene as
+                # still loaded after a re-initialize and render grey frames.
+                self._current_scene = None
+                # Post-shutdown evaluate()/queries error cleanly instead of
+                # reporting the dead episode's metrics.
+                self._acc = None
 
     @property
     def initialized(self) -> bool:
@@ -581,7 +599,7 @@ class VLNVerseEnvManager:
             self._episode_done = True
             self._truncated = True
             if self._acc is not None:
-                self._acc.set_end_reason("budget")
+                self._acc.set_end_reason("step_budget_exhausted")
         if pose_changed:
             self._invalidate_view_unlocked()
 
@@ -644,7 +662,7 @@ class VLNVerseEnvManager:
             moved_distance=0.0,
         )
         self._acc.mark_stop()
-        self._acc.set_end_reason("stop")
+        self._acc.set_end_reason("stop_called")
         self._episode_done = True
         self._terminated = True
         self._finish_step_unlocked(pose_changed=False)
@@ -750,12 +768,15 @@ class VLNVerseEnvManager:
         dir_id 0 = current heading, increasing CCW in (360/n)° steps
         (VLNVerse convention — the worker composes +yaw per view).
         """
+        # The node's slider floors at 4, but the /call surface can pass
+        # 0/negative — an empty capture would IndexError on the cache seed.
+        n_views = max(1, int(n_views))
         with self._lock:
             if self._backend is None:
                 return {"error": "Environment not initialized"}
             self._ensure_episode_scene_unlocked()
             rendered = self._backend.capture_panoramic(
-                self._kin.agent_position, self._kin.agent_heading, num_views=int(n_views)
+                self._kin.agent_position, self._kin.agent_heading, num_views=n_views
             )
             # Seed the front-view cache: dir 0 IS the current-heading view and
             # rendering doesn't move the pose, so a following
@@ -779,6 +800,7 @@ class VLNVerseEnvManager:
     def render_panorama(self, n_views: int = 4) -> dict:
         """Labeled composite panorama grid (single image). CCW direction
         names — 90° is Left here, unlike habitat's clockwise table."""
+        n_views = max(1, int(n_views))  # /call can pass 0 — see render_panorama_rgbd
         with self._lock:
             if self._backend is None:
                 return {"error": "Environment not initialized"}
@@ -814,7 +836,7 @@ class VLNVerseEnvManager:
 
             self._ensure_episode_scene_unlocked()
             rendered = self._backend.capture_panoramic(
-                self._kin.agent_position, self._kin.agent_heading, num_views=int(n_views)
+                self._kin.agent_position, self._kin.agent_heading, num_views=n_views
             )
             # Seed the front-view cache (dir 0 = current heading, pose
             # unchanged) — same rationale as render_panorama_rgbd.
@@ -864,8 +886,13 @@ class VLNVerseEnvManager:
             return None
         h, w = (int(v) for v in cfg.get("camera_resolution", (1024, 1024)))
         focal = float(cfg.get("focal_length", 10.0))
-        # TODO(code-review): verify aperture default vs Isaac Camera actual
-        # (fx may be w*f/20.955, not w/2).
+        # fx = w/2 is verified correct (code-review 2026-07-20): the worker
+        # explicitly calls set_horizontal/vertical_aperture(cfg["aperture"]
+        # or 2*focal = 20 mm) — Isaac's 20.955 mm default never applies —
+        # giving FOV = 2·atan(ap/(2f)) = 90° and f_px = (W/2)/tan(45°) = W/2,
+        # the exact model NavHarness middle_layer.py states. Isaac version
+        # unit quirks (mm vs cm in set_focal_length) cancel because focal and
+        # aperture go through the same wrapper and FOV depends on their ratio.
         aperture = float(cfg.get("aperture", 2 * focal))
         fx = w * focal / aperture
         fy = h * focal / aperture
@@ -1665,8 +1692,10 @@ class VLNVerseEnvPanel(BaseEnvPanel):
             )
             return
         if not mgr.initialized:
-            # Not booted yet — just remember the selection; initialize()
-            # will load it.
+            # Not booted yet — remember the selection for panel display only.
+            # NOTE: initialize() takes its dataset/split from the registry
+            # load kwargs and does NOT consult panel state; a pre-init
+            # selection here does not steer the eventual boot.
             self._state["split"] = split
             return
         result = await self._run(mgr.switch_split, dataset, split)
@@ -1785,4 +1814,8 @@ class EnvVLNVerseNodeSet(BaseNodeSet):
         return metadata
 
     async def shutdown(self) -> None:
-        self._mgr.shutdown()
+        # Via the executor, not inline: shutdown contends on the manager lock,
+        # which an in-flight deferred scene load can hold for 20-30 s — inline
+        # that would freeze the FastAPI event loop (no /health) during teardown.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._mgr.executor, self._mgr.shutdown)

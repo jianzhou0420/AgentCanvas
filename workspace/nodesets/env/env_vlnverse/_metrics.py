@@ -63,7 +63,7 @@ class EpisodeMetricsAccumulator:
         acc = EpisodeMetricsAccumulator(initial_distance=kin.current_dist_to_goal())
         # per env step — pre-action pose/dist, post-action collision:
         acc.record_step(position, dist_to_goal, collided, moved_distance=d)
-        acc.mark_stop(); acc.set_end_reason("stop")
+        acc.mark_stop(); acc.set_end_reason("stop_called")
         metrics = acc.final_metrics(ep_id, kin.current_dist_to_goal(), ref_path)
     """
 

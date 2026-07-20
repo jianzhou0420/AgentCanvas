@@ -233,14 +233,26 @@ class _FramedRPCMixin:
         # finite depth — habitat's sensor never produces non-finite values, and
         # a per-consumer clamp with a data-dependent cap would encode the same
         # no-hit sky pixel differently in every panorama view.
+        #
+        # Writability is enforced here too: msgpack_numpy decodes via
+        # np.frombuffer → WRITEABLE=False arrays. Habitat delivers fresh
+        # writable arrays, and downstream torch.from_numpy / in-place ops
+        # break on read-only buffers (upstream MLLMEnvironment .copy()s for
+        # exactly this reason). ~7 MB/view — negligible next to the render.
         views: List[RenderedView] = []
         for item in raw:
+            # NOT ascontiguousarray: frombuffer arrays are already contiguous,
+            # so it would return the same read-only object. copy=True always.
+            rgb = np.array(item['rgb'], copy=True)
             depth = np.asarray(item['depth'], dtype=np.float32)
             if not np.isfinite(depth).all():
+                # nan_to_num already returns a fresh writable array.
                 depth = np.nan_to_num(
                     depth, nan=0.0, posinf=_DEPTH_FAR_CLIP_M, neginf=0.0
                 )
-            views.append(RenderedView(rgb=item['rgb'], depth=depth))
+            else:
+                depth = np.array(depth, copy=True)
+            views.append(RenderedView(rgb=rgb, depth=depth))
         return views
 
 
