@@ -1,0 +1,384 @@
+{
+  "name": "ObjectNav HM3D (built-in navigator)",
+  "description": "HM3D ObjectNav agent assembled entirely from built-in glue (llmCall, textParse, historyLog) + basic_agent encoding nodes (image_analyze, obs_to_text) + the env_objnav nodeset's gym verbs. Loop: observe -> caption -> format obs -> LLM picks one of the 6 discrete actions -> step. The parse choice order matches the ObjectNav action space exactly (0=STOP 1=FORWARD 2=TURN_LEFT 3=TURN_RIGHT 4=LOOK_UP 5=LOOK_DOWN), so textParse's index IS the env action. No method-specific code — this graph exists to exercise env_objnav end-to-end; SR is not competitive (the paper-standard reference is VLFM, SR 52.5 on val). Benchmark step budget is 500 (enforced env-side via max_steps and the env panel's step_budget); the graph's 50 is a canvas-Play ceiling.",
+  "step_budget": 50,
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_objnav__reset",
+      "label": "ObjNav: Reset",
+      "position": { "x": 0, "y": 0 },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_objnav__observe_egocentric",
+      "label": "ObjNav: Observe (seed)",
+      "position": { "x": 0, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": { "x": 280, "y": 200 },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "object_category",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "caption",
+      "type": "basic_agent__image_analyze",
+      "label": "Vision: Analyze",
+      "position": { "x": 560, "y": 320 },
+      "config": {
+        "temperature": 1.0
+      }
+    },
+    {
+      "id": "obs_to_text",
+      "type": "basic_agent__obs_to_text",
+      "label": "Obs: To Text",
+      "position": { "x": 840, "y": 320 },
+      "config": {}
+    },
+    {
+      "id": "planner_llm",
+      "type": "llmCall",
+      "label": "LLM: Decide Action",
+      "position": { "x": 1120, "y": 200 },
+      "config": {
+        "ports": [
+          {
+            "name": "object_category",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "observation",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "history",
+            "wire_type": "TEXT",
+            "required": false
+          }
+        ],
+        "template": "Goal object: {object_category}\n\nCurrent observation:\n{observation}\n\nAction history:\n{history}\n\nYou are searching an unseen house for a {object_category}. Rooms connect through doorways and hallways — if the current view is a dead end or an unlikely room for this object, turn to find a new direction rather than pushing forward into a wall.\n\nChoose exactly one action: FORWARD (move 0.25m ahead), LEFT (turn 30 degrees), RIGHT (turn 30 degrees), LOOK_UP, LOOK_DOWN, or STOP (only when a {object_category} is clearly visible and within about 1 metre). Give one short sentence of reasoning, then write the action keyword alone on the last line.",
+        "system_prompt": "You are an object-goal navigation agent inside an indoor environment. You explore efficiently and stop only when the goal object is right in front of you.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "parse_action",
+      "type": "textParse",
+      "label": "Parse Action",
+      "position": { "x": 1400, "y": 200 },
+      "config": {
+        "mode": "choice",
+        "choices": "STOP,FORWARD,LEFT,RIGHT,LOOK_UP,LOOK_DOWN",
+        "scan": "last_line_first",
+        "default": "FORWARD"
+      }
+    },
+    {
+      "id": "history_log",
+      "type": "historyLog",
+      "label": "History Log",
+      "position": { "x": 1680, "y": 380 },
+      "config": {
+        "max_entries": 20,
+        "template": "Step {step}: {entry}"
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_objnav__step_discrete",
+      "label": "ObjNav: Step",
+      "position": { "x": 1680, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_objnav__observe_egocentric",
+      "label": "ObjNav: Observe (loop)",
+      "position": { "x": 1960, "y": 320 },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": { "x": 2240, "y": 200 },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "pose",
+            "wire_type": "POSE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "history",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_objnav__evaluate",
+      "label": "ObjNav: Evaluate",
+      "position": { "x": 1960, "y": 500 },
+      "config": {}
+    },
+    {
+      "id": "obs_viewer",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": { "x": 2240, "y": 560 },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "reasoning_scroll",
+      "type": "textScroll",
+      "label": "LLM Reasoning",
+      "position": { "x": 1120, "y": 560 },
+      "config": {}
+    },
+    {
+      "id": "action_log_viewer",
+      "type": "actionLog",
+      "label": "Action Log",
+      "position": { "x": 1400, "y": 560 },
+      "config": {}
+    },
+    {
+      "id": "metrics_viewer",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": { "x": 1960, "y": 660 },
+      "config": {}
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": { "x": 2240, "y": 700 },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "note_probe",
+      "type": "note",
+      "label": "env_objnav probe graph",
+      "position": { "x": 560, "y": -300 },
+      "config": {
+        "markdown": "**HM3D ObjectNav from built-in parts only**\n\nEvery reasoning node here ships with the platform (`llmCall`, `textParse`, `historyLog`) plus the standard `basic_agent` encoders. The env side is `env_objnav`'s four gym verbs: reset / observe_egocentric / step_discrete / evaluate.\n\n**Action mapping** — `textParse` choice order is the ObjectNav discrete action space, so `index` wires straight into `step_discrete.action`:\n\n| idx | action |\n|---|---|\n| 0 | STOP |\n| 1 | MOVE_FORWARD (0.25 m) |\n| 2 | TURN_LEFT (30°) |\n| 3 | TURN_RIGHT (30°) |\n| 4 | LOOK_UP |\n| 5 | LOOK_DOWN |\n\n**Scope**: this graph verifies the nodeset wiring end-to-end. It is *not* a competitive method — the paper-standard reference on this benchmark is VLFM (SR 52.5 / SPL 30.4 on val, habitat 0.2.4 + objectnav_hm3d_v1).\n\n**Episode selection** is env-panel-owned (dataset hm3d_v1/hm3d_v2/mp3d_v1 → split val/val_mini → episode)."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_category_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "object_category",
+      "targetHandle": "init_object_category"
+    },
+    {
+      "id": "e_reset_to_seedobs",
+      "source": "env_reset",
+      "target": "seed_obs",
+      "sourceHandle": "episode_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_seedobs_rgb_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "rgb",
+      "targetHandle": "iterout_rgb"
+    },
+    {
+      "id": "e_seedobs_pose_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "pose",
+      "targetHandle": "iterout_pose"
+    },
+    {
+      "id": "e_iterin_rgb_to_caption",
+      "source": "iter_in",
+      "target": "caption",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_caption_to_obstext",
+      "source": "caption",
+      "target": "obs_to_text",
+      "sourceHandle": "response",
+      "targetHandle": "caption"
+    },
+    {
+      "id": "e_iterin_pose_to_obstext",
+      "source": "iter_in",
+      "target": "obs_to_text",
+      "sourceHandle": "iterout_pose",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_iterin_category_to_llm",
+      "source": "iter_in",
+      "target": "planner_llm",
+      "sourceHandle": "init_object_category",
+      "targetHandle": "object_category"
+    },
+    {
+      "id": "e_obstext_to_llm",
+      "source": "obs_to_text",
+      "target": "planner_llm",
+      "sourceHandle": "observation",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "e_iterin_history_to_llm",
+      "source": "iter_in",
+      "target": "planner_llm",
+      "sourceHandle": "iterout_history",
+      "targetHandle": "history"
+    },
+    {
+      "id": "e_llm_to_parse",
+      "source": "planner_llm",
+      "target": "parse_action",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_llm_to_scroll",
+      "source": "planner_llm",
+      "target": "reasoning_scroll",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_parse_index_to_step",
+      "source": "parse_action",
+      "target": "env_step",
+      "sourceHandle": "index",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_parse_value_to_actionlog",
+      "source": "parse_action",
+      "target": "action_log_viewer",
+      "sourceHandle": "value",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_parse_value_to_history",
+      "source": "parse_action",
+      "target": "history_log",
+      "sourceHandle": "value",
+      "targetHandle": "entry"
+    },
+    {
+      "id": "e_historylog_to_iterout",
+      "source": "history_log",
+      "target": "iter_out",
+      "sourceHandle": "history",
+      "targetHandle": "history"
+    },
+    {
+      "id": "e_step_info_to_loopobs",
+      "source": "env_step",
+      "target": "loop_obs",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_loopobs_rgb_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_loopobs_pose_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "pose",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_loopobs_rgb_to_viewer",
+      "source": "loop_obs",
+      "target": "obs_viewer",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_step_terminated_to_iterout_stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "terminated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_iterout_finalstop_to_evaluate",
+      "source": "iter_out",
+      "target": "evaluate",
+      "sourceHandle": "final_stop",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_evaluate_to_metricsviewer",
+      "source": "evaluate",
+      "target": "metrics_viewer",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_evaluate_to_graphout",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    }
+  ]
+}
