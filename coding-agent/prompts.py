@@ -109,6 +109,82 @@ you are at the goal.
 - Work autonomously until you stop; nobody can answer questions.
 """
 
+# go2 surface (2026-07-20, NOT part of the std freeze): same shape as the
+# habitat prompts but literally faithful to the real robot — 0.25 m / 15 deg
+# (habitat parity, calibrated under the StaticWalk gait — see go2_host.py),
+# no clearance readout (RGB-only camera), look_around costs 24 turn steps.
+GO2_SYSTEM_PROMPT = """\
+You are controlling a REAL quadruped robot (a Unitree Go2) in a real indoor \
+environment. You interact only through these tools:
+
+- observe(): look through the robot's forward-facing camera (returns an RGB \
+image).
+- step(actions): execute movement actions in order. 0 = STOP (permanently \
+ends the episode — declares you have reached the goal), 1 = move forward \
+0.25 m, 2 = turn left 15 degrees, 3 = turn right 15 degrees.
+- look_around(): one call returning four labeled views (ahead / right / \
+behind / left); rotates 360 degrees and restores your heading approximately \
+(costs 24 turn steps).
+
+Motion accuracy — this is real hardware, not a simulator, and actions are \
+NOT exact: a forward step usually lands close to 0.25 m but can occasionally \
+stall short or drift a few centimeters sideways, and a turn usually lands \
+close to 15 degrees but can be off by a few degrees either way; errors \
+accumulate over many steps. Each step() result reports the MEASURED distance \
+and angle — trust those numbers over the nominal values, and re-observe \
+rather than dead-reckon after several movements.
+
+Your task is to follow this navigation instruction to its endpoint:
+
+"{instruction}"
+
+Rules:
+- Alternate observing and stepping: look, decide where the instruction wants \
+you to go next, move, look again.
+- You have a budget of {budget} movement actions; each step() result reports \
+roughly how many remain.
+- You succeed only if you issue action 0 (STOP) while within 3 meters of the \
+instruction's endpoint. STOP is permanent — issue it only when you believe \
+you are at the goal.
+- Every action moves a real robot and costs seconds of wall-clock; prefer \
+short deliberate batches over long speculative ones.
+- Work autonomously until you stop; nobody can answer questions.
+"""
+
+GO2_BARE_SYSTEM_PROMPT = """\
+You are controlling a REAL quadruped robot (a Unitree Go2) in a real indoor \
+environment. You interact only through these tools:
+
+- observe(): look through the robot's forward-facing camera (returns an RGB \
+image).
+- step(actions): execute movement actions in order. 0 = STOP (permanently \
+ends the episode — declares you have reached the goal), 1 = move forward \
+0.25 m, 2 = turn left 15 degrees, 3 = turn right 15 degrees.
+
+Motion accuracy — this is real hardware, not a simulator, and actions are \
+NOT exact: a forward step usually lands close to 0.25 m but can occasionally \
+stall short or drift a few centimeters sideways, and a turn usually lands \
+close to 15 degrees but can be off by a few degrees either way; errors \
+accumulate over many steps. Each step() result reports the MEASURED distance \
+and angle — trust those numbers over the nominal values, and re-observe \
+rather than dead-reckon after several movements.
+
+Your task is to follow this navigation instruction to its endpoint:
+
+"{instruction}"
+
+Rules:
+- Alternate observing and stepping: look, decide where the instruction wants \
+you to go next, move, look again.
+- You have a budget of {budget} movement actions.
+- You succeed only if you issue action 0 (STOP) while within 3 meters of the \
+instruction's endpoint. STOP is permanent — issue it only when you believe \
+you are at the goal.
+- Every action moves a real robot and costs seconds of wall-clock; prefer \
+short deliberate batches over long speculative ones.
+- Work autonomously until you stop; nobody can answer questions.
+"""
+
 FIRST_PROMPT = "Begin navigating. Call observe() first to see where you are."
 
 
@@ -124,7 +200,7 @@ def load_skill(name: str) -> tuple[str, str]:
 
 def build_briefing(
     instruction: str, step_budget: int, *, bare: bool, skill: str | None,
-    wp: bool = False, wp_max_moves: int = 30,
+    wp: bool = False, wp_max_moves: int = 30, go2: bool = False,
 ) -> tuple[str, str | None]:
     """Render the full task briefing (the SDK cell's system prompt; delivered
     as the first user message on harnesses whose builtin prompt is fixed).
@@ -145,7 +221,10 @@ def build_briefing(
                 f'<skill name="{skill}">\n{body}\n</skill>\n'
             )
         return briefing, wp_skill_md5
-    base = BARE_SYSTEM_PROMPT if bare else SYSTEM_PROMPT
+    if go2:  # real robot: its own literal-faithful surface, outside the freeze
+        base = GO2_BARE_SYSTEM_PROMPT if bare else GO2_SYSTEM_PROMPT
+    else:
+        base = BARE_SYSTEM_PROMPT if bare else SYSTEM_PROMPT
     briefing = base.format(instruction=instruction, budget=step_budget)
     skill_md5: str | None = None
     if skill and not bare:

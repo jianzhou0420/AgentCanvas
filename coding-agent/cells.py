@@ -17,7 +17,7 @@ Two experiment lines share this registry (merged 2026-07-19):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -222,6 +222,7 @@ class CellSpec:
     skill: str | None
     persona: bool = False  # keep the harness's stock persona (ablation)
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
+    go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
     max_turns: int | None = None  # None → STD_FROZEN's cap (std-v2: 200)
@@ -355,6 +356,19 @@ for _h, _m in WP_BOARD:
         CELLS[spec.name] = spec
 for _h, _m, _c in LOCAL_WP_BOARD:
     spec = _cell(_h, _m, _c)
+    CELLS[spec.name] = spec
+
+# real-robot pilots (2026-07-20): the sdk cells re-embodied on the Unitree Go2
+# via go2_bridge.py. BARE surface — observe + step only, no look_around, no
+# skill (user decision 2026-07-20: match the habitat main board's condition),
+# default effort. NOT part of the std board: instruction is operator-supplied
+# (--set instruction=...), the driver skips evaluate (no ground truth — success
+# is judged by a human from the recording), and the server is the go2 host on
+# the robot's machine, not an agentcanvas backend.
+GO2_BOARD = (("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"))
+for _h, _m in GO2_BOARD:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"go2_{_h}_{_m}", condition="go2", go2=True)
     CELLS[spec.name] = spec
 
 # batches: the tiered main board carries the effort tier in the cell name

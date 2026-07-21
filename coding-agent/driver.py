@@ -37,6 +37,10 @@ from prompts import FIRST_PROMPT, assert_std_skill_freeze, build_briefing
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
 WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
+# Real Unitree Go2. Same tool surface as mcp_bridge (observe/step/look_around),
+# but its HTTP peer is go2_host.py on the robot's own machine rather than a
+# local habitat auto_host — CycloneDDS is layer-2, so the SDK cannot run here.
+GO2_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "go2_bridge.py"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -96,22 +100,25 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
     return str(obj)
 
 
-_TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool], Any] = {}
+_TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool, bool], Any] = {}
 
 
-async def bridge_tool_schemas(bare: bool, wp: bool = False) -> Any:
+async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
-    wp_bridge.py for the wp condition; mini's port is byte-equivalent, gated
-    by check_equivalence.py). Cached per (bare, wp); never raises (logging
-    must not break a run)."""
-    key = (bare, wp)
+    wp_bridge.py for the wp condition, or go2_bridge.py for the real robot;
+    mini's port is byte-equivalent, gated by check_equivalence.py). Cached per
+    (bare, wp, go2); never raises (logging must not break a run)."""
+    key = (bare, wp, go2)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
-    bridge_path = WP_BRIDGE_PATH if wp else BRIDGE_PATH
-    saved = os.environ.get("HABITAT_BARE")
+    bridge_path = GO2_BRIDGE_PATH if go2 else WP_BRIDGE_PATH if wp else BRIDGE_PATH
+    # Each bridge reads its own prefix; introspecting go2 with HABITAT_BARE set
+    # would silently return the non-bare toolset.
+    bare_var = "GO2_BARE" if go2 else "HABITAT_BARE"
+    saved = os.environ.get(bare_var)
     try:
-        os.environ["HABITAT_BARE"] = "1" if bare else "0"
+        os.environ[bare_var] = "1" if bare else "0"
         spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -126,9 +133,9 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False) -> Any:
         _TOOL_SCHEMAS_CACHE[key] = {"error": f"tool-schema introspection failed: {exc!r}"}
     finally:
         if saved is None:
-            os.environ.pop("HABITAT_BARE", None)
+            os.environ.pop(bare_var, None)
         else:
-            os.environ["HABITAT_BARE"] = saved
+            os.environ[bare_var] = saved
     return _TOOL_SCHEMAS_CACHE[key]
 
 
@@ -210,6 +217,8 @@ class EpisodeContext:
     wp: bool = False       # waypoint action space (wp_bridge.py)
     wp_server_url: str = ""  # waypoint-predictor auto_host (wp cells only)
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
+    go2: bool = False      # real Unitree Go2 (go2_bridge.py); server_url points
+                           # at go2_host.py on the robot's machine, not localhost
     extra: dict[str, Any] = field(default_factory=dict)  # harness-specific knobs
 
     @property
@@ -219,11 +228,27 @@ class EpisodeContext:
 
     @property
     def bridge_path(self) -> Path:
-        """Stdio bridge module for this condition's action space."""
+        """Stdio bridge module for this condition's action space / embodiment."""
+        if self.go2:
+            return GO2_BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
 
     def bridge_env(self) -> dict[str, str]:
-        """HABITAT_* env for harnesses that spawn the stdio bridge."""
+        """Env for harnesses that spawn the stdio bridge, prefixed per bridge.
+
+        The prefix is not cosmetic: a bridge that does not recognise the name
+        falls back to its default, and for TURN_BUDGET that default is 0 —
+        which silently disables the STOP gate and the budget broadcast rather
+        than failing. So go2 gets GO2_*, and the two sets never mix.
+        """
+        if self.go2:
+            return {
+                "GO2_SERVER_URL": self.server_url,
+                "GO2_STEP_BUDGET": str(self.step_budget),
+                "GO2_TURN_BUDGET": str(self.turn_budget),
+                "GO2_BARE": "1" if self.bare else "0",
+                "GO2_LIVE_DIR": str(self.live_dir),
+            }
         env = {
             "HABITAT_SERVER_URL": self.server_url,
             "HABITAT_STEP_BUDGET": str(self.step_budget),
@@ -335,18 +360,31 @@ async def run_episode(
 ) -> dict[str, Any]:
     # Blocking HTTP rides to_thread so parallel workers never stall the loop
     # (first play on a cold server can hold a scene load for ~30s).
-    await asyncio.to_thread(panel_field, url, "episode_index", index)
-    await asyncio.to_thread(panel_action, url, "play")
+    if spec.go2:
+        # Real robot, minimal episode loop (user decision 2026-07-20): no dataset
+        # to place into and no env-panel on the host — the instruction is
+        # operator-supplied and reset just stands the dog up and zeroes counters.
+        instruction = str(cfg["extra"].get("instruction") or "")
+        if not instruction:
+            raise RuntimeError(
+                "go2 cell needs --set instruction=... — there is no dataset to read one from"
+            )
+        ep = await asyncio.to_thread(
+            call_function, url, "env_go2__reset", {"trigger": "driver"}
+        )
+    else:
+        await asyncio.to_thread(panel_field, url, "episode_index", index)
+        await asyncio.to_thread(panel_action, url, "play")
 
-    reset_config = {"rgb_resolution": str(cfg["rgb_resolution"])}
-    ep = await asyncio.to_thread(
-        call_function, url, "env_habitat__reset", {"trigger": "driver"}, reset_config
-    )
-    instruction = ep["instruction"]
+        reset_config = {"rgb_resolution": str(cfg["rgb_resolution"])}
+        ep = await asyncio.to_thread(
+            call_function, url, "env_habitat__reset", {"trigger": "driver"}, reset_config
+        )
+        instruction = ep["instruction"]
 
     briefing, skill_md5 = build_briefing(
         instruction, cfg["step_budget"], bare=spec.bare, skill=spec.skill,
-        wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30),
+        wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
     )
 
     workdir = run_dir / f"workdir_{index}"
@@ -371,6 +409,7 @@ async def run_episode(
         raw_dir=raw_dir,
         persona=spec.persona,
         wp=spec.wp,
+        go2=spec.go2,
         wp_server_url=cfg.get("wp_server") or "",
         wp_max_moves=cfg.get("wp_max_moves", 30),
         extra=dict(cfg.get("extra") or {}),
@@ -392,7 +431,7 @@ async def run_episode(
             "persona": spec.persona,
             "system_prompt": briefing,
             "first_prompt": FIRST_PROMPT,
-            "tool_schemas": await bridge_tool_schemas(spec.bare, spec.wp),
+            "tool_schemas": await bridge_tool_schemas(spec.bare, spec.wp, spec.go2),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -404,17 +443,20 @@ async def run_episode(
         })})
 
         # Evaluate while the trajectory file is still open so the metrics land
-        # in the log itself. Driver-side; the agent never sees it.
+        # in the log itself. Driver-side; the agent never sees it. On go2 there
+        # is no ground truth, hence no evaluate — success is a human judgment
+        # made from the recording, so metrics stay empty rather than fabricated.
         metrics: dict[str, Any] = {}
-        try:
-            metrics_out = await asyncio.to_thread(
-                call_function, url, "env_habitat__evaluate", {"trigger": "driver"}
-            )
-            metrics = metrics_out.get("metrics") or {}
-            if isinstance(metrics, str):
-                metrics = json.loads(metrics)
-        except Exception as exc:  # noqa: BLE001
-            sink.emit("driver_error", {"error": f"evaluate failed: {exc!r}"})
+        if not spec.go2:
+            try:
+                metrics_out = await asyncio.to_thread(
+                    call_function, url, "env_habitat__evaluate", {"trigger": "driver"}
+                )
+                metrics = metrics_out.get("metrics") or {}
+                if isinstance(metrics, str):
+                    metrics = json.loads(metrics)
+            except Exception as exc:  # noqa: BLE001
+                sink.emit("driver_error", {"error": f"evaluate failed: {exc!r}"})
         sink.emit("episode_metrics", {"metrics": metrics})
     finally:
         wall = sink.elapsed
@@ -540,7 +582,18 @@ async def run_cell(
     for url in servers:
         health = requests.get(f"{url}/health", timeout=10)
         health.raise_for_status()
-        print(f"[std] {url} healthy: {health.json()['name']}")
+        if spec.go2:
+            # go2_host's /health has no "name"; what matters is the feedback
+            # feed — without it every step runs open-loop and the calibration
+            # numbers stop applying, so refuse rather than degrade silently.
+            h = health.json()
+            print(f"[std] {url} healthy: go2 feedback={h.get('feedback')} "
+                  f"step_m={h.get('step_m')} turn_deg={h.get('turn_deg')}")
+            if not (h.get("dry_run") or h.get("feedback")):
+                raise RuntimeError(f"{url}: go2 host has no state feedback "
+                                   "(closed-loop unavailable) — check the dog link")
+        else:
+            print(f"[std] {url} healthy: {health.json()['name']}")
 
     if spec.wp:
         # a wp cell without its predictor would silently degrade — refuse
@@ -581,9 +634,10 @@ async def run_cell(
     indices = parse_episodes(episodes_spec or cfg["episodes"])
     print(f"[std] cell={spec.name} model={spec.model_id} eps={indices[0]}-{indices[-1]} "
           f"workers={len(servers)} -> {run_dir}")
-    for url in servers:
-        panel_field(url, "dataset", cfg["dataset"])
-        panel_field(url, "split", cfg["split"])
+    if not spec.go2:  # no env-panel on the go2 host, and no dataset to select
+        for url in servers:
+            panel_field(url, "dataset", cfg["dataset"])
+            panel_field(url, "split", cfg["split"])
 
     queue: asyncio.Queue[int] = asyncio.Queue()
     for index in indices:
