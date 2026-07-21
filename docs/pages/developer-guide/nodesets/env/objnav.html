@@ -233,9 +233,11 @@
 <tr><td>Budget exhaustion</td><td><code>max_steps=5</code>, forward-only, never STOP</td><td><code>terminated=False, truncated=True</code>, terminal metrics still attached</td></tr>
 <tr><td>LOOK_UP / LOOK_DOWN</td><td>actions 4 and 5 dispatched directly</td><td>accepted, step counter advances</td></tr>
 <tr><td>v2 dataset switch</td><td><code>switch_dataset_split("v2", "val_mini")</code></td><td>30 episodes load (after the symlink fix in §4)</td></tr>
+<tr><td>Consecutive-episode sequencing</td><td>4 placements walking a scene change and a same-scene pair, stepping away between each</td><td>every episode starts at its own <code>start_position</code> (drift 0.0000 m) with fresh counters; a revisited episode reproduces its start pose exactly — the 0.1.7 stale-pose bug does not reproduce on 0.2.4</td></tr>
 <tr><td>Server mode</td><td><code>load?mode=server</code> on the slot backend</td><td>auto_host subprocess up, 4 tools registered, env panel bridged via <code>RemoteEnvPanelProxy</code>, split change rebuilds val → val_mini</td></tr>
 <tr><td>Graph wiring</td><td><code>POST /api/graphs/validate</code></td><td>24/24 edges checked, zero wire errors</td></tr>
 <tr><td><strong>Graph run</strong></td><td>run <code>20260720_173306</code> (<code>/experiment:run objnav-hm3d objnav_hm3d</code>, 1 ep, budget 8)</td><td><strong>completed</strong> — reset×1 / observe×9 / step×8 / <strong>evaluate×1</strong>; metrics harvested into aggregate</td></tr>
+<tr><td><strong>Multi-worker batch</strong></td><td>run <code>20260720_205631</code> — val_mini <strong>all 30 episodes, <code>worker_count=4</code></strong>, budget 8</td><td><strong>30/30 completed</strong> in 931 s (~4× serial); balanced 8/8/7/7 across workers; 30 unique <code>(scene, episode_id)</code> pairs with 30 distinct <code>distance_to_goal</code> values and no same-scene identical-metric pairs — no cross-worker state bleed, no stale-pose signature. Measured VRAM ~535 MB/worker (peak 2897 MB incl. 755 MB baseline); host RAM ~3.4 GB/worker</td></tr>
 </tbody>
 </table>
 
@@ -252,11 +254,10 @@
 <p>Stated plainly so nobody reads the table above as broader than it is:</p>
 
 <ul>
-<li><strong>Multi-worker eval.</strong> <code>parallelism = "replicated"</code> is declared per ADR-server-003 but has only ever run at <code>worker_count=1</code>, where both modes are bit-identical.</li>
+<li><strong>Long episodes.</strong> Every batch run so far capped episodes at 8 steps for API cost; the full 500-step budget has only been exercised by the manager-level oracle/budget smokes.</li>
 <li><strong>Canvas Play.</strong> Verified through the eval-batch path only; the viewer nodes (<code>imageViewer</code>, <code>textScroll</code>, <code>actionLog</code>, <code>metrics</code>) executed but were never watched in the GUI.</li>
 <li><strong>The STOP path through the graph.</strong> The probe loop ended on step budget, so the <code>terminated → iter_out.stop</code> wire has never been driven truthy in a real run. The env-side STOP itself is verified at manager level.</li>
-<li><strong>Full-val scale.</strong> The largest run so far is 1 episode. No SR number from this stack should be quoted yet.</li>
-<li><strong><code>vram_mb: 2500</code></strong> in the <code>objnav-hm3d</code> experiment profile is an estimate from habitat-sim's typical 640×480 footprint, not a measurement.</li>
+<li><strong>Any success rate.</strong> No method has run on this env — only a nano-model toy agent. No SR number from this stack should be quoted yet.</li>
 </ul>
 
   <footer>
