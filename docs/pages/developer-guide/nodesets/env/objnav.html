@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ObjectNav NodeSet — AgentCanvas</title>
-<meta name="description" content="The ObjectNav NodeSet ( EnvObjnavNodeSet ) wraps habitat-lab 0.2.4 for object-goal navigation on HM3D: an episode names a category — chair, bed, plant, toilet, tv_monitor, sofa — and the agent must…">
+<meta name="description" content="The ObjectNav NodeSet ( EnvObjnavNodeSet ) wraps habitat-lab 0.2.4 for object-goal navigation: an episode names a category and the agent must reach any instance of it and call STOP within 1 m. Two…">
 <meta property="og:title" content="ObjectNav NodeSet — AgentCanvas">
-<meta property="og:description" content="The ObjectNav NodeSet ( EnvObjnavNodeSet ) wraps habitat-lab 0.2.4 for object-goal navigation on HM3D: an episode names a category — chair, bed, plant, toilet, tv_monitor, sofa — and the agent must…">
+<meta property="og:description" content="The ObjectNav NodeSet ( EnvObjnavNodeSet ) wraps habitat-lab 0.2.4 for object-goal navigation: an episode names a category and the agent must reach any instance of it and call STOP within 1 m. Two…">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentCanvas">
 <meta name="twitter:card" content="summary_large_image">
@@ -61,13 +61,13 @@
     <span class="sep">/</span>
     <span class="here">ObjectNav</span>
   </div>
-  <div class="last-updated">2026-07-21 10:35</div>
+  <div class="last-updated">2026-07-21 14:18</div>
 </div>
   <header class="page-header guide">
   <h1>ObjectNav NodeSet</h1>
 </header>
 
-<p class="lede">The <strong>ObjectNav NodeSet</strong> (<code>EnvObjnavNodeSet</code>) wraps <strong>habitat-lab 0.2.4</strong> for object-goal navigation on HM3D: an episode names a category — <em>chair, bed, plant, toilet, tv_monitor, sofa</em> — and the agent must reach any instance of it and call STOP within 1 m. Unlike the other nav envs here, the goal arrives as a bare noun, not a route description, so the whole task is search under semantic priors.</p>
+<p class="lede">The <strong>ObjectNav NodeSet</strong> (<code>EnvObjnavNodeSet</code>) wraps <strong>habitat-lab 0.2.4</strong> for object-goal navigation: an episode names a category and the agent must reach any instance of it and call STOP within 1 m. Two episode corpora are selectable from the env panel — <strong>HM3D</strong> (6 categories: <em>chair, bed, plant, toilet, tv_monitor, sofa</em>) and <strong>MP3D</strong> (21 categories, the Habitat-2020-challenge generation). Unlike the other nav envs here, the goal arrives as a bare noun, not a route description, so the whole task is search under semantic priors.</p>
 
 <p>Sibling of <a href="habitat.html">Habitat</a>, not an extension. Both wrap habitat, but they cannot share a process or an interpreter: Habitat pins <code>habitat-sim 0.1.7</code> + Python 3.8 for VLN-CE, while ObjectNav pins <code>habitat-sim 0.2.4</code> + <code>habitat-lab 0.2.420230405</code> + Python 3.9 in its own <code>ac-objnav</code> env. Different simulator generation, different config schema (<code>habitat.*</code> omegaconf vs VLN-CE's <code>TASK_CONFIG.*</code> yacs).</p>
 
@@ -88,9 +88,12 @@
 <tr><td>Sensors</td><td>640×480 RGB-D + GPS + compass</td><td>Challenge-2022 agent</td></tr>
 <tr><td>Step budget</td><td>500</td><td>Challenge-2022 agent</td></tr>
 <tr><td>Success radius</td><td>1.0 m from any goal instance</td><td><a href="https://arxiv.org/abs/2006.13171">ObjectNav Revisited</a> (20.06)</td></tr>
-<tr><td>Episodes</td><td><code>objectnav_hm3d_v1</code> val — 2000 episodes, 20 scenes, 6 categories</td><td>VLFM, MVP-Nav (v2 also selectable — OpenFrontier's choice)</td></tr>
+<tr><td>Episodes (HM3D)</td><td><code>objectnav_hm3d_v1</code> val — 2000 episodes, 20 scenes, 6 categories</td><td>VLFM, MVP-Nav (v2 also selectable — OpenFrontier's choice)</td></tr>
+<tr><td>Episodes (MP3D)</td><td><code>objectnav_mp3d_v1</code> val — 2195 episodes, 11 scenes, 21 categories</td><td>Habitat 2020 challenge generation, the <a href="https://arxiv.org/abs/2006.13171">ObjectNav Revisited</a> standard; VLFM's MP3D table uses exactly this dataset</td></tr>
 </tbody>
 </table>
+
+<p>One nodeset serves both corpora because habitat-lab 0.2.4's <code>objectnav_mp3d.yaml</code> and <code>objectnav_hm3d.yaml</code> benchmark configs are <strong>identical except for <code>data_path</code></strong> (verified by a resolved-config field diff): same agent, sensors, action space, success criterion and budget. Selecting a dataset in the env panel is therefore an episode-corpus choice, not a task change — method graphs never see the difference.</p>
 
 <h3 id="architecture">Architecture</h3>
 
@@ -194,8 +197,8 @@
 <p><code>ObjnavEnvPanel</code> owns episode placement — there are no split/episode canvas nodes. Its cascade is three deep:</p>
 
 <ul>
-<li><strong>dataset</strong> — <code>v1</code> (paper standard) or <code>v2</code> (Challenge-2023 episodes, OpenFrontier's choice). Changing it rebuilds the env.</li>
-<li><strong>split</strong> — <code>val</code> (2000 episodes) or <code>val_mini</code> (30, for smokes). <code>train</code> is deliberately absent: the train scenes are not staged, and zero-shot methods do not train.</li>
+<li><strong>dataset</strong> — <code>hm3d_v1</code> (paper standard), <code>hm3d_v2</code> (Challenge-2023 episodes, OpenFrontier's choice) or <code>mp3d_v1</code> (2020-challenge generation, 21 categories). Changing it rebuilds the env and re-scopes the split list. Legacy values <code>v1</code>/<code>v2</code> are accepted everywhere as aliases for the HM3D pair.</li>
+<li><strong>split</strong> — <code>val</code> (2000 episodes on HM3D, 2195 on MP3D) or <code>val_mini</code> (30, for smokes). <code>train</code> is deliberately absent: the HM3D train scenes are not staged, MP3D's train episodes would be eagerly loaded just to fill a dropdown, and zero-shot methods do not train.</li>
 <li><strong>episode_index</strong> — labelled <code>{index}: {scene} → {category}</code> so the goal is visible when picking.</li>
 </ul>
 
@@ -205,7 +208,7 @@
 
 <h2 id="4-data"><span class="num">4.</span> Data staging</h2>
 
-<p>Scenes come from the official Matterport distribution (login-gated; an API token works headlessly via <code>curl --user token-id:secret</code>). Episodes are public direct downloads from <code>dl.fbaipublicfiles.com</code>.</p>
+<p>Scenes come from the official Matterport distribution (login-gated; an API token works headlessly via <code>curl --user token-id:secret</code>). Episodes are public direct downloads from <code>dl.fbaipublicfiles.com</code> — with one trap: the MP3D episode zip's official URL spells the corpus <code>m3d</code> (<code>…/objectnav/m3d/v1/objectnav_mp3d_v1.zip</code>); the expected <code>mp3d</code> path returns 403.</p>
 
 <table>
 <thead><tr><th>Path</th><th>Contents</th></tr></thead>
@@ -213,6 +216,8 @@
 <tr><td><code>data/scene_datasets/hm3d/val/</code></td><td>100 HM3D v0.2 val scenes (<code>.basis.glb</code> + <code>.basis.navmesh</code>), plus <code>.semantic.glb</code>/<code>.semantic.txt</code> for the 36 annotated ones</td></tr>
 <tr><td><code>data/datasets/objectnav/hm3d/v1/</code></td><td><code>objectnav_hm3d_v1</code> — val (2000 eps / 20 scenes), val_mini (30), train</td></tr>
 <tr><td><code>data/datasets/objectnav/hm3d/v2/</code></td><td><code>objectnav_hm3d_v2</code> — same split shape</td></tr>
+<tr><td><code>data/scene_datasets/mp3d</code></td><td>compat symlink → <code>../habitat/scene_datasets/mp3d</code>: all 90 habitat-format MP3D scans (<code>.glb</code> + <code>.house</code> + <code>.navmesh</code> + <code>_semantic.ply</code>), long staged for VLN-CE; episodes bake <code>mp3d/{scan}/{scan}.glb</code></td></tr>
+<tr><td><code>data/datasets/objectnav/mp3d/v1/</code></td><td><code>objectnav_mp3d_v1</code> — val (2195 eps / 11 scenes / 21 categories; sharded per-scene under <code>content/</code>, the outer <code>val.json.gz</code> is an empty shell), val_mini (30), train</td></tr>
 </tbody>
 </table>
 
@@ -234,7 +239,7 @@
 <li>the four verbs above — env side</li>
 </ul>
 
-<p>The loop is: observe → caption the frame → format an observation string → LLM picks one of the six actions → parse → step. The parse node's choice list is written in action-index order (<code>STOP,FORWARD,LEFT,RIGHT,LOOK_UP,LOOK_DOWN</code>), so its <code>index</code> output wires straight into <code>step_discrete.action</code>. <code>step_discrete.terminated</code> drives <code>iter_out.stop</code>; <code>evaluate</code> hangs off <code>iter_out.final_stop</code> in the after-loop band, which is what keeps the terminal STOP step inside the harvested metrics.</p>
+<p>The loop is: observe → caption the frame → format an observation string → LLM picks one of the six actions → parse → step. The parse node's choice list is written in action-index order (<code>STOP,FORWARD,LEFT,RIGHT,LOOK_UP,LOOK_DOWN</code>), so its <code>index</code> output wires straight into <code>step_discrete.action</code>. <code>step_discrete.terminated</code> drives <code>iter_out.stop</code>; <code>evaluate</code> hangs off <code>iter_out.final_stop</code> in the after-loop band, which is what keeps the terminal STOP step inside the harvested metrics. The graph is also corpus-agnostic — nothing in it names a dataset, so the same JSON runs MP3D by submitting with <code>dataset=mp3d_v1</code>.</p>
 
 <div class="callout"><strong>Scope.</strong> This graph exists to prove the wiring, not to compete. Its success rate is not meaningful — the reference point on this benchmark is VLFM at SR 52.5 / SPL 30.4 on full val. Treat it the way you would a unit test with a printed number.</div>
 
@@ -242,7 +247,7 @@
 
 <h2 id="6-verification"><span class="num">6.</span> Verification evidence</h2>
 
-<p>All runs 2026-07-20, single RTX 3090, <code>ac-objnav</code> env, slot-b backend.</p>
+<p>HM3D rows 2026-07-20 (slot-b backend); MP3D rows 2026-07-21 (slot-c backend). Single RTX 3090, <code>ac-objnav</code> env.</p>
 
 <table>
 <thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
@@ -259,6 +264,11 @@
 <tr><td>Graph wiring</td><td><code>POST /api/graphs/validate</code></td><td>24/24 edges checked, zero wire errors</td></tr>
 <tr><td><strong>Graph run</strong></td><td>run <code>20260720_173306</code> (<code>/experiment:run objnav-hm3d objnav_hm3d</code>, 1 ep, budget 8)</td><td><strong>completed</strong> — reset×1 / observe×9 / step×8 / <strong>evaluate×1</strong>; metrics harvested into aggregate</td></tr>
 <tr><td><strong>Multi-worker batch</strong></td><td>run <code>20260720_205631</code> — val_mini <strong>all 30 episodes, <code>worker_count=4</code></strong>, budget 8</td><td><strong>30/30 completed</strong> in 931 s (~4× serial); balanced 8/8/7/7 across workers; 30 unique <code>(scene, episode_id)</code> pairs with 30 distinct <code>distance_to_goal</code> values and no same-scene identical-metric pairs — no cross-worker state bleed, no stale-pose signature. Measured VRAM ~535 MB/worker (peak 2897 MB incl. 755 MB baseline); host RAM ~3.4 GB/worker</td></tr>
+<tr><td>MP3D config parity</td><td>resolved <code>objectnav_mp3d.yaml</code> vs <code>objectnav_hm3d.yaml</code> field diff</td><td>identical except <code>data_path</code> — same agent, sensors, actions, success criterion, budget</td></tr>
+<tr><td>MP3D dataset shape</td><td><code>objectnav_mp3d_v1</code> val via habitat-lab</td><td>exactly 2195 episodes / 11 scenes / 21 categories; val_mini 30; sharded <code>content/</code> load works</td></tr>
+<tr><td><strong>MP3D oracle install check</strong></td><td>metric-blind <code>ShortestPathFollower</code> to episode viewpoints, STOP on planner termination</td><td><strong>SR 30/30 val_mini + 33/33 (3 eps × all 11 val scenes)</strong>, mean SPL 0.92–0.93</td></tr>
+<tr><td>MP3D server mode + dataset cascade</td><td><code>load?mode=server</code> on the slot backend, panel field push <code>dataset=mp3d_v1</code> then <code>split=val_mini</code></td><td>7 tools registered; rebuild → 2195 then 30 episodes; options labelled; reset action re-seats and emits <code>episode_reset</code></td></tr>
+<tr><td>HM3D alias regression</td><td><code>switch_dataset_split("v1", "val_mini")</code></td><td>legacy value resolves to <code>hm3d_v1</code>, 30 episodes load</td></tr>
 </tbody>
 </table>
 
@@ -267,6 +277,10 @@
 <h3 id="budget-sizing">A sizing trap worth inheriting</h3>
 
 <p>The first probe run died at step 10 of 30 with <em>"timeout after 150.0s"</em>. ADR-eval-002 caps each episode at <code>step_budget × default_per_step_budget_sec</code>, and the nodeset originally declared <code>5.0</code> — correct for a bare habitat step, wildly wrong for a graph making two vision-LLM calls per step (~15 s). It is now <code>30.0</code>, matching <a href="habitat.html">Habitat</a>'s value and for the same reason. Any env destined for LLM-in-the-loop graphs needs the larger number, and the symptom of getting it wrong looks like an env bug rather than a budget one.</p>
+
+<h3 id="oracle-stop-precision">Oracle stop precision on MP3D</h3>
+
+<p>MP3D's 2020-era goal viewpoints are sparser than HM3D's, which breaks naive oracle harnesses twice. A follower <code>goal_radius</code> of 0.25 m stops outside the 0.1 m success criterion — the first attempt scored SR 0.567 with <em>every</em> failure sitting at <code>distance_to_goal</code> 0.11–0.25. Tightening the radius to 0.1 makes the follower oscillate around it on 0.25 m steps until the budget burns, standing at dtg ≈ 0.04 with no STOP ever dispatched. The working form keeps the stop decision metric-blind: <code>goal_radius = success_distance</code> plus a no-progress rule (net displacement under 0.05 m across a 50-step nav call means the discretization is at its limit — commit STOP where standing). HM3D's dense viewpoints mask both traps: the same loose harness scores 1.0 there.</p>
 
 <hr>
 
@@ -279,6 +293,7 @@
 <li><strong>Canvas Play.</strong> Verified through the eval-batch path only; the viewer nodes (<code>imageViewer</code>, <code>textScroll</code>, <code>actionLog</code>, <code>metrics</code>) executed but were never watched in the GUI.</li>
 <li><strong>The STOP path through the graph.</strong> The probe loop ended on step budget, so the <code>terminated → iter_out.stop</code> wire has never been driven truthy in a real run. The env-side STOP itself is verified at manager level.</li>
 <li><strong>Any success rate.</strong> No method has run on this env — only a nano-model toy agent. No SR number from this stack should be quoted yet.</li>
+<li><strong>MP3D multi-worker.</strong> The 4-worker VRAM/RAM figures above were measured on HM3D; MP3D's building-scale meshes are larger. Re-measure on the first real MP3D batch (the <code>objnav-mp3d</code> profile note says the same).</li>
 </ul>
 
   <footer>
@@ -302,6 +317,7 @@
       <a class="toc-h2" href="#5-probe-graph">5. Probe graph: objnav_hm3d</a>
       <a class="toc-h2" href="#6-verification">6. Verification evidence</a>
       <a class="toc-h3" href="#budget-sizing">A sizing trap worth inheriting</a>
+      <a class="toc-h3" href="#oracle-stop-precision">Oracle stop precision on MP3D</a>
       <a class="toc-h2" href="#7-gaps">7. Not yet verified</a>
     </nav>
   </div>
