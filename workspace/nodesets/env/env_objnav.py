@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""EnvObjnavNodeSet — HM3D ObjectNav (habitat-lab 0.2.4) as a NodeSet.
+"""EnvObjnavNodeSet — Habitat ObjectNav (HM3D / MP3D, habitat-lab 0.2.4).
 
 Gym-like interface (docs: nodesets/env/template.html): ``reset`` (metadata
 only) / ``step_discrete`` (control signals) / ``observe_egocentric`` (pull) /
@@ -10,19 +10,32 @@ Works in-process or as an auto-hosted server:
   Local:  POST /api/components/nodesets/env_objnav/load
   Server: POST /api/components/nodesets/env_objnav/load?mode=server
 
-Task: Habitat ObjectNav on HM3D-Semantics — given a goal category (one of
-chair / bed / plant / toilet / tv_monitor / sofa), navigate to within 1 m of
-any instance and STOP. Benchmark configuration follows the de-facto paper
-standard (VLFM / SG-Nav / MVP-Nav lineage, NOT Challenge-2023 Stretch):
-habitat 0.2.4, classic agent (0.25 m forward / 30° turn / 640×480 RGB-D /
-500-step budget / 1.0 m success), episodes ``objectnav_hm3d_v1`` (2000 val
-episodes over 20 scenes; ``v2`` selectable for the OpenFrontier lineage).
+Task: Habitat ObjectNav — given a goal category, navigate to within 1 m of
+any instance and STOP. The env panel selects one of three episode corpora
+(dataset → split → episode):
 
-Data layout (repo-root-relative, staged 2026-07-20):
+  hm3d_v1 / hm3d_v2 — HM3D-Semantics val scenes, 6 goal categories
+      (chair / bed / plant / toilet / tv_monitor / sofa). v1 is the paper
+      standard (VLFM / SG-Nav / MVP-Nav lineage, NOT Challenge-2023
+      Stretch); v2 is the OpenFrontier generation.
+  mp3d_v1 — Matterport3D scenes, 21 goal categories — the Habitat 2020
+      challenge generation (ObjectNav-Revisited standard; VLFM also
+      reports MP3D numbers on exactly this dataset).
+
+Benchmark configuration is identical across corpora (verified 2026-07-21 on
+habitat-lab 0.2.4 — the hm3d/mp3d benchmark yamls differ only in data_path):
+classic agent, 0.25 m forward / 30° turn / 640×480 RGB-D / 500-step budget /
+episode-viewpoint success within 1 m.
+
+Data layout (repo-root-relative, staged 2026-07-20 / MP3D 2026-07-21):
   scenes:   data/scene_datasets/hm3d/val/            (HM3D v0.2 val, official)
+            data/scene_datasets/mp3d                 (compat symlink ->
+                ../habitat/scene_datasets/mp3d — all 90 habitat-format scans,
+                long staged for VLN-CE; episodes bake scene_id "mp3d/…")
   episodes: data/datasets/objectnav/hm3d/{v1,v2}/    (train / val / val_mini)
+            data/datasets/objectnav/mp3d/v1/         (train / val)
 
-  v1 and v2 disagree on the scene path baked into every episode's ``scene_id``:
+  HM3D v1 and v2 disagree on the scene path baked into every episode's ``scene_id``:
   v1 says ``hm3d/val/...`` while v2 says ``hm3d_v0.2/val/...`` — and v2's
   val_mini points at ``hm3d_v0.2/minival/...`` (its 2 scenes, 00800 + 00802,
   are a subset of our val download). Both v2 prefixes are therefore served by
@@ -67,14 +80,49 @@ log = logging.getLogger("agentcanvas.env_objnav")
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Dataset wiring — objectnav_hm3d v1 (paper standard) / v2 (challenge 2023)
+# Dataset wiring — one spec per selectable episode corpus
 # ══════════════════════════════════════════════════════════════════════
 
-_DATASETS: list[str] = ["v1", "v2"]
-_SPLITS: list[str] = ["val", "val_mini"]  # train scenes not staged locally
+# ``splits`` lists what is staged locally AND sensible to iterate from the
+# panel — train is deliberately absent (HM3D train scenes aren't staged;
+# MP3D train episodes are on disk but eagerly loading 61 scenes of episodes
+# just to populate a panel dropdown is not).
+_DATASET_SPECS: dict[str, dict[str, Any]] = {
+    "hm3d_v1": {
+        "label": "objectnav_hm3d_v1",
+        "env_name": "objnav_hm3d",
+        "bench_config": "benchmark/nav/objectnav/objectnav_hm3d.yaml",
+        "data_path": "data/datasets/objectnav/hm3d/v1/{split}/{split}.json.gz",
+        "splits": ["val", "val_mini"],
+    },
+    "hm3d_v2": {
+        "label": "objectnav_hm3d_v2",
+        "env_name": "objnav_hm3d",
+        "bench_config": "benchmark/nav/objectnav/objectnav_hm3d.yaml",
+        "data_path": "data/datasets/objectnav/hm3d/v2/{split}/{split}.json.gz",
+        "splits": ["val", "val_mini"],
+    },
+    "mp3d_v1": {
+        "label": "objectnav_mp3d_v1",
+        "env_name": "objnav_mp3d",
+        "bench_config": "benchmark/nav/objectnav/objectnav_mp3d.yaml",
+        "data_path": "data/datasets/objectnav/mp3d/v1/{split}/{split}.json.gz",
+        "splits": ["val", "val_mini"],
+    },
+}
 
-_BENCH_CONFIG = "benchmark/nav/objectnav/objectnav_hm3d.yaml"
-_DATA_PATH_TMPL = "data/datasets/objectnav/hm3d/{version}/{{split}}/{{split}}.json.gz"
+# Pre-MP3D selection values ("v1"/"v2", slot-b's verified 2026-07-20 runs)
+# stay accepted everywhere a dataset name enters.
+_DATASET_ALIASES: dict[str, str] = {"v1": "hm3d_v1", "v2": "hm3d_v2"}
+
+
+def _resolve_dataset(name: str) -> str:
+    canonical = _DATASET_ALIASES.get(str(name), str(name))
+    if canonical not in _DATASET_SPECS:
+        raise ValueError(
+            f"Unknown dataset {name!r} (expected {list(_DATASET_SPECS)})",
+        )
+    return canonical
 
 
 def _repo_root() -> str:
@@ -107,7 +155,7 @@ class ObjnavEnvManager:
         self._step_count: int = 0
         self._last_action: int | None = None
         self._lock = threading.Lock()
-        self._dataset: str = "v1"
+        self._dataset: str = "hm3d_v1"
         self._split: str = "val"
         self._episode_index: int = 0
         self._gpu_id: int = 0
@@ -139,7 +187,7 @@ class ObjnavEnvManager:
 
     def initialize(
         self,
-        dataset: str = "v1",
+        dataset: str = "hm3d_v1",
         split: str = "val",
         gpu_id: int = 0,
         max_steps: int = 500,
@@ -167,15 +215,17 @@ class ObjnavEnvManager:
         from habitat.config import read_write
         from habitat.config.default import get_config
 
-        if dataset not in _DATASETS:
-            raise ValueError(f"Unknown dataset {dataset!r} (expected {_DATASETS})")
-        if split not in _SPLITS:
-            raise ValueError(f"Unknown split {split!r} (expected {_SPLITS})")
+        dataset = _resolve_dataset(dataset)
+        spec = _DATASET_SPECS[dataset]
+        if split not in spec["splits"]:
+            raise ValueError(
+                f"Unknown split {split!r} for {dataset} (expected {spec['splits']})",
+            )
 
-        config = get_config(_BENCH_CONFIG)
+        config = get_config(spec["bench_config"])
         with read_write(config):
             config.habitat.dataset.split = split
-            config.habitat.dataset.data_path = _DATA_PATH_TMPL.format(version=dataset)
+            config.habitat.dataset.data_path = spec["data_path"]
             config.habitat.environment.max_episode_steps = int(max_steps)
             config.habitat.simulator.habitat_sim_v0.gpu_device_id = int(gpu_id)
 
@@ -219,7 +269,7 @@ class ObjnavEnvManager:
     # ── Episode control (env panel + reset) ──
 
     def list_splits(self) -> list[str]:
-        return list(_SPLITS)
+        return list(_DATASET_SPECS[self._dataset]["splits"])
 
     def get_total_episodes(self) -> int:
         with self._lock:
@@ -645,7 +695,7 @@ class ResetObjnavTool(BaseCanvasNode):
         PortDef("trigger", "ANY", "Trigger reset (any value)", optional=True),
     ]
     output_ports = [
-        PortDef("object_category", "TEXT", "Goal category (chair/bed/plant/toilet/tv_monitor/sofa)"),
+        PortDef("object_category", "TEXT", "Goal category (HM3D: 6 categories; MP3D: 21)"),
         PortDef("episode_id", "TEXT", "Episode ID"),
         PortDef("scene_id", "TEXT", "Scene ID"),
     ]
@@ -901,7 +951,7 @@ class EvaluateObjnavTool(BaseCanvasNode):
 
 class ObjnavEnvPanel(BaseEnvPanel):
     name: ClassVar[str] = "env_objnav"
-    display_name: ClassVar[str] = "HM3D ObjectNav"
+    display_name: ClassVar[str] = "Habitat ObjectNav"
 
     fields: ClassVar[list[EnvPanelField]] = [
         EnvPanelField("dataset", "select", "Episodes"),
@@ -917,7 +967,7 @@ class ObjnavEnvPanel(BaseEnvPanel):
 
     def __init__(self) -> None:
         self._state: dict[str, Any] = {
-            "dataset": "v1",
+            "dataset": "hm3d_v1",
             "split": "val",
             "episode_index": 0,
         }
@@ -951,8 +1001,8 @@ class ObjnavEnvPanel(BaseEnvPanel):
             "split": self._state["split"],
             "episode_index": int(self._state["episode_index"]),
             "episode_count": int(total),
-            "datasets": list(_DATASETS),
-            "splits": list(_SPLITS),
+            "datasets": list(_DATASET_SPECS),
+            "splits": list(_DATASET_SPECS[self._state["dataset"]]["splits"]),
             "step_budget": mgr.max_steps or 500,
             "current_episode": current if "error" not in current else None,
         }
@@ -960,9 +1010,17 @@ class ObjnavEnvPanel(BaseEnvPanel):
     async def on_field_change(self, name: str, value: Any) -> dict[str, Any]:
         mgr = _mgr()
         if name in ("dataset", "split"):
-            if name == "dataset" and str(value) in _DATASETS:
-                self._state["dataset"] = str(value)
-            elif name == "split" and str(value) in _SPLITS:
+            if name == "dataset":
+                candidate = _DATASET_ALIASES.get(str(value), str(value))
+                if candidate in _DATASET_SPECS:
+                    self._state["dataset"] = candidate
+                splits = _DATASET_SPECS[self._state["dataset"]]["splits"]
+                if self._state["split"] not in splits:
+                    self._state["split"] = splits[0]
+            elif (
+                name == "split"
+                and str(value) in _DATASET_SPECS[self._state["dataset"]]["splits"]
+            ):
                 self._state["split"] = str(value)
             self._state["episode_index"] = 0
             await self._run(
@@ -1025,9 +1083,15 @@ class ObjnavEnvPanel(BaseEnvPanel):
     async def get_options(self, field: str) -> list[dict[str, Any]]:
         mgr = _mgr()
         if field == "dataset":
-            return [{"value": d, "label": f"objectnav_hm3d_{d}"} for d in _DATASETS]
+            return [
+                {"value": d, "label": spec["label"]}
+                for d, spec in _DATASET_SPECS.items()
+            ]
         if field == "split":
-            return [{"value": s, "label": s} for s in _SPLITS]
+            return [
+                {"value": s, "label": s}
+                for s in _DATASET_SPECS[self._state["dataset"]]["splits"]
+            ]
         if field == "episode_index":
             if not mgr.initialized:
                 return []
@@ -1053,10 +1117,13 @@ class ObjnavEnvPanel(BaseEnvPanel):
 
 
 class EnvObjnavNodeSet(BaseNodeSet):
-    """HM3D ObjectNav (habitat-lab 0.2.4) as a NodeSet."""
+    """Habitat ObjectNav (HM3D / MP3D, habitat-lab 0.2.4) as a NodeSet."""
 
     name = "env_objnav"
-    description = "HM3D ObjectNav environment (habitat 0.2.4, paper-standard config)"
+    description = (
+        "Habitat ObjectNav environment (HM3D + MP3D episode corpora, "
+        "habitat 0.2.4, paper-standard config)"
+    )
     server_python = conda_env_python("ac-objnav", "OBJNAV_PYTHON")
     env_panel = ObjnavEnvPanel
     # ADR-server-003: stateful simulator — per-worker scene + agent pose.
@@ -1086,7 +1153,9 @@ class EnvObjnavNodeSet(BaseNodeSet):
         """Initialize the ObjectNav simulator.
 
         Kwargs:
-            dataset: "v1" (default, paper standard) or "v2" (challenge 2023).
+            dataset: "hm3d_v1" (default, paper standard), "hm3d_v2"
+                (OpenFrontier lineage) or "mp3d_v1" (2020 challenge / 21
+                categories). Legacy "v1"/"v2" alias the hm3d datasets.
             split: "val" (default) or "val_mini".
             gpu_id: CUDA device index (default 0).
             max_steps: episode step budget (default 500).
@@ -1097,7 +1166,7 @@ class EnvObjnavNodeSet(BaseNodeSet):
         await asyncio.get_running_loop().run_in_executor(
             self._mgr.executor,
             lambda: self._mgr.initialize(
-                dataset=kwargs.get("dataset", "v1"),
+                dataset=kwargs.get("dataset", "hm3d_v1"),
                 split=kwargs.get("split", "val"),
                 gpu_id=int(kwargs.get("gpu_id", 0)),
                 max_steps=int(kwargs.get("max_steps", 500)),
@@ -1106,10 +1175,11 @@ class EnvObjnavNodeSet(BaseNodeSet):
         log.info("EnvObjnavNodeSet initialized")
 
     async def get_eval_metadata(self) -> dict:
+        spec = _DATASET_SPECS[self._mgr._dataset]
         metadata = {
-            "env_name": "objnav_hm3d",
-            "datasets": list(_DATASETS),
-            "splits": list(_SPLITS),
+            "env_name": spec["env_name"],
+            "datasets": list(_DATASET_SPECS),
+            "splits": list(spec["splits"]),
             "episode_counts": {},
             "metrics": ["success", "spl", "soft_spl", "distance_to_goal"],
             "supports_set_episode": self._mgr.initialized,
