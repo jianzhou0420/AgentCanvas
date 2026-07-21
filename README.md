@@ -232,7 +232,7 @@ AgentCanvas is designed for portability: a single agent graph can execute agains
 
 ### Today: Simulator Nodesets
 
-The shipped environments — Habitat (VLN-CE), MatterSim / MP3D, HM-EQA, OpenEQA, SIMPLER (real-to-sim VLA), and LIBERO (manipulation) — are each implemented as a `BaseNodeSet` that exposes observation and action ports. The agent graph connects to these ports and never imports the simulator directly, which keeps the graph independent of any specific environment implementation.
+The shipped environments — Habitat (VLN-CE), MatterSim / MP3D, HM3D ObjectNav, HM-EQA, OpenEQA, SIMPLER (real-to-sim VLA), and LIBERO (manipulation) — are each implemented as a `BaseNodeSet` that exposes observation and action ports. The agent graph connects to these ports and never imports the simulator directly, which keeps the graph independent of any specific environment implementation.
 
 ### Tomorrow: A ROS Nodeset with the Same Interface
 
