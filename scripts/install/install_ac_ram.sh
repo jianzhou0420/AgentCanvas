@@ -122,3 +122,8 @@ echo "Weights (not downloaded here):"
 echo "  - RAM / RAM++:  under data/  (ram_swin_large_14m.pth / ram_plus_swin_large_14m.pth)"
 echo "  - SpatialBot:   HF snapshot at the nodeset's default model_path"
 echo ""
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$RAM_PYTHON"

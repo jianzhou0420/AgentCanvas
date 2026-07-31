@@ -462,3 +462,8 @@ echo "  1. cd agentcanvas && bash run_dev.sh"
 echo "  2. POST /api/components/nodesets/policy_adapter_vla/load?mode=server"
 echo "  3. Open the canvas — VLA Policy controller will appear."
 echo "     Pick model/policy/robot dropdowns + checkpoint path, click Load Model."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$VLA_PYTHON"

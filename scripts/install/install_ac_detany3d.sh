@@ -193,3 +193,9 @@ echo "Add to your shell rc:"
 echo "  export DETANY3D_PYTHON=$DETANY3D_PYTHON"
 echo ""
 echo "Then load model_detany3d from the AgentCanvas NodeSet Manager."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$DETANY3D_PYTHON"
+probe_auto_host "$DETANY3D_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/model/model_grounding_dino.py" "GroundingDinoNodeSet"

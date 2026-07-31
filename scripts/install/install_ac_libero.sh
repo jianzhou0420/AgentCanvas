@@ -216,3 +216,9 @@ echo "  1. cd agentcanvas && bash run_dev.sh"
 echo "  2. POST /api/components/nodesets/env_libero/load?mode=server"
 echo "  3. Open the canvas — drop env_libero__reset / env_libero__step nodes,"
 echo "     pick a suite/task/episode in the LIBERO controller panel."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$LIBERO_PYTHON"
+probe_auto_host "$LIBERO_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/env/env_libero/__init__.py" "EnvLiberoNodeSet"

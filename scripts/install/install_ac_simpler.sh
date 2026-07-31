@@ -210,3 +210,9 @@ echo "  1. cd agentcanvas && bash run_dev.sh"
 echo "  2. POST /api/components/nodesets/env_simpler/load?mode=server"
 echo "  3. Open the canvas — drop env_simpler__reset / env_simpler__step nodes,"
 echo "     pick a split/task/episode in the SIMPLER controller panel."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$SIMPLER_PYTHON"
+probe_auto_host "$SIMPLER_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/env/env_simpler/__init__.py" "EnvSimplerNodeSet"

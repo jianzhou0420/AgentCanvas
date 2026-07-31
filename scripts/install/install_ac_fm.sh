@@ -123,3 +123,10 @@ print("ac-fm sanity spike passed")
 EOF
 
 echo "Done. Env: ${ENV_NAME} — see header for per-nodeset *_PYTHON overrides."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+_FM_PY="$HOME/miniforge3/envs/${ENV_NAME}/bin/python"
+[ -f "$_FM_PY" ] || _FM_PY="$(conda run -n "$ENV_NAME" which python)"
+probe_server_stack "$_FM_PY"

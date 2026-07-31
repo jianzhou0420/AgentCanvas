@@ -573,6 +573,14 @@ main() {
     verify_connectivity
     validate_installation
 
+    # Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh).
+    # Inside main so --status/--help paths never trigger them.
+    source "$SCRIPT_DIR/lib/server_probe.sh"
+    local _mp3d_py
+    _mp3d_py=$(conda run -n "$ENV_NAME" python -c "import sys; print(sys.prefix)")/bin/python
+    probe_server_stack "$_mp3d_py"
+    probe_auto_host "$_mp3d_py" "$_PROBE_REPO_ROOT/workspace/nodesets/env/env_mp3d/__init__.py" "EnvMP3DNodeSet"
+
     print_header "Installation Complete"
     echo "  Next steps:"
     echo ""
