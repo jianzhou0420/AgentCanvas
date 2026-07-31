@@ -132,7 +132,8 @@ echo "=== Step 3: Installing SIMPLER + runtime deps ==="
     'uvicorn' \
     'httpx' \
     'pydantic' \
-    'websockets'
+    'websockets' \
+    'msgpack'
 
 # AgentCanvas backend has no setup.py — registry.py injects PYTHONPATH at
 # server-mode spawn (see install_ac_libero.sh:124-127 for the same pattern).

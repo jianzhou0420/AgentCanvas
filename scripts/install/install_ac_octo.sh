@@ -186,7 +186,7 @@ if [ "$DO_ENV" = "1" ]; then
     echo ""
     echo "=== Step 5: AgentCanvas server-mode deps ==="
     "$OCTO_PYTHON" -m pip install \
-        'fastapi' 'uvicorn' 'httpx' 'pydantic' 'websockets' \
+        'fastapi' 'uvicorn' 'httpx' 'pydantic' 'websockets' 'msgpack' \
         'huggingface_hub'
 
     # ── Step 6: Verify ──

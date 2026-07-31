@@ -90,6 +90,13 @@ echo "=== Step 2: Installing PyTorch 2.1 + CUDA 11.8 ==="
 $DETANY3D_PIP install --extra-index-url https://download.pytorch.org/whl/cu118 \
     torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2
 
+# ── Step 2b: AgentCanvas server-mode stack ──
+# The env boots app.server.auto_host (fastapi app + msgpack wire format);
+# none of these are in the vendored DetAny3D requirements.
+$DETANY3D_PIP install 'fastapi[standard]>=0.115.0' 'pydantic>=2.10.0' \
+    'pydantic-settings>=2.6.0' 'python-dotenv>=1.0.1' 'httpx>=0.28.0' \
+    websockets msgpack
+
 # ── Step 3: Install vendored DetAny3D requirements ──
 
 echo ""
