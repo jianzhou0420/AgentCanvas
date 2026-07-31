@@ -37,7 +37,7 @@ NC='\033[0m'
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$PROJECT_ROOT/data/habitat"    # was: $PROJECT_ROOT/data
 
 # Google Drive file IDs (from README.md)

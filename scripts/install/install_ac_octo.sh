@@ -186,7 +186,7 @@ if [ "$DO_ENV" = "1" ]; then
     echo ""
     echo "=== Step 5: AgentCanvas server-mode deps ==="
     "$OCTO_PYTHON" -m pip install \
-        'fastapi' 'uvicorn' 'httpx' 'pydantic' 'websockets' \
+        'fastapi' 'uvicorn' 'httpx' 'pydantic' 'websockets' 'msgpack' \
         'huggingface_hub'
 
     # ── Step 6: Verify ──
@@ -253,3 +253,9 @@ echo "  2. POST /api/components/nodesets/policy_octo/load?mode=server"
 echo "  3. Open the canvas — drop env_simpler__reset/step + policy_octo__predict,"
 echo "     pick model_type={octo-small,octo-base} and policy_setup={widowx_bridge,google_robot},"
 echo "     wire image+instruction in, action_chunk back to env_simpler__step."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$OCTO_PYTHON"
+probe_auto_host "$OCTO_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/policy/policy_octo.py" "PolicyOctoNodeSet"
