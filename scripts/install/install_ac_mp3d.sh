@@ -231,10 +231,21 @@ build_mattersim() {
     # System jsoncpp (libjsoncpp-dev) is used for ABI compatibility
     # Use the ac-mp3d env's cmake (from the env yaml) so the build does not
     # depend on a system-wide cmake (which may be absent on fresh hosts).
+    # CMAKE_BUILD_RPATH bakes the env's lib/ into MatterSim.so's RUNPATH
+    # (additive to cmake's automatic build-tree rpath). Without it the .so
+    # resolves libstdc++ from the system, whose CXXABI/GLIBCXX is older than
+    # what the env's OpenCV->ICU chain needs — imports then only work under
+    # `conda activate`/`conda run` (the activate.d hook sets LD_LIBRARY_PATH),
+    # while the backend's server mode spawns the env python BARE and hangs
+    # until its health timeout. Conda-forge's own binaries carry the same
+    # env-lib RPATH; this makes our locally-built .so follow that convention.
+    # Note: the RUNPATH is an absolute path — renaming/moving the env or the
+    # repo dangles it; re-run this script to rebuild.
     CMAKE_PREFIX_PATH="$conda_prefix" "$conda_prefix/bin/cmake" -S "$MP3D_DIR" -B "$build_dir" \
         "$render_flag" \
         -DPYTHON_EXECUTABLE="$conda_prefix/bin/python" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_BUILD_RPATH="$conda_prefix/lib" \
         "-DCMAKE_CXX_FLAGS=-std=c++11 -I${conda_prefix}/include -DCV_LOAD_IMAGE_ANYDEPTH=cv::IMREAD_ANYDEPTH"
 
     local nproc
@@ -348,19 +359,25 @@ verify_connectivity() {
 validate_installation() {
     print_header "Validating Installation"
 
-    print_info "Running import test inside '$ENV_NAME' environment ..."
+    print_info "Running bare-binary import test (server-mode loading context) ..."
+
+    local conda_prefix
+    conda_prefix=$(conda run -n "$ENV_NAME" python -c "import sys; print(sys.prefix)" 2>/dev/null)
+    if [[ -z "$conda_prefix" ]]; then
+        print_error "Could not determine conda prefix for environment '$ENV_NAME'."
+        exit 1
+    fi
 
     local result
-    # `conda run` runs the ac-mp3d activate.d hook (setup_pythonpath), which now
-    # exports both LD_LIBRARY_PATH (env lib/ — MatterSim's libicuuc->libstdc++
-    # chain needs GLIBCXX_3.4.30 that stock 20.04 lacks) and PYTHONPATH (build/),
-    # so a plain conda run finds and imports MatterSim.
-    #
-    # The test code is passed via `python -c "$(cat …)"` (an ARGUMENT), NOT
-    # `python - <<HEREDOC` (stdin): `conda run` does not forward stdin to the
-    # child, so the heredoc form silently ran an EMPTY program and this check
-    # ALWAYS reported FAILED regardless of whether MatterSim actually imports.
-    result=$(conda run -n "$ENV_NAME" python -c "$(cat <<'PYEOF'
+    # Deliberately the BARE env binary, NOT `conda run`: the backend's server
+    # mode spawns envs/ac-mp3d/bin/python directly, with no activation hooks
+    # (no LD_LIBRARY_PATH, no PYTHONPATH). A `conda run` test passes even when
+    # that bare context is broken — the hook's LD_LIBRARY_PATH masks a missing
+    # env-lib RUNPATH on MatterSim.so (see CMAKE_BUILD_RPATH in
+    # build_mattersim) — so validation must use the same loading context the
+    # server actually runs in. The build dir is passed explicitly because the
+    # bare context has no PYTHONPATH hook either.
+    result=$(_MP3D_BUILD_DIR="$MP3D_DIR/build" "$conda_prefix/bin/python" -c "$(cat <<'PYEOF'
 import sys, os
 build_dir = os.environ.get("_MP3D_BUILD_DIR", "")
 if build_dir:
@@ -387,9 +404,9 @@ PYEOF
         echo "$result"
         echo ""
         print_info "Troubleshooting:"
-        print_info "  1. Re-activate the environment: conda deactivate && conda activate $ENV_NAME"
-        print_info "  2. Check PYTHONPATH: echo \$PYTHONPATH"
-        print_info "  3. Confirm the .so exists: ls ${MP3D_DIR}/build/MatterSim*.so"
+        print_info "  1. Confirm the .so exists: ls ${MP3D_DIR}/build/MatterSim*.so"
+        print_info "  2. Check its RUNPATH includes the env lib (readelf -d ... | grep RUNPATH)."
+        print_info "     If missing or dangling (env renamed/moved), re-run this script to rebuild."
         exit 1
     fi
 }
