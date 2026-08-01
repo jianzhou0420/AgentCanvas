@@ -5,7 +5,10 @@ running ``env_habitat`` auto_host subprocess (ADR-server-001 HTTP surface,
 ``POST /call/{fn}``). The agent sees exactly two tools:
 
 - ``observe()``      -> egocentric RGB (base64 PNG passthrough as MCP image)
-- ``step(actions)``  -> discrete actions 0-3, sanitized gym flags only
+- ``step(actions)``  -> discrete actions 0-3, sanitized gym flags only; with
+                        HABITAT_AUTO_OBSERVE on, the result also carries the
+                        post-move RGB so no separate observe() turn is spent
+                        (RxR default); off = classic separate observe/step
 - ``look_around()``  -> four labeled views (ahead/right/behind/left) in one
                         call; rotates 360 degrees and restores heading
 
@@ -60,6 +63,12 @@ MAX_ACTIONS_PER_CALL = 50
 # disables the budget broadcast + STOP gate, so BARE only needs to drop the
 # depth-derived clearance and keep the tool descriptions honest.
 BARE = os.environ.get("HABITAT_BARE") == "1"
+# Auto-observe: step() attaches the post-move camera view so observe() is a
+# first-look only — halves the per-move tool-call/API round-trips. Off (default
+# when unset) = classic separate observe/step, byte-compatible with the frozen
+# R2R-CE baselines. The driver sets this per dataset (HABITAT_AUTO_OBSERVE): on
+# for RxR-CE (its long instructions otherwise double the turn count), off else.
+AUTO_OBSERVE = os.environ.get("HABITAT_AUTO_OBSERVE") == "1"
 
 _OBSERVE_DESC = (
     "Look through the robot's forward-facing camera. Returns the current "
@@ -80,8 +89,15 @@ _STEP_DESC = (
     "0.25 m, 2 = turn left 15 degrees, 3 = turn right 15 degrees.\n\n"
     "Executes sequentially and halts early if the episode ends. Returns how "
     "many actions ran, total steps taken, remaining budget, and whether the "
-    "episode is over. The camera view changes after stepping — call observe() "
-    "to see the result."
+    "episode is over."
+    + (
+        " The resulting camera view is attached as an image (auto-observe), so "
+        "you do NOT need to call observe() after moving — only observe() for "
+        "your very first look. A finished episode carries no image."
+        if AUTO_OBSERVE else
+        " The camera view changes after stepping — call observe() to see the "
+        "result."
+    )
     + (
         ""
         if BARE else
@@ -199,17 +215,27 @@ def _call(function_name: str, inputs: dict[str, Any]) -> dict[str, Any]:
     return resp.json()["outputs"]
 
 
-@mcp.tool(description=_OBSERVE_DESC)
-def observe() -> list:
-    global _obs_count, _tool_calls
-    _tool_calls += 1
+def _capture_view() -> tuple[bytes, dict[str, float] | None]:
+    """Render the current egocentric RGB (+ clearance for nav). Pure read —
+    advances the live-frame counter, never the simulator. Shared by observe()
+    and the auto-observe attached to every step() result."""
+    global _obs_count
     outputs = _call("env_habitat__observe_egocentric", {})
     png = base64.b64decode(outputs["rgb"])
     _obs_count += 1
     _live_frame(png)
+    clearance = None if BARE else _clearance_m(outputs.get("depth"))
+    return png, clearance
+
+
+@mcp.tool(description=_OBSERVE_DESC)
+def observe() -> list:
+    global _tool_calls
+    _tool_calls += 1
+    png, clearance = _capture_view()
     if BARE:
         return [Image(data=png, format="png")]
-    status = {"clearance_m": _clearance_m(outputs.get("depth")), **_budget_fields()}
+    status = {"clearance_m": clearance, **_budget_fields()}
     return [Image(data=png, format="png"), json.dumps(status)]
 
 
@@ -273,7 +299,10 @@ if not BARE:
 
 
 @mcp.tool(description=_STEP_DESC)
-def step(actions: list[int]) -> dict[str, Any]:
+def step(actions: list[int]) -> list:  # bare `list` => FastMCP unstructured path
+    # (handles both the [Image, json] live return and the bare dict when the
+    # episode is over; a structured annotation like dict/Any can't serialize
+    # the Image content — same reason observe() is annotated -> list)
     """Execute a sequence of movement actions, in order.
 
     Actions: 0 = STOP (permanently ENDS the episode — issue it only when you
@@ -282,10 +311,11 @@ def step(actions: list[int]) -> dict[str, Any]:
 
     Executes sequentially and halts early if the episode ends. Returns how
     many actions ran, total steps taken, remaining budget, and whether the
-    episode is over. The camera view changes after stepping — call observe()
-    to see the result. Note: when plenty of budget remains, your FIRST STOP
-    request is withheld pending a placement check — call step([0]) again to
-    confirm and execute it.
+    episode is over; with auto-observe on (HABITAT_AUTO_OBSERVE) the resulting
+    camera view is attached as an image so no separate observe() turn is
+    needed, otherwise the agent calls observe() itself. Note: when plenty of
+    budget remains, your FIRST STOP request is withheld pending a placement
+    check — call step([0]) again to confirm and execute it.
     """
     global _steps_taken, _episode_over, _end_reason, _tool_calls, _stop_armed
     _tool_calls += 1
@@ -324,11 +354,11 @@ def step(actions: list[int]) -> dict[str, Any]:
             # run the movement part of the call; only the STOP is withheld
             result = _execute_actions(prefix)
             result.update(withheld)
-            return result
+            return _with_view(result)
         return {**withheld, **_budget_fields()}
     if 0 in actions:
         _stop_armed = True  # confirmed (or budget-critical) — let it through
-    return _execute_actions(actions)
+    return _with_view(_execute_actions(actions))
 
 
 def _execute_actions(actions: list[int]) -> dict[str, Any]:
@@ -359,15 +389,32 @@ def _execute_actions(actions: list[int]) -> dict[str, Any]:
         "end_reason": _end_reason,
         **_budget_fields(),
     }
-    if not _episode_over and not BARE:
-        # post-move clearance (pure read; no sim advance) — metric feedback
-        # for the approach phase without an extra observe round-trip
-        outputs = _call("env_habitat__observe_egocentric", {})
-        clearance = _clearance_m(outputs.get("depth"))
-        if clearance:
-            result["clearance_m"] = clearance
     _live_log({"actions": actions, **result})
     return result
+
+
+def _with_view(result: dict[str, Any]) -> Any:
+    """Attach the post-move camera view (auto-observe) so the agent never
+    spends a separate observe() turn — halving the tool-call/API round-trips
+    per move. A finished episode carries no view (nothing left to act on).
+
+    With auto-observe OFF (classic separate mode) no image is attached — the
+    agent calls observe() itself — but nav still gets its post-move clearance
+    readout (pure depth read, no sim advance), matching the frozen R2R
+    baseline behavior exactly."""
+    if _episode_over:
+        return result
+    if not AUTO_OBSERVE:
+        if not BARE:  # nav: clearance-only readout, no image (as before)
+            _, clearance = _capture_view()
+            if clearance:
+                result["clearance_m"] = clearance
+        return result
+    png, clearance = _capture_view()
+    if clearance:  # nav only — BARE returns None
+        result["clearance_m"] = clearance
+    result["new_view"] = "the attached image is the camera view AFTER these actions"
+    return [Image(data=png, format="png"), json.dumps(result)]
 
 
 if __name__ == "__main__":

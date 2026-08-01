@@ -3,7 +3,15 @@
 Session block ported verbatim from beta-coding-agent/run_episodes.py (the
 legacy driver keeps its frozen copy for provenance). Auth rides the logged-in
 Claude subscription; a stray ANTHROPIC_API_KEY would silently switch billing
-to the API in headless mode, so prepare() strips it.
+to the API in headless mode, so prepare() strips it by default.
+
+To bill a run through the API instead (e.g. the Claude subscription plan is
+about to run out), export CODING_AGENT_ALLOW_API_KEY=1 in the shell that
+launches stdrun.py — prepare() then leaves ANTHROPIC_API_KEY in place and the
+bundled Claude CLI subprocess picks it up at launch (there is no separate
+api_key field on ClaudeAgentOptions; it's purely env-var-driven). Everything
+else about the harness (prompt, tools, WP bridge) stays identical — only
+billing changes, so results stay comparable to subscription-billed runs.
 """
 
 from __future__ import annotations
@@ -42,18 +50,30 @@ class ClaudeSdkAdapter:
             "auth": "claude subscription",
             "thinking": "adaptive+summarized (4.6+/5) / enabled+budget (haiku)",
             "turn_cap": "hard (SDK max_turns)",
-            # CC/Agent-SDK keeps only a recent window of tool_result images in
-            # the outgoing request (old observe()/look_around() frames are
-            # evicted) — undocumented but empirically bounded: image-heavy
-            # episodes stay single-digit MB, far under the API's 32 MB cap.
-            # Contrast mini's image_window=0 (full history). See docs
-            # developer-guide/coding-agent/harness-notes.
-            "vision_context": "recent-window auto (evicts old tool_result images; ~single-digit MB)",
+            # CC/Agent-SDK does NOT evict old images per-turn (verified against
+            # Claude Code source: applyToolResultBudget passes image tool_results
+            # through as-is; the time-based clear is off by default). Images are
+            # re-sent in FULL every turn, same as mini image_window=0. The only
+            # backstop is full compaction (auto at ~167k tokens / reactive on a
+            # media-size error), which drops the whole pre-boundary history and
+            # replaces images with '[image]'. So request size grows with
+            # accumulated frames until a compaction resets it — NOT a recent
+            # window. See docs coding-agent/harness-notes + tmp/cc-internals.
+            "vision_context": "full history re-sent each turn; compaction backstop ~167k tok (no per-turn eviction)",
         }
 
     def prepare(self, spec) -> None:  # noqa: ARG002 — no per-cell setup needed
-        if os.environ.pop("ANTHROPIC_API_KEY", None):
-            print("[sdk] ANTHROPIC_API_KEY was set — removed so sessions use subscription auth")
+        allow_api_key = os.environ.get("CODING_AGENT_ALLOW_API_KEY") == "1"
+        if allow_api_key:
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                print("[sdk] CODING_AGENT_ALLOW_API_KEY=1 — keeping ANTHROPIC_API_KEY, sessions bill via API")
+                self.inherent["auth"] = "provider API key (litellm-free direct billing)"
+            else:
+                print("[sdk] CODING_AGENT_ALLOW_API_KEY=1 but ANTHROPIC_API_KEY is unset — "
+                      "falling back to subscription auth")
+        elif os.environ.pop("ANTHROPIC_API_KEY", None):
+            print("[sdk] ANTHROPIC_API_KEY was set — removed so sessions use subscription auth "
+                  "(export CODING_AGENT_ALLOW_API_KEY=1 to bill via API instead)")
         try:
             import claude_agent_sdk
             self.inherent["sdk_version"] = getattr(claude_agent_sdk, "__version__", "?")
@@ -105,7 +125,10 @@ class ClaudeSdkAdapter:
             # ONLY our bridge — never the user's global MCP config.
             strict_mcp_config=True,
             allowed_tools=(
-                ["mcp__env__observe", "mcp__env__goto", "mcp__env__stop"]
+                ["mcp__env__observe", "mcp__env__observe_waypoints",
+                 "mcp__env__step", "mcp__env__goto", "mcp__env__stop"]
+                if ctx.hybrid
+                else ["mcp__env__observe", "mcp__env__goto", "mcp__env__stop"]
                 if ctx.wp
                 else ["mcp__env__observe", "mcp__env__step"]
                 if ctx.bare

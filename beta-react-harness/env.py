@@ -17,7 +17,7 @@ from typing import Any
 from minisweagent.exceptions import Submitted
 from pydantic import BaseModel
 
-from toolset import HabitatToolSet, WaypointToolSet
+from toolset import HabitatToolSet, HybridToolSet, WaypointToolSet
 
 
 class HabitatEnvironmentConfig(BaseModel):
@@ -33,13 +33,28 @@ class HabitatEnvironmentConfig(BaseModel):
     wp_server_url: str = ""
     wp_max_moves: int = 40
     wp_predict_fn: str = "smartway_waypoint__predict"
+    # Agent-selected hybrid interface (hybrid condition): primitive step() AND
+    # waypoint goto() in one surface, two observe lenses, look-then-move gate.
+    # Uses the same predictor (wp_server_url) as wp; no wp_max_moves cap (a goto
+    # just spends more of the shared 500 step budget). Mutually exclusive with wp.
+    hybrid: bool = False
 
 
 class HabitatEnvironment:
     def __init__(self, *, config_class: type = HabitatEnvironmentConfig, **kwargs: Any) -> None:
         self.config = config_class(**kwargs)
         live_dir = Path(self.config.live_dir) if self.config.live_dir else None
-        if self.config.wp:
+        if self.config.hybrid:
+            self.toolset = HybridToolSet(
+                self.config.server_url,
+                wp_server_url=self.config.wp_server_url,
+                predict_fn=self.config.wp_predict_fn,
+                step_budget=self.config.step_budget,
+                turn_budget=self.config.turn_budget,
+                pano_view_px=self.config.pano_view_px,
+                live_dir=live_dir,
+            )
+        elif self.config.wp:
             self.toolset = WaypointToolSet(
                 self.config.server_url,
                 wp_server_url=self.config.wp_server_url,

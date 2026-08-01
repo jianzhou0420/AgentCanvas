@@ -325,6 +325,7 @@ class MiniSweAdapter:
             wp_server_url=ctx.wp_server_url,
             wp_max_moves=ctx.wp_max_moves,
             wp_predict_fn=ctx.extra.get("wp_predict_fn", "smartway_waypoint__predict"),
+            hybrid=ctx.hybrid,
         )
         model = NavToolsModel(
             model_name=ctx.model,

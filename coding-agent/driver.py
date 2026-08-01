@@ -31,11 +31,17 @@ from typing import Any, Protocol
 import requests
 
 from cells import STD_FROZEN, WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec
-from prompts import FIRST_PROMPT, assert_std_skill_freeze, build_briefing
+from prompts import (
+    FIRST_PROMPT,
+    HYBRID_FIRST_PROMPT,
+    assert_std_skill_freeze,
+    build_briefing,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
 WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
+HYBRID_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "hybrid_bridge.py"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -98,19 +104,25 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
 _TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool], Any] = {}
 
 
-async def bridge_tool_schemas(bare: bool, wp: bool = False) -> Any:
+async def bridge_tool_schemas(bare: bool, wp: bool = False,
+                              auto_observe: bool = False,
+                              hybrid: bool = False) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
-    bridge module the sessions actually talk to (mcp_bridge.py, or
-    wp_bridge.py for the wp condition; mini's port is byte-equivalent, gated
-    by check_equivalence.py). Cached per (bare, wp); never raises (logging
-    must not break a run)."""
-    key = (bare, wp)
+    bridge module the sessions actually talk to (mcp_bridge.py, wp_bridge.py
+    for the wp condition, or hybrid_bridge.py for the hybrid condition; mini's
+    port is byte-equivalent, gated by check_equivalence.py). Cached per (bare,
+    wp, auto_observe, hybrid); never raises (logging must not break a run).
+    ``auto_observe`` mirrors the session's HABITAT_AUTO_OBSERVE so the recorded
+    step()/goto() descriptions match."""
+    key = (bare, wp, auto_observe, hybrid)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
-    bridge_path = WP_BRIDGE_PATH if wp else BRIDGE_PATH
-    saved = os.environ.get("HABITAT_BARE")
+    bridge_path = HYBRID_BRIDGE_PATH if hybrid else WP_BRIDGE_PATH if wp else BRIDGE_PATH
+    saved_bare = os.environ.get("HABITAT_BARE")
+    saved_ao = os.environ.get("HABITAT_AUTO_OBSERVE")
     try:
         os.environ["HABITAT_BARE"] = "1" if bare else "0"
+        os.environ["HABITAT_AUTO_OBSERVE"] = "1" if auto_observe else "0"
         spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -124,10 +136,12 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False) -> Any:
     except Exception as exc:  # noqa: BLE001 — logging must never break a run
         _TOOL_SCHEMAS_CACHE[key] = {"error": f"tool-schema introspection failed: {exc!r}"}
     finally:
-        if saved is None:
-            os.environ.pop("HABITAT_BARE", None)
-        else:
-            os.environ["HABITAT_BARE"] = saved
+        for name, saved in (("HABITAT_BARE", saved_bare),
+                            ("HABITAT_AUTO_OBSERVE", saved_ao)):
+            if saved is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = saved
     return _TOOL_SCHEMAS_CACHE[key]
 
 
@@ -207,8 +221,13 @@ class EpisodeContext:
     raw_dir: Path
     persona: bool = False  # ablation: keep the harness's stock persona
     wp: bool = False       # waypoint action space (wp_bridge.py)
-    wp_server_url: str = ""  # waypoint-predictor auto_host (wp cells only)
+    hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
+    wp_server_url: str = ""  # waypoint-predictor auto_host (wp / hybrid cells)
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
+    # auto-observe: step()/goto() carry the resulting view (observe() first-look
+    # only). RxR default (its long instructions double the turn count under the
+    # classic alternation); off for R2R-CE so its frozen baselines still hold.
+    auto_observe: bool = False
     extra: dict[str, Any] = field(default_factory=dict)  # harness-specific knobs
 
     @property
@@ -219,6 +238,8 @@ class EpisodeContext:
     @property
     def bridge_path(self) -> Path:
         """Stdio bridge module for this condition's action space."""
+        if self.hybrid:
+            return HYBRID_BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
 
     def bridge_env(self) -> dict[str, str]:
@@ -228,9 +249,10 @@ class EpisodeContext:
             "HABITAT_STEP_BUDGET": str(self.step_budget),
             "HABITAT_TURN_BUDGET": str(self.turn_budget),
             "HABITAT_BARE": "1" if self.bare else "0",
+            "HABITAT_AUTO_OBSERVE": "1" if self.auto_observe else "0",
             "HABITAT_LIVE_DIR": str(self.live_dir),
         }
-        if self.wp:
+        if self.wp or self.hybrid:  # both need the waypoint predictor
             env["HABITAT_WP_SERVER_URL"] = self.wp_server_url
             env["HABITAT_WP_MAX_MOVES"] = str(self.wp_max_moves)
             if self.extra.get("wp_predict_fn"):
@@ -322,9 +344,11 @@ async def run_episode(
     )
     instruction = ep["instruction"]
 
+    auto_observe = bool(cfg.get("auto_observe", False))
     briefing, skill_md5 = build_briefing(
         instruction, cfg["step_budget"], bare=spec.bare, skill=spec.skill,
         wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30),
+        auto_observe=auto_observe, hybrid=spec.hybrid,
     )
 
     workdir = run_dir / f"workdir_{index}"
@@ -336,7 +360,7 @@ async def run_episode(
         index=index,
         instruction=instruction,
         briefing=briefing,
-        first_prompt=FIRST_PROMPT,
+        first_prompt=HYBRID_FIRST_PROMPT if spec.hybrid else FIRST_PROMPT,
         server_url=url,
         bare=spec.bare,
         skill=spec.skill,
@@ -349,8 +373,10 @@ async def run_episode(
         raw_dir=raw_dir,
         persona=spec.persona,
         wp=spec.wp,
+        hybrid=spec.hybrid,
         wp_server_url=cfg.get("wp_server") or "",
         wp_max_moves=cfg.get("wp_max_moves", 30),
+        auto_observe=auto_observe,
         extra=dict(cfg.get("extra") or {}),
     )
 
@@ -370,7 +396,7 @@ async def run_episode(
             "persona": spec.persona,
             "system_prompt": briefing,
             "first_prompt": FIRST_PROMPT,
-            "tool_schemas": await bridge_tool_schemas(spec.bare, spec.wp),
+            "tool_schemas": await bridge_tool_schemas(spec.bare, spec.wp, auto_observe, spec.hybrid),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -464,9 +490,38 @@ async def run_cell(
     if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
         cfg["max_turns"] = spec.max_turns
     cfg["extra"] = dict(extra or {})
-    cfg["wp_server"] = wp_server if spec.wp else None
-    if spec.wp:
-        cfg["wp_max_moves"] = WP_MAX_MOVES
+    # Off-board (nonstd) overrides via --set: `dataset`/`split` retarget the
+    # eval (e.g. RxR-CE / rand100_en) and `max_turns` lifts the SDK turn cap
+    # (RxR's long instructions need >100 — episode turn-exhausts otherwise).
+    # Popped out of `extra` so they don't leak into the harness/model config;
+    # absent → the frozen defaults (R2R-CE / rand100 / STD_FROZEN max_turns).
+    for _k in ("dataset", "split", "max_turns"):
+        if _k in cfg["extra"]:
+            cfg[_k] = cfg["extra"].pop(_k)
+    # auto-observe: step()/goto() carry the resulting view so observe() is a
+    # first-look only — halves the per-move tool calls, which RxR's long
+    # instructions otherwise inflate. Default ON only for RxR-CE; R2R-CE keeps
+    # the classic observe/step alternation (and its frozen baselines). Override
+    # either way with `--set auto_observe=1|0`. The bridge (HABITAT_AUTO_OBSERVE)
+    # and the prompt are both driven off this single flag so they can't disagree.
+    _ao = cfg["extra"].pop("auto_observe", None)
+    if spec.hybrid:
+        # hybrid is ALWAYS separate (non-auto-observe): the model must choose
+        # which lens to look through — forward camera (observe) vs waypoint
+        # panorama (observe_waypoints) — and that choice IS the interface
+        # choice, so a view can never be auto-coupled into a move result.
+        cfg["auto_observe"] = False
+    else:
+        cfg["auto_observe"] = (
+            str(_ao).lower() in ("1", "true", "yes") if _ao is not None
+            else cfg["dataset"] == "RxR-CE"
+        )
+    cfg["wp_server"] = wp_server if (spec.wp or spec.hybrid) else None
+    if spec.wp or spec.hybrid:
+        # decision-step budget (wp_bridge-enforced; hybrid ignores it and lets
+        # the 500-step budget bind, but the value is still recorded). Overridable
+        # via --set wp_max_moves=N (pop it out of extra so it doesn't reach the model).
+        cfg["wp_max_moves"] = int(cfg["extra"].pop("wp_max_moves", WP_MAX_MOVES))
         # force substantive thinking (overridable via --set think_budget=N)
         cfg["extra"].setdefault("think_budget", WP_THINK_BUDGET)
     if spec.skill:
@@ -481,10 +536,10 @@ async def run_cell(
         health.raise_for_status()
         print(f"[std] {url} healthy: {health.json()['name']}")
 
-    if spec.wp:
-        # a wp cell without its predictor would silently degrade — refuse
+    if spec.wp or spec.hybrid:
+        # a wp/hybrid cell without its predictor would silently degrade — refuse
         if not wp_server:
-            raise RuntimeError("wp cell needs --wp-server (waypoint-predictor auto_host)")
+            raise RuntimeError("wp/hybrid cell needs --wp-server (waypoint-predictor auto_host)")
         health = requests.get(f"{wp_server}/health", timeout=10)
         health.raise_for_status()
         print(f"[std] {wp_server} healthy: {health.json()['name']} (waypoint predictor)")
