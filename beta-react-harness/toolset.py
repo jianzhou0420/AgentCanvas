@@ -822,7 +822,7 @@ class WaypointToolSet(NodesetToolSet):
                 text, fill=(255, 0, 0), font=num_font,
             )
 
-        if h > view_px:
+        if view_px and h > view_px:  # view_px=0 → native resolution, no downscale
             scale = view_px / h
             canvas = canvas.resize(
                 (int(canvas.width * scale), int(canvas.height * scale)), PILImage.LANCZOS
@@ -830,6 +830,382 @@ class WaypointToolSet(NodesetToolSet):
         buf = BytesIO()
         canvas.save(buf, format="PNG")
         return buf.getvalue()
+
+    def _live_frame(self, png: bytes) -> None:
+        if self.live_dir is None:
+            return
+        self.live_dir.mkdir(parents=True, exist_ok=True)
+        (self.live_dir / f"obs_{self._obs_count:04d}_step{self.steps_taken:03d}.png").write_bytes(png)
+        (self.live_dir / "latest.png").write_bytes(png)
+
+    def _live_log(self, entry: dict[str, Any]) -> None:
+        if self.live_dir is None:
+            return
+        self.live_dir.mkdir(parents=True, exist_ok=True)
+        with (self.live_dir / "actions.log").open("a") as fh:
+            fh.write(json.dumps({"t": round(time.time() - self._t0, 1), **entry}) + "\n")
+
+
+# ── hybrid toolset — hybrid_bridge.py port ──
+#
+# In-process mirror of beta-coding-agent/hybrid_bridge.py: the Agent-selected
+# Hybrid Interface. BOTH the primitive controls (observe + step 0-3) AND the
+# waypoint controls (observe_waypoints + goto) live in one surface, with a
+# shared stop(); the model chooses which lens to look through and which control
+# to move with, and may switch either direction any time. Runs in the classic
+# SEPARATE (non-auto-observe) mode — a move returns text only, and the agent
+# must pick its next look, which IS the interface choice. A look-then-move
+# commitment state machine (``_pending``) enforces, structurally: observe() ->
+# only step() next; observe_waypoints() -> only goto() next; never two looks in
+# a row. Tool descriptions + schemas are byte-identical to the bridge; geometry
+# and the annotated strip are reused verbatim from WaypointToolSet. Talks to the
+# SAME two auto_hosts as wp (habitat env + waypoint predictor). Per-episode
+# state lives on the instance, as the bridge kept it in module globals.
+
+# Descriptions: byte-identical to hybrid_bridge.py's _OBSERVE_DESC /
+# _OBSERVE_WP_DESC / _STEP_DESC / _GOTO_DESC / _STOP_DESC.
+HYBRID_OBSERVE_DESC = (
+    "Look through the robot's forward-facing camera. Returns the current "
+    "egocentric RGB view — the lens for precise, low-level control. Pure read: "
+    "does not advance the simulator or consume step budget. COMMITMENT: after "
+    "this look your next action must be step() (or stop()); you cannot goto(), "
+    "and you cannot look again without moving first."
+)
+HYBRID_OBSERVE_WP_DESC = (
+    "Scan a panorama and get your waypoint options. Returns a panoramic image "
+    "of four views labeled Left / Front / Right / Back with numbered green "
+    "circles marking the waypoints you can jump to, plus a JSON listing each "
+    "waypoint's direction, angle (degrees left of heading; negative = right) "
+    "and distance in meters. Pure read: does not advance the simulator or "
+    "consume step budget. COMMITMENT: after this look your next action must be "
+    "goto() (or stop()); you cannot step(), and you cannot look again without "
+    "moving first."
+)
+HYBRID_STEP_DESC = (
+    "PRIMITIVE control: execute a sequence of low-level movement actions, in "
+    "order. Actions: 0 = STOP (permanently ENDS the episode), 1 = move forward "
+    "0.25 m, 2 = turn left 15 degrees, 3 = turn right 15 degrees. The lens for "
+    "fine, exact positioning and tight turns. REQUIRES an immediately preceding "
+    "observe() (the forward camera); it is not available right after "
+    "observe_waypoints(). Returns how many actions ran, total steps taken, "
+    "remaining budget, and whether the episode is over. Look again before your "
+    "next move."
+)
+HYBRID_GOTO_DESC = (
+    "WAYPOINT control: walk to one numbered waypoint from the LATEST "
+    "observe_waypoints() — the robot turns toward it and walks there in one "
+    "call. The lens for covering distance quickly toward a visible landmark. "
+    "REQUIRES an immediately preceding observe_waypoints() (it is not available "
+    "right after observe()). Returns steps consumed, remaining budget, and "
+    "whether the episode is over. Look again before your next move."
+)
+HYBRID_STOP_DESC = (
+    "Permanently END the episode, declaring you have reached the goal. Issue it "
+    "only when you believe the robot is within 3 meters of the instruction's "
+    "endpoint — stopping is irreversible. (Equivalent to step([0]).)"
+)
+
+# observe_waypoints takes no args; FastMCP titles the schema after the fn name.
+HYBRID_OBSERVE_WP_SCHEMA = {
+    "properties": {}, "title": "observe_waypointsArguments", "type": "object"}
+
+
+class HybridToolSet(NodesetToolSet):
+    """Agent-selected hybrid interface — primitive step + waypoint goto in one
+    surface, two observe lenses, a look-then-move commitment gate. In-process
+    port of beta-coding-agent/hybrid_bridge.py."""
+
+    def __init__(
+        self,
+        server_url: str,
+        *,
+        wp_server_url: str,
+        predict_fn: str = "smartway_waypoint__predict",
+        step_budget: int = 500,
+        turn_budget: int = 0,
+        pano_view_px: int = 0,
+        live_dir: Path | None = None,
+    ) -> None:
+        super().__init__(server_url)
+        self.wp_server_url = wp_server_url
+        self.predict_fn = predict_fn
+        self.step_budget = step_budget
+        self.turn_budget = turn_budget
+        self.pano_view_px = pano_view_px
+        self.live_dir = live_dir
+
+        self.steps_taken = 0
+        self.episode_over = False
+        self.end_reason: str | None = None
+        self._obs_count = 0
+        self._tool_calls = 0
+        self._prim_moves = 0  # primitive step() calls that ran (analysis only)
+        self._wp_moves = 0    # goto() calls that ran (analysis only)
+        self._last_candidates: list[dict[str, float]] | None = None
+        # commitment state: None right after a move (a look is required before
+        # the next move), "forward" after observe(), "waypoints" after
+        # observe_waypoints(). See the class docstring.
+        self._pending: str | None = None
+        self._t0 = time.time()
+
+        self._register("observe", HYBRID_OBSERVE_DESC, OBSERVE_SCHEMA, self._tool_observe)
+        self._register("observe_waypoints", HYBRID_OBSERVE_WP_DESC,
+                       HYBRID_OBSERVE_WP_SCHEMA, self._tool_observe_waypoints)
+        self._register("step", HYBRID_STEP_DESC, STEP_SCHEMA, self._tool_step)
+        self._register("goto", HYBRID_GOTO_DESC, WP_GOTO_SCHEMA, self._tool_goto)
+        self._register("stop", HYBRID_STOP_DESC, WP_STOP_SCHEMA, self._tool_stop)
+
+    # ── two-server HTTP (env + predictor); mirrors WaypointToolSet._call2 ──
+
+    def _call2(
+        self, function_name: str, inputs: dict[str, Any],
+        config: dict[str, Any] | None = None, base: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"inputs": inputs}
+        if config:
+            body["config"] = config
+        resp = requests.post(
+            f"{base or self.server_url}/call/{function_name}", json=body, timeout=600
+        )
+        resp.raise_for_status()
+        return resp.json()["outputs"]
+
+    # ── observations ──
+
+    def _already_looked_msg(self) -> str:
+        nxt = "step()" if self._pending == "forward" else "goto()"
+        lens = "observe()" if self._pending == "forward" else "observe_waypoints()"
+        return (f"you already looked here (via {lens}) — you cannot take two looks in a row. "
+                f"Make your move first ({nxt}, or stop()), then look again.")
+
+    def _tool_observe(self, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            msg = f"episode already over ({self.end_reason}); no more moves possible"
+            return ToolResult(content=[text_part(msg)], info={"kind": "observe", "error": msg})
+        if self._pending is not None:
+            msg = self._already_looked_msg()
+            return ToolResult(content=[text_part(msg)], info={"kind": "observe", "error": msg})
+        outputs = self._call("env_habitat__observe_egocentric", {})
+        png = base64.b64decode(outputs["rgb"])
+        self._obs_count += 1
+        self._live_frame(png)
+        self._pending = "forward"
+        self._live_log({"observe": True})
+        return ToolResult(content=[png_part(png)], info={"kind": "observe"})
+
+    def _tool_observe_waypoints(self, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            msg = f"episode already over ({self.end_reason}); no more moves possible"
+            return ToolResult(content=[text_part(msg)],
+                              info={"kind": "observe_waypoints", "error": msg})
+        if self._pending is not None:
+            msg = self._already_looked_msg()
+            return ToolResult(content=[text_part(msg)],
+                              info={"kind": "observe_waypoints", "error": msg})
+
+        pano = self._call2(
+            "env_habitat__observe_panorama", {"trigger": "hybrid"},
+            config={"representation": "views_rgbd", "n_views": N_PANO_VIEWS},
+        )
+        views = pano.get("views") or []
+        slim = [
+            {"dir_id": v.get("dir_id"), "rgb_base64": v.get("rgb_base64"),
+             "depth_base64": v.get("depth_base64")}
+            for v in views
+        ]
+        pred = self._call2(self.predict_fn, {"views": slim}, base=self.wp_server_url)
+        self._last_candidates = WaypointToolSet._normalize_candidates(pred.get("candidates"))
+        png = WaypointToolSet._annotate_strip(views, self._last_candidates, self.pano_view_px)
+        self._obs_count += 1
+        self._live_frame(png)
+        self._pending = "waypoints"
+
+        status: dict[str, Any] = {
+            "waypoints": {
+                str(i + 1): {
+                    "direction": WaypointToolSet._direction_of(c["angle"]),
+                    "angle_deg": round(math.degrees(WaypointToolSet._norm_pi(c["angle"])), 1),
+                    "distance_m": round(c["distance"], 2),
+                }
+                for i, c in enumerate(self._last_candidates)
+            },
+            "action_options": WaypointToolSet._action_options(self._last_candidates),
+            **self._step_fields(),
+            **self._budget_fields(),
+        }
+        if not self._last_candidates:
+            status["note"] = (
+                "no reachable waypoints predicted here — use step() to reposition, "
+                "or stop() if you are at the goal"
+            )
+        self._live_log({"observe_waypoints": True, "num_waypoints": len(self._last_candidates)})
+        return ToolResult(content=[png_part(png), text_part(json.dumps(status))],
+                          info={"kind": "observe_waypoints", **status})
+
+    # ── moves ──
+
+    def _tool_step(self, actions: Any = None, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            return self._json_result(
+                {"error": f"episode already over ({self.end_reason}); no more moves possible"})
+        if self._pending != "forward":
+            if self._pending == "waypoints":
+                return self._json_result(
+                    {"error": "you looked at the waypoint panorama — its matching move is goto(). "
+                              "For a primitive step(), observe() the forward camera first."})
+            return self._json_result(
+                {"error": "look before you move — call observe() (the forward camera) to commit "
+                          "to a primitive step()."})
+        if not isinstance(actions, list) or not actions:
+            return self._json_result({"error": "empty action list"})
+        if len(actions) > MAX_ACTIONS_PER_CALL:
+            return self._json_result(
+                {"error": f"too many actions in one call (max {MAX_ACTIONS_PER_CALL})"})
+        bad = [a for a in actions if a not in (0, 1, 2, 3)]
+        if bad:
+            return self._json_result(
+                {"error": f"invalid actions {bad}; valid: 0=STOP 1=FORWARD 2=LEFT 3=RIGHT"})
+
+        executed = 0
+        for action in actions:
+            outputs = self._call("env_habitat__step_discrete", {"action": action})
+            executed += 1
+            self.steps_taken += 1
+            terminated = bool(outputs.get("terminated"))
+            truncated = bool(outputs.get("truncated"))
+            if terminated or truncated:
+                self.episode_over = True
+                self.end_reason = ("stop_called" if action == 0
+                                   else "step_budget_exhausted" if truncated else "terminated")
+                break
+        self._prim_moves += 1
+        self._pending = None          # move committed -> a look is required next
+        self._last_candidates = None  # position changed -> panorama numbers stale
+
+        result: dict[str, Any] = {
+            "interface": "primitive",
+            "executed": executed,
+            "requested": len(actions),
+            "episode_over": self.episode_over,
+            "end_reason": self.end_reason,
+            **self._step_fields(),
+            **self._budget_fields(),
+        }
+        if not self.episode_over:
+            result["note"] = (
+                "moved — look again before your next move: observe() (forward camera) to "
+                "step again, or observe_waypoints() to switch to a goto"
+            )
+        self._live_log({"step": actions, "steps_taken_total": self.steps_taken,
+                        "episode_over": self.episode_over})
+        return self._json_result(result)
+
+    def _tool_goto(self, waypoint: Any = None, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            return self._json_result(
+                {"error": f"episode already over ({self.end_reason}); no more moves possible"})
+        if self._pending != "waypoints":
+            if self._pending == "forward":
+                return self._json_result(
+                    {"error": "you looked at the forward camera — its matching move is step(). "
+                              "To goto a waypoint, observe_waypoints() first."})
+            return self._json_result(
+                {"error": "look before you move — call observe_waypoints() to see the numbered "
+                          "waypoints and commit to a goto()."})
+        if self._last_candidates is None:  # defensive; _pending=='waypoints' implies armed
+            return self._json_result(
+                {"error": "no armed waypoints — call observe_waypoints() first"})
+        try:
+            waypoint = int(waypoint)
+        except (TypeError, ValueError):
+            return self._json_result(
+                {"error": f"invalid waypoint {waypoint!r}; expected an integer"})
+        if not 1 <= waypoint <= len(self._last_candidates):
+            return self._json_result({
+                "error": (f"invalid waypoint {waypoint}; valid choices are 1-"
+                          f"{len(self._last_candidates)} from the LATEST observe_waypoints()"),
+            })
+
+        cand = self._last_candidates[waypoint - 1]
+        outputs = self._call2(
+            "env_habitat__step_hightolow", {"angle": cand["angle"], "distance": cand["distance"]})
+        info = outputs.get("info") or {}
+        if isinstance(info.get("step_count"), (int, float)):
+            self.steps_taken = int(info["step_count"])
+        self._wp_moves += 1
+        self._pending = None          # move committed -> a look is required next
+        self._last_candidates = None  # arrived somewhere new -> re-scan before next goto
+        terminated = bool(outputs.get("terminated"))
+        truncated = bool(outputs.get("truncated"))
+        if terminated or truncated:
+            self.episode_over = True
+            self.end_reason = "step_budget_exhausted" if truncated else "terminated"
+
+        result: dict[str, Any] = {
+            "interface": "waypoint",
+            "moved_to": waypoint,
+            "direction": WaypointToolSet._direction_of(cand["angle"]),
+            "distance_m": round(cand["distance"], 2),
+            "episode_over": self.episode_over,
+            "end_reason": self.end_reason,
+            **self._step_fields(),
+            **self._budget_fields(),
+        }
+        if not self.episode_over:
+            result["note"] = (
+                "arrived — look again before your next move: observe_waypoints() to goto "
+                "again, or observe() (forward camera) to switch to a primitive step"
+            )
+        self._live_log({"goto": waypoint, "distance_m": result["distance_m"],
+                        "steps_taken_total": self.steps_taken, "episode_over": self.episode_over})
+        return self._json_result(result)
+
+    def _tool_stop(self, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        if self.episode_over:
+            return self._json_result(
+                {"error": f"episode already over ({self.end_reason}); no more moves possible"})
+        self._call("env_habitat__step_discrete", {"action": 0})
+        self.steps_taken += 1
+        self.episode_over = True
+        self.end_reason = "stop_called"
+        result = {"interface": "stop", "stopped": True, "episode_over": True,
+                  "end_reason": self.end_reason, **self._step_fields()}
+        self._live_log(result)
+        return self._json_result(result)
+
+    # ── helpers ──
+
+    def _json_result(self, result: dict[str, Any]) -> ToolResult:
+        # kind="step" tags every move-result so the trajectory reader groups them
+        # with the primitive path; interface (primitive|waypoint|stop) is inside.
+        return ToolResult(content=[text_part(json.dumps(result))], info={"kind": "step", **result})
+
+    def _step_fields(self) -> dict[str, Any]:
+        return {
+            "steps_taken_total": self.steps_taken,
+            "steps_remaining_approx": max(0, self.step_budget - self.steps_taken),
+        }
+
+    def _budget_fields(self) -> dict[str, Any]:
+        """Turn-budget broadcast — inert (empty) while turn_budget<=0, the hybrid
+        case (bare-style cells set turn_budget=0). Verbatim from the bridge."""
+        if self.turn_budget <= 0:
+            return {}
+        remaining = max(0, self.turn_budget - self._tool_calls)
+        fields: dict[str, Any] = {"tool_calls_used": self._tool_calls,
+                                  "tool_calls_remaining": remaining}
+        if remaining <= 15:
+            fields["BUDGET_WARNING"] = (
+                f"Only {remaining} tool calls left before this session is killed. "
+                "Commit to your best goal candidate and stop() NOW — ending without "
+                "STOP scores ZERO."
+            )
+        return fields
 
     def _live_frame(self, png: bytes) -> None:
         if self.live_dir is None:

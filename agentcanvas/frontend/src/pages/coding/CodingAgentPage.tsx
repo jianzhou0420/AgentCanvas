@@ -112,7 +112,7 @@ export default function CodingAgentPage() {
   // control panel form (persisted: survive a refresh with the same inputs)
   const [episodes, setEpisodes] = usePersistentState("agentcanvas.coding.episodes", "0-9");
   const [split, setSplit] = usePersistentState("agentcanvas.coding.split", "rand100");
-  const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 200);
+  const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 80);
   const [model, setModel] = usePersistentState("agentcanvas.coding.model", "");
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -588,27 +588,40 @@ export default function CodingAgentPage() {
           <span className="mr-1 text-gray-500">episode:</span>
           {selEpisodes.map((i) => {
             const s = epSummary(i);
-            // An error tag alone no longer hides the outcome: a timeout that was
-            // still evaluated (metrics recovered from the env) has a real nav
-            // result, so show it and append ⚠ to flag the abnormal end. Only an
-            // episode with no metrics at all stays a bare ⚠.
+            // Two independent questions, answered in order (merged 2026-08-01):
+            //  1. Does this episode count at all? A rate-limit / "limit
+            //     exceeded" casualty errored WITHOUT taking a single navigation
+            //     step (error + env_steps 0), so it never attempted the task —
+            //     bare ⚠, and excluded from SR (see driver.is_scored).
+            //  2. If it counts, what happened — and did it end abnormally? A
+            //     timeout that was still evaluated has a real nav result, so
+            //     show the result and append ⚠ rather than hiding it behind the
+            //     error tag. A turn-exhausted run (env_steps > 0) is a genuine
+            //     ❌ and stays in the denominator.
+            const limitExceeded =
+              s != null && s.error != null && (s.env_steps ?? 0) === 0;
             const badge =
               s == null
                 ? "…"
-                : s.success == null
+                : limitExceeded
                   ? "⚠"
-                  : s.error
-                    ? s.success
-                      ? "✅⚠"
-                      : "❌⚠"
-                    : s.success
-                      ? "✅"
-                      : "❌";
+                  : s.success != null
+                    ? s.error
+                      ? s.success
+                        ? "✅⚠"
+                        : "❌⚠"
+                      : s.success
+                        ? "✅"
+                        : "❌"
+                    : s.error
+                      ? "⚠"
+                      : "…";
             return (
               <button
                 key={i}
                 title={s?.error ? `ended abnormally: ${s.error}` : undefined}
                 onClick={() => setViewEpisode(i)}
+                title={s?.error ?? undefined}
                 className={clsx(
                   "rounded border px-2 py-0.5",
                   shownEpisode === i

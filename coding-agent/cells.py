@@ -176,11 +176,17 @@ WP_MAX_MOVES = 30
 # wp cells force visible reasoning: a thinking budget (so thinking blocks are
 # substantive, not adaptive one-liners) on top of the prompt's ReAct rule.
 WP_THINK_BUDGET = 4000
-# The SDK turn cap must sit ABOVE the move budget so the move cap (enforced
-# in wp_bridge) is what actually ends an episode, not the harness. Measured
-# ~3 SDK turns per move (observe + reason + goto), so 30 moves ~= 90 turns;
-# 150 leaves ample margin. (bare/nav stay on STD_FROZEN's cap.)
-WP_MAX_TURNS = 150
+# Turn cap for the goto-based surfaces (wp and hybrid). Re-measured 2026-07-31
+# at ~2.6 SDK turns per move (observe + reason + goto), so a 30-move budget is
+# ~80 turns and a wp episode only turn-exhausts after ~38 moves — well past the
+# move cap that is supposed to end it. Lowered 150 -> 100 so the whole wp column
+# sits at the SAME cap as bare/nav (the R2R std, rented compute) and is directly
+# comparable; the move cap in wp_bridge still binds first.
+# NOTE (two-machine merge 2026-08-01): runs recorded before this date used 150.
+# They are a different protocol — do not pool them with post-merge wp numbers.
+# RxR needs longer trajectories and lifts BOTH caps off-board:
+#   --nonstd --set wp_max_moves=N max_turns=M
+WP_MAX_TURNS = 100
 
 # model key (board column) → model id passed to the harness.
 # gpt slugs are USUALLY identical on the codex CLI and litellm's openai route —
@@ -242,6 +248,9 @@ MODELS = {
     # 3.6/3.7-plus pattern — VERIFY the exact DashScope model string against Model
     # Studio before launching the run.
     "qwen3.8-plus": "openai/qwen3.8-plus",
+    # Qwen3.5-plus — the API sibling of the local 4b/9b column, so the
+    # small-open -> API-flagship scaling read covers 3.5 as well.
+    "qwen3.5-plus": "openai/qwen3.5-plus",
 }
 
 # concrete slug differs by access path even for the "same" board model: codex
@@ -268,6 +277,9 @@ MODEL_EXTRA: dict[str, dict] = {
         "api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     },
     "qwen3.8-plus": {
+        "api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    },
+    "qwen3.5-plus": {
         "api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     },
 }
@@ -334,6 +346,16 @@ CONDITIONS = {
     # flag only gates the mcp_bridge mechanisms (which wp never uses), so the
     # skill appends through build_briefing's wp branch, not the bare gate.
     "wp-nav": {"bare": True, "skill": "wp-ledger-nav", "wp": True},
+    # Agent-selected Hybrid Interface: primitive actions (step 0-3) AND the
+    # waypoint tool (goto) in ONE surface, plus two matching lenses to look
+    # through; the model decides per move which to use, and may switch freely.
+    # The tools enforce the pairing (look chooses the interface, you cannot look
+    # twice in a row), so the choice of lens IS the choice of interface.
+    # bare=True keeps it a minimal, workflow-free surface like bare/wp. Needs the
+    # waypoint predictor (--wp-server), same as wp.
+    #   sdk  -> beta-coding-agent/hybrid_bridge.py
+    #   mini -> toolset.HybridToolSet (in-process port; see check_equivalence.py)
+    "hybrid": {"bare": True, "skill": None, "hybrid": True},
 }
 
 # harness key → output root (the Monitor's SOURCE_ROOTS, unchanged)
@@ -356,6 +378,7 @@ class CellSpec:
     persona: bool = False  # keep the harness's stock persona (ablation)
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
     go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
+    hybrid: bool = False  # primitive + waypoint in one surface (hybrid_bridge.py)
     benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hm3d | mp3d | ovon
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
@@ -397,13 +420,14 @@ def _cell(harness: str, model_key: str, condition: str,
         skill=cond["skill"],
         persona=cond.get("persona", False),
         wp=cond.get("wp", False),
+        hybrid=cond.get("hybrid", False),
         effort_tier=tier,
         extra=tuple(sorted(extra.items())),
-        # the turn cap follows the cell line: wp needs headroom above its move
-        # budget (WP_MAX_TURNS); local GPU carries its own cap (LOCAL_MAX_TURNS);
-        # everything else takes STD_FROZEN's 200.
+        # the turn cap follows the cell line: wp and hybrid both move by goto
+        # and share WP_MAX_TURNS; local GPU carries its own cap
+        # (LOCAL_MAX_TURNS); everything else takes STD_FROZEN's 200.
         max_turns=(
-            WP_MAX_TURNS if cond.get("wp")
+            WP_MAX_TURNS if cond.get("wp") or cond.get("hybrid")
             else LOCAL_MAX_TURNS if model_id.startswith(("ollama", "hosted_vllm/"))
             else None
         ),
@@ -431,6 +455,7 @@ QWEN_API_BOARD = (
     ("mini", "qwen3.7-plus"),
     ("mini", "qwen3.6-plus"),
     ("mini", "qwen3.8-plus"),   # newest Qwen flagship (2026-07-25) — sweep row
+    ("mini", "qwen3.5-plus"),   # API sibling of the local 4b/9b column
 )
 
 # open-weight column: the same mini harness, locally served, and the only
@@ -446,8 +471,8 @@ LOCAL_BOARD = (
 # through the stdio bridge, so wp_bridge.py covers them for free; the mini
 # column waits for the toolset.py port (checked by check_equivalence.py).
 WP_BOARD = (
-    ("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"),
-    ("codex", "gpt-5.5"),
+    ("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "opus-5"), ("sdk", "fable-5"),
+    ("codex", "gpt-5.5"), ("codex", "gpt-5.6"),
 )
 
 # open-weight waypoint pilots. The mini harness now reaches wp through
@@ -503,6 +528,43 @@ for _h, _m in WP_BOARD:
         CELLS[spec.name] = spec
 for _h, _m, _c in LOCAL_WP_BOARD:
     spec = _cell(_h, _m, _c)
+    CELLS[spec.name] = spec
+
+# API-qwen waypoint pilots. Same mini + toolset.WaypointToolSet path as the
+# local qwen wp cells, so the wp column now spans local 4b/9b AND the API
+# flagships. Untier-ed; WP_MAX_TURNS puts every wp cell at the same 100.
+API_WP_BOARD = (
+    ("mini", "qwen3.7-plus", "wp"),
+    ("mini", "qwen3.6-plus", "wp"),
+    ("mini", "qwen3.5-plus", "wp"),
+)
+for _h, _m, _c in API_WP_BOARD:
+    spec = _cell(_h, _m, _c)
+    CELLS[spec.name] = spec
+
+# Agent-selected Hybrid Interface — primitive actions AND the waypoint tool in
+# one surface, the model choosing when to use/combine/switch. Same models as the
+# wp column so the hybrid vs primitive-only (bare) vs waypoint-only (wp)
+# contrast stays paired. Needs --wp-server, same as wp.
+HYBRID_BOARD = (
+    ("sdk", "fable-5"), ("sdk", "sonnet-5"),
+)
+for _h, _m in HYBRID_BOARD:
+    spec = _cell(_h, _m, "hybrid")
+    CELLS[spec.name] = spec
+
+# open-weight hybrid pilots. The mini harness reaches the hybrid surface through
+# toolset.HybridToolSet (in-process port of hybrid_bridge.py) — same path as the
+# WaypointToolSet wp cells, no MCP subprocess. This is the descend-to-small read
+# for the interface-choice condition: bare (SR ~0) and wp (the rescue, SR ~0.3)
+# already pin the two standalone action spaces for qwen-4b; hybrid asks whether a
+# small model can PICK between them turn by turn, or whether the added choice —
+# a freedom the frontier models exploit — is one more thing it cannot execute.
+LOCAL_HYBRID_BOARD = (
+    ("mini", "qwen3.5-4b"), ("mini", "qwen3.5-9b"),
+)
+for _h, _m in LOCAL_HYBRID_BOARD:
+    spec = _cell(_h, _m, "hybrid")
     CELLS[spec.name] = spec
 
 # real-robot pilots (2026-07-20): the sdk cells re-embodied on the Unitree Go2

@@ -13,9 +13,14 @@ The agent sees exactly three tools:
                          waypoint-predictor auto_host, draw the <=5 candidates
                          on a [Left|Front|Right|Back] strip (the VLN-MME
                          ``display_observation`` convention), return the
-                         annotated image + a JSON of numbered options
+                         annotated image + a JSON of numbered options; needed
+                         only for the FIRST look
 - ``goto(waypoint)``  -> execute one candidate via env_habitat__step_hightolow
-                         (rotate to its angle, walk its distance)
+                         (rotate to its angle, walk its distance); with
+                         HABITAT_AUTO_OBSERVE on, the result also re-renders the
+                         panorama + re-predicts waypoints for the new position,
+                         so no separate observe() turn is spent (RxR default);
+                         off = classic observe-then-goto
 - ``stop()``          -> discrete action 0; permanently ends the episode
 
 Two servers, both ADR-server-001 auto_hosts (``POST /call/{fn}``):
@@ -66,6 +71,12 @@ TURN_BUDGET = int(os.environ.get("HABITAT_TURN_BUDGET", "0"))
 # waiting for the 500-primitive budget.
 WP_MAX_MOVES = int(os.environ.get("HABITAT_WP_MAX_MOVES", "30"))
 WP_VIEW_PX = int(os.environ.get("HABITAT_WP_VIEW_PX", "384"))
+# Auto-observe: goto() re-renders the panorama + re-predicts waypoints so its
+# result carries the new numbered options — observe() becomes a first-look
+# only, halving the per-move round-trips. Off (default when unset) = classic
+# observe-then-goto (R2R-CE). Driver sets HABITAT_AUTO_OBSERVE per dataset: on
+# for RxR-CE, off elsewhere.
+AUTO_OBSERVE = os.environ.get("HABITAT_AUTO_OBSERVE") == "1"
 LIVE_DIR = Path(os.environ["HABITAT_LIVE_DIR"]) if os.environ.get("HABITAT_LIVE_DIR") else None
 
 N_PANO_VIEWS = 12
@@ -82,7 +93,17 @@ _OBSERVE_DESC = (
     "right) and distance in meters. Pure read — does not advance the "
     "simulator or consume step budget."
 )
+# Separate branch is the original (pre-auto-observe) text verbatim, so R2R-CE
+# wp baselines stay byte-comparable; the auto branch is the new coupled surface.
 _GOTO_DESC = (
+    "Move to one numbered waypoint from the LATEST observe()/goto() result: "
+    "the robot turns toward it and walks there. The result AUTOMATICALLY "
+    "carries the new panorama (image) and the freshly numbered waypoints for "
+    "your new position — you do NOT need to call observe() again after moving; "
+    "just reason and goto() the next one. Also returns steps consumed, "
+    "remaining budget, and whether the episode is over. (A finished episode "
+    "carries no new panorama.)"
+    if AUTO_OBSERVE else
     "Move to one numbered waypoint from the LATEST observe() result: the "
     "robot turns toward it and walks there. Moving invalidates the old "
     "numbers — call observe() again afterwards to see the new surroundings "
@@ -290,7 +311,7 @@ def _annotate_strip(views: list[dict[str, Any]],
             text, fill=(255, 0, 0), font=num_font,
         )
 
-    if h > WP_VIEW_PX:
+    if WP_VIEW_PX and h > WP_VIEW_PX:  # WP_VIEW_PX=0 → native resolution, no downscale
         scale = WP_VIEW_PX / h
         canvas = canvas.resize(
             (int(canvas.width * scale), int(canvas.height * scale)), PILImage.LANCZOS
@@ -303,13 +324,12 @@ def _annotate_strip(views: list[dict[str, Any]],
 # ── tools ──
 
 
-@mcp.tool(description=_OBSERVE_DESC)
-def observe() -> list:
-    global _obs_count, _tool_calls, _last_candidates
-    _tool_calls += 1
-    if _episode_over:
-        return [f"episode already over ({_end_reason}); no more moves possible"]
-
+def _render_and_predict() -> tuple[bytes, dict[str, Any]]:
+    """Render the RGB-D panorama, predict waypoints, annotate the strip, and
+    set ``_last_candidates`` to the fresh numbering. Pure read — advances the
+    frame counter, never the move budget or tool-call counter. Shared by
+    observe() and the auto-observe attached to every goto() result."""
+    global _obs_count, _last_candidates
     pano = _call(
         "env_habitat__observe_panorama", {"trigger": "wp"},
         config={"representation": "views_rgbd", "n_views": N_PANO_VIEWS},
@@ -345,14 +365,28 @@ def observe() -> list:
     if not _last_candidates:
         status["note"] = (
             "no reachable waypoints predicted here; if you believe you are at "
-            "the goal call stop(), otherwise observe() again after the next move"
+            "the goal call stop(), otherwise goto() a prior waypoint or make "
+            "another move"
         )
     _live_log({"observe_wp": True, "num_waypoints": len(_last_candidates)})
+    return png, status
+
+
+@mcp.tool(description=_OBSERVE_DESC)
+def observe() -> list:
+    global _tool_calls
+    _tool_calls += 1
+    if _episode_over:
+        return [f"episode already over ({_end_reason}); no more moves possible"]
+    png, status = _render_and_predict()
     return [Image(data=png, format="png"), json.dumps(status)]
 
 
 @mcp.tool(description=_GOTO_DESC)
-def goto(waypoint: int) -> dict[str, Any]:
+def goto(waypoint: int) -> list:  # bare `list` => FastMCP unstructured path
+    # (serves the [Image, json] live return AND the bare dict on
+    # episode-over/error; a structured annotation can't serialize Image —
+    # same reason observe() is annotated -> list)
     global _steps_taken, _episode_over, _end_reason, _tool_calls, _last_candidates, _moves
     _tool_calls += 1
     if _episode_over:
@@ -389,7 +423,6 @@ def goto(waypoint: int) -> dict[str, Any]:
         # decision-step budget spent — truncate like habitat's step cap
         _episode_over = True
         _end_reason = "wp_move_budget_exhausted"
-    _last_candidates = None  # position changed; numbers are stale
 
     result: dict[str, Any] = {
         "moved_to": waypoint,
@@ -401,11 +434,28 @@ def goto(waypoint: int) -> dict[str, Any]:
         **_move_fields(),
         **_budget_fields(),
     }
-    if not _episode_over:
-        result["note"] = "call observe() to see the new surroundings and waypoints"
     _live_log({"goto": waypoint, "distance_m": result["distance_m"],
                "steps_taken_total": _steps_taken, "episode_over": _episode_over})
-    return result
+
+    if _episode_over or not AUTO_OBSERVE:
+        # separate mode (or episode over): position changed, so the old
+        # waypoint numbers are stale — the agent must observe() again before
+        # the next goto(). Matches the frozen R2R-CE behavior.
+        _last_candidates = None
+        if not _episode_over:
+            result["note"] = "call observe() to see the new surroundings and waypoints"
+        return result
+
+    # auto-observe: re-render the panorama and re-predict waypoints for the new
+    # position (sets fresh _last_candidates), so the next goto() can pick a
+    # number straight from THIS result — no separate observe() round-trip.
+    png, obs_status = _render_and_predict()
+    result["waypoints"] = obs_status["waypoints"]
+    result["action_options"] = obs_status["action_options"]
+    if "note" in obs_status:
+        result["note"] = obs_status["note"]
+    result["new_view"] = "attached panorama + waypoints are for your NEW position"
+    return [Image(data=png, format="png"), json.dumps(result)]
 
 
 @mcp.tool(description=_STOP_DESC)

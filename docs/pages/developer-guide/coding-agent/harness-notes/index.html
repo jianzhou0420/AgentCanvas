@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness 隐性差异：vision 上下文管理（以及为什么它污染对比） — AgentCanvas</title>
+<meta name="description" content="这页记录 harness 之间那些 不写在 cell 名里、却会影响结论 的隐性差异。第一条 （已订正一次，见 §4） ： 视觉历史 ——原以为「SDK 近窗、mini 全带」；读了 Claude Code 源码 后订正为： 喂给两者的图大小一样、两者也都全量累积每轮重发 ，真正的差别只在 兜底 ——SDK 到阈值会整段 compact，mini image_window=0 没兜底 → 撞…">
+<meta property="og:title" content="Harness 隐性差异：vision 上下文管理（以及为什么它污染对比） — AgentCanvas">
+<meta property="og:description" content="这页记录 harness 之间那些 不写在 cell 名里、却会影响结论 的隐性差异。第一条 （已订正一次，见 §4） ： 视觉历史 ——原以为「SDK 近窗、mini 全带」；读了 Claude Code 源码 后订正为： 喂给两者的图大小一样、两者也都全量累积每轮重发 ，真正的差别只在 兜底 ——SDK 到阈值会整段 compact，mini image_window=0 没兜底 → 撞…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/harness-notes/index.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Harness 隐性差异">
+<style>
+  .key { border-left: 3px solid var(--accent, #3b82f6); padding: 0.5em 0 0.5em 1em; margin: 1.1em 0;
+         background: rgba(59, 130, 246, 0.06); }
+  .warn { border-left: 3px solid #d29922; padding: 0.5em 0 0.5em 1em; margin: 1.1em 0;
+          background: rgba(210, 153, 34, 0.08); }
+  .quote { border-left: 3px solid var(--text-muted, #999); padding: 0.2em 0 0.2em 1em; margin: 0.8em 0;
+           color: var(--text-muted, #777); font-style: italic; }
+  .board { border-collapse: collapse; margin: 1em 0; font-variant-numeric: tabular-nums; width: 100%; }
+  .board td, .board th { text-align: left; padding: 5px 12px; border-bottom: 1px solid var(--border, #ddd);
+                         vertical-align: top; }
+  .board th { color: var(--text-muted, #888); font-weight: 600; }
+  .caption { font-size: 0.82em; color: var(--text-muted, #888); margin: 0.3em 0 0 0; }
+  pre.term { background: rgba(127,127,127,0.09); border: 1px solid var(--border, #ddd); border-radius: 6px;
+             padding: 0.7em 0.9em; overflow-x: auto; font-size: 0.83em; line-height: 1.5; }
+  pre.term code { background: none; padding: 0; }
+  .lbl { display: inline-block; min-width: 5em; color: var(--text-muted, #888); }
+  code.f { font-size: 0.88em; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/harness-notes/index.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Coding Agent</a>
+    <span class="sep">/</span>
+    <span class="here">Harness Notes</span>
+  </div>
+  <div class="last-updated">2026-07-17</div>
+</div>
+  <header class="page-header coding-agent">
+    <h1>Harness 隐性差异：vision 上下文管理（以及为什么它污染对比）</h1>
+  </header>
+
+  <p class="lede">这页记录 harness 之间那些<strong>不写在 cell 名里、却会影响结论</strong>的隐性差异。第一条<strong>（已订正一次，见 §4）</strong>：<strong>视觉历史</strong>——原以为「SDK 近窗、mini 全带」；读了 <a href="../../tmp/cc-internals/1-context-loop.html#5-images">Claude Code 源码</a>后订正为：<strong>喂给两者的图大小一样、两者也都全量累积每轮重发</strong>，真正的差别只在<strong>兜底</strong>——SDK 到阈值会整段 compact，mini <code class="f">image_window=0</code> 没兜底 → 撞 32MB。</p>
+
+  <div class="key">
+  <strong>一句话（已订正）：</strong>Anthropic API 默认<strong>每轮重发全部历史图片字节</strong>，单请求上限 <strong>32MB</strong>，超了 413。<strong>喂给 CC 和 mini 的图大小完全一样</strong>（同 env、同帧），而且 <strong>CC 源码确认它默认不逐帧淘汰图</strong>（<code class="f">applyToolResultBudget</code> 原样透传含图块、时间触发清理默认关、cached-MC ant-only 且只认内置工具不碰 MCP <code class="f">observe()</code>）。所以 <strong>SDK 和 mini(<code class="f">image_window=0</code>) 都在全量累积同样的图、每轮重发</strong>——差别只在<strong>兜底</strong>：SDK 到阈值整段 compact 重置，mini 没兜底、一路涨到撞 32MB。已在 <code class="f">harness_inherent.vision_context</code> 里把每条 harness 的<strong>兜底策略</strong>记下来。
+  </div>
+
+  <h2 id="1-why"><span class="num">1.</span> 为什么单开这一页</h2>
+  <p>我们的 <code class="f">summary.json</code> 已经记 <code class="f">harness_inherent</code>（auth / thinking / turn_cap）—— 因为这些是「不在 cell 名里、但决定结果」的 harness 固有事实。vision 上下文管理是同一类:两条 harness 给模型的视觉历史不等量,<strong>直接影响导航成败</strong>,却一直没被记下来。这页 + 新增的 <code class="f">vision_context</code> 字段补上它。</p>
+
+  <h2 id="2-facts"><span class="num">2.</span> 事实层：API 怎么处理图</h2>
+  <ul>
+    <li><strong>单请求上限 32MB</strong>（标准端点;Bedrock/Vertex 更低),超出返回 <code class="f">413 request_too_large</code>;单图 10MB base64;一次 <strong>&gt;20 张图</strong>触发更严的尺寸限制。</li>
+    <li><strong>默认每轮重发全历史</strong>。官方 <a href="https://platform.claude.com/docs/en/build-with-claude/vision">Vision 文档</a>原话:<em>"each request resends the full conversation history. If images are base64-encoded, the full image bytes are included in the payload on every turn."</em> —— <strong>API 本身不做任何 vision 裁剪</strong>。</li>
+    <li>交互式 Claude Code <strong>不自动删「用户贴的图」</strong>（<a href="https://github.com/anthropics/claude-code/issues/52224">issue #52224</a>,feature request,已关;只有 /compact、/clear、开新 session）。</li>
+  </ul>
+  <p>注意 #52224 说的是<strong>用户贴的图</strong>;我们的 <code class="f">observe()</code> 图是经 MCP 回来的 <code class="f">tool_result</code> 图 —— 这一类由 agent loop 管理,行为不同(见 §4)。</p>
+
+  <h2 id="3-table"><span class="num">3.</span> 三条 harness 的 vision 策略</h2>
+  <table class="board">
+    <thead><tr><th>harness</th><th>视觉历史策略</th><th><code class="f">harness_inherent.vision_context</code></th></tr></thead>
+    <tbody>
+      <tr><td><strong>sdk</strong>(Claude Code / Agent SDK)</td><td><strong>全量累积、每轮重发</strong>(和 mini iw=0 一样、同样大小的图);<strong>不逐帧淘汰</strong>;只有到 <code class="f">167k</code> token auto-compact / 媒体超限 reactive-compact 时<strong>整段</strong>清(非近窗)</td><td><code class="f">full history; compaction backstop ~167k</code></td></tr>
+      <tr><td><strong>mini</strong>(mini-swe / ReAct)</td><td><code class="f">image_window=K</code> 保留最新 K 帧,旧的塌成 text stub;<strong>默认 0 = 全带</strong>(当前 cell 默认)→ 线性膨胀</td><td><code class="f">image_window=K newest frames (default 0 = full history)</code></td></tr>
+      <tr><td><strong>codex</strong>(Codex CLI)</td><td>codex 自管,未审计</td><td><code class="f">codex-managed (unaudited)</code></td></tr>
+    </tbody>
+  </table>
+  <p class="caption">mini 的 <code class="f">image_window</code> 在 <code class="f">beta-react-harness/model.py</code>,注释自称「the one declared deviation from mini's 'no context management'」。当前 std cells 跑 <code class="f">image_window=0</code>(<code class="f">cells.py</code> 确认)。</p>
+
+  <h2 id="4-proof"><span class="num">4.</span> 订正：CC 并没有在「窗口化」</h2>
+  <div class="warn"><strong>本节原来的结论错了。</strong>原推理：「一集 60 帧 × 1.1MB ≈ 66MB，而 CC 实测 &lt;10MB → 它一定只留了近窗几帧，铁证」。读 <a href="../../tmp/cc-internals/1-context-loop.html#5-images">Claude Code 源码</a>后确认 CC <strong>默认不逐帧淘汰图</strong>，这个「铁证」不成立。</div>
+  <p>为什么原推理站不住：</p>
+  <ul>
+    <li><strong>同样大小的图喂给两者。</strong>CC 和 mini 跑同一个 env、同样的帧，图字节数一样 —— 请求大小差异<strong>不可能来自图大小</strong>。</li>
+    <li><strong>CC 不 evict（源码级）</strong>：含图 tool_result 被 <code class="f">applyToolResultBudget</code> <strong>原样透传</strong>（<code class="f">hasImageBlock → return 整块</code>，注释 "sent as-is to Claude"）；时间触发清理默认关；cached-MC ant-only 且只认 8 个内置工具、不碰我们的 MCP <code class="f">observe()</code>。所以 <strong>SDK 和 mini(iw=0) 都在全量累积同样的图、每轮重发</strong> —— 等长的一集，两者请求应当<strong>一样大</strong>。</li>
+    <li><strong>字节 vs token</strong>：图字节重、token 轻（1.1MB ≈ ~1.5k token）。32MB <strong>字节</strong>墙在 ~29 帧就撞上，而 167k <strong>token</strong> 的 auto-compact 要 ~100 帧才到 —— 图密集时先撞字节墙，proactive 的 167k 压缩<strong>救不了</strong>你，真正兜底的是<strong>撞墙后的 reactive-compact / 报错让用户 /compact</strong>。</li>
+  </ul>
+  <p><strong>那 &lt;10MB vs &gt;32MB 的观测怎么解释？</strong>不是逐帧淘汰、也不是图大小，而是<strong>兜底 + 集长</strong>：mini iw=0 <strong>没兜底</strong>、单调涨到撞 32MB；SDK <strong>有 compaction 兜底</strong>被 reset，且我们当时监控的 SDK 集很可能<strong>累积的帧还没多到接近上限</strong>。要坐实，真数一个 late SDK 请求里有几张图即可（见 §7）。</p>
+
+  <h2 id="5-confound"><span class="num">5.</span> 真正的 confound：不是「窗口大小」，是「兜底」</h2>
+  <div class="warn">
+  订正后：同一个 VLN 任务,<code class="f">image_window=0</code> 的 mini 和 SDK <strong>给模型的视觉历史其实一样多</strong>（都全量累积同样大小的图）—— 不是「视觉记忆量不等」。真正不等的是<strong>兜底行为</strong>:
+  <ul style="margin:0.3em 0 0">
+    <li><strong>mini(iw=0)</strong>:无兜底 → 单调膨胀 → Anthropic cell 撞 32MB。</li>
+    <li><strong>SDK</strong>:有 compaction 兜底(167k auto / 媒体超限 reactive)→ 到点整段压缩重置。</li>
+  </ul>
+  所以对比时:要么给 mini 也上兜底(<code class="f">image_window=K</code> 或 <code class="f">compact_at</code>),要么两条都用 Files API,<strong>并把「有没有兜底、阈值多少」记进 <code class="f">harness_inherent</code></strong> —— 这才是真正该记的 confound（不是「窗口大小」）。
+  </div>
+  <p>另一个精确点:<strong>32MB 是 Anthropic API 专属限制</strong>,只咬 mini 的 Anthropic cell(sonnet/opus);本地 qwen 走 ollama,撞的是 <code class="f">served_context</code>(128k)不是 32MB。</p>
+
+  <h2 id="6-levers"><span class="num">6.</span> 想要「有保证」的图管理(别依赖未文档行为)</h2>
+  <table class="board">
+    <thead><tr><th>杠杆</th><th>做法</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Files API</strong>(<code class="f">file_id</code>)</td><td>图上传一次、按 id 引用,请求恒小(与图数量无关)</td><td>官方文档化推荐</td></tr>
+      <tr><td><strong>Context editing</strong> <code class="f">clear_tool_uses_20250919</code></td><td>服务端清旧 tool_result(换占位符)</td><td>文档化 beta 原语,和 CC 内部做法平行</td></tr>
+      <tr><td><strong>mini <code class="f">image_window=K</code></strong></td><td>直接限制最新 K 帧</td><td>已有,改 <code class="f">--set image_window=K</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="7-todo"><span class="num">7.</span> 已落地 + 待验证</h2>
+  <p><strong>已落地</strong>:每条 adapter 的 <code class="f">inherent</code> 加了 <code class="f">vision_context</code> 字段(<code class="f">harnesses/claude_sdk.py</code> · <code class="f">mini_swe.py</code> · <code class="f">codex_cli.py</code>),每份 <code class="f">summary.json</code> 的 <code class="f">harness_inherent</code> 都会带上它。</p>
+  <p><strong>待验证(一步就能坐实订正)</strong>:在监控到的某个 late-episode SDK 请求里数 image block ——</p>
+  <ol>
+    <li><strong>若很多张(≈全历史)</strong> → 印证「不 evict、全量累积」(订正后的预期);</li>
+    <li><strong>若很少 + 出现一条 "continued from previous conversation" 摘要消息</strong> → 说明中途触发了 full-compact —— 那才是 SDK 请求变小的真因,不是近窗淘汰。</li>
+  </ol>
+
+  <h2 id="8-refs"><span class="num">8.</span> 附：出处与相关</h2>
+  <ul>
+    <li><span class="lbl">官方</span><a href="https://platform.claude.com/docs/en/build-with-claude/vision">Vision（32MB / 每轮全历史 / Files API）</a> · <a href="https://platform.claude.com/docs/en/build-with-claude/context-editing">Context Editing（clear_tool_uses）</a></li>
+    <li><span class="lbl">issue</span><a href="https://github.com/anthropics/claude-code/issues/52224">#52224 用户图不自动删（feature request）</a></li>
+    <li><span class="lbl">我们侧</span><code class="f">beta-react-harness/model.py</code>（<code class="f">image_window</code>）· <code class="f">coding-agent/driver.py</code>（<code class="f">harness_inherent</code>）· <code class="f">coding-agent/harnesses/*.py</code>（<code class="f">vision_context</code>）</li>
+    <li><span class="lbl">相关</span><a href="../reasoning/index.html">思维链可见性</a>（同类「harness 只给你摘要/近窗，不给全部」）· <a href="../real-robot/index.html">真机具身</a></li>
+  </ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-why">1. 为什么单开这一页</a>
+      <a class="toc-h2" href="#2-facts">2. 事实层：API 怎么处理图</a>
+      <a class="toc-h2" href="#3-table">3. 三条 harness 的 vision 策略</a>
+      <a class="toc-h2" href="#4-proof">4. 订正：CC 并没有在「窗口化」</a>
+      <a class="toc-h2" href="#5-confound">5. 真正的 confound：不是「窗口大小」，是「兜底」</a>
+      <a class="toc-h2" href="#6-levers">6. 想要「有保证」的图管理(别依赖未文档行为)</a>
+      <a class="toc-h2" href="#7-todo">7. 已落地 + 待验证</a>
+      <a class="toc-h2" href="#8-refs">8. 附：出处与相关</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

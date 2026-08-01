@@ -36,6 +36,46 @@ OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 NODESET_NAME = "env_habitat"
 
 
+def _is_limit_exceeded(ep: dict[str, Any]) -> bool:
+    """A rate-limit / 'limit exceeded' casualty: the run errored WITHOUT taking a
+    single navigation step (error set + env_steps 0). It never really attempted
+    the task, so it counts as neither a pass nor a fail — excluded from SR and
+    shown as ⚠, not ✅/❌. A genuine turn-exhausted run DID navigate (env_steps
+    > 0) and is a real failure that stays in the denominator."""
+    return bool(ep.get("error")) and not ((ep.get("agent") or {}).get("env_steps") or 0)
+
+
+def display_aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Recompute SR/SPL/stop from raw episodes for display — always honest
+    regardless of what the driver wrote to summary.json (a live run's stored
+    aggregate can lag or predate the current scoring rule). Turn-exhausted =
+    failure (counts); limit-exceeded = excluded."""
+    scored = [
+        e for e in episodes
+        if (e.get("metrics") or {}).get("success") is not None and not _is_limit_exceeded(e)
+    ]
+    agg: dict[str, Any] = {"episode_count": len(scored)}
+    if not scored:
+        return agg
+
+    def _mean_metric(key: str) -> float | None:
+        vals = [
+            float((e.get("metrics") or {})[key])
+            for e in scored
+            if isinstance((e.get("metrics") or {}).get(key), (int, float))
+        ]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    for key in ("success", "spl", "ndtw", "oracle_success", "distance_to_goal"):
+        val = _mean_metric(key)
+        if val is not None:
+            agg[key] = val
+    agg["stop_rate"] = round(
+        sum(1 for e in scored if (e.get("agent") or {}).get("called_stop")) / len(scored), 4
+    )
+    return agg
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("", 0))
@@ -224,7 +264,7 @@ class CodingAgentRunner:
             "config": self._config,
             "active_episode": active if self._state == "running" else None,
             "started_episodes": started,
-            "aggregate": summary.get("aggregate"),
+            "aggregate": display_aggregate(summary.get("episodes", [])),
             "episodes": [
                 {
                     "index": e.get("index"),

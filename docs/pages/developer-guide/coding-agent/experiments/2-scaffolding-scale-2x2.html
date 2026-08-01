@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>脚手架 × 规模：Qwen3.5 导航的 2×2 消融 — AgentCanvas</title>
+<meta name="description" content="这是 CAN 计划 的第一个 完整因子设计 ：qwen3.5-{4b, 9b} × {bare, nav} 四个 std cell，每个 rand100 前 50 集，全部在同一套冻结协议下、$0 API 成本、 seed=42 逐字节可复现。它给出两个结论：一个 阳性、显著、可发表 的交互效应——coding-agent 脚手架与模型规模 互补 ，单独任何一个都不动导航能力；以及一堵…">
+<meta property="og:title" content="脚手架 × 规模：Qwen3.5 导航的 2×2 消融 — AgentCanvas">
+<meta property="og:description" content="这是 CAN 计划 的第一个 完整因子设计 ：qwen3.5-{4b, 9b} × {bare, nav} 四个 std cell，每个 rand100 前 50 集，全部在同一套冻结协议下、$0 API 成本、 seed=42 逐字节可复现。它给出两个结论：一个 阳性、显著、可发表 的交互效应——coding-agent 脚手架与模型规模 互补 ，单独任何一个都不动导航能力；以及一堵…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/experiments/2-scaffolding-scale-2x2.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="脚手架×规模 2×2">
+<style>
+  .board td, .board th { text-align: right; padding: 3px 10px; font-variant-numeric: tabular-nums; }
+  .board td:first-child, .board th:first-child { text-align: left; }
+  .board .win { background: rgba(46, 160, 67, 0.20); font-weight: 600; }
+  .board .rowlab { color: var(--text-muted, #888); font-size: 0.9em; }
+  .mc td, .mc th { padding: 3px 10px; font-variant-numeric: tabular-nums; }
+  .mc .sig td { background: rgba(46, 160, 67, 0.18); }
+  .mc .nul td { color: var(--text-muted, #999); }
+  .key { border-left: 3px solid var(--accent, #3b82f6); padding: 0.4em 0 0.4em 1em; margin: 1em 0;
+         background: rgba(59, 130, 246, 0.06); }
+  .warn { border-left: 3px solid #d29922; padding: 0.4em 0 0.4em 1em; margin: 1em 0;
+          background: rgba(210, 153, 34, 0.08); }
+  .frames { display: flex; gap: 1.2em; flex-wrap: wrap; align-items: flex-start; margin: 1em 0; }
+  .frames figure { margin: 0; }
+  .frames img { image-rendering: auto; border: 1px solid var(--border, #ccc); border-radius: 4px; max-width: 100%; }
+  .frames figcaption { font-size: 0.82em; color: var(--text-muted, #888); text-align: center; margin-top: 4px; }
+  .taxo td, .taxo th { padding: 2px 9px; font-size: 0.9em; text-align: right; font-variant-numeric: tabular-nums; }
+  .taxo td:first-child, .taxo th:first-child { text-align: left; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/experiments/2-scaffolding-scale-2x2.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Coding Agent</a>
+    <span class="sep">/</span>
+    <a href="index.html">Experiments</a>
+    <span class="sep">/</span>
+    <span class="here">脚手架×规模 2×2</span>
+  </div>
+  <div class="last-updated">2026-07-15</div>
+</div>
+  <header class="page-header coding-agent">
+  <h1>脚手架 × 规模：Qwen3.5 导航的 2×2 消融</h1>
+</header>
+
+<p class="lede">这是 <a href="../index.html">CAN 计划</a>的第一个<strong>完整因子设计</strong>：qwen3.5-{4b, 9b} × {bare, nav} 四个 <code>std</code> cell，每个 rand100 前 50 集，全部在同一套冻结协议下、$0 API 成本、<code>seed=42</code> 逐字节可复现。它给出两个结论：一个<strong>阳性、显著、可发表</strong>的交互效应——coding-agent 脚手架与模型规模<strong>互补</strong>，单独任何一个都不动导航能力；以及一堵<strong>不随任何旋钮移动的墙</strong>——「停止」决策，它决定了成功率为什么上不去。</p>
+
+<div class="key">
+<strong>一句话：</strong>在这套 harness 上，从 4B 到 9B、从裸 prompt 到全脚手架，规模买到的是<em>「找到目标」</em>（OSR，走进目标 3 米内），不是<em>「承认找到了」</em>（SR，成功宣告停止）。导航能力在「规模 × 脚手架」都齐备时显著提升；停止决策在四格里全部卡在 33–50% 的转化率，不随规模、脚手架、分辨率、回合预算、采样中的任何一个改善。
+</div>
+
+<h2 id="1-tldr"><span class="num">1.</span> TL;DR</h2>
+
+<p>四个 cell 各 50 集，同一组 episode，配对 McNemar 检验。核心指标是 <strong>OSR</strong>（oracle success rate，轨迹曾经进入目标 3 米内）和 <strong>SR</strong>（success rate，在目标处发出 STOP）。</p>
+
+<ul>
+<li><strong>OSR 上有一个教科书式的交互效应。</strong> 光有 skill（4B 上加 ledger-nav）：<code>p=1.0</code>，无效。光有规模（bare 条件下 4B→9B）：<code>p=1.0</code>，无效。<strong>两者都有</strong>（9B+skill）：从两个独立方向各自 <code>p=0.0215</code> 显著。OSR 三格持平（0.16 / 0.18 / 0.18），只有 <code>9b_nav</code> 一格翻倍到 <strong>0.34</strong>。</li>
+<li><strong>SR 在任何一格都没有显著变化。</strong> 因为「走到目标之后能不能停对」的转化率被焊死在 33–50%，四个 cell、两个规模、两种条件都一样。</li>
+<li><strong>分辨率、回合预算、采样惩罚——逐一排除。</strong> 5 倍像素（224→512）、回合 150→100、把重复惩罚全部归零，都<em>确实改变了行为</em>（动作批量、路程、停止率都变了），但 SR / OSR 纹丝不动。</li>
+<li><strong>唯一没被撼动过的是 STOP 决策本身。</strong> 它是成功率的真正瓶颈，也是 CAN 下一步该攻的地方。</li>
+</ul>
+
+<h2 id="2-protocol"><span class="num">2.</span> 协议与完全可复现口径</h2>
+
+<p>这套协议的每一层——包括三个平时没人钉的服务层默认值——都是<strong>从服务器读回并断言</strong>的，不是 harness 声称的。凡是钉不住的，adapter 就拒绝运行，而不是静默降级。</p>
+
+<table>
+<thead><tr><th>部件</th><th>取值</th><th>出处 / 为什么这么定</th></tr></thead>
+<tbody>
+<tr><td>数据集</td><td>R2R-CE val_unseen <code>rand100</code> 前 50 集</td><td>论文标准子集；habitat 自带 measure 评测</td></tr>
+<tr><td>模型</td><td>qwen3.5:{4b, 9b}-bf16</td><td><strong>全精度</strong>，两档同为 bf16 ⇒ scaling 对比不含量化混淆</td></tr>
+<tr><td>分辨率</td><td>512×512</td><td>真渲染（改 habitat RGB 传感器尺寸，非插值放大；降采样往返测试验证）</td></tr>
+<tr><td>回合上限</td><td>100（本地 GPU）</td><td>动作预算 500 从不绑定，回合才是约束——见 §6</td></tr>
+<tr><td>上下文</td><td>128k 钉死</td><td>ollama 默认 4096 会静默截断；7 万+ 请求峰值仅 41%，0 个超 64k</td></tr>
+<tr><td>采样</td><td>temp 1.0 · top_p .95 · top_k 20 · <strong>seed 42</strong> · pp 0 · rp 1.0 · fp 0</td><td>temp/top_p/top_k = Qwen 出厂；seed 是可复现的唯一来源；所有重复惩罚归中性</td></tr>
+<tr><td>确定性</td><td>逐字节可复现</td><td>temp=1.0 + 固定 seed ⇒ 同输入同输出（走真实 harness 路径验证）</td></tr>
+<tr><td>skill</td><td>ledger-nav，md5 <code>f7c74272</code></td><td>freeze gate：skill 文本漂移即拒跑</td></tr>
+<tr><td>成本</td><td>$0</td><td>本地 ollama，无 API 计费</td></tr>
+</tbody>
+</table>
+
+<div class="warn">
+<strong>关于采样的两个坑（写方法章节必须交代）：</strong>
+<ul style="margin:0.4em 0">
+<li><strong>确定性来自 <code>seed</code>，不是温度。</strong> temp=1.0 配固定 seed 即可逐字节复现；stock ollama 不传 seed，所以本日之前每一集都是一张随机彩票。</li>
+<li><strong>litellm 的 ollama 路由静默丢弃 <code>presence_penalty</code></strong>（<code>drop_params=True</code>），在客户端设它等于没设。所以采样只能烤进 Modelfile，再从 <code>/api/show</code> 读回验证。<code>repeat_penalty</code> 是<em>乘法</em>（<code>logit/penalty</code>），中性值是 <strong>1.0</strong> 不是 0——设 0 会除以零、强制重复循环。</li>
+</ul>
+</div>
+
+<h2 id="3-board"><span class="num">3.</span> 主结果：2×2 板</h2>
+
+<p>各 cell 均 50/50 完成。绿色是唯一显著移动的一格。</p>
+
+<table class="board">
+<thead><tr><th>指标</th><th>4b_bare</th><th>4b_nav</th><th>9b_bare</th><th class="win">9b_nav</th></tr></thead>
+<tbody>
+<tr><td>SR（成功停在目标）</td><td>0.08</td><td>0.08</td><td>0.06</td><td class="win">0.14</td></tr>
+<tr><td>SPL</td><td>0.07</td><td>0.07</td><td>0.06</td><td class="win">0.08</td></tr>
+<tr><td>nDTW</td><td>0.35</td><td>0.32</td><td>0.38</td><td class="win">0.37</td></tr>
+<tr><td><strong>OSR（进过目标 3m 内）</strong></td><td>0.16</td><td>0.18</td><td>0.18</td><td class="win">0.34</td></tr>
+<tr><td>dtg 停点距目标 (m)</td><td>8.52</td><td>8.80</td><td>7.93</td><td class="win">7.56</td></tr>
+<tr><td class="rowlab">平均环境动作数</td><td>65</td><td>322</td><td>108</td><td class="win">387</td></tr>
+<tr><td class="rowlab">stop_rate（发过 STOP 的比例）</td><td>0.30</td><td>0.54</td><td>0.20</td><td class="win">0.52</td></tr>
+<tr><td class="rowlab">动作批量（每次 step 调用）</td><td>1.5</td><td>3.4</td><td>2.4</td><td class="win">4.1</td></tr>
+<tr><td class="rowlab">走到过目标 / 其中成功</td><td>8 / 4</td><td>9 / 4</td><td>9 / 3</td><td class="win">17 / 7</td></tr>
+<tr><td class="rowlab"><strong>停止转化率</strong></td><td>50%</td><td>44%</td><td>33%</td><td class="win">41%</td></tr>
+</tbody>
+</table>
+
+<p>读这张板有一个纪律：<strong>看 OSR 和转化率这两行，别只看 SR。</strong> SR 是「找到 × 停对」的乘积，把两件独立的事揉在一起了。拆开看，故事立刻清楚——OSR（找到）只在一格动，转化率（停对）哪一格都不动。</p>
+
+<h2 id="4-interaction"><span class="num">4.</span> 交互效应：脚手架与规模互补</h2>
+
+<p>四组配对 McNemar，都是同一组 50 集内的配对比较（<code>A 独有</code> / <code>B 独有</code> 是两者结果不一致的集数，p 是精确双侧检验）。</p>
+
+<table class="mc">
+<thead><tr><th>对比</th><th>变量</th><th>指标</th><th>A 独有</th><th>B 独有</th><th>p</th><th></th></tr></thead>
+<tbody>
+<tr class="nul"><td>4b_bare → 4b_nav</td><td>加 skill（4B）</td><td>OSR</td><td>4</td><td>5</td><td>1.0000</td><td>—</td></tr>
+<tr class="nul"><td>4b_bare → 9b_bare</td><td>加规模（bare）</td><td>OSR</td><td>4</td><td>5</td><td>1.0000</td><td>—</td></tr>
+<tr class="sig"><td>9b_bare → 9b_nav</td><td>加 skill（9B）</td><td>OSR</td><td>1</td><td>9</td><td><strong>0.0215</strong></td><td>✓ 显著</td></tr>
+<tr class="sig"><td>4b_nav → 9b_nav</td><td>加规模（nav）</td><td>OSR</td><td>1</td><td>9</td><td><strong>0.0215</strong></td><td>✓ 显著</td></tr>
+</tbody>
+</table>
+
+<div class="key">
+<strong>这是一个干净的交互（interaction），不是两个主效应。</strong> 加 skill 在 4B 上无效（p=1.0），加规模在 bare 上无效（p=1.0）；只有当两者<strong>同时</strong>具备，OSR 才从两个独立方向各自显著跳升。翻译成机制：4B 拿到 skill，只学会了「走得多」（环境动作 65→322），学不会「走得对」（OSR 0.16→0.18）；9B 不给 skill，也只是走得稍远（65→108）。<strong>只有 9B 拿到 skill，才把移动能力转化成真正朝目标的导航。</strong>
+</div>
+
+<p>这直接<strong>反驳了本项目最早的一个单集轶事</strong>——4B 挂上 ledger-nav 后第 0 集从失败变成 SR 1.0，当时被当作「coding-agent 纪律拯救小模型」的证据。n=50 的配对检验说：<strong>那是运气。</strong> 在 4B 上，skill 买到的是移动，不是成功。</p>
+
+<p>推论：<strong>coding-agent 的脚手架存在一个「接得住」的最小能力门槛。</strong> 这比「skill 对小模型有用」更有意思，也解释了一整天里所有看似矛盾的观测——为什么 4B 走了 5 倍的路却只多摸到 1 次目标。</p>
+
+<h2 id="5-wall"><span class="num">5.</span> 停止之墙：为什么 SR 不动</h2>
+
+<p>把 SR 也做配对检验，会发现<strong>同一个 n=50 的设计，有功效检出 OSR 的效应，却检不出 SR 的效应</strong>：</p>
+
+<table class="mc">
+<thead><tr><th>对比</th><th>指标</th><th>A 独有</th><th>B 独有</th><th>p</th></tr></thead>
+<tbody>
+<tr class="sig"><td>4b_nav → 9b_nav（加规模）</td><td>OSR</td><td>1</td><td>9</td><td><strong>0.0215 ✓</strong></td></tr>
+<tr class="nul"><td>4b_nav → 9b_nav（加规模）</td><td>SR</td><td>3</td><td>6</td><td>0.5078</td></tr>
+<tr class="sig"><td>9b_bare → 9b_nav（加 skill）</td><td>OSR</td><td>1</td><td>9</td><td><strong>0.0215 ✓</strong></td></tr>
+<tr class="nul"><td>9b_bare → 9b_nav（加 skill）</td><td>SR</td><td>2</td><td>6</td><td>0.2891</td></tr>
+</tbody>
+</table>
+
+<p>这不是「样本不够」。这是说：<strong>规模确实、显著地让模型更会找路，但这份收益在「停下」那一步被丢光了。</strong> 转化率给出了丢在哪：</p>
+
+<ul>
+<li>4B：走到目标的 9 集里成功 4 集 = <strong>44%</strong></li>
+<li>9B：走到目标的 17 集里成功 7 集 = <strong>41%</strong></li>
+</ul>
+
+<p>规模把机会翻了一倍（OSR 0.18→0.34），转化率一步没动。失败分类也吻合——「到过 3m 内却没停对」这一桶，从 4b_nav 的 5/50 涨到 9b_nav 的 10/50，<strong>正好和 OSR 同比例翻倍</strong>。9B 把新赢来的机会，原封不动地按同样比例浪费掉了。</p>
+
+<h2 id="6-ruled-out"><span class="num">6.</span> 排除项：三个旋钮都不动 SR</h2>
+
+<p>今天最贵的负结果来自和归档跑的对照。把 <code>4b_nav</code> 从旧协议（224px / 150 回合 / pp=0.5）换到新协议（512px / 100 回合 / pp=0），<strong>三个正交旋钮一起拧</strong>：</p>
+
+<table class="taxo">
+<thead><tr><th>4b_nav</th><th>SR</th><th>OSR</th><th>nDTW</th><th>动作批量</th><th>stop_rate</th></tr></thead>
+<tbody>
+<tr><td>旧：224px / 150 回合 / pp0.5</td><td>0.08</td><td>0.18</td><td>0.30</td><td>2.5</td><td>0.68</td></tr>
+<tr><td>新：512px / 100 回合 / pp0</td><td>0.08</td><td>0.18</td><td>0.32</td><td>3.4</td><td>0.54</td></tr>
+</tbody>
+</table>
+
+<div class="key">
+<strong>SR 和 OSR 精确到小数点后两位不变——而干预是真实生效的。</strong> 动作批量从 2.5 涨到 3.4（+36%），stop_rate 从 0.68 掉到 0.54，模型行为确实变了，只是<em>成功率不变</em>。所以这不是「什么都没改」，而是「改了行为、没改结果」。感知精度、回合预算、采样惩罚——三个都被排除。
+</div>
+
+<p>关于分辨率值得多说一句，因为直觉上它「应该」有用。R2R 指令常常要求识别一个精确地标（如「停在吧台转角」），而在 224px 下这个地标基本糊成一团：</p>
+
+<div class="frames">
+  <figure><img src="../../../assets/coding-agent/ep0_frame0_1024.png" alt="episode 0 第一帧 1024px" width="360"><figcaption>1024px — 远处吧台清晰可辨（= 指令终点）</figcaption></figure>
+  <figure><img src="../../../assets/coding-agent/ep0_frame0_224.png" alt="episode 0 第一帧 224px" width="224"><figcaption>224px — 同一个吧台已糊成一团</figcaption></figure>
+</div>
+
+<p>直觉是对的——224px 确实看不清该停在哪。但实验说：<strong>把它换成 512px，SR 还是不动。</strong> 说明「看不清」不是当前的绑定约束；就算把地标看清了，模型也不会因此就知道该停。瓶颈在更下游。</p>
+
+<h2 id="7-failure"><span class="num">7.</span> 失败结构（四格逐桶）</h2>
+
+<p>六类互斥的终局，按停点行为划分。</p>
+
+<table class="taxo">
+<thead><tr><th>终局桶</th><th>4b_bare</th><th>4b_nav</th><th>9b_bare</th><th>9b_nav</th></tr></thead>
+<tbody>
+<tr><td>✅ 成功</td><td>4</td><td>4</td><td>3</td><td>7</td></tr>
+<tr><td>到过 3m 内却没停对</td><td>4</td><td>5</td><td>6</td><td>10</td></tr>
+<tr><td>近失（停点 3–10m）</td><td>9</td><td>13</td><td>3</td><td>8</td></tr>
+<tr><td>烧完 500 动作预算，从不提交</td><td>0</td><td>13</td><td>1</td><td>17</td></tr>
+<tr><td>撞 100 回合上限</td><td>32</td><td>7</td><td>36</td><td>2</td></tr>
+<tr><td>远距离游荡（&gt;10m）后停下</td><td>1</td><td>8</td><td>1</td><td>6</td></tr>
+</tbody>
+</table>
+
+<p>两个失败模式随「加脚手架」而<strong>互换</strong>：bare 的主导失败是<strong>撞回合上限</strong>（32、36 / 50，因为动作批量只有 1.5–2.4，100 回合换不来足够动作），nav 把它换成了<strong>烧光动作预算不肯停</strong>（13、17 / 50）。skill 完美地修好了「走不动」，一点也没修好「走对/停对」。</p>
+
+<h2 id="8-system"><span class="num">8.</span> 系统与上下文审计</h2>
+
+<table class="taxo">
+<thead><tr><th>cell</th><th>LLM 请求</th><th>prompt token 峰值</th><th>占 128k</th><th>超 64k</th><th>VRAM 峰值</th></tr></thead>
+<tbody>
+<tr><td>4b_nav</td><td>3,800</td><td>54,261</td><td>41.4%</td><td>0</td><td>16.0 GB</td></tr>
+<tr><td>4b_bare</td><td>4,326</td><td>32,011</td><td>24.4%</td><td>0</td><td>≈16 GB*</td></tr>
+<tr><td>9b_nav</td><td>3,545</td><td>49,690</td><td>37.9%</td><td>0</td><td>23.3 GB</td></tr>
+<tr><td>9b_bare</td><td>4,466</td><td>34,125</td><td>26.0%</td><td>0</td><td>≈23 GB*</td></tr>
+</tbody>
+</table>
+
+<p style="font-size:0.85em;color:var(--text-muted,#888)">* VRAM 采样是系统级的，bare cell 的峰值被前一个 9B 模型卸载时的瞬时叠加污染；代表值取自各模型的 nav cell（4B ≈ 16 GB，9B ≈ 23 GB）。全部 15,000+ 请求<strong>零</strong>超窗——128k 上下文钉死这一层，是防灾难的，不是摆设。</p>
+
+<h2 id="9-validity"><span class="num">9.</span> 有效性声明与限制（引用本表前必读）</h2>
+
+<ul>
+<li><strong>单 seed。</strong> 每个 cell 是 <code>seed=42</code> 的一个样本。McNemar 是<em>跨 episode</em> 的配对，不是<em>跨 seed</em> 的。SR≈0.1 时区分 0.08 与 0.14 需要每臂 200+ 集——所以本报告只声称 OSR 上的效应（效应量大到 n=50 能测出），不声称 SR 上的规模效应（p=0.51，未达显著）。</li>
+<li><strong>bare ≠「裸模型能力」。</strong> bare cell 有 64–75% 的集撞在 100 回合上限（动作批量 1.5–2.4）。所以 bare 测的是「没有脚手架就被回合预算饿死」，<em>不是</em>「裸导航能力」。要测后者，bare 需要一个动作对齐的回合预算（约 270 回合）。</li>
+<li><strong>「排除分辨率」的对照同时动了三样。</strong> §6 那组严格讲是「512/100/pp0 与 224/150/pp0.5 结果相同」，即<em>这三者一起</em>不动 SR；单独隔离 512 的贡献需要一个 512/150/pp0 的干净臂。</li>
+<li><strong>bare vs nav 差 6 样东西。</strong> nav 相对 bare 同时变了：prompt 文本、clearance 读数、look_around 工具、回合广播、STOP 门控、ledger-nav skill。所以 §4 的交互效应归因到「整套脚手架」，<em>不能</em>拆分到「是机制还是 skill」——那需要第三条 <code>mech</code> 臂（full 机制但无 skill）。</li>
+<li><strong>方法自省。</strong> 得到这些结论的过程里，我至少三次把小样本观测（n=1 或 n=10）过度解读成机制，全部被更大样本推翻（「4B 永远单动作」被 nav 分布推翻；「presence_penalty 砍半批量」被 6 帧扫描推翻；「512 让 SR==OSR」被 20 集推翻）。本报告只保留了扛住 n=50 的结论。</li>
+</ul>
+
+<h2 id="10-next"><span class="num">10.</span> 下一步（按信息量排序）</h2>
+
+<ol>
+<li><strong>攻停止之墙。</strong> 这是唯一没被撼动过的东西，也是 SR 上不去的唯一原因。ledger 的 verify-before-STOP 纪律在 opus 上把「从不停」从 14/50 打到 <strong>0/50</strong>，但没传导到小模型——为什么？一个小模型真能执行的停止协议，是最高价值的干预。</li>
+<li><strong>补 <code>mech</code> 臂</strong>（full 机制但无 skill），把 §4 的交互效应从「整套脚手架」拆分到机制 vs skill。</li>
+<li><strong>动作对齐的 bare</strong>（约 270 回合），测出真正的「裸导航能力」，而不是「被回合饿死」。</li>
+<li><strong>多 seed</strong>，把 SR 的方差量化到底，判断规模在 SR 上到底有没有效应。</li>
+</ol>
+
+<h2 id="11-artifacts"><span class="num">11.</span> 工件</h2>
+
+<ul>
+<li>结果目录：<code>outputs/beta-react-harness/std_mini_qwen3.5-{4b,9b}_{bare,nav}/</code>——各含 <code>summary.json</code>（含 <code>run_stats</code>：VRAM 峰值 + 从服务器读回的采样 + token 审计）、逐集 <code>episode_{i}.jsonl</code>、<code>live_{i}/</code> 512px 帧。</li>
+<li>归档对照（旧协议，未删）：<code>*__t150_rgb224_pp0.5</code>、<code>*__t100_rgb512_pp0.5</code>。</li>
+<li>runner：<code>coding-agent/</code> 统一 std-v1 runner（<code>stdrun.py run/batch/board/compare</code>）；采样烤进 ollama Modelfile <code>qwen3.5:{4b,9b}-bf16-std</code>，adapter 读回并断言。</li>
+<li>相关文档：<a href="../index.html">CAN 计划</a> · <a href="../setup/1-swe-agent-anatomy.html">SWE-agent 拆解</a> · <a href="1-qwen4b-ledger50.html">4B ledger50 首批报告</a>。</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-tldr">1. TL;DR</a>
+      <a class="toc-h2" href="#2-protocol">2. 协议与完全可复现口径</a>
+      <a class="toc-h2" href="#3-board">3. 主结果：2×2 板</a>
+      <a class="toc-h2" href="#4-interaction">4. 交互效应：脚手架与规模互补</a>
+      <a class="toc-h2" href="#5-wall">5. 停止之墙：为什么 SR 不动</a>
+      <a class="toc-h2" href="#6-ruled-out">6. 排除项：三个旋钮都不动 SR</a>
+      <a class="toc-h2" href="#7-failure">7. 失败结构（四格逐桶）</a>
+      <a class="toc-h2" href="#8-system">8. 系统与上下文审计</a>
+      <a class="toc-h2" href="#9-validity">9. 有效性声明与限制（引用本表前必读）</a>
+      <a class="toc-h2" href="#10-next">10. 下一步（按信息量排序）</a>
+      <a class="toc-h2" href="#11-artifacts">11. 工件</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

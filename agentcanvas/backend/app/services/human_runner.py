@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import socket
 import sys
 import threading
@@ -43,8 +44,14 @@ log = logging.getLogger("agentcanvas.human")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 OUTPUT_ROOT = REPO_ROOT / "outputs" / "human"
+# Per-tester snapshots live here (a sibling of the live split dirs, so wiping a
+# split never touches saved runs). Reserved as a split name.
+ARCHIVE_ROOT = OUTPUT_ROOT / "archive"
 
 NODESET_NAME = "env_habitat"
+
+# A complete run covers this many episodes (rand100). Reaching it auto-archives.
+N_EPISODES = 100
 
 # Discrete action space — identical to the coding-agent experiments.
 ACTION_NAMES = {0: "STOP", 1: "FORWARD", 2: "TURN_LEFT", 3: "TURN_RIGHT"}
@@ -393,7 +400,16 @@ class HumanRunner:
             self._append_traj({"t": round(time.time() - session["t0"], 2),
                                "kind": "metrics", "metrics": metrics})
 
+            prev_tested = self._tested_indices()
             self._persist_record(session)
+            now_tested = prev_tested | {session["index"]}
+            # Auto-save the moment the run first reaches all N episodes, so a
+            # completed tester's data is archived without any manual step.
+            archived_to = None
+            if len(now_tested) >= N_EPISODES > len(prev_tested):
+                archived_to = self._archive_current(self._split)
+                log.info("human run complete (%d eps) — auto-archived to %s",
+                         len(now_tested), archived_to)
             return {
                 "index": session["index"],
                 "metrics": metrics,
@@ -401,6 +417,8 @@ class HumanRunner:
                 "called_stop": session["called_stop"],
                 "end_reason": session["end_reason"],
                 "done": True,
+                "complete": len(now_tested) >= N_EPISODES,
+                "archived_to": archived_to,
             }
 
     # ── persistence ───────────────────────────────────────────────────
@@ -468,6 +486,109 @@ class HumanRunner:
                 agg[k] = round(sum(vals) / len(vals), 4)
         return agg
 
+    # ── archive + clear ───────────────────────────────────────────────
+
+    def _tested_indices(self, split: str | None = None) -> set[int]:
+        """Episode indices already recorded for a split (empty if none)."""
+        d = (OUTPUT_ROOT / (split or self._split)) / "summary.json"
+        if not d.exists():
+            return set()
+        try:
+            data = json.loads(d.read_text())
+        except (OSError, ValueError):
+            return set()
+        return {e["index"] for e in data.get("episodes", []) if e.get("tested")}
+
+    def _matching_archive(self) -> str | None:
+        """Name of an existing archive whose summary is byte-identical to the
+        live one (i.e. this exact data is already saved), else None."""
+        live = self._run_dir() / "summary.json"
+        if not live.exists() or not ARCHIVE_ROOT.exists():
+            return None
+        try:
+            live_text = live.read_text()
+        except OSError:
+            return None
+        for d in sorted(ARCHIVE_ROOT.iterdir()):
+            s = d / "summary.json"
+            if d.is_dir() and s.exists():
+                try:
+                    if s.read_text() == live_text:
+                        return d.name
+                except OSError:
+                    continue
+        return None
+
+    def _archive_current(self, prefix: str) -> str | None:
+        """Copy the live split dir into a fresh, timestamped archive folder
+        (+ a human-readable RESULTS.md). Returns the archive name, or None if
+        there is nothing to save."""
+        live = self._run_dir()
+        if not live.exists() or not (live / "summary.json").exists():
+            return None
+        name = f"{prefix}_{time.strftime('%Y%m%d-%H%M%S')}"
+        dst = ARCHIVE_ROOT / name
+        if dst.exists():  # same-second collision — disambiguate
+            name = f"{name}_{int(time.time() * 1000) % 1000:03d}"
+            dst = ARCHIVE_ROOT / name
+        shutil.copytree(live, dst)
+        self._write_results_md(dst)
+        return name
+
+    @staticmethod
+    def _write_results_md(archive_dir: Path) -> None:
+        try:
+            data = json.loads((archive_dir / "summary.json").read_text())
+        except (OSError, ValueError):
+            return
+        a = data.get("aggregate") or {}
+        eps = data.get("episodes") or []
+        fails = sorted(e["index"] for e in eps
+                       if (e.get("metrics") or {}).get("success", 0) <= 0.5)
+
+        def pct(k: str) -> str:
+            v = a.get(k)
+            return f"{v * 100:.1f}%" if isinstance(v, (int, float)) else "—"
+
+        def num(k: str, nd: int = 3) -> str:
+            v = a.get(k)
+            return f"{v:.{nd}f}" if isinstance(v, (int, float)) else "—"
+
+        md = (
+            f"# Human eval — {data.get('split', '')} — {archive_dir.name}\n\n"
+            f"- **Saved:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"- **Split:** {data.get('split', '')} ({a.get('tested', 0)}/{N_EPISODES} tested)\n\n"
+            "## Results (habitat's own ruler)\n\n"
+            "| Metric | Value |\n|---|---|\n"
+            f"| SR (success) | {pct('success')} |\n"
+            f"| OSR (oracle success) | {pct('oracle_success')} |\n"
+            f"| NE (distance to goal, m) | {num('distance_to_goal')} |\n"
+            f"| nDTW | {num('ndtw')} |\n"
+            f"| SPL | {num('spl')} |\n"
+            f"| avg path length (m) | {num('path_length', 2)} |\n"
+            f"| avg steps | {num('steps_taken', 1)} |\n\n"
+            f"Failed episodes ({len(fails)}): {fails}\n\n"
+            "Per-episode records: `summary.json`; trajectories: `episode_*.jsonl`.\n"
+        )
+        (archive_dir / "RESULTS.md").write_text(md)
+
+    def clear(self) -> dict[str, Any]:
+        """Wipe the live split so the next tester starts empty. Archives first
+        as a safety net UNLESS this exact data is already saved (e.g. it was
+        auto-archived on completion) — so the normal flow leaves one copy, and
+        a discarded partial run is still never lost."""
+        with self._lock:
+            live = self._run_dir()
+            archived_to = None
+            if self._tested_indices():
+                archived_to = self._matching_archive()
+                if archived_to is None:  # unsaved data → keep a safety copy
+                    archived_to = self._archive_current(f"{self._split}_cleared")
+            if live.exists():
+                shutil.rmtree(live)
+            self._session = None
+        return {**self.status(), "cleared": True, "archived_to": archived_to}
+
     # ── read surface ──────────────────────────────────────────────────
 
     def status(self, split: str | None = None) -> dict[str, Any]:
@@ -497,7 +618,16 @@ class HumanRunner:
                     })
             except (OSError, ValueError):
                 pass
-        return {"split": use, "episodes": episodes, "aggregate": aggregate}
+        tested = sum(1 for e in episodes if e.get("tested"))
+        # archived_to is only meaningful for the live split (compares its dir).
+        archived_to = self._matching_archive() if use == self._split else None
+        return {
+            "split": use,
+            "episodes": episodes,
+            "aggregate": aggregate,
+            "complete": tested >= N_EPISODES,
+            "archived_to": archived_to,
+        }
 
     def _server_status_unlocked(self) -> dict[str, Any]:
         return {

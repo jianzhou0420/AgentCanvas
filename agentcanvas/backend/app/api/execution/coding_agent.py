@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from ...services.coding_agent_runner import OUTPUT_ROOT, REPO_ROOT
+from ...services.coding_agent_runner import OUTPUT_ROOT, REPO_ROOT, display_aggregate
 from ...state import get_services
 
 router = APIRouter()
@@ -116,7 +116,7 @@ async def list_runs(source: str = "claude-sdk") -> dict:
         if has_summary:
             try:
                 data = json.loads((d / "summary.json").read_text())
-                agg = data.get("aggregate") or {}
+                agg = display_aggregate(data.get("episodes", []))
                 cfg = data.get("config") or {}
                 entry.update(
                     success=agg.get("success"),
@@ -145,7 +145,7 @@ async def run_summary(run_name: str, source: str = "claude-sdk") -> dict:
     if summary_path.exists():
         try:
             data = json.loads(summary_path.read_text())
-            aggregate = data.get("aggregate")
+            aggregate = display_aggregate(data.get("episodes", []))
             cfg = data.get("config") or {}
             config = {k: cfg.get(k) for k in ("split", "model", "skill", "max_turns", "episodes")}
             for e in data.get("episodes", []):
@@ -217,19 +217,22 @@ async def frames(run_name: str, index: int, source: str = "claude-sdk") -> dict:
     _, live_dir = _episode_paths(run_name, index, source)
     if not live_dir.exists():
         return {"frames": []}
-    # habitat bridges dump .png; the go2 bridge dumps camera .jpg
-    names = sorted(p.name for p in live_dir.glob("obs_*")
-                   if p.suffix in (".png", ".jpg"))
+    # habitat bridges dump .png; the go2 bridge dumps camera .jpg, and the
+    # real-robot harness dumps .jpeg — accept all three.
+    names = sorted(
+        p.name for p in live_dir.iterdir()
+        if p.name.startswith("obs_") and p.suffix.lower() in (".png", ".jpg", ".jpeg")
+    )
     return {"frames": names}
 
 
 @router.get("/runs/{run_name}/episode/{index}/frame/{name}")
 async def frame(run_name: str, index: int, name: str, source: str = "claude-sdk"):
-    if "/" in name or ".." in name or not (name.endswith(".png") or name.endswith(".jpg")):
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if "/" in name or ".." in name or ext not in ("png", "jpg", "jpeg"):
         raise HTTPException(400, "bad frame name")
     _, live_dir = _episode_paths(run_name, index, source)
     path = live_dir / name
     if not path.exists():
         raise HTTPException(404, "frame not found")
-    media = "image/jpeg" if name.endswith(".jpg") else "image/png"
-    return FileResponse(path, media_type=media)
+    return FileResponse(path, media_type="image/png" if ext == "png" else "image/jpeg")

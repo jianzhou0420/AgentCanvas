@@ -92,3 +92,13 @@ async def stop() -> dict:
 async def status(split: str = "rand100") -> dict:
     """Per-episode tested/success records + aggregate (from summary.json)."""
     return _runner().status(split)
+
+
+@router.post("/clear")
+async def clear() -> dict:
+    """Wipe the live split for the next tester (archives first as a safety net).
+    Returns the now-empty status plus `archived_to` (the saved snapshot name)."""
+    try:
+        return await asyncio.to_thread(_runner().clear)
+    except _HANDLED as exc:
+        raise HTTPException(409, str(exc)) from exc

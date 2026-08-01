@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wp 省图不一定省 context：每集图片数与峰值上下文统计 — AgentCanvas</title>
+<meta name="description" content="统计了两套 harness 上 bare 与 wp 两种动作空间的 每集图片数 和 每集峰值上下文 ：qwen3.5-4b（Habitat，mini harness，全历史多轮）与 sonnet-5（VLNVerse，Claude SDK harness）。发现方向并不一致—— wp 在两边都把图片数和交互轮次砍到约 1/3，但峰值 context 一边降、一边反而升 。记录于…">
+<meta property="og:title" content="wp 省图不一定省 context：每集图片数与峰值上下文统计 — AgentCanvas">
+<meta property="og:description" content="统计了两套 harness 上 bare 与 wp 两种动作空间的 每集图片数 和 每集峰值上下文 ：qwen3.5-4b（Habitat，mini harness，全历史多轮）与 sonnet-5（VLNVerse，Claude SDK harness）。发现方向并不一致—— wp 在两边都把图片数和交互轮次砍到约 1/3，但峰值 context 一边降、一边反而升 。记录于…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/coding-agent/experiments/4-wp-context-stats.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="wp 与上下文形态">
+<style>
+  .board td, .board th { text-align: right; padding: 3px 10px; font-variant-numeric: tabular-nums; }
+  .board td:first-child, .board th:first-child { text-align: left; }
+  .board .win { background: rgba(46, 160, 67, 0.20); font-weight: 600; }
+  .board .lo  { background: rgba(210, 140, 63, 0.16); }
+  .key { border-left: 3px solid var(--accent, #3b82f6); padding: 0.4em 0 0.4em 1em; margin: 1em 0;
+         background: rgba(59, 130, 246, 0.06); }
+  .warn { border-left: 3px solid #d29922; padding: 0.4em 0 0.4em 1em; margin: 1em 0;
+          background: rgba(210, 153, 34, 0.08); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/coding-agent/experiments/4-wp-context-stats.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Coding Agent</a>
+    <span class="sep">/</span>
+    <a href="index.html">Experiments</a>
+    <span class="sep">/</span>
+    <span class="here">wp 与上下文形态</span>
+  </div>
+</div>
+  <main>
+<h1>wp 省图不一定省 context：每集图片数与峰值上下文统计</h1>
+
+<p>统计了两套 harness 上 bare 与 wp 两种动作空间的<strong>每集图片数</strong>和<strong>每集峰值上下文</strong>：qwen3.5-4b（Habitat，mini harness，全历史多轮）与 sonnet-5（VLNVerse，Claude SDK harness）。发现方向并不一致——<strong>wp 在两边都把图片数和交互轮次砍到约 1/3，但峰值 context 一边降、一边反而升</strong>。记录于 2026-07-17。</p>
+
+<h2 id="tldr">结论</h2>
+<div class="key">
+<p><strong>wp 稳定省的是「张数」和「轮次」，不是「上下文」。</strong>图片数两边都降到 ~1/3（4b：40.8 → 12.9；sonnet：73.2 → 32.7），轮次同步降到 ~1/3。但峰值 context：4b（Habitat）wp 的中位数只有 bare 的 <strong>57%</strong>（13.7k vs 23.9k），sonnet（VLNVerse）wp 的均值反而比 bare <strong>高 41%</strong>（43.2k vs 30.7k）。</p>
+</div>
+
+<h2 id="data-4b">qwen3.5-4b · Habitat（mini，n=100/100）</h2>
+<table class="board">
+<thead><tr><th></th><th>bare</th><th>wp</th></tr></thead>
+<tbody>
+<tr><td>图片数/集 · 均值</td><td>40.8</td><td class="win">12.9</td></tr>
+<tr><td>图片数/集 · 中位数</td><td>50</td><td class="win">10</td></tr>
+<tr><td>图片数/集 · 范围</td><td>1–51</td><td>2–30</td></tr>
+<tr><td>峰值 context/集 · 均值 (tok)</td><td>21,332</td><td class="win">18,342</td></tr>
+<tr><td>峰值 context/集 · 中位数 (tok)</td><td>23,858</td><td class="win">13,692</td></tr>
+<tr><td>峰值 context/集 · 范围 (tok)</td><td>4,256–32,011</td><td>3,067–46,885</td></tr>
+<tr><td>LLM 调用数/集 · 均值</td><td>82.6</td><td class="win">25.8</td></tr>
+</tbody>
+</table>
+
+<h2 id="data-sonnet">sonnet-5 · VLNVerse（Claude SDK，n=50/100）</h2>
+<table class="board">
+<thead><tr><th></th><th>bare (n=50)</th><th>wp (n=100)</th></tr></thead>
+<tbody>
+<tr><td>图片数/集 · 均值</td><td>73.2</td><td class="win">32.7</td></tr>
+<tr><td>图片数/集 · 中位数</td><td>81</td><td class="win">30</td></tr>
+<tr><td>图片数/集 · 范围</td><td>16–100</td><td>6–62</td></tr>
+<tr><td>峰值 context/集 · 均值 (tok)</td><td class="win">30,664</td><td class="lo">43,157</td></tr>
+<tr><td>峰值 context/集 · 中位数 (tok)</td><td class="win">31,410</td><td class="lo">40,362</td></tr>
+<tr><td>峰值 context/集 · 范围 (tok)</td><td>7,071–52,110</td><td>9,027–81,672</td></tr>
+<tr><td>turns/集 · 均值</td><td>74.2</td><td class="win">33.8</td></tr>
+</tbody>
+</table>
+<p>另外注意 sonnet bare 的中位 81 张图、74.2 turns——它在 VLNVerse 上大多接近 100-turn 上限才结束，属于「跑满型」交互。</p>
+
+<h2 id="why">为什么方向相反</h2>
+<ul>
+<li><strong>wp 的单张图贵得多。</strong>bare 每次 observe 是一张前向帧；wp 每次 observe 是一张 Left/Front/Right/Back 四视角拼接、带编号标注的全景条，单张 token 数远高于前向帧。张数省 2/3，单张贵数倍，净效应不定。</li>
+<li><strong>wp 条件带强制 thinking。</strong>SDK 侧 wp cell 有 thinking 预算，思考块全程留在历史里，纯文本历史比 bare 厚。</li>
+<li><strong>bare 的图小但密。</strong>4b（Habitat，512px 前向帧）单张成本低，靠张数堆 context；wp 砍掉张数后 context 中位数直接掉到 57%。</li>
+<li>哪边净胜取决于「单张成本 × 张数」与文本历史占比——两套 harness 恰好落在了分界线两侧。</li>
+</ul>
+
+<div class="warn">
+<p><strong>口径差异，跨 harness 绝对值不可直接比。</strong>mini 侧 context = 该集最后（=最大）一次调用的 <code>prompt_tokens</code>（ollama 计数）；SDK 侧 = 最大一次调用的 <code>input_tokens + cache_read + cache_creation</code>（Anthropic 计费口径），且两边分词器不同。同一 harness 内 bare vs wp 的对比是干净的。</p>
+</div>
+
+<h2 id="implication">工程含义</h2>
+<ul>
+<li>wp 必然省的是<strong>交互轮次</strong>（≈ 时延与调用次数）；对 API 计费、在 cache 命中良好时，这是主要省钱项。</li>
+<li>wp <strong>不必然</strong>省峰值上下文（≈ 本地模型的 KV 显存、API 单次调用的账单上限）。给本地小模型配 wp 时不能按「图少所以 context 小」做容量规划——4b wp 的 max（46.9k）反而高于 bare 的 max（32.0k），长 episode 里全景条叠得更快。</li>
+</ul>
+
+<h2 id="metrics">统计口径</h2>
+<ul>
+<li><strong>图片数/集</strong>：该集完整消息历史中 image 块总数（mini：<code>image_url</code> 块；SDK：工具返回中的 image 块）。</li>
+<li><strong>峰值 context/集</strong>：该集所有 LLM 调用中最大的一次输入上下文（全历史多轮下即末次调用）。</li>
+<li>数据源：<code>outputs/beta-react-harness/std_mini_qwen3.5-4b_{bare,wp}/raw/episode_*.traj.json</code>（各 100 集）；<code>outputs/beta-coding-agent/sdk_{bare,wp}_claude-sonnet-5_fine_subset/raw/episode_*.jsonl</code>（50/100 集）。</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#tldr">结论</a>
+      <a class="toc-h2" href="#data-4b">qwen3.5-4b · Habitat（mini，n=100/100）</a>
+      <a class="toc-h2" href="#data-sonnet">sonnet-5 · VLNVerse（Claude SDK，n=50/100）</a>
+      <a class="toc-h2" href="#why">为什么方向相反</a>
+      <a class="toc-h2" href="#implication">工程含义</a>
+      <a class="toc-h2" href="#metrics">统计口径</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

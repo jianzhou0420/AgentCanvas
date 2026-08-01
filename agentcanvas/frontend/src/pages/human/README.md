@@ -4,7 +4,9 @@ An interactive **human baseline** for VLN-CE. A person drives one episode by
 keyboard through the *same* `env_habitat` auto_host the coding-agent runs use,
 so the metrics come from habitat's own ruler (`env_habitat__evaluate`) — SR /
 OSR / NE / nDTW / SPL identical to the agent experiments. Default target is the
-`rand100` split (100 episodes), rendered at **512 px** to match the runs.
+`rand100` split (100 episodes), rendered at **800 px** and shown in a large
+square frame that fills the left panel (sized by viewport height so it stays
+fully visible).
 
 Open it from the header **Human** tab (next to *Coding Agent*).
 
@@ -14,7 +16,7 @@ Open it from the header **Human** tab (next to *Coding Agent*).
 |---|---|
 | `agentcanvas/backend/app/services/human_runner.py` | `HumanRunner`: owns one `env_habitat` auto_host (spawn/reuse), one live session; `load_episode` / `step` / `stop` drive it; records trajectory + summary under `outputs/human/{split}/`. |
 | `agentcanvas/backend/app/api/execution/human.py` | `/api/human/*` router — thin shell over `HumanRunner`. Frames ride back inline as base64 PNG. |
-| `agentcanvas/frontend/src/pages/human/HumanPage.tsx` | The page: 512 px frame + instruction, keyboard control loop, episode nav, 100-cell status grid, live metrics. |
+| `agentcanvas/frontend/src/pages/human/HumanPage.tsx` | The page: large square frame + instruction, keyboard control loop, episode nav, 100-cell status grid, live metrics. |
 
 Wiring: `main.py` (router + lifespan init/shutdown), `state.py` (`human_runner`),
 `store.ts` (`human` app mode), `App.tsx`, `components/Header.tsx`.
@@ -26,7 +28,7 @@ Wiring: `main.py` (router + lifespan init/shutdown), `state.py` (`human_runner`)
 | `↑` | forward 0.25 m (action 1) |
 | `←` | turn left 15° (action 2) |
 | `→` | turn right 15° (action 3) |
-| `Enter` | STOP (action 0) — opens a confirm dialog, then scores the episode |
+| `Enter` | STOP (action 0) — opens a confirm dialog; press `Enter` again to confirm (or `Esc` to cancel), then the episode is scored |
 
 On-screen D-pad buttons mirror the keys. Keys are ignored while typing in an
 input. If the step budget (500) is exhausted, a **Finish & Score** button
@@ -42,6 +44,21 @@ appears so the episode is still recorded.
    any episode to overwrite its record.
 5. **End Session** tears the env down and frees the GPU.
 
+## Multiple testers (auto-save + Clear)
+
+Built for running the same 100 episodes across several people:
+
+- **Auto-save on completion** — the moment a tester finishes all 100, the run is
+  automatically copied to `outputs/human/archive/{split}_{timestamp}/` (with a
+  `RESULTS.md` scorecard). A green banner confirms it. Nothing to click.
+- **Clear** (grid header, **double confirmation**) — wipes the live grid so the
+  next person starts empty. It archives first as a safety net *unless* the exact
+  data is already saved (so the normal complete→clear flow leaves one copy, and
+  a discarded partial run is still never lost). Archives live in a sibling
+  `archive/` dir, so clearing a split never touches saved runs.
+
+Rename an archive folder to the tester's real name whenever you like.
+
 ## HTTP API (`/api/human`)
 
 | Method + path | Purpose |
@@ -51,8 +68,9 @@ appears so the episode is still recorded.
 | `GET /server-status` | `{state, error, split, url, session}`; proactively flips to `error` if the env died. |
 | `POST /episode/{i}/load` `{rgb_resolution}` | Place + arm episode `i`; returns instruction + first frame. |
 | `POST /step` `{action}` | One discrete move (1/2/3); returns new frame + `done`. |
-| `POST /stop` | STOP (if live) + evaluate; persists the record. |
-| `GET /status?split=` | Per-episode tested/success records + aggregate (from `summary.json`). |
+| `POST /stop` | STOP (if live) + evaluate; persists the record. Auto-archives on the run reaching all 100. |
+| `GET /status?split=` | Per-episode records + aggregate + `{complete, archived_to}` (from `summary.json`). |
+| `POST /clear` | Wipe the live split for the next tester (archives first unless already saved). |
 
 ## Outputs
 
