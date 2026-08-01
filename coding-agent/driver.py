@@ -448,6 +448,29 @@ async def run_episode(
     return episode
 
 
+def is_scored(rec: dict[str, Any]) -> bool:
+    """True if the episode is a real, scored navigation attempt that counts
+    toward SR.
+
+    INCLUDES a turn-exhausted episode (hit the SDK ``max_turns`` cap without
+    calling STOP): it navigated, was evaluated, ``success`` is 0.0 — a
+    legitimate FAILURE, not an error to hide (dropping it inflates SR).
+
+    EXCLUDES two kinds of non-attempts:
+    - genuine infra failures (timeout / crash) that produced no metrics
+      (``metrics == {}`` → ``success is None``);
+    - rate-limit / 'limit exceeded' casualties — errored WITHOUT taking a
+      single navigation step (``error`` set + ``env_steps`` 0), so the model
+      never really attempted the task. (A genuine turn-exhausted run has
+      ``env_steps`` > 0 and stays counted.)
+    """
+    if (rec.get("metrics") or {}).get("success") is None:
+        return False
+    if rec.get("error") and not ((rec.get("agent") or {}).get("env_steps") or 0):
+        return False
+    return True
+
+
 def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     agg: dict[str, Any] = {"episode_count": len(episodes)}
     numeric: dict[str, list[float]] = {}
@@ -587,7 +610,7 @@ async def run_cell(
                            "extra": json_safe(cfg["extra"])},
                 "servers": servers,
                 "run_stats": run_stats,
-                "aggregate": aggregate([e for e in ordered if "error" not in e]),
+                "aggregate": aggregate([e for e in ordered if is_scored(e)]),
                 "episodes": ordered,
             }
             summary_path.write_text(json.dumps(summary, indent=2))
@@ -634,7 +657,7 @@ async def run_cell(
                 run_stats["finalize_error"] = repr(exc)
         await flush_summary()
 
-    final = aggregate([e for e in episodes.values() if "error" not in e])
+    final = aggregate([e for e in episodes.values() if is_scored(e)])
     print(f"[std] cell complete -> {summary_path}")
     if run_stats:
         print(f"[std] run stats: {json.dumps(run_stats)}")

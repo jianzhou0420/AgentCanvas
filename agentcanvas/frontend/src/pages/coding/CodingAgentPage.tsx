@@ -569,12 +569,31 @@ export default function CodingAgentPage() {
           <span className="mr-1 text-gray-500">episode:</span>
           {selEpisodes.map((i) => {
             const s = epSummary(i);
+            // A rate-limit / "limit exceeded" casualty errored WITHOUT taking a
+            // single navigation step (error + env_steps 0): it never really
+            // attempted the task, so it gets neither ✅ nor ❌ — just ⚠ — and is
+            // excluded from SR. A genuine turn-exhausted run (hit max_turns but
+            // DID navigate, env_steps > 0) stays ❌: a real failure. Otherwise a
+            // scored episode is ✅/❌ by outcome; a metric-less infra error is ⚠.
+            const limitExceeded =
+              s != null && s.error != null && (s.env_steps ?? 0) === 0;
             const badge =
-              s == null ? "…" : s.error ? "⚠" : s.success ? "✅" : "❌";
+              s == null
+                ? "…"
+                : limitExceeded
+                  ? "⚠"
+                  : s.success != null
+                    ? s.success
+                      ? "✅"
+                      : "❌"
+                    : s.error
+                      ? "⚠"
+                      : "…";
             return (
               <button
                 key={i}
                 onClick={() => setViewEpisode(i)}
+                title={s?.error ?? undefined}
                 className={clsx(
                   "rounded border px-2 py-0.5",
                   shownEpisode === i
