@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Harness 隐性差异：vision 上下文管理（以及为什么它污染对比） — AgentCanvas</title>
-<meta name="description" content="这页记录 harness 之间那些 不写在 cell 名里、却会影响「哪个 harness 强」结论 的隐性差异。第一条（也是发现的起点）：三条 harness 对 视觉历史 的处理策略根本不同 —— SDK/CC 自动只保留近窗几帧，mini 默认全带，这让模型拿到的「视觉记忆量」不等，是对比里的一个真实 confound。">
+<meta name="description" content="这页记录 harness 之间那些 不写在 cell 名里、却会影响结论 的隐性差异。第一条 （已订正一次，见 §4） ： 视觉历史 ——原以为「SDK 近窗、mini 全带」；读了 Claude Code 源码 后订正为： 喂给两者的图大小一样、两者也都全量累积每轮重发 ，真正的差别只在 兜底 ——SDK 到阈值会整段 compact，mini image_window=0 没兜底 → 撞…">
 <meta property="og:title" content="Harness 隐性差异：vision 上下文管理（以及为什么它污染对比） — AgentCanvas">
-<meta property="og:description" content="这页记录 harness 之间那些 不写在 cell 名里、却会影响「哪个 harness 强」结论 的隐性差异。第一条（也是发现的起点）：三条 harness 对 视觉历史 的处理策略根本不同 —— SDK/CC 自动只保留近窗几帧，mini 默认全带，这让模型拿到的「视觉记忆量」不等，是对比里的一个真实 confound。">
+<meta property="og:description" content="这页记录 harness 之间那些 不写在 cell 名里、却会影响结论 的隐性差异。第一条 （已订正一次，见 §4） ： 视觉历史 ——原以为「SDK 近窗、mini 全带」；读了 Claude Code 源码 后订正为： 喂给两者的图大小一样、两者也都全量累积每轮重发 ，真正的差别只在 兜底 ——SDK 到阈值会整段 compact，mini image_window=0 没兜底 → 撞…">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentCanvas">
 <meta name="twitter:card" content="summary_large_image">
@@ -52,6 +52,7 @@
     <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
     <div class="site-actions">
       <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
       <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
       <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
     </div>
@@ -81,10 +82,10 @@
     <h1>Harness 隐性差异：vision 上下文管理（以及为什么它污染对比）</h1>
   </header>
 
-  <p class="lede">这页记录 harness 之间那些<strong>不写在 cell 名里、却会影响「哪个 harness 强」结论</strong>的隐性差异。第一条（也是发现的起点）：三条 harness 对<strong>视觉历史</strong>的处理策略根本不同 —— SDK/CC 自动只保留近窗几帧，mini 默认全带，这让模型拿到的「视觉记忆量」不等，是对比里的一个真实 confound。</p>
+  <p class="lede">这页记录 harness 之间那些<strong>不写在 cell 名里、却会影响结论</strong>的隐性差异。第一条<strong>（已订正一次，见 §4）</strong>：<strong>视觉历史</strong>——原以为「SDK 近窗、mini 全带」；读了 <a href="../../tmp/cc-internals/1-context-loop.html#5-images">Claude Code 源码</a>后订正为：<strong>喂给两者的图大小一样、两者也都全量累积每轮重发</strong>，真正的差别只在<strong>兜底</strong>——SDK 到阈值会整段 compact，mini <code class="f">image_window=0</code> 没兜底 → 撞 32MB。</p>
 
   <div class="key">
-  <strong>一句话：</strong>Anthropic API 默认<strong>每轮重发全部历史图片字节</strong>（官方明说），单请求上限 <strong>32MB</strong>，超了 413。mini 忠实照做（<code class="f">image_window=0</code> 全带 → 线性膨胀 → Anthropic cell 会撞 32MB）；而 <strong>Claude Code / Agent SDK 只把最近几帧 <code class="f">tool_result</code> 图发上去</strong>（旧的 <code class="f">observe()</code> 帧被丢弃），所以图像密集的一集请求也稳在个位数 MB。这个行为<strong>官方没文档化</strong>，但用你的数据能反推出来。已在 <code class="f">harness_inherent.vision_context</code> 里把每条 harness 的策略记下来。
+  <strong>一句话（已订正）：</strong>Anthropic API 默认<strong>每轮重发全部历史图片字节</strong>，单请求上限 <strong>32MB</strong>，超了 413。<strong>喂给 CC 和 mini 的图大小完全一样</strong>（同 env、同帧），而且 <strong>CC 源码确认它默认不逐帧淘汰图</strong>（<code class="f">applyToolResultBudget</code> 原样透传含图块、时间触发清理默认关、cached-MC ant-only 且只认内置工具不碰 MCP <code class="f">observe()</code>）。所以 <strong>SDK 和 mini(<code class="f">image_window=0</code>) 都在全量累积同样的图、每轮重发</strong>——差别只在<strong>兜底</strong>：SDK 到阈值整段 compact 重置，mini 没兜底、一路涨到撞 32MB。已在 <code class="f">harness_inherent.vision_context</code> 里把每条 harness 的<strong>兜底策略</strong>记下来。
   </div>
 
   <h2 id="1-why"><span class="num">1.</span> 为什么单开这一页</h2>
@@ -102,27 +103,31 @@
   <table class="board">
     <thead><tr><th>harness</th><th>视觉历史策略</th><th><code class="f">harness_inherent.vision_context</code></th></tr></thead>
     <tbody>
-      <tr><td><strong>sdk</strong>(Claude Code / Agent SDK)</td><td>只保留<strong>近窗几帧</strong> <code class="f">tool_result</code> 图,旧帧自动丢(未文档化,实测有界)</td><td><code class="f">recent-window auto (…~single-digit MB)</code></td></tr>
+      <tr><td><strong>sdk</strong>(Claude Code / Agent SDK)</td><td><strong>全量累积、每轮重发</strong>(和 mini iw=0 一样、同样大小的图);<strong>不逐帧淘汰</strong>;只有到 <code class="f">167k</code> token auto-compact / 媒体超限 reactive-compact 时<strong>整段</strong>清(非近窗)</td><td><code class="f">full history; compaction backstop ~167k</code></td></tr>
       <tr><td><strong>mini</strong>(mini-swe / ReAct)</td><td><code class="f">image_window=K</code> 保留最新 K 帧,旧的塌成 text stub;<strong>默认 0 = 全带</strong>(当前 cell 默认)→ 线性膨胀</td><td><code class="f">image_window=K newest frames (default 0 = full history)</code></td></tr>
       <tr><td><strong>codex</strong>(Codex CLI)</td><td>codex 自管,未审计</td><td><code class="f">codex-managed (unaudited)</code></td></tr>
     </tbody>
   </table>
   <p class="caption">mini 的 <code class="f">image_window</code> 在 <code class="f">beta-react-harness/model.py</code>,注释自称「the one declared deviation from mini's 'no context management'」。当前 std cells 跑 <code class="f">image_window=0</code>(<code class="f">cells.py</code> 确认)。</p>
 
-  <h2 id="4-proof"><span class="num">4.</span> 数据反推：CC 确实在窗口化</h2>
-  <p>量一帧 wp 全景:<strong>1536×411,822KB PNG ≈ 1.1MB base64</strong>。一集 ~60 次 <code class="f">observe</code>,若像 mini 那样全带:</p>
-  <pre class="term"><code>full history  ≈ 60 帧 × 1.1MB  ≈ 66MB   ← 远超 32MB,mini(image_window=0)在此崩
-CC 实测       &lt; 10MB                     ← 只可能装下 ~5–8 张近帧</code></pre>
-  <p>60 帧全带会到 ~66MB,而监控到 CC 一直 &lt;10MB → 它<strong>没发全历史,只留了近窗几帧</strong>。这是铁证。机制未文档化(翻遍 Claude Code / Agent SDK docs、changelog 都没有),但行为确凿,且和「&gt;20 图触发严限」一致 —— 留少量近图才能既合法又小。<span class="caption">(次要可能:CC 也可能对图降采样,但 60 图本身就会撞 &gt;20-图 严限,所以「丢数量」是主因。)</span></p>
-
-  <h2 id="5-confound"><span class="num">5.</span> 这是对比的 confound —— 怎么对齐</h2>
-  <div class="warn">
-  同一个 VLN 任务,<code class="f">image_window=0</code> 的 mini 把<strong>整段视觉历史</strong>喂给模型,CC 只喂<strong>近窗几帧</strong>。视觉记忆量不同 → 导航能力不可直接比。做「哪个 harness 强」时,要么:
-  <ul style="margin:0.3em 0 0">
-    <li>把 mini 的 <code class="f">image_window</code> 设成和 CC 等效的 K(需先测 CC 的窗口大小,见 §7),或</li>
-    <li>两条都改用 <strong>Files API</strong> 统一图策略,或</li>
-    <li>至少把差异记进 <code class="f">harness_inherent.vision_context</code>(已做)+ 报告里点明,别当同一件事比。</li>
+  <h2 id="4-proof"><span class="num">4.</span> 订正：CC 并没有在「窗口化」</h2>
+  <div class="warn"><strong>本节原来的结论错了。</strong>原推理：「一集 60 帧 × 1.1MB ≈ 66MB，而 CC 实测 &lt;10MB → 它一定只留了近窗几帧，铁证」。读 <a href="../../tmp/cc-internals/1-context-loop.html#5-images">Claude Code 源码</a>后确认 CC <strong>默认不逐帧淘汰图</strong>，这个「铁证」不成立。</div>
+  <p>为什么原推理站不住：</p>
+  <ul>
+    <li><strong>同样大小的图喂给两者。</strong>CC 和 mini 跑同一个 env、同样的帧，图字节数一样 —— 请求大小差异<strong>不可能来自图大小</strong>。</li>
+    <li><strong>CC 不 evict（源码级）</strong>：含图 tool_result 被 <code class="f">applyToolResultBudget</code> <strong>原样透传</strong>（<code class="f">hasImageBlock → return 整块</code>，注释 "sent as-is to Claude"）；时间触发清理默认关；cached-MC ant-only 且只认 8 个内置工具、不碰我们的 MCP <code class="f">observe()</code>。所以 <strong>SDK 和 mini(iw=0) 都在全量累积同样的图、每轮重发</strong> —— 等长的一集，两者请求应当<strong>一样大</strong>。</li>
+    <li><strong>字节 vs token</strong>：图字节重、token 轻（1.1MB ≈ ~1.5k token）。32MB <strong>字节</strong>墙在 ~29 帧就撞上，而 167k <strong>token</strong> 的 auto-compact 要 ~100 帧才到 —— 图密集时先撞字节墙，proactive 的 167k 压缩<strong>救不了</strong>你，真正兜底的是<strong>撞墙后的 reactive-compact / 报错让用户 /compact</strong>。</li>
   </ul>
+  <p><strong>那 &lt;10MB vs &gt;32MB 的观测怎么解释？</strong>不是逐帧淘汰、也不是图大小，而是<strong>兜底 + 集长</strong>：mini iw=0 <strong>没兜底</strong>、单调涨到撞 32MB；SDK <strong>有 compaction 兜底</strong>被 reset，且我们当时监控的 SDK 集很可能<strong>累积的帧还没多到接近上限</strong>。要坐实，真数一个 late SDK 请求里有几张图即可（见 §7）。</p>
+
+  <h2 id="5-confound"><span class="num">5.</span> 真正的 confound：不是「窗口大小」，是「兜底」</h2>
+  <div class="warn">
+  订正后：同一个 VLN 任务,<code class="f">image_window=0</code> 的 mini 和 SDK <strong>给模型的视觉历史其实一样多</strong>（都全量累积同样大小的图）—— 不是「视觉记忆量不等」。真正不等的是<strong>兜底行为</strong>:
+  <ul style="margin:0.3em 0 0">
+    <li><strong>mini(iw=0)</strong>:无兜底 → 单调膨胀 → Anthropic cell 撞 32MB。</li>
+    <li><strong>SDK</strong>:有 compaction 兜底(167k auto / 媒体超限 reactive)→ 到点整段压缩重置。</li>
+  </ul>
+  所以对比时:要么给 mini 也上兜底(<code class="f">image_window=K</code> 或 <code class="f">compact_at</code>),要么两条都用 Files API,<strong>并把「有没有兜底、阈值多少」记进 <code class="f">harness_inherent</code></strong> —— 这才是真正该记的 confound（不是「窗口大小」）。
   </div>
   <p>另一个精确点:<strong>32MB 是 Anthropic API 专属限制</strong>,只咬 mini 的 Anthropic cell(sonnet/opus);本地 qwen 走 ollama,撞的是 <code class="f">served_context</code>(128k)不是 32MB。</p>
 
@@ -138,10 +143,10 @@ CC 实测       &lt; 10MB                     ← 只可能装下 ~5–8 张近�
 
   <h2 id="7-todo"><span class="num">7.</span> 已落地 + 待验证</h2>
   <p><strong>已落地</strong>:每条 adapter 的 <code class="f">inherent</code> 加了 <code class="f">vision_context</code> 字段(<code class="f">harnesses/claude_sdk.py</code> · <code class="f">mini_swe.py</code> · <code class="f">codex_cli.py</code>),每份 <code class="f">summary.json</code> 的 <code class="f">harness_inherent</code> 都会带上它。</p>
-  <p><strong>待验证(一步就能确认机制)</strong>:在监控到的某个 late-episode 请求里看两件事 ——</p>
+  <p><strong>待验证(一步就能坐实订正)</strong>:在监控到的某个 late-episode SDK 请求里数 image block ——</p>
   <ol>
-    <li>有几个 image block(预期近窗几张,不是全部 → 确认窗口化 + 量出 K);</li>
-    <li>是 <code class="f">base64</code> 还是 <code class="f">file_id</code>(区分「近窗裁剪」vs「Files API 自动上传」—— 两者都解释小请求,但对齐做法不同)。</li>
+    <li><strong>若很多张(≈全历史)</strong> → 印证「不 evict、全量累积」(订正后的预期);</li>
+    <li><strong>若很少 + 出现一条 "continued from previous conversation" 摘要消息</strong> → 说明中途触发了 full-compact —— 那才是 SDK 请求变小的真因,不是近窗淘汰。</li>
   </ol>
 
   <h2 id="8-refs"><span class="num">8.</span> 附：出处与相关</h2>
@@ -164,8 +169,8 @@ CC 实测       &lt; 10MB                     ← 只可能装下 ~5–8 张近�
       <a class="toc-h2" href="#1-why">1. 为什么单开这一页</a>
       <a class="toc-h2" href="#2-facts">2. 事实层：API 怎么处理图</a>
       <a class="toc-h2" href="#3-table">3. 三条 harness 的 vision 策略</a>
-      <a class="toc-h2" href="#4-proof">4. 数据反推：CC 确实在窗口化</a>
-      <a class="toc-h2" href="#5-confound">5. 这是对比的 confound —— 怎么对齐</a>
+      <a class="toc-h2" href="#4-proof">4. 订正：CC 并没有在「窗口化」</a>
+      <a class="toc-h2" href="#5-confound">5. 真正的 confound：不是「窗口大小」，是「兜底」</a>
       <a class="toc-h2" href="#6-levers">6. 想要「有保证」的图管理(别依赖未文档行为)</a>
       <a class="toc-h2" href="#7-todo">7. 已落地 + 待验证</a>
       <a class="toc-h2" href="#8-refs">8. 附：出处与相关</a>
