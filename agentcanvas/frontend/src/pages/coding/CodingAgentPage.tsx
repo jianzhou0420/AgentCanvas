@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Download, Play, Square } from "lucide-react";
+import { BarChart3, Bot, Download, Play, Square } from "lucide-react";
 import clsx from "clsx";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
@@ -86,6 +86,23 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
       };
     case "driver_error":
       return { icon: "⚠", text: String(line.error ?? ""), dim: false };
+    case "episode_metrics": {
+      // The scored outcome of the episode — the one line a reader looks for,
+      // so it renders as text rather than falling through to raw JSON.
+      const m = (line.metrics ?? {}) as Record<string, number>;
+      const n = (v: number | undefined, d = 2) =>
+        typeof v === "number" ? v.toFixed(d) : "—";
+      const verdict = m.success ? "SUCCESS" : "FAIL";
+      const salvaged = line.salvaged ? " · metrics salvaged post-hoc" : "";
+      return {
+        icon: m.success ? "✅" : "❌",
+        text:
+          `${verdict} · NE ${n(m.distance_to_goal)}m · SPL ${n(m.spl)} · ` +
+          `nDTW ${n(m.ndtw)} · OSR ${n(m.oracle_success, 0)} · ` +
+          `steps ${n(m.steps_taken, 0)}${salvaged}`,
+        dim: false,
+      };
+    }
     default:
       return { icon: "·", text: JSON.stringify(line), dim: true };
   }
@@ -141,6 +158,8 @@ export default function CodingAgentPage() {
   const logContentRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  // stats.html report panel (charts + tables generated after each run's metrics)
+  const [showStats, setShowStats] = useState(false);
 
   const running = status?.state === "running" || status?.state === "starting";
   const shownEpisode =
@@ -569,11 +588,26 @@ export default function CodingAgentPage() {
           <span className="mr-1 text-gray-500">episode:</span>
           {selEpisodes.map((i) => {
             const s = epSummary(i);
+            // An error tag alone no longer hides the outcome: a timeout that was
+            // still evaluated (metrics recovered from the env) has a real nav
+            // result, so show it and append ⚠ to flag the abnormal end. Only an
+            // episode with no metrics at all stays a bare ⚠.
             const badge =
-              s == null ? "…" : s.error ? "⚠" : s.success ? "✅" : "❌";
+              s == null
+                ? "…"
+                : s.success == null
+                  ? "⚠"
+                  : s.error
+                    ? s.success
+                      ? "✅⚠"
+                      : "❌⚠"
+                    : s.success
+                      ? "✅"
+                      : "❌";
             return (
               <button
                 key={i}
+                title={s?.error ? `ended abnormally: ${s.error}` : undefined}
                 onClick={() => setViewEpisode(i)}
                 className={clsx(
                   "rounded border px-2 py-0.5",
@@ -597,6 +631,28 @@ export default function CodingAgentPage() {
         </div>
       )}
 
+      {/* ── stats report (charts + tables generated after each run's metrics) ── */}
+      {showStats && run && (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-800">
+          <div className="flex items-center justify-between border-b border-gray-800 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-400">
+            <span>Stats — {run}</span>
+            <a
+              href={`/api/coding-agent/runs/${run}/stats?source=${mode === "browse" ? harness : "claude-sdk"}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-normal text-blue-400 hover:text-blue-300"
+            >
+              open in new tab ↗
+            </a>
+          </div>
+          <iframe
+            src={`/api/coding-agent/runs/${run}/stats?source=${mode === "browse" ? harness : "claude-sdk"}`}
+            title={`stats — ${run}`}
+            className="min-h-0 flex-1 bg-white"
+          />
+        </div>
+      )}
+
       {/* ── unified log (frames embedded inline at their observe calls) ── */}
       <div className="flex min-h-0 flex-1 flex-col rounded border border-gray-800 bg-gray-900">
         <div className="flex items-center justify-between border-b border-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-400">
@@ -608,6 +664,20 @@ export default function CodingAgentPage() {
             {exportError && (
               <span className="font-normal text-red-400">{exportError}</span>
             )}
+            <button
+              onClick={() => setShowStats((v) => !v)}
+              disabled={!run}
+              title="full statistics report for this run (charts + tables, generated after metrics)"
+              className={clsx(
+                "flex items-center gap-1 rounded border px-2 py-0.5 font-normal disabled:cursor-not-allowed disabled:opacity-40",
+                showStats
+                  ? "border-purple-500 bg-purple-600/20 text-purple-300"
+                  : "border-gray-700 bg-gray-800 text-gray-300 hover:text-gray-100",
+              )}
+            >
+              <BarChart3 size={12} />
+              stats
+            </button>
             <button
               onClick={exportPdf}
               disabled={exporting || lines.length === 0}

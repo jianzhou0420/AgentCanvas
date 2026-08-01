@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from ...services.coding_agent_runner import OUTPUT_ROOT
+from ...services.coding_agent_runner import OUTPUT_ROOT, REPO_ROOT
 from ...state import get_services
 
 router = APIRouter()
@@ -172,6 +173,30 @@ async def run_summary(run_name: str, source: str = "claude-sdk") -> dict:
     }
 
 
+@router.get("/runs/{run_name}/stats")
+async def stats_report(run_name: str, source: str = "claude-sdk",
+                       refresh: bool = False):
+    """Self-contained statistics report (charts + tables after the metric
+    block) for one run. The driver writes stats.html at run end; older runs
+    are backfilled on demand here by invoking coding-agent/run_stats.py in
+    this backend's interpreter (same env, has matplotlib)."""
+    run_dir = _run_dir(source, run_name)
+    path = run_dir / "stats.html"
+    if refresh or not path.exists():
+        if not (run_dir / "summary.json").exists():
+            raise HTTPException(409, "run has no summary.json yet — still running?")
+        script = REPO_ROOT / "coding-agent" / "run_stats.py"
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(script), str(run_dir),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+        if not path.exists():
+            raise HTTPException(
+                500, f"stats generation failed: {out.decode(errors='replace')[-400:]}")
+    return FileResponse(path, media_type="text/html")
+
+
 @router.get("/runs/{run_name}/episode/{index}/textlog")
 async def textlog(run_name: str, index: int, offset: int = 0, source: str = "claude-sdk") -> dict:
     jsonl_path, _ = _episode_paths(run_name, index, source)
@@ -192,16 +217,19 @@ async def frames(run_name: str, index: int, source: str = "claude-sdk") -> dict:
     _, live_dir = _episode_paths(run_name, index, source)
     if not live_dir.exists():
         return {"frames": []}
-    names = sorted(p.name for p in live_dir.glob("obs_*.png"))
+    # habitat bridges dump .png; the go2 bridge dumps camera .jpg
+    names = sorted(p.name for p in live_dir.glob("obs_*")
+                   if p.suffix in (".png", ".jpg"))
     return {"frames": names}
 
 
 @router.get("/runs/{run_name}/episode/{index}/frame/{name}")
 async def frame(run_name: str, index: int, name: str, source: str = "claude-sdk"):
-    if "/" in name or ".." in name or not name.endswith(".png"):
+    if "/" in name or ".." in name or not (name.endswith(".png") or name.endswith(".jpg")):
         raise HTTPException(400, "bad frame name")
     _, live_dir = _episode_paths(run_name, index, source)
     path = live_dir / name
     if not path.exists():
         raise HTTPException(404, "frame not found")
-    return FileResponse(path, media_type="image/png")
+    media = "image/jpeg" if name.endswith(".jpg") else "image/png"
+    return FileResponse(path, media_type=media)
