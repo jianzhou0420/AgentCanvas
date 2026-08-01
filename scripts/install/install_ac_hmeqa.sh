@@ -190,3 +190,8 @@ echo "  $HMEQA_PYTHON -c \"from huggingface_hub import login; login(token='\$HF_
 echo ""
 echo "Next:"
 echo "  bash scripts/data/fetch_episodes_vln.sh --hmeqa    # fetch HM-EQA CSVs + HM3D instructions"
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$HMEQA_PYTHON"

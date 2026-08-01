@@ -171,3 +171,8 @@ echo "To set it explicitly:  export VLNCE_PYTHON=$VLNCE_PYTHON"
 echo "To activate manually:  conda activate ac-vlnce"
 echo ""
 echo "Download data if needed:  bash scripts/data/fetch_data_vlnce.sh --status"
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$VLNCE_PYTHON"

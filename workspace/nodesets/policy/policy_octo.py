@@ -294,6 +294,10 @@ class PolicyOctoNodeSet(BaseNodeSet):
         "Single ``policy_octo__predict`` node."
     )
     server_python = conda_env_python("ac-octo", "OCTO_PYTHON")
+    # JAX preallocates 75% of the visible GPU by default — on a shared GPU
+    # (sibling models resident) that exceeds free VRAM and sample_actions
+    # dies with CUDA_ERROR_OUT_OF_MEMORY. Allocate on demand instead.
+    server_env = {"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
     parallelism = "replicated"  # Per-worker JAX state.
     default_per_step_budget_sec = 30.0
 

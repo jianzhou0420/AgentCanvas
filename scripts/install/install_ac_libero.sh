@@ -132,7 +132,9 @@ echo "=== Step 3: Installing LIBERO + runtime deps ==="
     'fastapi' \
     'httpx' \
     'pydantic' \
-    'websockets'
+    'websockets' \
+    'msgpack' \
+    'mujoco==3.8.0'  # 3.11 drops MjData.qM access robosuite 1.4.1 relies on
 
 if [ "$LIBERO_INSTALL_TARGET" = "$LIBERO_SRC" ]; then
     "$LIBERO_PYTHON" -m pip install -e "$LIBERO_INSTALL_TARGET"
@@ -148,6 +150,18 @@ fi
 echo "N" | "$LIBERO_PYTHON" -c "import libero" >/dev/null 2>&1 \
     && echo "  [ok] libero config initialized (~/.libero/config.yaml)" \
     || echo "  [WARN] libero config init failed — first import may still prompt."
+
+# The prompt path above is unreliable: top-level `import libero` never reaches
+# libero.libero's config code, and answering "N" does not persist a config —
+# server-mode spawns (stdin=/dev/null) then die with EOFError on first use.
+# Write the config explicitly, using the installed package's own location.
+if [ ! -f "$HOME/.libero/config.yaml" ]; then
+    _LB=$("$LIBERO_PYTHON" -c "import libero, os; print(os.path.join(os.path.dirname(libero.__file__), 'libero'))")
+    mkdir -p "$HOME/.libero"
+    printf 'assets: %s/assets\nbddl_files: %s/bddl_files\nbenchmark_root: %s\ndatasets: %s/../datasets\ninit_states: %s/init_files\n' \
+        "$_LB" "$_LB" "$_LB" "$_LB" "$_LB" > "$HOME/.libero/config.yaml"
+    echo "  [ok] wrote $HOME/.libero/config.yaml explicitly"
+fi
 
 # AgentCanvas backend has no setup.py — the framework injects
 # PYTHONPATH=<backend>:<workspace> at server-mode spawn time
@@ -202,3 +216,9 @@ echo "  1. cd agentcanvas && bash run_dev.sh"
 echo "  2. POST /api/components/nodesets/env_libero/load?mode=server"
 echo "  3. Open the canvas — drop env_libero__reset / env_libero__step nodes,"
 echo "     pick a suite/task/episode in the LIBERO controller panel."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$LIBERO_PYTHON"
+probe_auto_host "$LIBERO_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/env/env_libero/__init__.py" "EnvLiberoNodeSet"

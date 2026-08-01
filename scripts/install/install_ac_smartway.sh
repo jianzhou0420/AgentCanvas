@@ -187,3 +187,9 @@ echo "     .claude/commands/experiment/profiles.yaml (vram_mb: 5000, exclusive_g
 echo "  3. Smoke-test individual servers via standalone auto_host before any"
 echo "     full graph run — see plan file under .claude/plans/."
 echo ""
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$SMARTWAY_PYTHON"
+probe_auto_host "$SMARTWAY_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/method/opennav_waypoint/__init__.py" "OpenNavWaypointNodeSet"

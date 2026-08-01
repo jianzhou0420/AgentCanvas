@@ -90,6 +90,13 @@ echo "=== Step 2: Installing PyTorch 2.1 + CUDA 11.8 ==="
 $DETANY3D_PIP install --extra-index-url https://download.pytorch.org/whl/cu118 \
     torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2
 
+# ── Step 2b: AgentCanvas server-mode stack ──
+# The env boots app.server.auto_host (fastapi app + msgpack wire format);
+# none of these are in the vendored DetAny3D requirements.
+$DETANY3D_PIP install 'fastapi[standard]>=0.115.0' 'pydantic>=2.10.0' \
+    'pydantic-settings>=2.6.0' 'python-dotenv>=1.0.1' 'httpx>=0.28.0' \
+    websockets msgpack
+
 # ── Step 3: Install vendored DetAny3D requirements ──
 
 echo ""
@@ -186,3 +193,9 @@ echo "Add to your shell rc:"
 echo "  export DETANY3D_PYTHON=$DETANY3D_PYTHON"
 echo ""
 echo "Then load model_detany3d from the AgentCanvas NodeSet Manager."
+
+# ── Install-time server probes (2026-07-31 campaign; see lib/server_probe.sh) ──
+_SP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SP_DIR/lib/server_probe.sh"
+probe_server_stack "$DETANY3D_PYTHON"
+probe_auto_host "$DETANY3D_PYTHON" "$_PROBE_REPO_ROOT/workspace/nodesets/model/model_grounding_dino.py" "GroundingDinoNodeSet"
