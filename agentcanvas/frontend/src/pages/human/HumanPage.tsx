@@ -9,6 +9,7 @@ import {
   ArrowLeft as ArrowLeftIcon,
   ArrowRight as ArrowRightIcon,
   CornerDownLeft,
+  Trash2,
 } from "lucide-react";
 import { usePersistentState } from "../coding/usePersistentState";
 
@@ -19,7 +20,7 @@ import { usePersistentState } from "../coding/usePersistentState";
 // NE / nDTW / SPL, identical to the coding-agent runs. Frames ride back inline
 // as base64 PNG so each action is a single request.
 
-const FRAME_PX = 512; // render size — matches the experiment RGB resolution
+const RENDER_PX = 800; // env RGB render resolution (rgb_resolution sent to the backend)
 const N_EPISODES = 100; // rand100
 
 type ServerState = "idle" | "starting" | "ready" | "error" | "stopped";
@@ -55,6 +56,8 @@ interface StatusData {
   split: string;
   episodes: EpisodeStat[];
   aggregate: Record<string, number> | null;
+  complete?: boolean;
+  archived_to?: string | null;
 }
 
 const isSuccess = (v: number | null | undefined) => (v ?? 0) > 0.5;
@@ -90,7 +93,11 @@ export default function HumanPage() {
 
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Clear (reset for next tester) needs a double confirmation: 0=closed,
+  // 1=first prompt, 2=final prompt.
+  const [clearStage, setClearStage] = useState<0 | 1 | 2>(0);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null); // green info banner
 
   const inFlight = useRef(false); // synchronous guard against key auto-repeat
 
@@ -172,7 +179,7 @@ export default function HumanPage() {
         const res = await fetch(`/api/human/episode/${index}/load`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rgb_resolution: FRAME_PX }),
+          body: JSON.stringify({ rgb_resolution: RENDER_PX }),
         });
         if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
         const d = await res.json();
@@ -239,6 +246,32 @@ export default function HumanPage() {
     }
   }, [loadStatus]);
 
+  // Reset the working set for the next tester. The backend archives first
+  // (unless this exact data is already saved), so nothing is lost.
+  const clearData = useCallback(async () => {
+    setClearStage(0);
+    setError(null);
+    try {
+      const res = await fetch("/api/human/clear", { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      const d = await res.json();
+      setFrame(null);
+      setActiveIndex(null);
+      setDone(false);
+      setMetrics(null);
+      setInstruction("");
+      setStepCount(0);
+      setStatus(d);
+      setNotice(
+        d.archived_to
+          ? `Saved to archive/${d.archived_to} · grid cleared for the next tester.`
+          : "Grid cleared for the next tester.",
+      );
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  }, []);
+
   // ── keyboard ─────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -246,6 +279,17 @@ export default function HumanPage() {
       // arrows should edit the number, Enter shouldn't open the STOP confirm.
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      // With the confirm dialog open, Enter confirms (STOP) and Escape cancels.
+      if (confirmOpen) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finishEpisode();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          setConfirmOpen(false);
+        }
+        return;
+      }
       // Enter opens the STOP confirm as long as an episode is live.
       if (e.key === "Enter") {
         if (serverReady && frame != null && !done && !busy) {
@@ -268,7 +312,7 @@ export default function HumanPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [canControl, serverReady, frame, done, busy, doStep]);
+  }, [canControl, serverReady, frame, done, busy, doStep, confirmOpen, finishEpisode]);
 
   // ── derived: episode grid lookup ─────────────────────────────────────
   const statByIndex = new Map<number, EpisodeStat>();
@@ -321,6 +365,19 @@ export default function HumanPage() {
         {(error || (server?.state === "error" && server.error)) && (
           <div className="mb-2 rounded border border-red-800 bg-red-950/60 px-3 py-1.5 text-xs text-red-300">
             {error || server?.error}
+          </div>
+        )}
+        {(notice || (status?.complete && status?.archived_to)) && (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded border border-green-800 bg-green-950/50 px-3 py-1.5 text-xs text-green-300">
+            <span>
+              {notice ??
+                `✓ All ${N_EPISODES} episodes tested — auto-saved to archive/${status?.archived_to}. Clear to reset for the next tester.`}
+            </span>
+            {notice && (
+              <button onClick={() => setNotice(null)} className="text-green-500 hover:text-green-300">
+                ✕
+              </button>
+            )}
           </div>
         )}
 
@@ -392,10 +449,12 @@ export default function HumanPage() {
         </div>
 
         {/* frame + controls */}
-        <div className="flex flex-wrap items-start gap-4">
+        <div className="flex flex-wrap items-start justify-center gap-4">
           <div
             className="relative shrink-0 overflow-hidden rounded border border-gray-800 bg-black"
-            style={{ width: FRAME_PX, height: FRAME_PX, maxWidth: "100%" }}
+            // Big, square view that fills the left panel: sized by viewport
+            // height (so it stays fully visible), capped by the column width.
+            style={{ width: "min(74vh, 100%)", aspectRatio: "1 / 1", maxWidth: "100%" }}
           >
             {frame ? (
               <img
@@ -451,11 +510,21 @@ export default function HumanPage() {
       {/* ── Right: episode grid + aggregate ── */}
       <div className="flex w-[300px] shrink-0 flex-col border-l border-gray-800 bg-gray-900/50">
         <div className="border-b border-gray-800 px-3 py-2">
-          <div className="flex items-baseline justify-between">
+          <div className="flex items-center justify-between">
             <span className="text-sm font-semibold">Episodes</span>
-            <span className="text-xs text-gray-500">
-              {testedCount}/{N_EPISODES} tested
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">
+                {testedCount}/{N_EPISODES} tested
+              </span>
+              <button
+                onClick={() => setClearStage(1)}
+                disabled={testedCount === 0}
+                className="flex items-center gap-1 rounded border border-red-800 bg-red-950/40 px-2 py-0.5 text-xs text-red-300 hover:bg-red-900/50 disabled:opacity-40"
+                title="Clear all data and reset the grid for the next tester"
+              >
+                <Trash2 size={12} /> Clear
+              </button>
+            </div>
           </div>
           {agg && (
             <div className="mt-2 grid grid-cols-5 gap-1 text-center text-[10px]">
@@ -541,6 +610,64 @@ export default function HumanPage() {
                 Confirm STOP
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Clear: double confirmation (reset for the next tester) ── */}
+      {clearStage > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-96 rounded-lg border border-gray-700 bg-gray-900 p-5 shadow-xl">
+            {clearStage === 1 ? (
+              <>
+                <div className="mb-1 text-base font-semibold text-gray-100">
+                  Clear all data for the next tester?
+                </div>
+                <div className="mb-4 text-sm text-gray-400">
+                  This resets the grid so a new person can test the {N_EPISODES} episodes
+                  from scratch. The current run ({testedCount}/{N_EPISODES} tested) is saved
+                  to an archive first — nothing is lost.
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setClearStage(0)}
+                    className="rounded border border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-800"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => setClearStage(2)}
+                    className="rounded bg-red-800 px-3 py-1.5 text-sm font-medium hover:bg-red-700"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mb-1 text-base font-semibold text-red-300">
+                  Final confirmation
+                </div>
+                <div className="mb-4 text-sm text-gray-400">
+                  Permanently wipe the live {testedCount}-episode grid? It has been archived
+                  (recoverable there), but the working grid cannot be un-cleared.
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setClearStage(0)}
+                    className="rounded border border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-800"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={clearData}
+                    className="rounded bg-red-700 px-3 py-1.5 text-sm font-medium hover:bg-red-600"
+                  >
+                    Yes, clear everything
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
