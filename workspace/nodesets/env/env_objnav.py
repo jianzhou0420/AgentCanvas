@@ -87,13 +87,23 @@ log = logging.getLogger("agentcanvas.env_objnav")
 # panel — train is deliberately absent (HM3D train scenes aren't staged;
 # MP3D train episodes are on disk but eagerly loading 61 scenes of episodes
 # just to populate a panel dropdown is not).
+#
+# ``teaps{N}`` are DERIVED evaluation splits: N episodes of the official val,
+# scene-stratified proportional random sample (seed 42), materialized as a
+# dataset file so each is selectable like any split. N ranges over _TEAPS_N
+# (TEAPS-100 = full board, TEAPS-60 = V1.0 long-horizon indicator); keep this
+# tuple in sync with sample_episodes.py. Generator + method + audit manifest:
+# coding-agent/sample_episodes.py (--materialize) and
+# coding-agent/splits/*_n{N}_seed42.json — regenerable byte-identically.
+_TEAPS_N: tuple[int, ...] = (100, 60)
+_TEAPS_SPLITS: list[str] = [f"teaps{n}" for n in _TEAPS_N]
 _DATASET_SPECS: dict[str, dict[str, Any]] = {
     "hm3d_v1": {
         "label": "objectnav_hm3d_v1",
         "env_name": "objnav_hm3d",
         "bench_config": "benchmark/nav/objectnav/objectnav_hm3d.yaml",
         "data_path": "data/datasets/objectnav/hm3d/v1/{split}/{split}.json.gz",
-        "splits": ["val", "val_mini"],
+        "splits": ["val", "val_mini", *_TEAPS_SPLITS],
     },
     "hm3d_v2": {
         "label": "objectnav_hm3d_v2",
@@ -107,7 +117,7 @@ _DATASET_SPECS: dict[str, dict[str, Any]] = {
         "env_name": "objnav_mp3d",
         "bench_config": "benchmark/nav/objectnav/objectnav_mp3d.yaml",
         "data_path": "data/datasets/objectnav/mp3d/v1/{split}/{split}.json.gz",
-        "splits": ["val", "val_mini"],
+        "splits": ["val", "val_mini", *_TEAPS_SPLITS],
     },
 }
 

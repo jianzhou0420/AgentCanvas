@@ -31,8 +31,10 @@ from typing import Any, Protocol
 
 import requests
 
-from cells import STD_FROZEN, WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec
-from prompts import FIRST_PROMPT, assert_std_skill_freeze, build_briefing
+from cells import (BENCHMARK_FROZEN, OBJNAV_BENCHMARKS, STD_FROZEN,
+                   WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec)
+from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT,
+                     assert_std_skill_freeze, build_briefing)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
@@ -41,6 +43,24 @@ WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
 # but its HTTP peer is go2_host.py on the robot's own machine rather than a
 # local habitat auto_host — CycloneDDS is layer-2, so the SDK cannot run here.
 GO2_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "go2_bridge.py"
+# ObjectNav family (hm3d / mp3d / ovon — peer benchmarks, each with its own
+# board and frozen config). ONE bridge file serves all three: hm3d and mp3d
+# talk to an env_objnav auto_host, ovon to an env_ovon auto_host, and the two
+# nodesets mirror each other's port shapes so only the verb prefix differs
+# (OBJNAV_VERB_PREFIX, set per cell in bridge_env()).
+OBJNAV_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "objnav_bridge.py"
+# HM-EQA (explore-eqa, Ren et al. 2024): multiple-choice EQA on HM3D. Same
+# structural copy of the objnav bridge, with the one benchmark-shaped
+# difference that the episode ends by answer("A".."D") instead of STOP — the
+# answer rides the tool-result channel (EventSink.last_step_result) back to
+# the driver, which passes it to env_hmeqa__evaluate as pred_letter.
+HMEQA_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "hmeqa_bridge.py"
+
+
+def objnav_verb_prefix(benchmark: str) -> str:
+    """Nodeset verb prefix for an ObjectNav-family benchmark. The three
+    OVON lines (ovon-seen / ovon-syn / ovon-unseen) share one nodeset."""
+    return "env_ovon" if benchmark.startswith("ovon") else "env_objnav"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -100,25 +120,37 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
     return str(obj)
 
 
-_TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool, bool], Any] = {}
+_TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool, bool, bool, bool, bool], Any] = {}
 
 
-async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False) -> Any:
+async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
+                              objnav: bool = False, hmeqa: bool = False,
+                              hmeqa_tilt: bool = True) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
-    wp_bridge.py for the wp condition, or go2_bridge.py for the real robot;
-    mini's port is byte-equivalent, gated by check_equivalence.py). Cached per
-    (bare, wp, go2); never raises (logging must not break a run)."""
-    key = (bare, wp, go2)
+    wp_bridge.py for the wp condition, or go2_bridge.py for the real robot,
+    or objnav_bridge.py for the ObjectNav family — hm3d/mp3d/ovon share one
+    schema, the verb prefix only changes the HTTP peer; or hmeqa_bridge.py
+    for HM-EQA, whose step description also keys off the tilt mask; mini's
+    port is byte-equivalent, gated by check_equivalence.py). Cached per
+    (bare, wp, go2, objnav, hmeqa, hmeqa_tilt); never raises (logging must
+    not break a run)."""
+    key = (bare, wp, go2, objnav, hmeqa, hmeqa_tilt)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
-    bridge_path = GO2_BRIDGE_PATH if go2 else WP_BRIDGE_PATH if wp else BRIDGE_PATH
+    bridge_path = (GO2_BRIDGE_PATH if go2 else OBJNAV_BRIDGE_PATH if objnav
+                   else HMEQA_BRIDGE_PATH if hmeqa
+                   else WP_BRIDGE_PATH if wp else BRIDGE_PATH)
     # Each bridge reads its own prefix; introspecting go2 with HABITAT_BARE set
     # would silently return the non-bare toolset.
-    bare_var = "GO2_BARE" if go2 else "HABITAT_BARE"
+    bare_var = ("GO2_BARE" if go2 else "OBJNAV_BARE" if objnav
+                else "HMEQA_BARE" if hmeqa else "HABITAT_BARE")
     saved = os.environ.get(bare_var)
+    saved_tilt = os.environ.get("HMEQA_TILT")
     try:
         os.environ[bare_var] = "1" if bare else "0"
+        if hmeqa:
+            os.environ["HMEQA_TILT"] = "1" if hmeqa_tilt else "0"
         spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -136,6 +168,10 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False) -
             os.environ.pop(bare_var, None)
         else:
             os.environ[bare_var] = saved
+        if saved_tilt is None:
+            os.environ.pop("HMEQA_TILT", None)
+        else:
+            os.environ["HMEQA_TILT"] = saved_tilt
     return _TOOL_SCHEMAS_CACHE[key]
 
 
@@ -219,6 +255,12 @@ class EpisodeContext:
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
     go2: bool = False      # real Unitree Go2 (go2_bridge.py); server_url points
                            # at go2_host.py on the robot's machine, not localhost
+    benchmark: str = "r2r"  # r2r | hm3d | mp3d | ovon-{seen,syn,unseen} | hmeqa
+    hmeqa_tilt: bool = True  # hmeqa only: camera-tilt actions 4/5 on the
+                             # toolface (cells tilt_actions; --set tilt_actions=0
+                             # masks them — bridge + briefing follow together)
+    max_budget_usd: float | None = None  # per-episode USD fuse (sdk harness only;
+                                         # CLI --max-budget-usd, objnav frozen $18)
     extra: dict[str, Any] = field(default_factory=dict)  # harness-specific knobs
 
     @property
@@ -231,6 +273,10 @@ class EpisodeContext:
         """Stdio bridge module for this condition's action space / embodiment."""
         if self.go2:
             return GO2_BRIDGE_PATH
+        if self.benchmark in OBJNAV_BENCHMARKS:
+            return OBJNAV_BRIDGE_PATH
+        if self.benchmark == "hmeqa":
+            return HMEQA_BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
 
     def bridge_env(self) -> dict[str, str]:
@@ -248,6 +294,24 @@ class EpisodeContext:
                 "GO2_TURN_BUDGET": str(self.turn_budget),
                 "GO2_BARE": "1" if self.bare else "0",
                 "GO2_LIVE_DIR": str(self.live_dir),
+            }
+        if self.benchmark in OBJNAV_BENCHMARKS:
+            return {
+                "OBJNAV_SERVER_URL": self.server_url,
+                "OBJNAV_VERB_PREFIX": objnav_verb_prefix(self.benchmark),
+                "OBJNAV_STEP_BUDGET": str(self.step_budget),
+                "OBJNAV_TURN_BUDGET": str(self.turn_budget),
+                "OBJNAV_BARE": "1" if self.bare else "0",
+                "OBJNAV_LIVE_DIR": str(self.live_dir),
+            }
+        if self.benchmark == "hmeqa":
+            return {
+                "HMEQA_SERVER_URL": self.server_url,
+                "HMEQA_STEP_BUDGET": str(self.step_budget),
+                "HMEQA_TURN_BUDGET": str(self.turn_budget),
+                "HMEQA_BARE": "1" if self.bare else "0",
+                "HMEQA_TILT": "1" if self.hmeqa_tilt else "0",
+                "HMEQA_LIVE_DIR": str(self.live_dir),
             }
         env = {
             "HABITAT_SERVER_URL": self.server_url,
@@ -372,6 +436,47 @@ async def run_episode(
         ep = await asyncio.to_thread(
             call_function, url, "env_go2__reset", {"trigger": "driver"}
         )
+    elif spec.benchmark in OBJNAV_BENCHMARKS:
+        # Same placement flow as habitat-r2r (panel episode_index + play),
+        # but reset returns a goal CATEGORY, not an instruction — ObjectNav
+        # episodes carry no language. The recorded "instruction" is the goal
+        # text the briefing embeds (underscores are dataset-internal:
+        # "tv_monitor" -> "tv monitor"; OVON goals are already free text).
+        await asyncio.to_thread(panel_field, url, "episode_index", index)
+        await asyncio.to_thread(panel_action, url, "play")
+        ep = await asyncio.to_thread(
+            call_function, url, f"{objnav_verb_prefix(spec.benchmark)}__reset",
+            {"trigger": "driver"},
+        )
+        category = str(ep.get("object_category") or "").strip()
+        if not category:
+            raise RuntimeError(
+                f"{spec.benchmark} reset returned no object_category "
+                f"(episode {index}) — episode placement failed?"
+            )
+        instruction = category.replace("_", " ")
+    elif spec.benchmark == "hmeqa":
+        # Same placement flow (panel episode_index + play). reset's
+        # `question` port is the RAW text (the verified explore_eqa_hmeqa
+        # graph depends on that — it appends the choices itself), so the
+        # formatted multiple-choice question the briefing's {question} slot
+        # needs is built HERE from question + choices, mirroring
+        # explore-eqa's own formatting ("\nA. <choice>").
+        await asyncio.to_thread(panel_field, url, "episode_index", index)
+        await asyncio.to_thread(panel_action, url, "play")
+        ep = await asyncio.to_thread(
+            call_function, url, "env_hmeqa__reset", {"trigger": "driver"}
+        )
+        raw_q = str(ep.get("question") or "").strip()
+        choices = ep.get("choices") or []
+        if not raw_q or not choices:
+            raise RuntimeError(
+                f"hmeqa reset returned question={raw_q!r} choices={choices!r} "
+                f"(episode {index}) — episode placement failed?"
+            )
+        instruction = raw_q + "".join(
+            f"\n{letter}. {c}" for letter, c in zip("ABCD", choices)
+        )
     else:
         await asyncio.to_thread(panel_field, url, "episode_index", index)
         await asyncio.to_thread(panel_action, url, "play")
@@ -385,6 +490,8 @@ async def run_episode(
     briefing, skill_md5 = build_briefing(
         instruction, cfg["step_budget"], bare=spec.bare, skill=spec.skill,
         wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
+        benchmark=spec.benchmark,
+        hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
     )
 
     workdir = run_dir / f"workdir_{index}"
@@ -396,7 +503,8 @@ async def run_episode(
         index=index,
         instruction=instruction,
         briefing=briefing,
-        first_prompt=FIRST_PROMPT,
+        first_prompt=(HMEQA_FIRST_PROMPT if spec.benchmark == "hmeqa"
+                      else FIRST_PROMPT),
         server_url=url,
         bare=spec.bare,
         skill=spec.skill,
@@ -407,6 +515,9 @@ async def run_episode(
         workdir=workdir,
         live_dir=run_dir / f"live_{index}",
         raw_dir=raw_dir,
+        benchmark=spec.benchmark,
+        hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
+        max_budget_usd=cfg.get("max_budget_usd"),
         persona=spec.persona,
         wp=spec.wp,
         go2=spec.go2,
@@ -431,7 +542,11 @@ async def run_episode(
             "persona": spec.persona,
             "system_prompt": briefing,
             "first_prompt": FIRST_PROMPT,
-            "tool_schemas": await bridge_tool_schemas(spec.bare, spec.wp, spec.go2),
+            "tool_schemas": await bridge_tool_schemas(
+                spec.bare, spec.wp, spec.go2,
+                spec.benchmark in OBJNAV_BENCHMARKS,
+                spec.benchmark == "hmeqa",
+                bool(cfg.get("tilt_actions", True))),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -448,9 +563,27 @@ async def run_episode(
         # made from the recording, so metrics stay empty rather than fabricated.
         metrics: dict[str, Any] = {}
         if not spec.go2:
+            if spec.benchmark == "hmeqa":
+                # The agent's letter rides the tool-result channel (see
+                # hmeqa_bridge.answer — its result carries steps_taken_total,
+                # so it lands as the sink's last parsed step result). An
+                # episode that never answered evaluates "" -> success 0,
+                # the benchmark's own zero.
+                evaluate_fn = "env_hmeqa__evaluate"
+                evaluate_inputs: dict[str, Any] = {
+                    "pred_letter": str(
+                        (sink.last_step_result or {}).get("answer") or "")
+                }
+            else:
+                evaluate_fn = (
+                    f"{objnav_verb_prefix(spec.benchmark)}__evaluate"
+                    if spec.benchmark in OBJNAV_BENCHMARKS
+                    else "env_habitat__evaluate"
+                )
+                evaluate_inputs = {"trigger": "driver"}
             try:
                 metrics_out = await asyncio.to_thread(
-                    call_function, url, "env_habitat__evaluate", {"trigger": "driver"}
+                    call_function, url, evaluate_fn, evaluate_inputs
                 )
                 metrics = metrics_out.get("metrics") or {}
                 if isinstance(metrics, str):
@@ -473,7 +606,10 @@ async def run_episode(
             "tool_calls": sink.tool_calls,
             "env_steps": last.get("steps_taken_total", 0),
             "end_reason": last.get("end_reason"),
-            "called_stop": last.get("end_reason") == "stop_called",
+            # deliberate termination: STOP on the nav lines, answer() on
+            # hmeqa — same "the agent chose to end" semantics either way
+            "called_stop": last.get("end_reason") in ("stop_called",
+                                                      "answer_submitted"),
             "num_turns": outcome.turns,
             "usage": outcome.usage,
             "total_cost_usd": outcome.cost_usd,
@@ -481,6 +617,8 @@ async def run_episode(
         },
         "wall_sec": round(wall, 1),
     }
+    if spec.benchmark == "hmeqa" and last.get("answer"):
+        episode["agent"]["answer"] = last.get("answer")
     if outcome.error:
         episode["error"] = outcome.error
     return episode
@@ -563,10 +701,25 @@ async def run_cell(
 ) -> dict[str, Any]:
     """Run (or resume) one cell. Existing episode records in the run dir's
     summary are kept; requested indices are re-run and replace their records."""
-    cfg = dict(STD_FROZEN)
+    # Each benchmark line carries its own frozen config — hm3d / mp3d / ovon
+    # are peers of the habitat-r2r std line, not variants of it.
+    cfg = dict(BENCHMARK_FROZEN.get(spec.benchmark, STD_FROZEN))
     if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
         cfg["max_turns"] = spec.max_turns
     cfg["extra"] = dict(extra or {})
+    # off-board turn-cap override: `--nonstd --set max_turns=N` retunes the cap
+    # (frozen cells never carry it). Popped so it retunes the core config, not
+    # the harness extra dict the adapter reads.
+    if "max_turns" in cfg["extra"]:
+        cfg["max_turns"] = int(cfg["extra"].pop("max_turns"))
+    # hmeqa tilt mask: `--nonstd --set tilt_actions=0` drops actions 4/5 from
+    # the toolface (bridge validation + tool description + briefing together).
+    if "tilt_actions" in cfg["extra"]:
+        cfg["tilt_actions"] = bool(int(cfg["extra"].pop("tilt_actions")))
+    # dataset-layer split override: `--nonstd --set split=val` runs the full
+    # released split off-board (frozen cells pin their own derived split).
+    if "split" in cfg["extra"]:
+        cfg["split"] = str(cfg["extra"].pop("split"))
     cfg["wp_server"] = wp_server if spec.wp else None
     if spec.wp:
         cfg["wp_max_moves"] = WP_MAX_MOVES
@@ -593,7 +746,20 @@ async def run_cell(
                 raise RuntimeError(f"{url}: go2 host has no state feedback "
                                    "(closed-loop unavailable) — check the dog link")
         else:
-            print(f"[std] {url} healthy: {health.json()['name']}")
+            server_name = health.json()["name"]
+            print(f"[std] {url} healthy: {server_name}")
+            if spec.benchmark in OBJNAV_BENCHMARKS or spec.benchmark == "hmeqa":
+                # hm3d/mp3d need an env_objnav auto_host, ovon an env_ovon
+                # one, hmeqa an env_hmeqa one — a mismatched server would
+                # place the wrong episodes, so refuse rather than degrade
+                # silently.
+                want = ("env_hmeqa" if spec.benchmark == "hmeqa"
+                        else objnav_verb_prefix(spec.benchmark))
+                if server_name != want:
+                    raise RuntimeError(
+                        f"{url} serves {server_name!r} but cell {spec.name} "
+                        f"({spec.benchmark}) needs {want!r}"
+                    )
 
     if spec.wp:
         # a wp cell without its predictor would silently degrade — refuse
@@ -636,7 +802,10 @@ async def run_cell(
           f"workers={len(servers)} -> {run_dir}")
     if not spec.go2:  # no env-panel on the go2 host, and no dataset to select
         for url in servers:
-            panel_field(url, "dataset", cfg["dataset"])
+            # ovon's panel has no dataset selector (one dataset; the split IS
+            # the experimental axis) — its FROZEN block carries dataset=None.
+            if cfg.get("dataset"):
+                panel_field(url, "dataset", cfg["dataset"])
             panel_field(url, "split", cfg["split"])
 
     queue: asyncio.Queue[int] = asyncio.Queue()
@@ -744,4 +913,12 @@ async def run_cell(
     if run_stats:
         print(f"[std] run stats: {json.dumps(run_stats)}")
     print(json.dumps(final, indent=2))
+    # Full statistics report (charts + tables, after the metric block) for
+    # every run — user decision 2026-07-23. Best-effort: a failed report
+    # must never lose a completed run.
+    try:
+        from run_stats import generate as _generate_stats
+        print(f"[std] stats report -> {_generate_stats(run_dir)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[std] stats report failed (non-fatal): {exc!r}")
     return final

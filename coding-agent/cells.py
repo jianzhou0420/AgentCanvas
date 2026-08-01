@@ -35,6 +35,126 @@ STD_FROZEN: dict = {
     "episode_timeout": 2400,
 }
 
+# ── ObjectNav-family benchmarks (2026-07-21): hm3d / mp3d / ovon×3 ──
+# Five benchmark lines at the SAME level as habitat-r2r's std line (user
+# decision 2026-07-21): each carries its own frozen config, its own board,
+# and its own cell-name prefix — hm3d and mp3d are NOT collapsed into one
+# "objnav" line just because they share the env_objnav nodeset, and OVON's
+# three val splits are three LINES (the seen / synonyms / unseen ladder is
+# the experimental axis, so each rung gets its own board). Sharing the
+# nodeset and objnav_bridge.py is an implementation fact, like driver.py.
+# Not part of the std-v2 freeze: no rgb knob (640×480 benchmark native).
+#
+# Episodes: the TEAPS100 splits (user decisions 2026-07-22) — the seed-42
+# scene-stratified proportional samples of the official vals, MATERIALIZED
+# at the dataset layer (same form as R2R-CE's rand100): each is a derived
+# split file the env panel selects (split="teaps100..."), and eval runs
+# episodes 0-99 of it. Generator: coding-agent/sample_episodes.py
+# --materialize; audit manifests: coding-agent/splits/*_n100_seed42.json
+# (committed — anyone can regenerate both byte-identically).
+
+SPLITS_DIR = REPO_ROOT / "coding-agent" / "splits"
+
+
+def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
+                   manifest_stem: str) -> dict:
+    manifest = SPLITS_DIR / f"{manifest_stem}.json"
+    if not manifest.exists():  # provenance must exist — never run unaudited
+        raise FileNotFoundError(
+            f"{benchmark}: missing split manifest {manifest} — run "
+            "coding-agent/sample_episodes.py --materialize")
+    return {
+        "benchmark": benchmark,
+        "dataset": dataset,
+        "split": split,       # teaps100*: derived dataset-layer split
+        "episodes": "0-99",   # the whole TEAPS100 split, manifest order
+        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
+        # Objnav deviates from std-v2's max_turns=200 (user decision 2026-07-22;
+        # the delta vs the R2R std setting is documented in the paper appendix):
+        # 150 turns + an $18/episode USD fuse. The fuse is the CLI's own
+        # --max-budget-usd — session ends with subtype error_max_budget_usd,
+        # scored as clean truncation (like error_max_turns), never retried.
+        # Motivation: hm3d smokes showed cap-burning episodes cost 2-4x a
+        # success (worst $38.9) because full-history resend makes cost grow
+        # ~quadratically in turns; the fuse kills exactly that tail.
+        "max_turns": 150,
+        "max_budget_usd": 18.0,
+        "step_budget": 500,  # = habitat's ObjectNav max_episode_steps
+        "episode_timeout": 2400,
+    }
+
+
+# hm3d: objectnav_hm3d_v1 (val: 2000 eps / 20 scenes / 6 categories)
+# mp3d: objectnav_mp3d_v1 (val: 2195 eps / 11 scenes / 21 categories)
+# ovon-*: HM3D-OVON (3000 eps / 36 scenes per val split); no dataset
+# selector on its panel (one dataset — the split IS the axis) -> None.
+BENCHMARK_FROZEN: dict[str, dict] = {
+    "hm3d": _objnav_frozen("hm3d", "hm3d_v1", "teaps100",
+                           "hm3d_val_n100_seed42"),
+    "mp3d": _objnav_frozen("mp3d", "mp3d_v1", "teaps100",
+                           "mp3d_val_n100_seed42"),
+    "ovon-seen": _objnav_frozen("ovon-seen", None, "teaps100_seen",
+                                "ovon_val_seen_n100_seed42"),
+    "ovon-syn": _objnav_frozen("ovon-syn", None, "teaps100_seen_synonyms",
+                               "ovon_val_seen_synonyms_n100_seed42"),
+    "ovon-unseen": _objnav_frozen("ovon-unseen", None, "teaps100_unseen",
+                                  "ovon_val_unseen_n100_seed42"),
+}
+OBJNAV_BENCHMARKS = tuple(BENCHMARK_FROZEN)  # the five ObjectNav-family lines
+                                             # (hmeqa is added below, after
+                                             # this tuple is taken)
+
+
+# ── HM-EQA benchmark line (2026-07-29): explore-eqa multiple-choice EQA ──
+# Sixth benchmark line at the same level as the ObjectNav five. Success is
+# answer correctness (env_hmeqa__evaluate compares the agent's letter to GT);
+# the episode ends by answer("A".."D") via hmeqa_bridge.py, not STOP.
+# Deviations from the benchmark-native protocol (all documented in the
+# bridge docstring): discrete 0.25 m / 30° actions via env_hmeqa__
+# step_discrete (native is TSDF-planned free-pose teleports; explore-eqa's
+# scene-size-dependent num_step budget is a TELEPORT budget and does not
+# apply), step budget enforced bridge-side at the std 500. The camera stays
+# benchmark-native (640×480, hfov 120, starting tilted 30° down).
+# Episodes: split="teaps100" — the MATERIALIZED dataset-layer split
+# (data/hm3d/hmeqa/questions_teaps100.csv, row k = k-th sampled original
+# row) selected via the env panel, episodes 0-99 into it. Same semantics as
+# the objnav teaps splits (aligned 2026-07-29 on user request; before that
+# the cell carried raw val indices — the trial20/smoke run dirs are indexed
+# in THAT original-CSV space).
+def _hmeqa_frozen() -> dict:
+    manifest = SPLITS_DIR / "hmeqa_val_n100_seed42.json"
+    if not manifest.exists():  # provenance must exist — never run unaudited
+        raise FileNotFoundError(
+            f"hmeqa: missing split manifest {manifest} — run "
+            "coding-agent/sample_episodes.py --benchmark hmeqa")
+    derived = REPO_ROOT / "data" / "hm3d" / "hmeqa" / "questions_teaps100.csv"
+    if not derived.exists():  # the split the env panel selects must exist too
+        raise FileNotFoundError(
+            f"hmeqa: missing materialized split {derived} — run "
+            "coding-agent/sample_episodes.py --benchmark hmeqa --materialize")
+    return {
+        "benchmark": "hmeqa",
+        "dataset": None,       # single-CSV benchmark: no dataset selector
+        "split": "teaps100",   # dataset-layer derived split (objnav semantics)
+        "episodes": "0-99",
+        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
+        # Same turn/fuse posture as the ObjectNav lines (exploration task,
+        # full-history resend cost tail): 150 turns + $18/episode USD fuse.
+        "max_turns": 150,
+        "max_budget_usd": 18.0,
+        "step_budget": 500,
+        "episode_timeout": 2400,
+        # Camera-tilt actions 4/5 on the toolface (user decision 2026-07-29,
+        # option B: the native −30° pitch made near-overhead ceiling
+        # fixtures structurally unobservable — ep4 smoke analysis). Mask
+        # with `--nonstd --set tilt_actions=0`: bridge validation, tool
+        # description, and briefing all follow the one flag.
+        "tilt_actions": True,
+    }
+
+
+BENCHMARK_FROZEN["hmeqa"] = _hmeqa_frozen()
+
 # Compute we own (local GPU, no API bill or rate limit) can take its own cap;
 # the knob is kept so the rented and owned columns can diverge.
 #
@@ -77,6 +197,12 @@ MODELS = {
     "sonnet-5": "claude-sonnet-5",
     "opus-4.8": "claude-opus-4-8",
     "fable-5": "claude-fable-5",
+    # Opus 5 (released 2026-07; added 2026-07-25). Probed on the R2R board via
+    # three targeted cells (OPUS5_CELLS below), NOT by joining CLAUDE_MODELS —
+    # that would fan the model out across the whole sdk/mini/wp/objnav matrix.
+    # _tier_extra keys off harness + gpt-prefix only, so opus-5 (sdk/mini, non-gpt)
+    # resolves its effort tiers correctly without any board membership.
+    "opus-5": "claude-opus-5",
     "gpt-5.5": "gpt-5.5",
     "gpt-5.6": "gpt-5.6",
     # open-weight column, served locally by ollama (litellm's ollama_chat route).
@@ -112,6 +238,10 @@ MODELS = {
     # (litellm has no price entry for dashscope slugs).
     "qwen3.7-plus": "openai/qwen3.7-plus",
     "qwen3.6-plus": "openai/qwen3.6-plus",
+    # Qwen3.8 flagship (released 2026-07; added 2026-07-25). Slug assumed from the
+    # 3.6/3.7-plus pattern — VERIFY the exact DashScope model string against Model
+    # Studio before launching the run.
+    "qwen3.8-plus": "openai/qwen3.8-plus",
 }
 
 # concrete slug differs by access path even for the "same" board model: codex
@@ -135,6 +265,9 @@ MODEL_EXTRA: dict[str, dict] = {
         "api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     },
     "qwen3.6-plus": {
+        "api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    },
+    "qwen3.8-plus": {
         "api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     },
 }
@@ -223,6 +356,7 @@ class CellSpec:
     persona: bool = False  # keep the harness's stock persona (ablation)
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
     go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
+    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hm3d | mp3d | ovon
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
     max_turns: int | None = None  # None → STD_FROZEN's cap (std-v2: 200)
@@ -296,6 +430,7 @@ BOARD = (
 QWEN_API_BOARD = (
     ("mini", "qwen3.7-plus"),
     ("mini", "qwen3.6-plus"),
+    ("mini", "qwen3.8-plus"),   # newest Qwen flagship (2026-07-25) — sweep row
 )
 
 # open-weight column: the same mini harness, locally served, and the only
@@ -345,6 +480,18 @@ for _h, _m in (("sdk", "sonnet-5"), ("sdk", "opus-4.8")):
 for _h, _m in QWEN_API_BOARD:
     spec = _cell(_h, _m, "bare")
     CELLS[spec.name] = spec
+
+# Opus 5 probe (2026-07-25): three targeted R2R cells, bare surface, so the newest
+# frontier Opus lands in the sweep (mini row → Table 2 / harness Table 4) and the
+# effort ablation (sdk default+max → Table 3) without expanding CLAUDE_MODELS.
+OPUS5_CELLS = (
+    ("mini", "opus-5", "bare", "default"),
+    ("sdk",  "opus-5", "bare", "default"),
+    ("sdk",  "opus-5", "bare", "max"),
+)
+for _h, _m, _c, _t in OPUS5_CELLS:
+    spec = _cell(_h, _m, _c, _t)
+    CELLS[spec.name] = spec
 for _h, _m, _c in LOCAL_BOARD:
     spec = _cell(_h, _m, _c)
     CELLS[spec.name] = spec
@@ -371,10 +518,40 @@ for _h, _m in GO2_BOARD:
     spec = replace(_base, name=f"go2_{_h}_{_m}", condition="go2", go2=True)
     CELLS[spec.name] = spec
 
+# ObjectNav-family boards (2026-07-21, split-frozen 2026-07-22): five lines
+# (hm3d / mp3d / ovon-seen / ovon-syn / ovon-unseen), each its own board at
+# the same level as the habitat-r2r std line (see BENCHMARK_FROZEN).
+# Bare surface, default effort, sdk trio first — mirrors the go2 pilots; the
+# codex/mini columns can join later (their adapters are env-agnostic), which
+# would then also mirror the main board's harness pairing.
+# Cell names carry the full line: hm3d_sdk_fable-5 / ovon-unseen_sdk_sonnet-5
+# — benchmark prefix first, parallel to std_* and go2_*.
+OBJNAV_TRIO = (("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"))
+for _bench in OBJNAV_BENCHMARKS:
+    for _h, _m in OBJNAV_TRIO:
+        _base = _cell(_h, _m, "bare", "default")
+        spec = replace(_base, name=f"{_bench}_{_h}_{_m}", condition=_bench,
+                       benchmark=_bench)
+        CELLS[spec.name] = spec
+
+# HM-EQA board (2026-07-29): same sdk trio, bare surface, default effort —
+# mirrors the ObjectNav lines. Servers: env_hmeqa auto_host (ac-hmeqa env);
+# the driver refuses a mismatched server name.
+for _h, _m in OBJNAV_TRIO:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"hmeqa_{_h}_{_m}", condition="hmeqa",
+                   benchmark="hmeqa")
+    CELLS[spec.name] = spec
+
 # batches: the tiered main board carries the effort tier in the cell name
 # (*_default = vendor-default main experiment, *_max = elevated ablation);
 # Q/W/WQ are the untier-ed wp/local line.
 BATCHES = {
+    # new-model probes (2026-07-25): Opus 5 trio (mini sweep + sdk default/max
+    # effort) and the Qwen3.8 sweep row. All R2R-CE rand100, reusing STD_FROZEN.
+    "O5": ["std_mini_opus-5_bare_default", "std_sdk_opus-5_bare_default",
+           "std_sdk_opus-5_bare_max"],
+    "Q8": ["std_mini_qwen3.8-plus_bare"],
     # default-effort main experiment (paper main table)
     "Ad": [f"std_sdk_{m}_bare_default" for m in CLAUDE_MODELS],
     "Bd": ["std_mini_sonnet-5_bare_default", "std_mini_opus-4.8_bare_default"],  # anthropic key
@@ -398,6 +575,16 @@ BATCHES = {
     # batch can be cut short — better to lose the control than the treatment.
     "WQ": ["std_mini_qwen3.5-4b_wp-nav", "std_mini_qwen3.5-4b_wp",
            "std_mini_qwen3.5-9b_wp-nav", "std_mini_qwen3.5-9b_wp"],
+    # ObjectNav-family boards — one batch per benchmark line (peer lines, not
+    # one merged "objnav" batch). Servers: env_objnav auto_host for OH/OM,
+    # env_ovon auto_host for the OV* trio (the driver refuses a mismatch).
+    "OH": [f"hm3d_sdk_{m}" for m in CLAUDE_MODELS],
+    "OM": [f"mp3d_sdk_{m}" for m in CLAUDE_MODELS],
+    "OVS": [f"ovon-seen_sdk_{m}" for m in CLAUDE_MODELS],
+    "OVY": [f"ovon-syn_sdk_{m}" for m in CLAUDE_MODELS],
+    "OVU": [f"ovon-unseen_sdk_{m}" for m in CLAUDE_MODELS],
+    # HM-EQA board — servers: env_hmeqa auto_host (ac-hmeqa env)
+    "EQ": [f"hmeqa_sdk_{m}" for m in CLAUDE_MODELS],
 }
 
 
@@ -432,6 +619,11 @@ EXPERIMENTS: dict[str, dict] = {
     "E18": {"section": "4.3 effort", "label": "SDK · effort=max · fable-5",   "cell": "std_sdk_fable-5_bare_max"},
     "E19": {"section": "4.3 effort", "label": "Codex · effort=xhigh · gpt-5.5", "cell": "std_codex_gpt-5.5_bare_max"},
     "E20": {"section": "4.3 effort", "label": "mini · effort=xhigh · gpt-5.5",  "cell": "std_mini_gpt-5.5_bare_max"},
+    # new-model probes (2026-07-25). Opus 5 slots into the same tables as the
+    # other Claude models; qwen3.8 stays unregistered (mini·qwen line, like E10-E13).
+    "E29": {"section": "4.1 main",   "label": "mini · opus-5",                 "cell": "std_mini_opus-5_bare_default"},
+    "E30": {"section": "4.1 main",   "label": "SDK · opus-5",                  "cell": "std_sdk_opus-5_bare_default"},
+    "E31": {"section": "4.3 effort", "label": "SDK · effort=max · opus-5",     "cell": "std_sdk_opus-5_bare_max"},
 }
 
 

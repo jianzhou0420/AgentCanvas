@@ -129,6 +129,10 @@ class ClaudeSdkAdapter:
             # 1 MiB stdout buffer truncates it and kills the session mid-parse
             max_buffer_size=32 * 1024 * 1024,
             max_turns=ctx.max_turns,
+            # Per-episode USD fuse (objnav frozen: $18). The CLI checks between
+            # API calls and ends the session with subtype error_max_budget_usd
+            # — whitelisted below as a scored truncation, like error_max_turns.
+            max_budget_usd=ctx.max_budget_usd,
             model=ctx.model,
             cwd=str(ctx.workdir),
         )
@@ -212,11 +216,14 @@ class ClaudeSdkAdapter:
         # result — the flag tracks the session, not the navigation outcome, so
         # an episode that called stop and reached the goal still comes back
         # is_error=True (observed: fable ep40). is_error alone therefore
-        # over-flags. Score by the ENV terminal instead: both "success" (normal
-        # return, whatever the nav result) and "error_max_turns" (clean
-        # truncation, like mini's step_limit) are scored outcomes — only a
-        # genuine execution error (error_during_execution, or a missing
-        # subtype) is a broken session that propagates as error.
+        # over-flags. Score by the ENV terminal instead: "success" (normal
+        # return, whatever the nav result), "error_max_turns" (clean
+        # truncation, like mini's step_limit), and "error_max_budget_usd"
+        # (USD fuse tripped — same clean-truncation semantics) are scored
+        # outcomes — only a genuine execution error (error_during_execution,
+        # or a missing subtype) is a broken session that propagates as error.
+        # Keeping the fuse subtype OUT of this whitelist would make the driver
+        # retry the most expensive episodes — the opposite of a budget cap.
         subtype = getattr(result_msg, "subtype", None)
         result_text = str(getattr(result_msg, "result", "") or "")
         error = None
@@ -226,7 +233,8 @@ class ClaudeSdkAdapter:
             # backs off and re-runs it, never scoring it as a navigation failure.
             error = "rate_limited"
         elif (getattr(result_msg, "is_error", False)
-                and subtype not in ("error_max_turns", "success")):
+                and subtype not in ("error_max_turns", "error_max_budget_usd",
+                                    "success")):
             error = f"sdk result {subtype or 'is_error'}"
         return SessionOutcome(
             usage=json_safe(getattr(result_msg, "usage", None)),

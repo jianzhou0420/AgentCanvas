@@ -5,11 +5,13 @@ actions / 2400 s) comes from the registry; the only free choices are WHICH
 cell and WHICH env servers. Deviations require --nonstd, which renames the
 run so it can never sit on the standard board.
 
-Usage (agentcanvas env; habitat auto_host(s) must already be up):
+Usage (agentcanvas env; the cell's env auto_host(s) must already be up —
+env_habitat for std_*, env_objnav for hm3d_*/mp3d_*, env_ovon for ovon_*):
     python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
     python coding-agent/stdrun.py run std_mini_gpt-5.6_bare --servers http://127.0.0.1:9200,http://127.0.0.1:9201
     python coding-agent/stdrun.py run std_codex_gpt-5.5_bare --episodes 3,7   # rerun/resume two indices
-    python coding-agent/stdrun.py batch A
+    python coding-agent/stdrun.py run hm3d_sdk_fable-5 --episodes 0           # ObjectNav smoke
+    python coding-agent/stdrun.py batch A     # (OH / OM / OV = hm3d / mp3d / ovon boards)
     python coding-agent/stdrun.py board
     python coding-agent/stdrun.py compare std_sdk_opus-4.8_bare std_mini_opus-4.8_bare
     python coding-agent/stdrun.py drain std_sdk_opus-4.8_bare   # finish in-flight eps, stop
@@ -34,7 +36,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cells import BATCHES, CELLS, EXPERIMENTS, STD_FROZEN, get_cell, resolve_cell
+from cells import (BATCHES, BENCHMARK_FROZEN, CELLS, EXPERIMENTS, STD_FROZEN,
+                   get_cell, resolve_cell)
 from driver import run_cell
 from harnesses import get_adapter
 
@@ -96,8 +99,11 @@ def _board(_args: argparse.Namespace) -> None:
     for name, spec in CELLS.items():
         # for an unrun cell show what it WILL run at, not the frozen default, or
         # the board lies about a protocol it has not executed yet
-        planned_turns = spec.max_turns or STD_FROZEN["max_turns"]
-        planned_rgb = STD_FROZEN["rgb_resolution"]
+        frozen = BENCHMARK_FROZEN.get(spec.benchmark, STD_FROZEN)
+        planned_turns = spec.max_turns or frozen["max_turns"]
+        # ObjectNav-family cells have no rgb knob — the benchmark sensor is a
+        # fixed 640×480, so that is what the board shows
+        planned_rgb = frozen.get("rgb_resolution", 640)
         summary = _load_summary(name)
         if summary is None:
             print(f"{name:<34} {'—':>5} {planned_turns:>6} {planned_rgb:>5}")
