@@ -840,19 +840,36 @@ async def run_cell(
                 )
 
     if spec.wp or spec.hybrid:
-        # vlnverse rides the primitive surface only. Two reasons, both of
-        # which would degrade SILENTLY rather than fail: (1) its panorama
-        # numbers dir_id counter-clockwise (NavHarness strip convention) where
-        # habitat numbers it clockwise, so wp_bridge's dir_id arithmetic maps
-        # candidates to mirrored headings; (2) the SmartWay predictor is
-        # trained on habitat RGB-D at habitat intrinsics, and vlnverse renders
-        # 1024²/90° in Isaac — out of distribution, no calibration behind it.
-        # Lift this only WITH a re-derived pano convention + a wp calibration.
+        # vlnverse rides the primitive surface only, because the wp surface is
+        # wired to SmartWay and VLNVerse HAS ITS OWN waypoint predictor. Both
+        # mismatches below would degrade SILENTLY rather than fail:
+        #
+        # (1) Pano convention: vlnverse numbers dir_id counter-clockwise (the
+        #     NavHarness strip convention) where habitat numbers it clockwise,
+        #     so wp_bridge's dir_id arithmetic maps candidates to mirrored
+        #     headings.
+        # (2) Wrong predictor, NOT an uncalibrated one. The two descend from
+        #     the same model (Hong et al. CVPR'22 — transformer/waypoint_bert.py
+        #     is byte-identical between the two trees), but everything around
+        #     it differs: SmartWay adds ID_CrossAttention and hardcodes
+        #     120 angles / 12 imgs, loads best.pth over a gibson-2plus depth
+        #     encoder, and is trained on habitat MP3D/Gibson. VLNVerse ships
+        #     checkpoints trained on THESE Isaac renders
+        #     (internnav/model/waypoint_predictor/checkpoints/wp-train-cv*,
+        #     over gibson-4plus-mp3d-train-val-test) — and NavHarness runs the
+        #     `_worgb` depth-only variant, which sidesteps the RGB domain gap
+        #     entirely.
+        #
+        # So the path to lifting this is NOT "recalibrate SmartWay for Isaac":
+        # it is a second predictor nodeset (or a ckpt/encoder switch on the
+        # existing engine, since the transformer core is shared) plus the
+        # re-derived pano convention. Tracked as the M5 follow-up.
         if spec.benchmark == "vlnverse":
             raise RuntimeError(
-                f"cell {spec.name}: wp/hybrid is habitat-only — the vlnverse "
-                "pano is CCW-indexed and the waypoint predictor is not "
-                "calibrated for Isaac renders. Use a bare/std vlnverse cell."
+                f"cell {spec.name}: wp/hybrid is wired to the SmartWay "
+                "predictor (habitat-trained, CW pano). VLNVerse has its own "
+                "predictor checkpoints — serving those is the M5 follow-up. "
+                "Use a bare/std vlnverse cell."
             )
         # a wp/hybrid cell without its predictor would silently degrade — refuse
         if not wp_server:
