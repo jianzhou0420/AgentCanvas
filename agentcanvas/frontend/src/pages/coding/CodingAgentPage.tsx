@@ -618,9 +618,17 @@ export default function CodingAgentPage() {
             return (
               <button
                 key={i}
-                title={s?.error ? `ended abnormally: ${s.error}` : undefined}
                 onClick={() => setViewEpisode(i)}
-                title={s?.error ?? undefined}
+                // one tooltip for the two ways an episode can carry an error,
+                // matching the badge above: excluded from SR vs scored but
+                // ended abnormally
+                title={
+                  s?.error
+                    ? limitExceeded
+                      ? `not attempted (excluded from SR): ${s.error}`
+                      : `ended abnormally: ${s.error}`
+                    : undefined
+                }
                 className={clsx(
                   "rounded border px-2 py-0.5",
                   shownEpisode === i

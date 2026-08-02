@@ -37,6 +37,7 @@ HERE = Path(__file__).resolve().parent            # coding-agent/mini
 CODING_AGENT_DIR = HERE.parent
 BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "mcp_bridge.py"
 WP_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "wp_bridge.py"
+HYBRID_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "hybrid_bridge.py"
 PROMPTS_PATH = CODING_AGENT_DIR / "prompts.py"
 SDK_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-coding-agent" / "run_episodes.py"
 MINI_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-react-harness" / "run_episodes.py"
@@ -46,7 +47,11 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from jinja2 import StrictUndefined, Template
 
-from toolset import HabitatToolSet, WaypointToolSet
+from toolset import (
+    HYBRID_GOTO_DESC, HYBRID_OBSERVE_DESC, HYBRID_OBSERVE_WP_DESC,
+    HYBRID_STEP_DESC, HYBRID_STOP_DESC,
+    HabitatToolSet, HybridToolSet, WaypointToolSet,
+)
 
 FAILURES: list[str] = []
 
@@ -136,11 +141,23 @@ def check_prompts() -> None:
               _diff(sdk_text, mini_text))
     check("first_prompt", sdk.FIRST_PROMPT == ours.FIRST_PROMPT,
           _diff(sdk.FIRST_PROMPT, ours.FIRST_PROMPT))
-    # the live prompt surface vs the frozen legacy source it was moved from
-    for attr in ("SYSTEM_PROMPT", "BARE_SYSTEM_PROMPT", "FIRST_PROMPT"):
-        sdk_text, live_text = getattr(sdk, attr), getattr(live, attr)
-        check(f"prompts.py {attr} verbatim", sdk_text == live_text,
-              _diff(sdk_text, live_text))
+    # The live prompt surface vs the frozen legacy source it was moved from.
+    #
+    # Compare what the model RECEIVES, not the raw template. Since auto-observe
+    # (2026-07-31) the std prompts carry {obs_note}/{step_note}/{loop_rule}
+    # slots, so the literal strings can no longer match — but at the frozen
+    # setting (auto_observe=False, the R2R-CE default) the rendered text must
+    # still be byte-identical to the legacy driver's, and that is the property
+    # the freeze was actually protecting. A real drift still fails here.
+    check("first_prompt verbatim", sdk.FIRST_PROMPT == live.FIRST_PROMPT,
+          _diff(sdk.FIRST_PROMPT, live.FIRST_PROMPT))
+    for label, attr, bare in (("SYSTEM_PROMPT", "SYSTEM_PROMPT", False),
+                              ("BARE_SYSTEM_PROMPT", "BARE_SYSTEM_PROMPT", True)):
+        sdk_text = getattr(sdk, attr).format(instruction=instruction, budget=budget)
+        live_text, _ = live.build_briefing(
+            instruction, budget, bare=bare, skill=None, auto_observe=False)
+        check(f"prompts.py {label} renders verbatim (auto_observe=False)",
+              sdk_text == live_text, _diff(sdk_text, live_text))
 
 
 def check_clearance() -> None:
@@ -223,10 +240,47 @@ def check_wp() -> None:
           f"  len sdk={len(sdk_png)} mini={len(mini_png)}")
 
 
+def check_hybrid() -> None:
+    """hybrid_bridge.py (SDK path) vs toolset.HybridToolSet (mini path).
+
+    The hybrid experiment compares models ACROSS these two paths, so the two
+    surfaces must show the model the same thing. Nothing else enforces that:
+    the descriptions are hand-copied between the files.
+    """
+    hyb = _import_from_path("_hybrid_bridge_mod", HYBRID_BRIDGE_PATH)
+    pairs = [
+        ("observe", hyb._OBSERVE_DESC, HYBRID_OBSERVE_DESC),
+        ("observe_waypoints", hyb._OBSERVE_WP_DESC, HYBRID_OBSERVE_WP_DESC),
+        ("step", hyb._STEP_DESC, HYBRID_STEP_DESC),
+        ("goto", hyb._GOTO_DESC, HYBRID_GOTO_DESC),
+        ("stop", hyb._STOP_DESC, HYBRID_STOP_DESC),
+    ]
+    for name, sdk_desc, mini_desc in pairs:
+        check(f"hybrid {name}.description", sdk_desc == mini_desc,
+              _diff(sdk_desc, mini_desc))
+
+    # the registered tool set must match too (a tool present on one path only
+    # would be a silent capability difference)
+    sdk_tools = {t.name for t in asyncio.run(hyb.mcp.list_tools())}
+    mini_tools = {t["name"] for t in
+                  HybridToolSet("http://x", wp_server_url="http://y").tool_schemas()}
+    check("hybrid tool set", sdk_tools == mini_tools,
+          f"  sdk={sorted(sdk_tools)}\n  mini={sorted(mini_tools)}")
+
+    # look-then-move gate: the refusal text the model reads must be identical
+    ts = HybridToolSet("http://x", wp_server_url="http://y")
+    ts._pending = "forward"
+    hyb._pending = "forward"
+    check("hybrid already-looked message",
+          hyb._already_looked_msg() == ts._already_looked_msg(),
+          _diff(hyb._already_looked_msg(), ts._already_looked_msg()))
+
+
 if __name__ == "__main__":
     check_schemas()
     check_prompts()
     check_clearance()
     check_wp()
+    check_hybrid()
     print(f"\n{len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)
