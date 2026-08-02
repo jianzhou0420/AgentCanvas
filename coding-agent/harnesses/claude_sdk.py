@@ -25,7 +25,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from driver import EpisodeContext, EventSink, SessionOutcome, json_safe
+from driver import (
+    EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe,
+)
 
 
 def _tool_result_texts(block: Any) -> list[str]:

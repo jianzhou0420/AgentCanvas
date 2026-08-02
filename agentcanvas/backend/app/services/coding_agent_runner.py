@@ -36,42 +36,54 @@ OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 NODESET_NAME = "env_habitat"
 
 
-def _is_limit_exceeded(ep: dict[str, Any]) -> bool:
-    """A rate-limit / 'limit exceeded' casualty: the run errored WITHOUT taking a
-    single navigation step (error set + env_steps 0). It never really attempted
-    the task, so it counts as neither a pass nor a fail — excluded from SR and
-    shown as ⚠, not ✅/❌. A genuine turn-exhausted run DID navigate (env_steps
-    > 0) and is a real failure that stays in the denominator."""
-    return bool(ep.get("error")) and not ((ep.get("agent") or {}).get("env_steps") or 0)
-
-
 def display_aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
-    """Recompute SR/SPL/stop from raw episodes for display — always honest
-    regardless of what the driver wrote to summary.json (a live run's stored
-    aggregate can lag or predate the current scoring rule). Turn-exhausted =
-    failure (counts); limit-exceeded = excluded."""
-    scored = [
-        e for e in episodes
-        if (e.get("metrics") or {}).get("success") is not None and not _is_limit_exceeded(e)
-    ]
-    agg: dict[str, Any] = {"episode_count": len(scored)}
-    if not scored:
-        return agg
+    """Recompute the board metrics from raw episodes for display, instead of
+    trusting whatever the driver wrote into summary.json — a live run's stored
+    aggregate lags, and an older run's may predate the current rule.
 
-    def _mean_metric(key: str) -> float | None:
-        vals = [
-            float((e.get("metrics") or {})[key])
-            for e in scored
-            if isinstance((e.get("metrics") or {}).get(key), (int, float))
-        ]
-        return round(sum(vals) / len(vals), 4) if vals else None
+    This is a FAITHFUL PORT of coding-agent/driver.py::aggregate (口径
+    2026-07-15). Keep the two in step: if the driver's rule changes, change
+    this with it, or the Monitor and the board will quietly disagree.
 
-    for key in ("success", "spl", "ndtw", "oracle_success", "distance_to_goal"):
-        val = _mean_metric(key)
-        if val is not None:
-            agg[key] = val
+      - a rate-limited episode is a subscription throttle, not a navigation
+        result -> excluded from the denominator entirely
+      - an episode with evaluated metrics is scored as-is, error tag or not
+        (cap-hit and cost truncations land here — they DID navigate), provided
+        the agent actually engaged (evaluate() also runs when a session died at
+        spawn, leaving spawn-position metrics)
+      - an unevaluated timeout scores success=0 — it ran and got nowhere
+      - any other unevaluated error (account block, server crash) is a non-run
+        and is reported under "excluded"
+    """
+    def _engaged(e: dict[str, Any]) -> bool:
+        a = e.get("agent") or {}
+        return bool(a.get("env_steps") or a.get("tool_calls") or a.get("called_stop"))
+
+    scored: list[dict[str, Any]] = []
+    for e in episodes:
+        if e.get("error") == "rate_limited":
+            continue
+        if e.get("metrics") and (not e.get("error") or _engaged(e)):
+            scored.append(e)
+        elif e.get("error") == "timeout":
+            scored.append({"metrics": {"success": 0.0}, "agent": e.get("agent") or {}})
+
+    agg: dict[str, Any] = {"episode_count": len(scored),
+                           "excluded": len(episodes) - len(scored)}
+    numeric: dict[str, list[float]] = {}
+    for rec in scored:
+        for key, value in (rec.get("metrics") or {}).items():
+            if isinstance(value, bool):
+                value = float(value)
+            if isinstance(value, (int, float)):
+                numeric.setdefault(key, []).append(float(value))
+        numeric.setdefault("env_steps", []).append(
+            float((rec.get("agent") or {}).get("env_steps", 0)))
+    for key, values in numeric.items():
+        if values:
+            agg[key] = round(sum(values) / len(values), 4)
     agg["stop_rate"] = round(
-        sum(1 for e in scored if (e.get("agent") or {}).get("called_stop")) / len(scored), 4
+        sum(1 for r in scored if (r.get("agent") or {}).get("called_stop")) / max(1, len(scored)), 4
     )
     return agg
 

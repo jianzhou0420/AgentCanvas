@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -36,9 +37,9 @@ from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT, HYBRID_FIRST_PROMPT,
                      assert_std_skill_freeze, build_briefing)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Every stdio bridge now lives in coding-agent/bridges/ — moved there by the
-# 1be8d4c restructure, which folded the old top-level beta-* dirs into this
-# package. Resolve off THIS file, not REPO_ROOT, so a worktree checkout works.
+# Every stdio bridge lives in coding-agent/bridges/ since the 1be8d4c
+# restructure folded the old top-level beta-* dirs into this package.
+# Resolve off THIS file, not REPO_ROOT, so a worktree checkout works.
 _BRIDGES = Path(__file__).resolve().parent / "bridges"
 BRIDGE_PATH = _BRIDGES / "mcp_bridge.py"
 WP_BRIDGE_PATH = _BRIDGES / "wp_bridge.py"
@@ -58,17 +59,17 @@ OBJNAV_BRIDGE_PATH = _BRIDGES / "objnav_bridge.py"
 # answer rides the tool-result channel (EventSink.last_step_result) back to
 # the driver, which passes it to env_hmeqa__evaluate as pred_letter.
 HMEQA_BRIDGE_PATH = _BRIDGES / "hmeqa_bridge.py"
+# Agent-selected hybrid surface: primitive step() AND waypoint goto() in one
+# toolface, with the look-then-move gate that makes the choice of lens the
+# choice of interface. Same habitat auto_host peer as mcp_bridge, plus the
+# waypoint predictor that wp uses.
+HYBRID_BRIDGE_PATH = _BRIDGES / "hybrid_bridge.py"
 
 
 def objnav_verb_prefix(benchmark: str) -> str:
     """Nodeset verb prefix for an ObjectNav-family benchmark. The three
     OVON lines (ovon-seen / ovon-syn / ovon-unseen) share one nodeset."""
     return "env_ovon" if benchmark.startswith("ovon") else "env_objnav"
-# Agent-selected hybrid surface: primitive step() AND waypoint goto() in one
-# toolface, with the look-then-move gate that makes the choice of lens the
-# choice of interface. Same habitat auto_host peer as mcp_bridge, plus the
-# waypoint predictor that wp uses.
-HYBRID_BRIDGE_PATH = _BRIDGES / "hybrid_bridge.py"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -138,16 +139,15 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                               hybrid: bool = False) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
-    wp_bridge.py for the wp condition, hybrid_bridge.py for the hybrid
-    condition, go2_bridge.py for the real robot, objnav_bridge.py for the
-    ObjectNav family — hm3d/mp3d/ovon share one schema, the verb prefix only
-    changes the HTTP peer; or hmeqa_bridge.py for HM-EQA, whose step
-    description also keys off the tilt mask; mini's port is byte-equivalent,
-    gated by check_equivalence.py). Cached per
+    wp_bridge.py for the wp condition, or go2_bridge.py for the real robot,
+    or objnav_bridge.py for the ObjectNav family — hm3d/mp3d/ovon share one
+    schema, the verb prefix only changes the HTTP peer; or hmeqa_bridge.py
+    for HM-EQA, whose step description also keys off the tilt mask; mini's
+    port is byte-equivalent, gated by check_equivalence.py). Cached per
     (bare, wp, go2, objnav, hmeqa, hmeqa_tilt, auto_observe, hybrid); never
-    raises (logging must not break a run).
-    ``auto_observe`` mirrors the session's HABITAT_AUTO_OBSERVE so the recorded
-    step()/goto() descriptions match."""
+    raises (logging must not break a run). ``auto_observe`` mirrors the
+    session's HABITAT_AUTO_OBSERVE so the recorded step()/goto() descriptions
+    match."""
     key = (bare, wp, go2, objnav, hmeqa, hmeqa_tilt, auto_observe, hybrid)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
@@ -156,8 +156,7 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                    else HYBRID_BRIDGE_PATH if hybrid
                    else WP_BRIDGE_PATH if wp else BRIDGE_PATH)
     # Each bridge reads its own prefix; introspecting go2 with HABITAT_BARE set
-    # would silently return the non-bare toolset. (hybrid is a habitat bridge,
-    # so it stays on HABITAT_BARE.)
+    # would silently return the non-bare toolset.
     bare_var = ("GO2_BARE" if go2 else "OBJNAV_BARE" if objnav
                 else "HMEQA_BARE" if hmeqa else "HABITAT_BARE")
     saved = os.environ.get(bare_var)
@@ -181,12 +180,18 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
     except Exception as exc:  # noqa: BLE001 — logging must never break a run
         _TOOL_SCHEMAS_CACHE[key] = {"error": f"tool-schema introspection failed: {exc!r}"}
     finally:
-        for _name, _saved in ((bare_var, saved), ("HMEQA_TILT", saved_tilt),
-                              ("HABITAT_AUTO_OBSERVE", saved_ao)):
-            if _saved is None:
-                os.environ.pop(_name, None)
-            else:
-                os.environ[_name] = _saved
+        if saved is None:
+            os.environ.pop(bare_var, None)
+        else:
+            os.environ[bare_var] = saved
+        if saved_tilt is None:
+            os.environ.pop("HMEQA_TILT", None)
+        else:
+            os.environ["HMEQA_TILT"] = saved_tilt
+        if saved_ao is None:
+            os.environ.pop("HABITAT_AUTO_OBSERVE", None)
+        else:
+            os.environ["HABITAT_AUTO_OBSERVE"] = saved_ao
     return _TOOL_SCHEMAS_CACHE[key]
 
 
@@ -266,8 +271,7 @@ class EpisodeContext:
     raw_dir: Path
     persona: bool = False  # ablation: keep the harness's stock persona
     wp: bool = False       # waypoint action space (wp_bridge.py)
-    hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
-    wp_server_url: str = ""  # waypoint-predictor auto_host (wp / hybrid cells)
+    wp_server_url: str = ""  # waypoint-predictor auto_host (wp cells only)
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
     go2: bool = False      # real Unitree Go2 (go2_bridge.py); server_url points
                            # at go2_host.py on the robot's machine, not localhost
@@ -300,7 +304,6 @@ class EpisodeContext:
             return HMEQA_BRIDGE_PATH
         if self.hybrid:
             return HYBRID_BRIDGE_PATH
-        return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
 
     def bridge_env(self) -> dict[str, str]:
@@ -420,6 +423,27 @@ class VramSampler:
 
 
 # ── episode + run loops ──
+
+# Rate-limit retry — subscription throttling ("Server is temporarily limiting
+# requests") rides through transiently. A throttled session is NOT a navigation
+# result: the worker backs off OUTSIDE the timed scope and re-runs the episode
+# fresh, so the wait never counts against the episode's wall-clock budget (user
+# constraint 2026-07-17: pause the 2400s countdown while waiting). Exhausted
+# retries keep error="rate_limited" -> excluded by aggregate() (not scored 0).
+# "session limit"/"usage limit" = the 5h subscription window (resets on a clock,
+# not transient) — retry can't clear it within the window, but tagging it here
+# routes it to error="rate_limited" -> excluded (not scored 0 as a nav failure).
+RATE_LIMIT_MARKERS = ("temporarily limiting", "rate limited", "overloaded",
+                      "rate_limit", "429", "session limit", "usage limit",
+                      "hit your session")
+RATE_LIMIT_MAX_ATTEMPTS = 6
+RATE_LIMIT_BASE_BACKOFF = 30     # seconds, exponential per attempt
+RATE_LIMIT_MAX_BACKOFF = 300     # per-backoff cap
+
+
+def is_rate_limited(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m in low for m in RATE_LIMIT_MARKERS)
 
 
 async def run_episode(
@@ -634,33 +658,32 @@ async def run_episode(
     return episode
 
 
-def is_scored(rec: dict[str, Any]) -> bool:
-    """True if the episode is a real, scored navigation attempt that counts
-    toward SR.
-
-    INCLUDES a turn-exhausted episode (hit the SDK ``max_turns`` cap without
-    calling STOP): it navigated, was evaluated, ``success`` is 0.0 — a
-    legitimate FAILURE, not an error to hide (dropping it inflates SR).
-
-    EXCLUDES two kinds of non-attempts:
-    - genuine infra failures (timeout / crash) that produced no metrics
-      (``metrics == {}`` → ``success is None``);
-    - rate-limit / 'limit exceeded' casualties — errored WITHOUT taking a
-      single navigation step (``error`` set + ``env_steps`` 0), so the model
-      never really attempted the task. (A genuine turn-exhausted run has
-      ``env_steps`` > 0 and stays counted.)
-    """
-    if (rec.get("metrics") or {}).get("success") is None:
-        return False
-    if rec.get("error") and not ((rec.get("agent") or {}).get("env_steps") or 0):
-        return False
-    return True
-
-
 def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
-    agg: dict[str, Any] = {"episode_count": len(episodes)}
+    """Truncation counts, infra failure doesn't (口径 2026-07-15):
+    an episode with evaluated metrics is scored as-is (cap-hit / cost
+    truncations land here, error tag or not); an unevaluated timeout scores
+    success=0; other unevaluated errors (account block, server crash) are
+    excluded as non-runs and reported via "excluded"."""
+    def _engaged(e: dict[str, Any]) -> bool:
+        # evaluate() runs even when the session died at spawn (infra failure
+        # leaves spawn-position metrics) — only score error-tagged records
+        # where the agent actually did something
+        a = e.get("agent") or {}
+        return bool(a.get("env_steps") or a.get("tool_calls") or a.get("called_stop"))
+
+    scored: list[dict[str, Any]] = []
+    for e in episodes:
+        if e.get("error") == "rate_limited":
+            continue  # subscription throttle, not a navigation result -> excluded
+        if e.get("metrics") and (not e.get("error") or _engaged(e)):
+            scored.append(e)
+        elif e.get("error") == "timeout":
+            scored.append({"metrics": {"success": 0.0},
+                           "agent": e.get("agent") or {}})
+    agg: dict[str, Any] = {"episode_count": len(scored),
+                           "excluded": len(episodes) - len(scored)}
     numeric: dict[str, list[float]] = {}
-    for rec in episodes:
+    for rec in scored:
         for key, value in (rec.get("metrics") or {}).items():
             if isinstance(value, bool):
                 value = float(value)
@@ -671,7 +694,7 @@ def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         if values:
             agg[key] = round(sum(values) / len(values), 4)
     agg["stop_rate"] = round(
-        sum(1 for r in episodes if r["agent"].get("called_stop")) / max(1, len(episodes)), 4
+        sum(1 for r in scored if r["agent"].get("called_stop")) / max(1, len(scored)), 4
     )
     return agg
 
@@ -688,6 +711,23 @@ def parse_episodes(spec: str) -> list[int]:
     return indices
 
 
+def format_episodes(indices: list[int]) -> str:
+    """Inverse of parse_episodes: [7,8,9,14,44] -> '7-9,14,44'."""
+    xs = sorted(set(indices))
+    if not xs:
+        return ""
+    out: list[str] = []
+    start = prev = xs[0]
+    for x in xs[1:]:
+        if x == prev + 1:
+            prev = x
+            continue
+        out.append(f"{start}-{prev}" if start != prev else f"{start}")
+        start = prev = x
+    out.append(f"{start}-{prev}" if start != prev else f"{start}")
+    return ",".join(out)
+
+
 async def run_cell(
     adapter: HarnessAdapter, spec: CellSpec, servers: list[str],
     episodes_spec: str | None = None, run_name: str | None = None,
@@ -697,9 +737,9 @@ async def run_cell(
     """Run (or resume) one cell. Existing episode records in the run dir's
     summary are kept; requested indices are re-run and replace their records.
     cfg_overrides patches the frozen knobs (split, rgb_resolution, ...) for
-    off-board runs -- the Monitor UI's free-knob path (uirun.py); stdrun's std
+    off-board runs -- the Monitor UI free-knob path (uirun.py); stdrun's std
     cells never pass it."""
-    # Each benchmark line carries its own frozen config -- hm3d / mp3d / ovon
+    # Each benchmark line carries its own frozen config — hm3d / mp3d / ovon
     # are peers of the habitat-r2r std line, not variants of it.
     cfg = dict(BENCHMARK_FROZEN.get(spec.benchmark, STD_FROZEN))
     if cfg_overrides:
@@ -707,13 +747,9 @@ async def run_cell(
     if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
         cfg["max_turns"] = spec.max_turns
     cfg["extra"] = dict(extra or {})
-    # Off-board (nonstd) overrides via --set: `dataset`/`split` retarget the
-    # eval (e.g. RxR-CE / rand100_en) and `max_turns` lifts the SDK turn cap
-    # (RxR's long instructions need >100 — episode turn-exhausts otherwise).
-    # Popped out of `extra` so they don't leak into the harness/model config;
-    # absent → the frozen defaults for this benchmark line.
-    # (Merged 2026-08-01: this loop is the superset of the separate max_turns /
-    # split pops that used to sit here — one place, not three.)
+    # off-board turn-cap override: `--nonstd --set max_turns=N` retunes the cap
+    # (frozen cells never carry it). Popped so it retunes the core config, not
+    # the harness extra dict the adapter reads.
     for _k in ("dataset", "split", "max_turns"):
         if _k in cfg["extra"]:
             cfg[_k] = cfg["extra"].pop(_k)
@@ -724,17 +760,14 @@ async def run_cell(
     if "tilt_actions" in cfg["extra"]:
         cfg["tilt_actions"] = bool(int(cfg["extra"].pop("tilt_actions")))
     # auto-observe: step()/goto() carry the resulting view so observe() is a
-    # first-look only — halves the per-move tool calls, which RxR's long
-    # instructions otherwise inflate. Default ON only for RxR-CE; R2R-CE keeps
-    # the classic observe/step alternation (and its frozen baselines). Override
-    # either way with `--set auto_observe=1|0`. The bridge (HABITAT_AUTO_OBSERVE)
-    # and the prompt are both driven off this single flag so they can't disagree.
+    # first-look only. Default ON only for RxR-CE; R2R-CE keeps the classic
+    # alternation (and its frozen baselines). Override with
+    # `--set auto_observe=1|0`. The bridge (HABITAT_AUTO_OBSERVE) and the prompt
+    # are driven off this ONE flag so they can never disagree.
     _ao = cfg["extra"].pop("auto_observe", None)
     if spec.hybrid:
-        # hybrid is ALWAYS separate (non-auto-observe): the model must choose
-        # which lens to look through — forward camera (observe) vs waypoint
-        # panorama (observe_waypoints) — and that choice IS the interface
-        # choice, so a view can never be auto-coupled into a move result.
+        # hybrid is ALWAYS separate: the model must choose which lens to look
+        # through, and that choice IS the interface choice.
         cfg["auto_observe"] = False
     else:
         cfg["auto_observe"] = (
@@ -743,9 +776,6 @@ async def run_cell(
         )
     cfg["wp_server"] = wp_server if (spec.wp or spec.hybrid) else None
     if spec.wp or spec.hybrid:
-        # decision-step budget (wp_bridge-enforced; hybrid ignores it and lets
-        # the 500-step budget bind, but the value is still recorded). Overridable
-        # via --set wp_max_moves=N (popped so it doesn't reach the model).
         cfg["wp_max_moves"] = int(cfg["extra"].pop("wp_max_moves", WP_MAX_MOVES))
         # force substantive thinking (overridable via --set think_budget=N)
         cfg["extra"].setdefault("think_budget", WP_THINK_BUDGET)
@@ -798,6 +828,20 @@ async def run_cell(
     run_dir.mkdir(parents=True, exist_ok=True)
     summary_path = run_dir / "summary.json"
 
+    # graceful drain: `touch <run_dir>/DRAIN` (or `stdrun.py drain <cell>`, or
+    # send SIGUSR1) asks every worker to finish its current episode, flush, and
+    # exit WITHOUT pulling a new one — in-flight work is never cut, un-pulled
+    # indices stay pending for the next resume. Lets us stop a batch at an
+    # episode boundary instead of hard-killing it (which loses in-flight work).
+    drain = asyncio.Event()
+    drain_sentinel = run_dir / "DRAIN"
+    if drain_sentinel.exists():
+        drain_sentinel.unlink()  # clear a stale sentinel from a prior run
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, drain.set)
+    except (NotImplementedError, RuntimeError):
+        pass  # signal handlers unavailable on this platform / thread
+
     # resume: keep prior records for indices not being re-run
     prior: dict[int, dict[str, Any]] = {}
     if summary_path.exists():
@@ -840,7 +884,9 @@ async def run_cell(
                            "extra": json_safe(cfg["extra"])},
                 "servers": servers,
                 "run_stats": run_stats,
-                "aggregate": aggregate([e for e in ordered if is_scored(e)]),
+                # aggregate() applies the board口径 itself (timeout scores 0,
+                # rate_limited/infra errors are excluded) — do not pre-filter.
+                "aggregate": aggregate(ordered),
                 "episodes": ordered,
             }
             summary_path.write_text(json.dumps(summary, indent=2))
@@ -848,24 +894,43 @@ async def run_cell(
     async def worker(position: int, url: str) -> None:
         await asyncio.sleep(position * 2)  # stagger cold-server scene loads
         while True:
+            if drain.is_set() or drain_sentinel.exists():
+                print(f"[std] worker {position} ({url}) draining — "
+                      f"no new episode pulled")
+                return
             try:
                 index = queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
             print(f"[std] episode {index} starting on {url}")
-            try:
-                episode = await asyncio.wait_for(
-                    run_episode(adapter, spec, cfg, url, index, run_dir),
-                    timeout=cfg["episode_timeout"] + 600,  # backstop over in-session caps
-                )
-            except asyncio.TimeoutError:
-                print(f"[std] episode {index} TIMED OUT (backstop)")
-                episode = {"index": index, "error": "timeout", "metrics": {},
-                           "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
-            except Exception as exc:  # noqa: BLE001 — one bad episode must not kill the run
-                print(f"[std] episode {index} FAILED: {exc!r}")
-                episode = {"index": index, "error": repr(exc), "metrics": {},
-                           "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
+            # Rate-limit retry: back off OUTSIDE the timed scope and re-run the
+            # episode fresh, so the wait never eats the episode's wall-clock
+            # budget. Each attempt gets a full episode_timeout; the backoff sleep
+            # is not counted against it (the "paused countdown").
+            episode = None
+            for attempt in range(1, RATE_LIMIT_MAX_ATTEMPTS + 1):
+                try:
+                    episode = await asyncio.wait_for(
+                        run_episode(adapter, spec, cfg, url, index, run_dir),
+                        timeout=cfg["episode_timeout"] + 600,  # backstop over in-session caps
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[std] episode {index} TIMED OUT (backstop)")
+                    episode = {"index": index, "error": "timeout", "metrics": {},
+                               "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
+                except Exception as exc:  # noqa: BLE001 — one bad episode must not kill the run
+                    tag = "rate_limited" if is_rate_limited(repr(exc)) else repr(exc)
+                    print(f"[std] episode {index} FAILED: {exc!r}")
+                    episode = {"index": index, "error": tag, "metrics": {},
+                               "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
+                if episode.get("error") != "rate_limited" or attempt == RATE_LIMIT_MAX_ATTEMPTS:
+                    break
+                backoff = min(RATE_LIMIT_BASE_BACKOFF * (2 ** (attempt - 1)),
+                              RATE_LIMIT_MAX_BACKOFF)
+                print(f"[std] episode {index} RATE-LIMITED (attempt {attempt}/"
+                      f"{RATE_LIMIT_MAX_ATTEMPTS}) — backing off {backoff}s "
+                      f"(episode countdown paused) then retrying")
+                await asyncio.sleep(backoff)  # OUTSIDE wait_for: excluded from episode_timeout
             episodes[index] = episode
             await flush_summary()
             m = episode.get("metrics") or {}
@@ -887,7 +952,17 @@ async def run_cell(
                 run_stats["finalize_error"] = repr(exc)
         await flush_summary()
 
-    final = aggregate([e for e in episodes.values() if is_scored(e)])
+    if drain.is_set() or drain_sentinel.exists():
+        left: list[int] = []
+        while not queue.empty():
+            left.append(queue.get_nowait())
+        print(f"[std] DRAINED — in-flight episodes finished; "
+              f"{len(left)} un-run, resume with --episodes {format_episodes(left)}"
+              if left else "[std] DRAINED — queue already empty")
+    if drain_sentinel.exists():
+        drain_sentinel.unlink()
+
+    final = aggregate(list(episodes.values()))
     print(f"[std] cell complete -> {summary_path}")
     if run_stats:
         print(f"[std] run stats: {json.dumps(run_stats)}")
