@@ -72,6 +72,23 @@ def objnav_verb_prefix(benchmark: str) -> str:
     return "env_ovon" if benchmark.startswith("ovon") else "env_objnav"
 
 
+def env_verb_prefix(benchmark: str) -> str:
+    """Nodeset verb namespace for ANY benchmark — the driver's one place that
+    turns a benchmark name into the ``env_*`` prefix its auto_host answers on.
+
+    Also the value of the server's ``/health`` ``name``, which is what makes
+    the pre-flight peer check (a mismatched server places the WRONG episodes)
+    a one-liner for every line rather than a per-family special case.
+    """
+    if benchmark in OBJNAV_BENCHMARKS:
+        return objnav_verb_prefix(benchmark)
+    if benchmark == "hmeqa":
+        return "env_hmeqa"
+    if benchmark == "vlnverse":
+        return "env_vlnverse"
+    return "env_habitat"
+
+
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
 
 
@@ -342,6 +359,13 @@ class EpisodeContext:
             }
         env = {
             "HABITAT_SERVER_URL": self.server_url,
+            # env_habitat for the R2R/RxR lines, env_vlnverse for the Isaac
+            # line — same two verbs, same port shapes, so mcp_bridge only
+            # needs the namespace. wp/hybrid do NOT read this: their pano
+            # dir_id convention is habitat's clockwise one and the waypoint
+            # predictor is habitat-trained, so those surfaces stay
+            # habitat-only (refused for vlnverse at cell-build time).
+            "HABITAT_VERB_PREFIX": env_verb_prefix(self.benchmark),
             "HABITAT_STEP_BUDGET": str(self.step_budget),
             "HABITAT_TURN_BUDGET": str(self.turn_budget),
             "HABITAT_BARE": "1" if self.bare else "0",
@@ -509,9 +533,14 @@ async def run_episode(
         await asyncio.to_thread(panel_field, url, "episode_index", index)
         await asyncio.to_thread(panel_action, url, "play")
 
+        # habitat-r2r / RxR-CE and vlnverse share this branch: both are
+        # instruction-following VLN, both emit the instruction straight off
+        # reset. Only the verb namespace differs (vlnverse has no rgb knob —
+        # it renders at its own 1024²/90° and ignores the config key).
         reset_config = {"rgb_resolution": str(cfg["rgb_resolution"])}
         ep = await asyncio.to_thread(
-            call_function, url, "env_habitat__reset", {"trigger": "driver"}, reset_config
+            call_function, url, f"{env_verb_prefix(spec.benchmark)}__reset",
+            {"trigger": "driver"}, reset_config,
         )
         instruction = ep["instruction"]
 
@@ -609,11 +638,7 @@ async def run_episode(
                         (sink.last_step_result or {}).get("answer") or "")
                 }
             else:
-                evaluate_fn = (
-                    f"{objnav_verb_prefix(spec.benchmark)}__evaluate"
-                    if spec.benchmark in OBJNAV_BENCHMARKS
-                    else "env_habitat__evaluate"
-                )
+                evaluate_fn = f"{env_verb_prefix(spec.benchmark)}__evaluate"
                 evaluate_inputs = {"trigger": "driver"}
             try:
                 metrics_out = await asyncio.to_thread(
@@ -802,20 +827,33 @@ async def run_cell(
         else:
             server_name = health.json()["name"]
             print(f"[std] {url} healthy: {server_name}")
-            if spec.benchmark in OBJNAV_BENCHMARKS or spec.benchmark == "hmeqa":
-                # hm3d/mp3d need an env_objnav auto_host, ovon an env_ovon
-                # one, hmeqa an env_hmeqa one — a mismatched server would
-                # place the wrong episodes, so refuse rather than degrade
-                # silently.
-                want = ("env_hmeqa" if spec.benchmark == "hmeqa"
-                        else objnav_verb_prefix(spec.benchmark))
-                if server_name != want:
-                    raise RuntimeError(
-                        f"{url} serves {server_name!r} but cell {spec.name} "
-                        f"({spec.benchmark}) needs {want!r}"
-                    )
+            # hm3d/mp3d need an env_objnav auto_host, ovon an env_ovon one,
+            # hmeqa an env_hmeqa one, vlnverse an env_vlnverse one — a
+            # mismatched server would place the wrong episodes, so refuse
+            # rather than degrade silently. The habitat lines are checked too
+            # now that the prefix is computed rather than assumed.
+            want = env_verb_prefix(spec.benchmark)
+            if server_name != want:
+                raise RuntimeError(
+                    f"{url} serves {server_name!r} but cell {spec.name} "
+                    f"({spec.benchmark}) needs {want!r}"
+                )
 
     if spec.wp or spec.hybrid:
+        # vlnverse rides the primitive surface only. Two reasons, both of
+        # which would degrade SILENTLY rather than fail: (1) its panorama
+        # numbers dir_id counter-clockwise (NavHarness strip convention) where
+        # habitat numbers it clockwise, so wp_bridge's dir_id arithmetic maps
+        # candidates to mirrored headings; (2) the SmartWay predictor is
+        # trained on habitat RGB-D at habitat intrinsics, and vlnverse renders
+        # 1024²/90° in Isaac — out of distribution, no calibration behind it.
+        # Lift this only WITH a re-derived pano convention + a wp calibration.
+        if spec.benchmark == "vlnverse":
+            raise RuntimeError(
+                f"cell {spec.name}: wp/hybrid is habitat-only — the vlnverse "
+                "pano is CCW-indexed and the waypoint predictor is not "
+                "calibrated for Isaac renders. Use a bare/std vlnverse cell."
+            )
         # a wp/hybrid cell without its predictor would silently degrade — refuse
         if not wp_server:
             raise RuntimeError("wp/hybrid cell needs --wp-server (waypoint-predictor auto_host)")

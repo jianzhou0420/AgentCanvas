@@ -155,6 +155,39 @@ def _hmeqa_frozen() -> dict:
 
 BENCHMARK_FROZEN["hmeqa"] = _hmeqa_frozen()
 
+
+# ── VLNVerse line (2026-08-02): instruction-following VLN in Isaac Sim 5.1 ──
+# Seventh benchmark line, but NOT an ObjectNav sibling: vlnverse is the same
+# task shape as habitat-r2r (a language instruction, STOP within 3 m of the
+# goal), just a different simulator + scene corpus (262 kujiale scans, Isaac
+# 5.1 renders at 1024²/90° behind an msgpack RPC seam). So it reuses the R2R
+# branch end to end — mcp_bridge with HABITAT_VERB_PREFIX=env_vlnverse, the
+# std briefing verbatim (identical action space: 0=STOP, 1=FWD 0.25 m,
+# 2/3=turn 15°), driver reset/evaluate through env_verb_prefix().
+#
+# PROVISIONAL — this is deliberately NOT a frozen protocol yet. The other six
+# lines run a MATERIALIZED, scene-stratified, seed-42 sample of 100 (rand100 /
+# teaps100) with a committed audit manifest; no such sample exists for
+# vlnverse because sample_episodes.py has no vlnverse backend. Until it does,
+# this line runs the first 100 episodes of fine/val_unseen IN SPLIT-FILE ORDER
+# — deterministic and reproducible, but scene-clustered (the split is grouped
+# by scan, so eps 0-99 cover only a handful of the 262 scenes) and therefore
+# NOT comparable to the R2R std numbers. Use it for smoke + development;
+# freeze a teaps100-style sample before it carries a paper claim.
+BENCHMARK_FROZEN["vlnverse"] = {
+    "benchmark": "vlnverse",
+    "dataset": "fine",         # fine-grained instructions (the R2R analogue)
+    "split": "val_unseen",     # 825 episodes
+    "episodes": "0-99",        # split-file order — see PROVISIONAL note above
+    # Same posture as the R2R std line, not the objnav one: this is a
+    # point-to-point instruction follow, not open-ended exploration, so it
+    # takes std-v2's 200 turns rather than objnav's 150 + USD fuse.
+    "max_turns": 200,
+    "rgb_resolution": 512,     # accepted-and-ignored: Isaac renders 1024²
+    "step_budget": 500,
+    "episode_timeout": 2400,
+}
+
 # Compute we own (local GPU, no API bill or rate limit) can take its own cap;
 # the knob is kept so the rented and owned columns can diverge.
 #
@@ -379,7 +412,8 @@ class CellSpec:
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
     go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
     hybrid: bool = False  # primitive + waypoint in one surface (hybrid_bridge.py)
-    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hm3d | mp3d | ovon
+    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hm3d | mp3d | ovon*
+                            # | hmeqa | vlnverse
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
     max_turns: int | None = None  # None → STD_FROZEN's cap (std-v2: 200)
@@ -603,6 +637,17 @@ for _h, _m in OBJNAV_TRIO:
     _base = _cell(_h, _m, "bare", "default")
     spec = replace(_base, name=f"hmeqa_{_h}_{_m}", condition="hmeqa",
                    benchmark="hmeqa")
+    CELLS[spec.name] = spec
+
+# VLNVerse board (2026-08-02): same sdk trio, bare surface, default effort.
+# Server: env_vlnverse auto_host (ac-vlnverse env, Isaac 5.1 worker behind it);
+# the driver refuses a mismatched server name. wp/hybrid cells are NOT built
+# for this line — the driver refuses that combination outright (CCW pano
+# indexing + a habitat-trained waypoint predictor); see driver.py.
+for _h, _m in OBJNAV_TRIO:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"vlnverse_{_h}_{_m}", condition="vlnverse",
+                   benchmark="vlnverse")
     CELLS[spec.name] = spec
 
 # batches: the tiered main board carries the effort tier in the cell name
