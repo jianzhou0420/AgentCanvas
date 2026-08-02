@@ -21,6 +21,14 @@ live in module globals.
 
 Env vars:
     HABITAT_SERVER_URL   auto_host base URL (default http://127.0.0.1:9200)
+    HABITAT_VERB_PREFIX  nodeset verb namespace (default env_habitat; set to
+                         env_vlnverse to drive the VLNVerse / Isaac Sim 5.1
+                         nodeset). The two nodesets expose the same two verbs
+                         this bridge uses — observe_egocentric (rgb + depth)
+                         and step_discrete (0=STOP, 1=FWD 0.25 m, 2/3=turn
+                         15°) — with identical port shapes, so the prefix is
+                         the ONLY thing that differs. Mirrors objnav_bridge's
+                         OBJNAV_VERB_PREFIX.
     HABITAT_STEP_BUDGET  advisory low-level step budget echoed to the agent
                          (default 500 — habitat's MAX_EPISODE_STEPS truncates
                          authoritatively regardless)
@@ -50,6 +58,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from PIL import Image as PILImage
 
 SERVER_URL = os.environ.get("HABITAT_SERVER_URL", "http://127.0.0.1:9200")
+VERB_PREFIX = os.environ.get("HABITAT_VERB_PREFIX", "env_habitat")
 STEP_BUDGET = int(os.environ.get("HABITAT_STEP_BUDGET", "500"))
 TURN_BUDGET = int(os.environ.get("HABITAT_TURN_BUDGET", "0"))
 # 0 = no downscale: pano views ride at the native render resolution, same
@@ -220,7 +229,7 @@ def _capture_view() -> tuple[bytes, dict[str, float] | None]:
     advances the live-frame counter, never the simulator. Shared by observe()
     and the auto-observe attached to every step() result."""
     global _obs_count
-    outputs = _call("env_habitat__observe_egocentric", {})
+    outputs = _call(f"{VERB_PREFIX}__observe_egocentric", {})
     png = base64.b64decode(outputs["rgb"])
     _obs_count += 1
     _live_frame(png)
@@ -255,7 +264,7 @@ def look_around() -> list:
 
     content: list[Any] = []
     for label in ("ahead (0°)", "right (+90°)", "behind (+180°)", "left (+270°)"):
-        outputs = _call("env_habitat__observe_egocentric", {})
+        outputs = _call(f"{VERB_PREFIX}__observe_egocentric", {})
         png = base64.b64decode(outputs["rgb"])
         _obs_count += 1
         _live_frame(png)
@@ -269,7 +278,7 @@ def look_around() -> list:
         # rotate 90° right toward the next view; the 4th rotation restores
         # the original heading (4 x 90° = 360°)
         for _ in range(6):
-            outputs = _call("env_habitat__step_discrete", {"action": 3})
+            outputs = _call(f"{VERB_PREFIX}__step_discrete", {"action": 3})
             _steps_taken += 1
             if outputs.get("terminated") or outputs.get("truncated"):
                 _episode_over = True
@@ -365,7 +374,7 @@ def _execute_actions(actions: list[int]) -> dict[str, Any]:
     global _steps_taken, _episode_over, _end_reason
     executed = 0
     for action in actions:
-        outputs = _call("env_habitat__step_discrete", {"action": action})
+        outputs = _call(f"{VERB_PREFIX}__step_discrete", {"action": action})
         executed += 1
         _steps_taken += 1
         terminated = bool(outputs.get("terminated"))

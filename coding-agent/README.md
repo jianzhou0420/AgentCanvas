@@ -45,6 +45,17 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
   --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \
   --class SmartWayWaypointNodeSet --port 9210
 
+# VLNVerse cells (vlnverse_*) talk to an env_vlnverse auto_host instead. It
+# runs in the lean ac-vlnverse env (no simulator: Isaac Sim 5.1 renders in its
+# OWN bundled python behind an msgpack RPC seam, spawned by the nodeset). Data:
+# data/vlnverse/{raw_data,scene} — laid down by scripts/install/
+# install_ac_vlnverse.sh, or fetched with scripts/data/fetch_{episodes,scenes}_
+# vlnverse.py. Cold boot is ~25 s (Isaac + first scene).
+cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
+  ~/miniconda3/envs/ac-vlnverse/bin/python -m app.server.auto_host \
+  --file ../../workspace/nodesets/env/env_vlnverse/__init__.py \
+  --class EnvVLNVerseNodeSet --port 9260
+
 # then (agentcanvas env):
 python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
 python coding-agent/stdrun.py run std_sdk_fable-5_wp   # reads --wp-server (default :9210)
