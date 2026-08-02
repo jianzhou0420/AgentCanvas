@@ -36,24 +36,28 @@ from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT, HYBRID_FIRST_PROMPT,
                      assert_std_skill_freeze, build_briefing)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
-WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
+# Every stdio bridge now lives in coding-agent/bridges/ — moved there by the
+# 1be8d4c restructure, which folded the old top-level beta-* dirs into this
+# package. Resolve off THIS file, not REPO_ROOT, so a worktree checkout works.
+_BRIDGES = Path(__file__).resolve().parent / "bridges"
+BRIDGE_PATH = _BRIDGES / "mcp_bridge.py"
+WP_BRIDGE_PATH = _BRIDGES / "wp_bridge.py"
 # Real Unitree Go2. Same tool surface as mcp_bridge (observe/step/look_around),
 # but its HTTP peer is go2_host.py on the robot's own machine rather than a
 # local habitat auto_host — CycloneDDS is layer-2, so the SDK cannot run here.
-GO2_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "go2_bridge.py"
+GO2_BRIDGE_PATH = _BRIDGES / "go2_bridge.py"
 # ObjectNav family (hm3d / mp3d / ovon — peer benchmarks, each with its own
 # board and frozen config). ONE bridge file serves all three: hm3d and mp3d
 # talk to an env_objnav auto_host, ovon to an env_ovon auto_host, and the two
 # nodesets mirror each other's port shapes so only the verb prefix differs
 # (OBJNAV_VERB_PREFIX, set per cell in bridge_env()).
-OBJNAV_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "objnav_bridge.py"
+OBJNAV_BRIDGE_PATH = _BRIDGES / "objnav_bridge.py"
 # HM-EQA (explore-eqa, Ren et al. 2024): multiple-choice EQA on HM3D. Same
 # structural copy of the objnav bridge, with the one benchmark-shaped
 # difference that the episode ends by answer("A".."D") instead of STOP — the
 # answer rides the tool-result channel (EventSink.last_step_result) back to
 # the driver, which passes it to env_hmeqa__evaluate as pred_letter.
-HMEQA_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "hmeqa_bridge.py"
+HMEQA_BRIDGE_PATH = _BRIDGES / "hmeqa_bridge.py"
 
 
 def objnav_verb_prefix(benchmark: str) -> str:
@@ -64,7 +68,7 @@ def objnav_verb_prefix(benchmark: str) -> str:
 # toolface, with the look-then-move gate that makes the choice of lens the
 # choice of interface. Same habitat auto_host peer as mcp_bridge, plus the
 # waypoint predictor that wp uses.
-HYBRID_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "hybrid_bridge.py"
+HYBRID_BRIDGE_PATH = _BRIDGES / "hybrid_bridge.py"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
@@ -688,12 +692,18 @@ async def run_cell(
     adapter: HarnessAdapter, spec: CellSpec, servers: list[str],
     episodes_spec: str | None = None, run_name: str | None = None,
     extra: dict[str, Any] | None = None, wp_server: str | None = None,
+    cfg_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run (or resume) one cell. Existing episode records in the run dir's
-    summary are kept; requested indices are re-run and replace their records."""
-    # Each benchmark line carries its own frozen config — hm3d / mp3d / ovon
+    summary are kept; requested indices are re-run and replace their records.
+    cfg_overrides patches the frozen knobs (split, rgb_resolution, ...) for
+    off-board runs -- the Monitor UI's free-knob path (uirun.py); stdrun's std
+    cells never pass it."""
+    # Each benchmark line carries its own frozen config -- hm3d / mp3d / ovon
     # are peers of the habitat-r2r std line, not variants of it.
     cfg = dict(BENCHMARK_FROZEN.get(spec.benchmark, STD_FROZEN))
+    if cfg_overrides:
+        cfg.update(cfg_overrides)
     if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
         cfg["max_turns"] = spec.max_turns
     cfg["extra"] = dict(extra or {})

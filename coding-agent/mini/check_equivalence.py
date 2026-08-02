@@ -1,17 +1,20 @@
 """Equivalence checks: mini-swe-agent path vs the claude-SDK path.
 
 Offline (no env server, no LLM). Three checks, each against the SDK path's
-OWN source as the fixture:
+OWN source as the fixture (the frozen legacy drivers under
+coding-agent/legacy/ — kept unedited exactly so they can serve here):
 
 1. Tool schemas — HabitatToolSet's declared {name, description, input_schema}
    vs the MCP bridge introspected in-process (the exact schemas SDK sessions
    received, per the recorded session_inputs events). Bare and full variants.
-2. Prompts — our jinja templates rendered vs the SDK driver's str.format
-   prompts, plus the first user message.
+2. Prompts — the legacy mini jinja templates rendered vs the legacy SDK
+   driver's str.format prompts, plus the first user message; and the live
+   prompt surface (coding-agent/prompts.py) byte-equal to the legacy SDK
+   driver it claims to be moved verbatim from.
 3. Clearance readout — same synthetic depth frame through both
    implementations.
 
-Run:  ~/miniforge3/envs/agentcanvas/bin/python beta-react-harness/check_equivalence.py
+Run:  ~/miniforge3/envs/agentcanvas/bin/python coding-agent/mini/check_equivalence.py
 Exit code 0 = all equivalent.
 """
 
@@ -30,18 +33,19 @@ from pathlib import Path
 import numpy as np
 from PIL import Image as PILImage
 
-HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[0]
-BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "mcp_bridge.py"
-WP_BRIDGE_PATH = REPO_ROOT / "beta-coding-agent" / "wp_bridge.py"
-SDK_DRIVER_PATH = REPO_ROOT / "beta-coding-agent" / "run_episodes.py"
+HERE = Path(__file__).resolve().parent            # coding-agent/mini
+CODING_AGENT_DIR = HERE.parent
+BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "mcp_bridge.py"
+WP_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "wp_bridge.py"
+PROMPTS_PATH = CODING_AGENT_DIR / "prompts.py"
+SDK_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-coding-agent" / "run_episodes.py"
+MINI_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-react-harness" / "run_episodes.py"
 
 sys.path.insert(0, str(HERE))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from jinja2 import StrictUndefined, Template
 
-import run_episodes as ours
 from toolset import HabitatToolSet, WaypointToolSet
 
 FAILURES: list[str] = []
@@ -111,6 +115,8 @@ def check_schemas() -> None:
 
 def check_prompts() -> None:
     sdk = _import_from_path("_sdk_driver", SDK_DRIVER_PATH)
+    ours = _import_from_path("_mini_legacy_driver", MINI_DRIVER_PATH)
+    live = _import_from_path("_live_prompts", PROMPTS_PATH)
     instruction = 'Walk past the sofa, then "turn left" at the door.'
     budget = 500
     pairs = [
@@ -130,6 +136,11 @@ def check_prompts() -> None:
               _diff(sdk_text, mini_text))
     check("first_prompt", sdk.FIRST_PROMPT == ours.FIRST_PROMPT,
           _diff(sdk.FIRST_PROMPT, ours.FIRST_PROMPT))
+    # the live prompt surface vs the frozen legacy source it was moved from
+    for attr in ("SYSTEM_PROMPT", "BARE_SYSTEM_PROMPT", "FIRST_PROMPT"):
+        sdk_text, live_text = getattr(sdk, attr), getattr(live, attr)
+        check(f"prompts.py {attr} verbatim", sdk_text == live_text,
+              _diff(sdk_text, live_text))
 
 
 def check_clearance() -> None:
