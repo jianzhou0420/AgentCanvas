@@ -14,7 +14,7 @@ from git history at FIXTURE_COMMIT — the tree no longer carries them):
 3. Clearance readout — same synthetic depth frame through both
    implementations.
 
-Run:  ~/miniforge3/envs/agentcanvas/bin/python coding-agent/mini/check_equivalence.py
+Run:  ~/miniforge3/envs/agentcanvas/bin/python coding-agent/harnesses/mini/check_equivalence.py
 Exit code 0 = all equivalent.
 """
 
@@ -35,8 +35,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image as PILImage
 
-HERE = Path(__file__).resolve().parent            # coding-agent/mini
-CODING_AGENT_DIR = HERE.parent
+HERE = Path(__file__).resolve().parent            # coding-agent/harnesses/mini
+CODING_AGENT_DIR = HERE.parents[1]
 BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "mcp_bridge.py"
 WP_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "wp_bridge.py"
 PROMPTS_PATH = CODING_AGENT_DIR / "prompts.py"

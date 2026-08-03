@@ -14,14 +14,15 @@ ONE core.
 prompts.py    briefing surfaces (bare/nav/wp/hybrid/hmeqa) + skill loader + md5 gate
 cells.py      the std board as code: 62 cells (std · go2 · hmeqa), frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
-harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each
+harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each;
+              mini/ = the mini harness's in-repo body (toolset/model/env/
+              nav_agent) + check_equivalence.py, the bridges<->mini byte gate
 stdrun.py     CLI: run / batch / board / compare
 monitor_api.py  the run-artifact + scoring contract — the ONE surface any
               monitor consumes runs through (layout, honest-SR rule, roots,
               uirun spawn contract); backend loads it by path
 bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
               hmeqa · go2(+go2_host)
-mini/         mini-swe-agent harness modules (toolset/model/env/nav_agent) + check_equivalence.py
 scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
 ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
               run_stats.py (stats backfill) — spawned by the backend
@@ -80,12 +81,12 @@ codex = ChatGPT subscription (`codex login`).
   etc.), same artifact layout — the Coding-Agent Monitor and its source
   toggle work unchanged.
 - **Legacy drivers are frozen in git history** (fixtures pinned at
-  `d10591e:beta-*/run_episodes.py` by `mini/check_equivalence.py`) — they
+  `d10591e:beta-*/run_episodes.py` by `harnesses/mini/check_equivalence.py`) — they
   document how the pre-std archived runs were produced. New runs go through
   this package only.
 - **The bridge stays the single tool surface**: `coding-agent/bridges/mcp_bridge.py`
   (sdk + codex spawn it; mini's byte-equivalent port is still gated by
-  `coding-agent/mini/check_equivalence.py`).
+  `coding-agent/harnesses/mini/check_equivalence.py`).
 - **Event vocabulary enforced by construction**: adapters can only emit
   through `driver.EventSink`, which also derives tool-call counts and
   env-step totals uniformly for all harnesses.
