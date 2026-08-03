@@ -23,7 +23,7 @@ Launch (see also `coding-agent/README.md`):
 
 ```bash
 cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
-  SMARTWAY_REPO_PATH=$PWD/../../beta-coding-agent/wp_predictor_shim \
+  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/wp_predictor_shim \
   TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
   ~/miniconda3/envs/ac-wp/bin/python -m app.server.auto_host \
   --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \

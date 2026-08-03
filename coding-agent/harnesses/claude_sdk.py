@@ -1,6 +1,6 @@
 """Claude Agent SDK adapter — Anthropic's closed scaffolding.
 
-Session block ported verbatim from beta-coding-agent/run_episodes.py (the
+Session block ported verbatim from coding-agent/legacy/beta-coding-agent/run_episodes.py (the
 legacy driver keeps its frozen copy for provenance). Auth rides the logged-in
 Claude subscription; a stray ANTHROPIC_API_KEY would silently switch billing
 to the API in headless mode, so prepare() strips it by default.
@@ -143,7 +143,7 @@ class ClaudeSdkAdapter:
             # API calls and ends the session with subtype error_max_budget_usd
             # — whitelisted below as a scored truncation, like error_max_turns.
             max_budget_usd=ctx.max_budget_usd,
-            model=ctx.model,
+            model=ctx.model or None,
             cwd=str(ctx.workdir),
         )
 

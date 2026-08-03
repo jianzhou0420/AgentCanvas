@@ -1,18 +1,30 @@
-# coding-agent — unified std-v1 experiment runner
+# coding-agent — unified std experiment runner
 
-The high-level interface over the three harness cells. The legacy drivers
-(`beta-coding-agent/`, `beta-react-harness/`, `beta-codex-agent/`) each carry
-a full copy of the driver skeleton and prompt drafts; this package collects
-that shared 90% once and reduces each harness to a ~100-line adapter, so the
-std-v1 board (docs → developer-guide/tmp/coding-agent/standard-experiments.html)
-runs from ONE core.
+The high-level interface over the harness cells, and (since 2026-08-03) the
+ONE home of the whole coding-agent experiment: the former repo-root
+`beta-coding-agent/`, `beta-react-harness/`, and `beta-codex-agent/` dirs are
+unified here — live shared assets in subpackages, the frozen legacy drivers
+under `legacy/`. Each legacy driver used to carry a full copy of the driver
+skeleton and prompt drafts; this package collects that shared 90% once and
+reduces each harness to a ~100-line adapter, so the std board
+(docs → developer-guide/tmp/coding-agent/standard-experiments.html) runs from
+ONE core.
 
 ```
-prompts.py    BARE/FULL drafts (07-09 freeze) + skill loader + md5 gate
-cells.py      the std board as code: 12 cells + codex appendix, frozen knobs, batches
+prompts.py    briefing surfaces (bare/nav/wp/hybrid/objnav/hmeqa) + skill loader + md5 gate
+cells.py      the std board as code: cells across 8 prefixes, frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
 harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each
 stdrun.py     CLI: run / batch / board / compare
+uirun.py      Coding-Agent Monitor's Run-button entry (spawned by the backend)
+bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
+              objnav(+singlestep) · hmeqa · go2(+go2_host) · nodeset_mcp (generic)
+mini/         mini-swe-agent harness modules (toolset/model/env/nav_agent) + check_equivalence.py
+skills/       SKILL.md texts appended to briefings (md5-gated by prompts.py)
+splits/       frozen episode samples (seed42) for the six peer benchmark lines
+analysis/     run_stats.py (per-run report) · analyze_hybrid.py (interface choices)
+wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
+legacy/       the three frozen pre-unification drivers + opus-lab (provenance; never edited)
 ```
 
 ## Usage
@@ -26,11 +38,11 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
 
 # wp cells additionally need the waypoint-predictor server. It runs in the
 # ac-wp env (py3.10 + torch cu128 — GPU inference on sm_120 cards) against the
-# habitat-free shim tree; see beta-coding-agent/wp_predictor_shim/README.md.
+# habitat-free shim tree; see coding-agent/wp_predictor_shim/README.md.
 # Checkpoints: data/smartway/waypoint_ckpt/best.pth + data/smartway/ddppo/
 # gibson-2plus-resnet50.pth (symlink into VLN-MME's data).
 cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
-  SMARTWAY_REPO_PATH=$PWD/../../beta-coding-agent/wp_predictor_shim \
+  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/wp_predictor_shim \
   TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
   ~/miniconda3/envs/ac-wp/bin/python -m app.server.auto_host \
   --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \
@@ -60,9 +72,9 @@ codex = ChatGPT subscription (`codex login`).
   toggle work unchanged.
 - **Legacy drivers are frozen, not edited** — they document how the pre-std
   archived runs were produced. New runs go through this package only.
-- **The bridge stays the single tool surface**: `beta-coding-agent/mcp_bridge.py`
+- **The bridge stays the single tool surface**: `coding-agent/bridges/mcp_bridge.py`
   (sdk + codex spawn it; mini's byte-equivalent port is still gated by
-  `beta-react-harness/check_equivalence.py`).
+  `coding-agent/mini/check_equivalence.py`).
 - **Event vocabulary enforced by construction**: adapters can only emit
   through `driver.EventSink`, which also derives tool-call counts and
   env-step totals uniformly for all harnesses.

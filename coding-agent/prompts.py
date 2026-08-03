@@ -1,7 +1,7 @@
 """Single source of truth for the std-v1 prompt surface.
 
 The BARE / FULL drafts below are the 2026-07-09 finalized texts, moved here
-verbatim from beta-coding-agent/run_episodes.py (which keeps its own frozen
+verbatim from coding-agent/legacy/beta-coding-agent/run_episodes.py (which keeps its own frozen
 copy for provenance — the legacy drivers are not edited). Any std run built
 through this module records the ledger-nav body md5 and refuses to run a nav
 cell whose skill text drifted from the freeze.
@@ -21,7 +21,7 @@ import hashlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILLS_DIR = REPO_ROOT / "beta-coding-agent" / "skills"
+SKILLS_DIR = REPO_ROOT / "coding-agent" / "skills"
 
 # std-v1 freeze: frontmatter-stripped body hash of ledger-nav/SKILL.md
 LEDGER_NAV_STD_MD5 = "f7c74272"
@@ -479,7 +479,7 @@ HYBRID_FIRST_PROMPT = (
 
 def load_skill(name: str) -> tuple[str, str]:
     """Return (frontmatter-stripped body, md5[:8]) of a skill under
-    beta-coding-agent/skills/ — the exact text the drivers feed the model."""
+    coding-agent/skills/ — the exact text the drivers feed the model."""
     text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
     if text.startswith("---"):
         text = text.split("---", 2)[2]

@@ -353,7 +353,7 @@ CONDITIONS = {
     # twice in a row), so the choice of lens IS the choice of interface.
     # bare=True keeps it a minimal, workflow-free surface like bare/wp. Needs the
     # waypoint predictor (--wp-server), same as wp.
-    #   sdk  -> beta-coding-agent/hybrid_bridge.py
+    #   sdk  -> coding-agent/bridges/hybrid_bridge.py
     #   mini -> toolset.HybridToolSet (in-process port; see check_equivalence.py)
     "hybrid": {"bare": True, "skill": None, "hybrid": True},
 }

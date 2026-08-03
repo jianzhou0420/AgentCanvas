@@ -1,9 +1,10 @@
-"""Coding-agent run manager — owns one beta-coding-agent run (auto_host + driver).
+"""Coding-agent run manager — owns one Monitor-launched run (auto_host + driver).
 
 Backs the Coding-Agent Monitor tab. One run at a time (v1, single worker):
 ``start()`` spawns a dedicated ``env_habitat`` auto_host (via ``BaseServer``,
-dynamic free port, PDEATHSIG) and then the beta-coding-agent driver
-(``beta-coding-agent/run_episodes.py``) as a process-group child; ``stop()``
+dynamic free port, PDEATHSIG) and then the UI driver entry
+(``coding-agent/uirun.py`` — the shared std core with the claude_sdk adapter)
+as a process-group child; ``stop()``
 tears both down (driver first). Run state beyond process liveness is derived
 from the driver's own artifacts under ``outputs/beta-coding-agent/{run_name}/`` —
 ``summary.json`` for finished episodes, ``episode_{i}.jsonl`` presence for the
@@ -30,7 +31,7 @@ from typing import Any
 log = logging.getLogger("agentcanvas.coding-agent")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DRIVER_PATH = REPO_ROOT / "beta-coding-agent" / "run_episodes.py"
+DRIVER_PATH = REPO_ROOT / "coding-agent" / "uirun.py"
 OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 
 NODESET_NAME = "env_habitat"
@@ -83,7 +84,7 @@ def _free_port() -> int:
 
 
 class CodingAgentRunner:
-    """Singleton service (lifespan-owned) managing at most one beta-coding-agent run."""
+    """Singleton service (lifespan-owned) managing at most one Monitor coding-agent run."""
 
     def __init__(self, registry: Any) -> None:
         self._registry = registry

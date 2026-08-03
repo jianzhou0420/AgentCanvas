@@ -9,7 +9,7 @@ auto_host and then drives it one keypress at a time from the browser:
     stop()          -> step(0) if still live, then env_habitat__evaluate
 
 It talks to the auto_host over the exact same HTTP surface the
-beta-coding-agent driver uses (``/env-panel/field/{name}``,
+coding-agent driver uses (``/env-panel/field/{name}``,
 ``/env-panel/action/{name}``, ``/call/{fn}``), so the metrics come from
 habitat's own ruler — SR / OSR / NE / nDTW / SPL identical to the agent runs.
 
