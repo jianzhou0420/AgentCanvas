@@ -4,7 +4,7 @@ The high-level interface over the harness cells, and (since 2026-08-03) the
 ONE home of the whole coding-agent experiment: the former repo-root
 `beta-coding-agent/`, `beta-react-harness/`, and `beta-codex-agent/` dirs are
 unified here — live shared assets in subpackages, the frozen legacy drivers
-under `legacy/`. Each legacy driver used to carry a full copy of the driver
+in git history (`d10591e`). Each legacy driver used to carry a full copy of the driver
 skeleton and prompt drafts; this package collects that shared 90% once and
 reduces each harness to a ~100-line adapter, so the std board
 (docs → developer-guide/tmp/coding-agent/standard-experiments.html) runs from
@@ -26,12 +26,13 @@ scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's 
 ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
               run_stats.py (stats backfill) — spawned by the backend
 wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
-legacy/       the three frozen pre-unification drivers + opus-lab (provenance; never edited)
 ```
 
 Trimmed 2026-08-03 to the TEAPS-paper surface: the ObjectNav-family pieces
 (objnav bridges, splits/, sample_episodes.py), skills/, and nodeset_mcp.py
-were deleted — recover any of them from git history. The cells/driver code
+were deleted, and so was `legacy/` (the equivalence fixtures now come
+straight from git at `d10591e`) — recover any of it from git history. The
+cells/driver code
 for the skill cells remains, so they enumerate but cannot run until their
 files are restored.
 
@@ -78,8 +79,10 @@ codex = ChatGPT subscription (`codex login`).
 - **Outputs land in the legacy per-harness roots** (`outputs/beta-coding-agent`
   etc.), same artifact layout — the Coding-Agent Monitor and its source
   toggle work unchanged.
-- **Legacy drivers are frozen, not edited** — they document how the pre-std
-  archived runs were produced. New runs go through this package only.
+- **Legacy drivers are frozen in git history** (fixtures pinned at
+  `d10591e:beta-*/run_episodes.py` by `mini/check_equivalence.py`) — they
+  document how the pre-std archived runs were produced. New runs go through
+  this package only.
 - **The bridge stays the single tool surface**: `coding-agent/bridges/mcp_bridge.py`
   (sdk + codex spawn it; mini's byte-equivalent port is still gated by
   `coding-agent/mini/check_equivalence.py`).

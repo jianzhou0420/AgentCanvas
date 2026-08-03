@@ -1,7 +1,7 @@
 """Claude Agent SDK adapter — Anthropic's closed scaffolding.
 
-Session block ported verbatim from coding-agent/legacy/beta-coding-agent/run_episodes.py (the
-legacy driver keeps its frozen copy for provenance). Auth rides the logged-in
+Session block ported verbatim from the legacy driver, frozen in git history
+at d10591e:beta-coding-agent/run_episodes.py (gated by mini/check_equivalence). Auth rides the logged-in
 Claude subscription; a stray ANTHROPIC_API_KEY would silently switch billing
 to the API in headless mode, so prepare() strips it by default.
 

@@ -1,8 +1,8 @@
 """Equivalence checks: mini-swe-agent path vs the claude-SDK path.
 
 Offline (no env server, no LLM). Three checks, each against the SDK path's
-OWN source as the fixture (the frozen legacy drivers under
-coding-agent/legacy/ — kept unedited exactly so they can serve here):
+OWN source as the fixture (the frozen legacy drivers, taken verbatim
+from git history at FIXTURE_COMMIT — the tree no longer carries them):
 
 1. Tool schemas — HabitatToolSet's declared {name, description, input_schema}
    vs the MCP bridge introspected in-process (the exact schemas SDK sessions
@@ -26,7 +26,9 @@ import difflib
 import importlib.util
 import math
 import os
+import subprocess
 import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
@@ -38,8 +40,14 @@ CODING_AGENT_DIR = HERE.parent
 BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "mcp_bridge.py"
 WP_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "wp_bridge.py"
 PROMPTS_PATH = CODING_AGENT_DIR / "prompts.py"
-SDK_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-coding-agent" / "run_episodes.py"
-MINI_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-react-harness" / "run_episodes.py"
+REPO_ROOT = CODING_AGENT_DIR.parent
+# The frozen legacy drivers left the tree on 2026-08-03 — git history is the
+# provenance store now. Fixtures are pinned to the two-machine merge d10591e,
+# whose copies were verified byte-identical to the last on-disk legacy/ at
+# deletion time. NEVER repoint this at a moving ref.
+FIXTURE_COMMIT = "d10591e"
+SDK_DRIVER_GITPATH = "beta-coding-agent/run_episodes.py"
+MINI_DRIVER_GITPATH = "beta-react-harness/run_episodes.py"
 
 sys.path.insert(0, str(HERE))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
@@ -64,6 +72,18 @@ def _import_from_path(name: str, path: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _import_from_git(name: str, repo_path: str):
+    """Import a frozen fixture straight out of git history: materialize
+    FIXTURE_COMMIT:repo_path into a temp file and import that."""
+    src = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", f"{FIXTURE_COMMIT}:{repo_path}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    tmp = Path(tempfile.gettempdir()) / f"ce_fixture_{name}.py"
+    tmp.write_text(src)
+    return _import_from_path(name, tmp)
 
 
 def _bridge_schemas(bare: bool) -> list[dict]:
@@ -114,8 +134,8 @@ def check_schemas() -> None:
 
 
 def check_prompts() -> None:
-    sdk = _import_from_path("_sdk_driver", SDK_DRIVER_PATH)
-    ours = _import_from_path("_mini_legacy_driver", MINI_DRIVER_PATH)
+    sdk = _import_from_git("_sdk_driver", SDK_DRIVER_GITPATH)
+    ours = _import_from_git("_mini_legacy_driver", MINI_DRIVER_GITPATH)
     live = _import_from_path("_live_prompts", PROMPTS_PATH)
     instruction = 'Walk past the sofa, then "turn left" at the door.'
     budget = 500

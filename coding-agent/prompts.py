@@ -1,7 +1,8 @@
 """Single source of truth for the std-v1 prompt surface.
 
 The BARE / FULL drafts below are the 2026-07-09 finalized texts, moved here
-verbatim from coding-agent/legacy/beta-coding-agent/run_episodes.py (which keeps its own frozen
+verbatim from the legacy driver — d10591e:beta-coding-agent/run_episodes.py in
+git history (which keeps its own frozen
 copy for provenance — the legacy drivers are not edited). Any std run built
 through this module records the ledger-nav body md5 and refuses to run a nav
 cell whose skill text drifted from the freeze.

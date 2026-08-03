@@ -1,6 +1,7 @@
 """mini-swe-agent adapter — the open ReAct loop.
 
-Session block ported from coding-agent/legacy/beta-react-harness/run_episodes.py; the harness
+Session block ported from the legacy driver (frozen in git history at
+d10591e:beta-react-harness/run_episodes.py); the harness
 modules themselves (toolset / model / env / nav_agent) are imported from
 coding-agent/mini/ — they stay the single implementation, still gated by
 check_equivalence.py. litellm bills through the provider API key.
