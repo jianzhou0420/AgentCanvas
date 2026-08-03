@@ -49,11 +49,13 @@ STD_FROZEN: dict = {
 # scene-stratified proportional samples of the official vals, MATERIALIZED
 # at the dataset layer (same form as R2R-CE's rand100): each is a derived
 # split file the env panel selects (split="teaps100..."), and eval runs
-# episodes 0-99 of it. Generator: coding-agent/sample_episodes.py
-# --materialize; audit manifests: coding-agent/splits/*_n100_seed42.json
-# (committed — anyone can regenerate both byte-identically).
+# episodes 0-99 of it. Audit manifests: coding-agent/bridges/splits/
+# *_n100_seed42.json (committed — data/ is gitignored, so the manifest is
+# the ONE tracked record of what each teaps split contains). Generator:
+# sample_episodes.py, in git history at cecd19c — manifest + generator
+# regenerate the materialized CSV byte-identically.
 
-SPLITS_DIR = REPO_ROOT / "coding-agent" / "splits"
+SPLITS_DIR = REPO_ROOT / "coding-agent" / "bridges" / "splits"
 
 
 def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
@@ -114,13 +116,13 @@ def _hmeqa_frozen() -> dict:
     manifest = SPLITS_DIR / "hmeqa_val_n100_seed42.json"
     if not manifest.exists():  # provenance must exist — never run unaudited
         raise FileNotFoundError(
-            f"hmeqa: missing split manifest {manifest} — run "
-            "coding-agent/sample_episodes.py --benchmark hmeqa")
+            f"hmeqa: missing split manifest {manifest} — restore it from git "
+            "(tracked; sampler sample_episodes.py lives at cecd19c)")
     derived = REPO_ROOT / "data" / "hm3d" / "hmeqa" / "questions_teaps100.csv"
     if not derived.exists():  # the split the env panel selects must exist too
         raise FileNotFoundError(
-            f"hmeqa: missing materialized split {derived} — run "
-            "coding-agent/sample_episodes.py --benchmark hmeqa --materialize")
+            f"hmeqa: missing materialized split {derived} — regenerate with "
+            "sample_episodes.py --benchmark hmeqa --materialize (git, cecd19c)")
     return {
         "benchmark": "hmeqa",
         "dataset": None,       # single-CSV benchmark: no dataset selector

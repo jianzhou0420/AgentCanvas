@@ -22,7 +22,9 @@ monitor_api.py  the run-artifact + scoring contract — the ONE surface any
               monitor consumes runs through (layout, honest-SR rule, roots,
               uirun spawn contract); backend loads it by path
 bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
-              hmeqa · go2(+go2_host)
+              hmeqa · go2(+go2_host); splits/ = tracked sampling-provenance
+              manifests for the derived teaps env splits (data/ is gitignored,
+              so these are the one versioned record of what each split holds)
 scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
 ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
               run_stats.py (stats backfill) — spawned by the backend
@@ -30,7 +32,7 @@ ac_wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
 ```
 
 Trimmed 2026-08-03 to the TEAPS-paper surface: the ObjectNav-family pieces
-(objnav bridges, splits/, sample_episodes.py), skills/, and nodeset_mcp.py
+(objnav bridges, their split manifests, sample_episodes.py), skills/, and nodeset_mcp.py
 were deleted, and so was `legacy/` (the equivalence fixtures now come
 straight from git at `d10591e`) — recover any of it from git history. The
 cells/driver code

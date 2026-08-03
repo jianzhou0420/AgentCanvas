@@ -91,10 +91,10 @@ log = logging.getLogger("agentcanvas.env_objnav")
 # ``teaps{N}`` are DERIVED evaluation splits: N episodes of the official val,
 # scene-stratified proportional random sample (seed 42), materialized as a
 # dataset file so each is selectable like any split. N ranges over _TEAPS_N
-# (TEAPS-100 = full board, TEAPS-60 = V1.0 long-horizon indicator); keep this
-# tuple in sync with sample_episodes.py. Generator + method + audit manifest:
-# coding-agent/sample_episodes.py (--materialize) and
-# coding-agent/splits/*_n{N}_seed42.json — regenerable byte-identically.
+# (TEAPS-100 = full board, TEAPS-60 = V1.0 long-horizon indicator). Generator
+# (coding-agent/sample_episodes.py --materialize) + the objnav audit manifests
+# were trimmed with the coding-agent objnav line 2026-08-03 — both live in git
+# history at cecd19c and regenerate the dataset files byte-identically.
 _TEAPS_N: tuple[int, ...] = (100, 60)
 _TEAPS_SPLITS: list[str] = [f"teaps{n}" for n in _TEAPS_N]
 _DATASET_SPECS: dict[str, dict[str, Any]] = {

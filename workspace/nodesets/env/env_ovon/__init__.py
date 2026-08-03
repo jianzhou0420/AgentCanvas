@@ -114,9 +114,9 @@ log = logging.getLogger("agentcanvas.env_ovon")
 # teaps{N}_* are DERIVED evaluation splits: N episodes of the matching val
 # split, scene-stratified proportional random sample (seed 42), materialized
 # as dataset files. N ranges over _TEAPS_N (TEAPS-100 = full board, TEAPS-60 =
-# V1.0 long-horizon indicator); keep this tuple in sync with
-# sample_episodes.py. Generator + audit manifests:
-# coding-agent/sample_episodes.py (--materialize) + coding-agent/splits/.
+# V1.0 long-horizon indicator). Generator (coding-agent/sample_episodes.py
+# --materialize) + the ovon audit manifests were trimmed with the coding-agent
+# objnav line 2026-08-03 — both live in git history at cecd19c.
 _TEAPS_N: tuple[int, ...] = (100, 60)
 
 # The three OVON val splits, each contributing a suffix to the teaps{N}_* names.
