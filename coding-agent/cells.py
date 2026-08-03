@@ -45,13 +45,13 @@ STD_FROZEN: dict = {
 # nodeset and objnav_bridge.py is an implementation fact, like driver.py.
 # Not part of the std-v2 freeze: no rgb knob (640×480 benchmark native).
 #
-# Episodes: the TEAPS100 splits (user decisions 2026-07-22) — the seed-42
+# Episodes: the MIP100 splits (user decisions 2026-07-22) — the seed-42
 # scene-stratified proportional samples of the official vals, MATERIALIZED
 # at the dataset layer (same form as R2R-CE's rand100): each is a derived
-# split file the env panel selects (split="teaps100..."), and eval runs
+# split file the env panel selects (split="mip100..."), and eval runs
 # episodes 0-99 of it. Audit manifests: coding-agent/bridges/splits/
 # *_n100_seed42.json (committed — data/ is gitignored, so the manifest is
-# the ONE tracked record of what each teaps split contains). Generator:
+# the ONE tracked record of what each mip split contains). Generator:
 # sample_episodes.py, in git history at cecd19c — manifest + generator
 # regenerate the materialized CSV byte-identically.
 
@@ -68,8 +68,8 @@ def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
     return {
         "benchmark": benchmark,
         "dataset": dataset,
-        "split": split,       # teaps100*: derived dataset-layer split
-        "episodes": "0-99",   # the whole TEAPS100 split, manifest order
+        "split": split,       # mip100*: derived dataset-layer split
+        "episodes": "0-99",   # the whole MIP100 split, manifest order
         "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
         # Objnav deviates from std-v2's max_turns=200 (user decision 2026-07-22;
         # the delta vs the R2R std setting is documented in the paper appendix):
@@ -87,7 +87,7 @@ def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
 
 
 # ObjectNav family (hm3d / mp3d / ovon-*) removed 2026-08-03 — the line never
-# entered the TEAPS paper; its bridges, splits and cells live in git history
+# entered the MIP paper; its bridges, splits and cells live in git history
 # (last present at cecd19c). Re-arming it = restore the _objnav_frozen entries
 # here plus bridges/objnav_bridge*.py, splits/, sample_episodes.py.
 BENCHMARK_FROZEN: dict[str, dict] = {}
@@ -106,10 +106,10 @@ OBJNAV_BENCHMARKS = tuple(BENCHMARK_FROZEN)  # empty while the line is parked
 # scene-size-dependent num_step budget is a TELEPORT budget and does not
 # apply), step budget enforced bridge-side at the std 500. The camera stays
 # benchmark-native (640×480, hfov 120, starting tilted 30° down).
-# Episodes: split="teaps100" — the MATERIALIZED dataset-layer split
-# (data/hm3d/hmeqa/questions_teaps100.csv, row k = k-th sampled original
+# Episodes: split="mip100" — the MATERIALIZED dataset-layer split
+# (data/hm3d/hmeqa/questions_mip100.csv, row k = k-th sampled original
 # row) selected via the env panel, episodes 0-99 into it. Same semantics as
-# the objnav teaps splits (aligned 2026-07-29 on user request; before that
+# the objnav mip splits (aligned 2026-07-29 on user request; before that
 # the cell carried raw val indices — the trial20/smoke run dirs are indexed
 # in THAT original-CSV space).
 def _hmeqa_frozen() -> dict:
@@ -118,7 +118,7 @@ def _hmeqa_frozen() -> dict:
         raise FileNotFoundError(
             f"hmeqa: missing split manifest {manifest} — restore it from git "
             "(tracked; sampler sample_episodes.py lives at cecd19c)")
-    derived = REPO_ROOT / "data" / "hm3d" / "hmeqa" / "questions_teaps100.csv"
+    derived = REPO_ROOT / "data" / "hm3d" / "hmeqa" / "questions_mip100.csv"
     if not derived.exists():  # the split the env panel selects must exist too
         raise FileNotFoundError(
             f"hmeqa: missing materialized split {derived} — regenerate with "
@@ -126,7 +126,7 @@ def _hmeqa_frozen() -> dict:
     return {
         "benchmark": "hmeqa",
         "dataset": None,       # single-CSV benchmark: no dataset selector
-        "split": "teaps100",   # dataset-layer derived split (objnav semantics)
+        "split": "mip100",   # dataset-layer derived split (objnav semantics)
         "episodes": "0-99",
         "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
         # Same turn/fuse posture as the ObjectNav lines (exploration task,
