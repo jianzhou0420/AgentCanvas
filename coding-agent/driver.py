@@ -124,6 +124,27 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
     return str(obj)
 
 
+# Restored 2026-08-01 after the two-machine merge dropped it (claude_sdk.py
+# still calls is_rate_limited at episode finalization — every claude-sdk
+# episode NameError'd at the result step without this). Source: 6d0bf63
+# (std-v2 rate-limit resilience). NOTE: that commit's worker-level
+# retry/backoff loop did NOT survive the merge and still needs a re-merge.
+# "session limit"/"usage limit" = the 5h subscription window (resets on a clock,
+# not transient) — retry can't clear it within the window, but tagging it here
+# routes it to error="rate_limited" -> excluded (not scored 0 as a nav failure).
+RATE_LIMIT_MARKERS = ("temporarily limiting", "rate limited", "overloaded",
+                      "rate_limit", "429", "session limit", "usage limit",
+                      "hit your session")
+RATE_LIMIT_MAX_ATTEMPTS = 6
+RATE_LIMIT_BASE_BACKOFF = 30     # seconds, exponential per attempt
+RATE_LIMIT_MAX_BACKOFF = 300     # per-backoff cap
+
+
+def is_rate_limited(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m in low for m in RATE_LIMIT_MARKERS)
+
+
 _TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool, bool, bool, bool, bool], Any] = {}
 
 
