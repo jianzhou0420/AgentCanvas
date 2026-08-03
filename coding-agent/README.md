@@ -12,24 +12,27 @@ ONE core.
 
 ```
 prompts.py    briefing surfaces (bare/nav/wp/hybrid/hmeqa) + skill loader + md5 gate
-cells.py      the std board as code: cells across 8 prefixes, frozen knobs, batches
+cells.py      the std board as code: 62 cells (std · go2 · hmeqa), frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
 harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each
 stdrun.py     CLI: run / batch / board / compare
+monitor_api.py  the run-artifact + scoring contract — the ONE surface any
+              monitor consumes runs through (layout, honest-SR rule, roots,
+              uirun spawn contract); backend loads it by path
 bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
               hmeqa · go2(+go2_host)
 mini/         mini-swe-agent harness modules (toolset/model/env/nav_agent) + check_equivalence.py
-analysis/     analyze_hybrid.py (interface choices, feeds the paper's hybrid section)
+scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
+ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
+              run_stats.py (stats backfill) — spawned by the backend
 wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
 legacy/       the three frozen pre-unification drivers + opus-lab (provenance; never edited)
 ```
 
 Trimmed 2026-08-03 to the TEAPS-paper surface: the ObjectNav-family pieces
 (objnav bridges, splits/, sample_episodes.py), skills/, and nodeset_mcp.py
-were deleted — recover any of them from git history. The Coding-Agent
-Monitor's helpers live in `scripts/eval/` (`uirun.py` Run-button entry,
-`run_stats.py` stats backfill); the cells/driver code for the ObjectNav and
-skill cells remains, so those cells enumerate but cannot run until their
+were deleted — recover any of them from git history. The cells/driver code
+for the skill cells remains, so they enumerate but cannot run until their
 files are restored.
 
 ## Usage

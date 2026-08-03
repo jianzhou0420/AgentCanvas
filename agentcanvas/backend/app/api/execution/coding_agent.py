@@ -178,14 +178,14 @@ async def stats_report(run_name: str, source: str = "claude-sdk",
                        refresh: bool = False):
     """Self-contained statistics report (charts + tables after the metric
     block) for one run. The driver writes stats.html at run end; older runs
-    are backfilled on demand here by invoking scripts/eval/run_stats.py in
+    are backfilled on demand here by invoking coding-agent/ac_support/run_stats.py in
     this backend's interpreter (same env, has matplotlib)."""
     run_dir = _run_dir(source, run_name)
     path = run_dir / "stats.html"
     if refresh or not path.exists():
         if not (run_dir / "summary.json").exists():
             raise HTTPException(409, "run has no summary.json yet — still running?")
-        script = REPO_ROOT / "scripts" / "eval" / "run_stats.py"
+        script = REPO_ROOT / "coding-agent" / "ac_support" / "run_stats.py"
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(script), str(run_dir),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
