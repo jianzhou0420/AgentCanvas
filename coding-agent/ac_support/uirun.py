@@ -41,9 +41,8 @@ def main() -> None:
         harness="sdk",
         model_key="ui",
         model_id=args.model or "",
-        condition="ui",  # full toolset, no skill — the legacy UI condition
+        condition="ui",  # full toolset — the legacy UI condition
         bare=False,
-        skill=None,
         max_turns=args.max_turns,
     )
     asyncio.run(run_cell(

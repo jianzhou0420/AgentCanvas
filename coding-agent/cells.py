@@ -35,69 +35,23 @@ STD_FROZEN: dict = {
     "episode_timeout": 2400,
 }
 
-# ── ObjectNav-family benchmarks (2026-07-21): hm3d / mp3d / ovon×3 ──
-# Five benchmark lines at the SAME level as habitat-r2r's std line (user
-# decision 2026-07-21): each carries its own frozen config, its own board,
-# and its own cell-name prefix — hm3d and mp3d are NOT collapsed into one
-# "objnav" line just because they share the env_objnav nodeset, and OVON's
-# three val splits are three LINES (the seen / synonyms / unseen ladder is
-# the experimental axis, so each rung gets its own board). Sharing the
-# nodeset and objnav_bridge.py is an implementation fact, like driver.py.
-# Not part of the std-v2 freeze: no rgb knob (640×480 benchmark native).
-#
-# Episodes: the MIP100 splits (user decisions 2026-07-22) — the seed-42
-# scene-stratified proportional samples of the official vals, MATERIALIZED
-# at the dataset layer (same form as R2R-CE's rand100): each is a derived
-# split file the env panel selects (split="mip100..."), and eval runs
-# episodes 0-99 of it. Audit manifests: coding-agent/bridges/splits/
-# *_n100_seed42.json (committed — data/ is gitignored, so the manifest is
-# the ONE tracked record of what each mip split contains). Generator:
-# sample_episodes.py, in git history at cecd19c — manifest + generator
-# regenerate the materialized CSV byte-identically.
+# Derived mip{N} evaluation splits (user decisions 2026-07-22): seed-42
+# scene-stratified proportional samples of an official val, MATERIALIZED at
+# the dataset layer (same form as R2R-CE's rand100) — a derived split file
+# the env panel selects (split="mip100"), eval running episodes 0-99 of it.
+# Audit manifests: coding-agent/bridges/splits/*_n100_seed42.json (committed
+# — data/ is gitignored, so the manifest is the ONE tracked record of what
+# each mip split contains). Generator: sample_episodes.py, in git history at
+# cecd19c — manifest + generator regenerate the materialized CSV
+# byte-identically. The ObjectNav family (hm3d / mp3d / ovon×3) that shared
+# this mechanism never entered the MIP paper and was removed 2026-08-03
+# (cells + helper last at a942483; bridges/splits at cecd19c).
 
 SPLITS_DIR = REPO_ROOT / "coding-agent" / "bridges" / "splits"
 
 
-def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
-                   manifest_stem: str) -> dict:
-    manifest = SPLITS_DIR / f"{manifest_stem}.json"
-    if not manifest.exists():  # provenance must exist — never run unaudited
-        raise FileNotFoundError(
-            f"{benchmark}: missing split manifest {manifest} — run "
-            "coding-agent/sample_episodes.py --materialize")
-    return {
-        "benchmark": benchmark,
-        "dataset": dataset,
-        "split": split,       # mip100*: derived dataset-layer split
-        "episodes": "0-99",   # the whole MIP100 split, manifest order
-        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
-        # Objnav deviates from std-v2's max_turns=200 (user decision 2026-07-22;
-        # the delta vs the R2R std setting is documented in the paper appendix):
-        # 150 turns + an $18/episode USD fuse. The fuse is the CLI's own
-        # --max-budget-usd — session ends with subtype error_max_budget_usd,
-        # scored as clean truncation (like error_max_turns), never retried.
-        # Motivation: hm3d smokes showed cap-burning episodes cost 2-4x a
-        # success (worst $38.9) because full-history resend makes cost grow
-        # ~quadratically in turns; the fuse kills exactly that tail.
-        "max_turns": 150,
-        "max_budget_usd": 18.0,
-        "step_budget": 500,  # = habitat's ObjectNav max_episode_steps
-        "episode_timeout": 2400,
-    }
-
-
-# ObjectNav family (hm3d / mp3d / ovon-*) removed 2026-08-03 — the line never
-# entered the MIP paper; its bridges, splits and cells live in git history
-# (last present at cecd19c). Re-arming it = restore the _objnav_frozen entries
-# here plus bridges/objnav_bridge*.py, splits/, sample_episodes.py.
-BENCHMARK_FROZEN: dict[str, dict] = {}
-OBJNAV_BENCHMARKS = tuple(BENCHMARK_FROZEN)  # empty while the line is parked
-                                             # (hmeqa is added below, after
-                                             # this tuple is taken)
-
-
 # ── HM-EQA benchmark line (2026-07-29): explore-eqa multiple-choice EQA ──
-# Sixth benchmark line at the same level as the ObjectNav five. Success is
+# A benchmark line at the same level as the habitat-r2r std line. Success is
 # answer correctness (env_hmeqa__evaluate compares the agent's letter to GT);
 # the episode ends by answer("A".."D") via hmeqa_bridge.py, not STOP.
 # Deviations from the benchmark-native protocol (all documented in the
@@ -126,7 +80,7 @@ def _hmeqa_frozen() -> dict:
     return {
         "benchmark": "hmeqa",
         "dataset": None,       # single-CSV benchmark: no dataset selector
-        "split": "mip100",   # dataset-layer derived split (objnav semantics)
+        "split": "mip100",   # dataset-layer derived split (mip semantics)
         "episodes": "0-99",
         "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
         # Same turn/fuse posture as the ObjectNav lines (exploration task,
@@ -144,7 +98,7 @@ def _hmeqa_frozen() -> dict:
     }
 
 
-BENCHMARK_FROZEN["hmeqa"] = _hmeqa_frozen()
+BENCHMARK_FROZEN: dict[str, dict] = {"hmeqa": _hmeqa_frozen()}
 
 # Compute we own (local GPU, no API bill or rate limit) can take its own cap;
 # the knob is kept so the rented and owned columns can diverge.
@@ -319,24 +273,18 @@ def _tier_extra(harness: str, model_key: str, tier: str) -> dict:
                     else {"thinking": "adaptive"})   # keep thinking, drop effort
     return {}
 
+# The nav / wp-nav (ledger skill) and persona ablation conditions were
+# retired 2026-08-03 with the skills/ dir — none entered the MIP paper.
+# Last present at a942483; skills/ files at cecd19c.
 CONDITIONS = {
-    "bare": {"bare": True, "skill": None},
-    "nav": {"bare": False, "skill": "ledger-nav"},
-    # ablation: bare tool surface + BARE briefing, but the stock Claude Code
-    # persona is KEPT (preset system prompt, briefing appended instead of
-    # replacing). sdk-only — mini has no persona; codex can't drop its own.
-    "persona": {"bare": True, "skill": None, "persona": True},
+    "bare": {"bare": True},
     # waypoint action space (wp_bridge.py): depth-predicted candidate
     # waypoints drawn numbered on a 4-view panorama; the agent picks one
     # (goto) or stops. bare=True keeps the mcp_bridge mechanisms
     # (clearance / look_around / STOP gate) out of the comparison — wp is
     # its own tool surface, not bare + extras. Needs a second auto_host
     # (waypoint predictor, --wp-server).
-    "wp": {"bare": True, "skill": None, "wp": True},
-    # wp + the anti-circling waypoint ledger skill. bare stays True: for wp the
-    # flag only gates the mcp_bridge mechanisms (which wp never uses), so the
-    # skill appends through build_briefing's wp branch, not the bare gate.
-    "wp-nav": {"bare": True, "skill": "wp-ledger-nav", "wp": True},
+    "wp": {"bare": True, "wp": True},
     # Agent-selected Hybrid Interface: primitive actions (step 0-3) AND the
     # waypoint tool (goto) in ONE surface, plus two matching lenses to look
     # through; the model decides per move which to use, and may switch freely.
@@ -346,7 +294,7 @@ CONDITIONS = {
     # waypoint predictor (--wp-server), same as wp.
     #   sdk  -> coding-agent/bridges/hybrid_bridge.py
     #   mini -> toolset.HybridToolSet (in-process port; see check_equivalence.py)
-    "hybrid": {"bare": True, "skill": None, "hybrid": True},
+    "hybrid": {"bare": True, "hybrid": True},
 }
 
 # harness key → output root (the Monitor's SOURCE_ROOTS, unchanged)
@@ -363,10 +311,8 @@ class CellSpec:
     harness: str       # sdk | mini | codex
     model_key: str     # board column
     model_id: str      # harness-facing model string
-    condition: str     # bare | nav | persona | wp | wp-nav
+    condition: str     # bare | wp | hybrid (std); go2 / hmeqa / ui via replace()
     bare: bool
-    skill: str | None
-    persona: bool = False  # keep the harness's stock persona (ablation)
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
     go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
     hybrid: bool = False  # primitive + waypoint in one surface (hybrid_bridge.py)
@@ -408,8 +354,6 @@ def _cell(harness: str, model_key: str, condition: str,
         model_id=model_id,
         condition=condition,
         bare=cond["bare"],
-        skill=cond["skill"],
-        persona=cond.get("persona", False),
         wp=cond.get("wp", False),
         hybrid=cond.get("hybrid", False),
         effort_tier=tier,
@@ -449,13 +393,12 @@ QWEN_API_BOARD = (
     ("mini", "qwen3.5-plus"),   # API sibling of the local 4b/9b column
 )
 
-# open-weight column: the same mini harness, locally served, and the only
-# cells that carry BOTH conditions — the closed board answers "which stack",
-# this one answers "does the nav scaffolding (mechanisms + ledger-nav) buy a
-# small model anything the frontier models don't need".
+# open-weight column: the same mini harness, locally served — the descend-to-
+# small read of the bare surface. (The nav pairing that once rode here was
+# retired with the skill condition, 2026-08-03.)
 LOCAL_BOARD = (
-    ("mini", "qwen3.5-4b", "bare"), ("mini", "qwen3.5-4b", "nav"),
-    ("mini", "qwen3.5-9b", "bare"), ("mini", "qwen3.5-9b", "nav"),
+    ("mini", "qwen3.5-4b", "bare"),
+    ("mini", "qwen3.5-9b", "bare"),
 )
 
 # waypoint-action-space pilots. sdk + codex only: both reach the env
@@ -469,14 +412,13 @@ WP_BOARD = (
 # open-weight waypoint pilots. The mini harness now reaches wp through
 # toolset.WaypointToolSet (in-process port of wp_bridge.py, gated by
 # check_equivalence.py) — so qwen runs wp with no MCP subprocess, same path as
-# bare/nav. wp is the action space that structurally removes the two failure
+# bare. wp is the action space that structurally removes the two failure
 # modes the step()-space 2×2 found in small models: batching starvation (one
 # goto = one real move the predictor executes, so a single-action model is not
 # penalized) and the stopping wall (a discrete "pick a number / stop" choice).
-# `wp` = the action space alone; `wp-nav` = plus the anti-circling ledger skill.
 LOCAL_WP_BOARD = (
-    ("mini", "qwen3.5-4b", "wp"), ("mini", "qwen3.5-4b", "wp-nav"),
-    ("mini", "qwen3.5-9b", "wp"), ("mini", "qwen3.5-9b", "wp-nav"),
+    ("mini", "qwen3.5-4b", "wp"),
+    ("mini", "qwen3.5-9b", "wp"),
 )
 
 CELLS: dict[str, CellSpec] = {}
@@ -484,13 +426,6 @@ for _h, _m in BOARD:
     for _t in EFFORT_TIERS:
         spec = _cell(_h, _m, "bare", _t)
         CELLS[spec.name] = spec
-
-# persona ablation (paper 4.2, E14/E15): stock Claude Code persona kept, bare
-# briefing appended — sdk-only, sonnet/opus, at default effort so it pairs with
-# the bare main cells (E1/E2).
-for _h, _m in (("sdk", "sonnet-5"), ("sdk", "opus-4.8")):
-    spec = _cell(_h, _m, "persona", "default")
-    CELLS[spec.name] = spec
 
 # wp / local / qwen-API line — untier-ed names (match the existing on-disk runs)
 for _h, _m in QWEN_API_BOARD:
@@ -512,11 +447,8 @@ for _h, _m, _c in LOCAL_BOARD:
     spec = _cell(_h, _m, _c)
     CELLS[spec.name] = spec
 for _h, _m in WP_BOARD:
-    # both the action space alone (wp) and + the anti-circling skill (wp-nav),
-    # symmetric with LOCAL_WP_BOARD so the skill's effect is a paired contrast
-    for _c in ("wp", "wp-nav"):
-        spec = _cell(_h, _m, _c)
-        CELLS[spec.name] = spec
+    spec = _cell(_h, _m, "wp")
+    CELLS[spec.name] = spec
 for _h, _m, _c in LOCAL_WP_BOARD:
     spec = _cell(_h, _m, _c)
     CELLS[spec.name] = spec
@@ -571,26 +503,12 @@ for _h, _m in GO2_BOARD:
     spec = replace(_base, name=f"go2_{_h}_{_m}", condition="go2", go2=True)
     CELLS[spec.name] = spec
 
-# ObjectNav-family boards (2026-07-21, split-frozen 2026-07-22): five lines
-# (hm3d / mp3d / ovon-seen / ovon-syn / ovon-unseen), each its own board at
-# the same level as the habitat-r2r std line (see BENCHMARK_FROZEN).
-# Bare surface, default effort, sdk trio first — mirrors the go2 pilots; the
-# codex/mini columns can join later (their adapters are env-agnostic), which
-# would then also mirror the main board's harness pairing.
-# Cell names carry the full line: hm3d_sdk_fable-5 / ovon-unseen_sdk_sonnet-5
-# — benchmark prefix first, parallel to std_* and go2_*.
-OBJNAV_TRIO = (("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"))
-for _bench in OBJNAV_BENCHMARKS:
-    for _h, _m in OBJNAV_TRIO:
-        _base = _cell(_h, _m, "bare", "default")
-        spec = replace(_base, name=f"{_bench}_{_h}_{_m}", condition=_bench,
-                       benchmark=_bench)
-        CELLS[spec.name] = spec
-
-# HM-EQA board (2026-07-29): same sdk trio, bare surface, default effort —
-# mirrors the ObjectNav lines. Servers: env_hmeqa auto_host (ac-hmeqa env);
-# the driver refuses a mismatched server name.
-for _h, _m in OBJNAV_TRIO:
+# HM-EQA board (2026-07-29): sdk trio, bare surface, default effort — cell
+# names carry the benchmark prefix (hmeqa_sdk_fable-5), parallel to std_* and
+# go2_*. Servers: env_hmeqa auto_host (ac-hmeqa env); the driver refuses a
+# mismatched server name.
+SDK_TRIO = (("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"))
+for _h, _m in SDK_TRIO:
     _base = _cell(_h, _m, "bare", "default")
     spec = replace(_base, name=f"hmeqa_{_h}_{_m}", condition="hmeqa",
                    benchmark="hmeqa")
@@ -615,27 +533,13 @@ BATCHES = {
     "B": ["std_mini_sonnet-5_bare_max", "std_mini_opus-4.8_bare_max"],
     "G": ["std_mini_gpt-5.5_bare_max", "std_mini_gpt-5.6_bare_max"],
     "X": ["std_codex_gpt-5.5_bare_max", "std_codex_gpt-5.6_bare_max"],
-    # local GPU, $0. nav (full mechanisms + ledger-nav) runs BEFORE bare: it is
-    # the condition that might actually work, and a batch this long can always be
-    # cut short — better to lose the control than the treatment. The mini adapter
-    # brings ollama up with the context pinned; it refuses to run if it can't.
-    "Q": ["std_mini_qwen3.5-4b_nav", "std_mini_qwen3.5-9b_nav",
-          "std_mini_qwen3.5-4b_bare", "std_mini_qwen3.5-9b_bare"],
+    # local GPU, $0. The mini adapter brings ollama up with the context
+    # pinned; it refuses to run if it can't.
+    "Q": ["std_mini_qwen3.5-4b_bare", "std_mini_qwen3.5-9b_bare"],
     # waypoint pilots (needs --wp-server; see coding-agent/README.md)
     "W": ["std_sdk_sonnet-5_wp", "std_sdk_fable-5_wp"],
-    # open-weight waypoint pilots, local GPU $0 (needs --wp-server). wp-nav
-    # (skill) before wp (control): the treatment might actually work, and a long
-    # batch can be cut short — better to lose the control than the treatment.
-    "WQ": ["std_mini_qwen3.5-4b_wp-nav", "std_mini_qwen3.5-4b_wp",
-           "std_mini_qwen3.5-9b_wp-nav", "std_mini_qwen3.5-9b_wp"],
-    # ObjectNav-family boards — one batch per benchmark line (peer lines, not
-    # one merged "objnav" batch). Servers: env_objnav auto_host for OH/OM,
-    # env_ovon auto_host for the OV* trio (the driver refuses a mismatch).
-    "OH": [f"hm3d_sdk_{m}" for m in CLAUDE_MODELS],
-    "OM": [f"mp3d_sdk_{m}" for m in CLAUDE_MODELS],
-    "OVS": [f"ovon-seen_sdk_{m}" for m in CLAUDE_MODELS],
-    "OVY": [f"ovon-syn_sdk_{m}" for m in CLAUDE_MODELS],
-    "OVU": [f"ovon-unseen_sdk_{m}" for m in CLAUDE_MODELS],
+    # open-weight waypoint pilots, local GPU $0 (needs --wp-server)
+    "WQ": ["std_mini_qwen3.5-4b_wp", "std_mini_qwen3.5-9b_wp"],
     # HM-EQA board — servers: env_hmeqa auto_host (ac-hmeqa env)
     "EQ": [f"hmeqa_sdk_{m}" for m in CLAUDE_MODELS],
 }
@@ -647,9 +551,10 @@ BATCHES = {
 # the paper's grouping (not derivable); `cell` is the single source of truth for
 # every frozen knob and reasoning-effort tier (resolve via get_cell / the
 # `experiments` command). In scope (user decision 2026-07-17): 4.1 main (default
-# tier), 4.2 persona, 4.3 effort (max tier). OUT of scope and intentionally
-# unregistered: E10-E13 (mini · qwen*), E21-E24 (Waypoint), E25-E28 (VLNVerse) —
-# the qwen/wp CELLS above cover that line without E-numbers.
+# tier), 4.3 effort (max tier). OUT of scope and intentionally unregistered:
+# E10-E13 (mini · qwen*), E21-E24 (Waypoint), E25-E28 (VLNVerse) — the qwen/wp
+# CELLS above cover that line without E-numbers. The persona pair (E14/E15)
+# was retired 2026-08-03 with the persona condition — never entered the paper.
 EXPERIMENTS: dict[str, dict] = {
     # 4.1 Main — R2R-CE, bare tools, vendor-DEFAULT effort (paper main table)
     "E1": {"section": "4.1 main", "label": "SDK · sonnet-5",   "cell": "std_sdk_sonnet-5_bare_default"},
@@ -661,10 +566,6 @@ EXPERIMENTS: dict[str, dict] = {
     "E7": {"section": "4.1 main", "label": "mini · opus-4.8",  "cell": "std_mini_opus-4.8_bare_default"},
     "E8": {"section": "4.1 main", "label": "mini · gpt-5.5",   "cell": "std_mini_gpt-5.5_bare_default"},
     "E9": {"section": "4.1 main", "label": "mini · gpt-5.6",   "cell": "std_mini_gpt-5.6_bare_default"},
-    # 4.2 Persona — R2R-CE, stock Claude Code persona kept + bare briefing
-    # appended, default effort (sdk-only; mini has no persona, codex can't drop its own)
-    "E14": {"section": "4.2 persona", "label": "SDK · +persona · sonnet-5", "cell": "std_sdk_sonnet-5_persona_default"},
-    "E15": {"section": "4.2 persona", "label": "SDK · +persona · opus-4.8", "cell": "std_sdk_opus-4.8_persona_default"},
     # 4.3 Effort — R2R-CE, bare, elevated effort (max=Claude effort=max /
     # codex xhigh / mini-gpt reasoning_effort=xhigh); the max-tier ablation
     "E16": {"section": "4.3 effort", "label": "SDK · effort=max · sonnet-5",  "cell": "std_sdk_sonnet-5_bare_max"},

@@ -30,10 +30,10 @@ from typing import Any, Protocol
 
 import requests
 
-from cells import (BENCHMARK_FROZEN, OBJNAV_BENCHMARKS, STD_FROZEN,
+from cells import (BENCHMARK_FROZEN, STD_FROZEN,
                    WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec)
 from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT, HYBRID_FIRST_PROMPT,
-                     assert_std_skill_freeze, build_briefing)
+                     build_briefing)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "mcp_bridge.py"
@@ -42,24 +42,11 @@ WP_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "wp_bridge.py"
 # but its HTTP peer is go2_host.py on the robot's own machine rather than a
 # local habitat auto_host — CycloneDDS is layer-2, so the SDK cannot run here.
 GO2_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "go2_bridge.py"
-# ObjectNav family (hm3d / mp3d / ovon — peer benchmarks, each with its own
-# board and frozen config). ONE bridge file serves all three: hm3d and mp3d
-# talk to an env_objnav auto_host, ovon to an env_ovon auto_host, and the two
-# nodesets mirror each other's port shapes so only the verb prefix differs
-# (OBJNAV_VERB_PREFIX, set per cell in bridge_env()).
-OBJNAV_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "objnav_bridge.py"
-# HM-EQA (explore-eqa, Ren et al. 2024): multiple-choice EQA on HM3D. Same
-# structural copy of the objnav bridge, with the one benchmark-shaped
-# difference that the episode ends by answer("A".."D") instead of STOP — the
-# answer rides the tool-result channel (EventSink.last_step_result) back to
-# the driver, which passes it to env_hmeqa__evaluate as pred_letter.
+# HM-EQA (explore-eqa, Ren et al. 2024): multiple-choice EQA on HM3D. The
+# episode ends by answer("A".."D") instead of STOP — the answer rides the
+# tool-result channel (EventSink.last_step_result) back to the driver, which
+# passes it to env_hmeqa__evaluate as pred_letter.
 HMEQA_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "hmeqa_bridge.py"
-
-
-def objnav_verb_prefix(benchmark: str) -> str:
-    """Nodeset verb prefix for an ObjectNav-family benchmark. The three
-    OVON lines (ovon-seen / ovon-syn / ovon-unseen) share one nodeset."""
-    return "env_ovon" if benchmark.startswith("ovon") else "env_objnav"
 # Agent-selected hybrid surface: primitive step() AND waypoint goto() in one
 # toolface, with the look-then-move gate that makes the choice of lens the
 # choice of interface. Same habitat auto_host peer as mcp_bridge, plus the
@@ -149,33 +136,31 @@ _TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool, bool, bool, bool, bool], Any] = {}
 
 
 async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
-                              objnav: bool = False, hmeqa: bool = False,
+                              hmeqa: bool = False,
                               hmeqa_tilt: bool = True,
                               auto_observe: bool = False,
                               hybrid: bool = False) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
     wp_bridge.py for the wp condition, hybrid_bridge.py for the hybrid
-    condition, go2_bridge.py for the real robot, objnav_bridge.py for the
-    ObjectNav family — hm3d/mp3d/ovon share one schema, the verb prefix only
-    changes the HTTP peer; or hmeqa_bridge.py for HM-EQA, whose step
-    description also keys off the tilt mask; mini's port is byte-equivalent,
-    gated by check_equivalence.py). Cached per
-    (bare, wp, go2, objnav, hmeqa, hmeqa_tilt, auto_observe, hybrid); never
+    condition, go2_bridge.py for the real robot, or hmeqa_bridge.py for
+    HM-EQA, whose step description also keys off the tilt mask; mini's port
+    is byte-equivalent, gated by check_equivalence.py). Cached per
+    (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid); never
     raises (logging must not break a run).
     ``auto_observe`` mirrors the session's HABITAT_AUTO_OBSERVE so the recorded
     step()/goto() descriptions match."""
-    key = (bare, wp, go2, objnav, hmeqa, hmeqa_tilt, auto_observe, hybrid)
+    key = (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
-    bridge_path = (GO2_BRIDGE_PATH if go2 else OBJNAV_BRIDGE_PATH if objnav
+    bridge_path = (GO2_BRIDGE_PATH if go2
                    else HMEQA_BRIDGE_PATH if hmeqa
                    else HYBRID_BRIDGE_PATH if hybrid
                    else WP_BRIDGE_PATH if wp else BRIDGE_PATH)
     # Each bridge reads its own prefix; introspecting go2 with HABITAT_BARE set
     # would silently return the non-bare toolset. (hybrid is a habitat bridge,
     # so it stays on HABITAT_BARE.)
-    bare_var = ("GO2_BARE" if go2 else "OBJNAV_BARE" if objnav
+    bare_var = ("GO2_BARE" if go2
                 else "HMEQA_BARE" if hmeqa else "HABITAT_BARE")
     saved = os.environ.get(bare_var)
     saved_tilt = os.environ.get("HMEQA_TILT")
@@ -273,7 +258,6 @@ class EpisodeContext:
     first_prompt: str
     server_url: str
     bare: bool
-    skill: str | None
     model: str
     max_turns: int
     step_budget: int
@@ -281,19 +265,18 @@ class EpisodeContext:
     workdir: Path
     live_dir: Path
     raw_dir: Path
-    persona: bool = False  # ablation: keep the harness's stock persona
     wp: bool = False       # waypoint action space (wp_bridge.py)
     hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
     wp_server_url: str = ""  # waypoint-predictor auto_host (wp / hybrid cells)
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
     go2: bool = False      # real Unitree Go2 (go2_bridge.py); server_url points
                            # at go2_host.py on the robot's machine, not localhost
-    benchmark: str = "r2r"  # r2r | hm3d | mp3d | ovon-{seen,syn,unseen} | hmeqa
+    benchmark: str = "r2r"  # r2r | hmeqa
     hmeqa_tilt: bool = True  # hmeqa only: camera-tilt actions 4/5 on the
                              # toolface (cells tilt_actions; --set tilt_actions=0
                              # masks them — bridge + briefing follow together)
     max_budget_usd: float | None = None  # per-episode USD fuse (sdk harness only;
-                                         # CLI --max-budget-usd, objnav frozen $18)
+                                         # CLI --max-budget-usd, hmeqa frozen $18)
     hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
     # auto-observe: step()/goto() carry the resulting view (observe() first-look
     # only). RxR default (its long instructions double the turn count under the
@@ -311,13 +294,10 @@ class EpisodeContext:
         """Stdio bridge module for this condition's action space / embodiment."""
         if self.go2:
             return GO2_BRIDGE_PATH
-        if self.benchmark in OBJNAV_BENCHMARKS:
-            return OBJNAV_BRIDGE_PATH
         if self.benchmark == "hmeqa":
             return HMEQA_BRIDGE_PATH
         if self.hybrid:
             return HYBRID_BRIDGE_PATH
-        return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
 
     def bridge_env(self) -> dict[str, str]:
@@ -335,15 +315,6 @@ class EpisodeContext:
                 "GO2_TURN_BUDGET": str(self.turn_budget),
                 "GO2_BARE": "1" if self.bare else "0",
                 "GO2_LIVE_DIR": str(self.live_dir),
-            }
-        if self.benchmark in OBJNAV_BENCHMARKS:
-            return {
-                "OBJNAV_SERVER_URL": self.server_url,
-                "OBJNAV_VERB_PREFIX": objnav_verb_prefix(self.benchmark),
-                "OBJNAV_STEP_BUDGET": str(self.step_budget),
-                "OBJNAV_TURN_BUDGET": str(self.turn_budget),
-                "OBJNAV_BARE": "1" if self.bare else "0",
-                "OBJNAV_LIVE_DIR": str(self.live_dir),
             }
         if self.benchmark == "hmeqa":
             return {
@@ -457,25 +428,6 @@ async def run_episode(
         ep = await asyncio.to_thread(
             call_function, url, "env_go2__reset", {"trigger": "driver"}
         )
-    elif spec.benchmark in OBJNAV_BENCHMARKS:
-        # Same placement flow as habitat-r2r (panel episode_index + play),
-        # but reset returns a goal CATEGORY, not an instruction — ObjectNav
-        # episodes carry no language. The recorded "instruction" is the goal
-        # text the briefing embeds (underscores are dataset-internal:
-        # "tv_monitor" -> "tv monitor"; OVON goals are already free text).
-        await asyncio.to_thread(panel_field, url, "episode_index", index)
-        await asyncio.to_thread(panel_action, url, "play")
-        ep = await asyncio.to_thread(
-            call_function, url, f"{objnav_verb_prefix(spec.benchmark)}__reset",
-            {"trigger": "driver"},
-        )
-        category = str(ep.get("object_category") or "").strip()
-        if not category:
-            raise RuntimeError(
-                f"{spec.benchmark} reset returned no object_category "
-                f"(episode {index}) — episode placement failed?"
-            )
-        instruction = category.replace("_", " ")
     elif spec.benchmark == "hmeqa":
         # Same placement flow (panel episode_index + play). reset's
         # `question` port is the RAW text (the verified explore_eqa_hmeqa
@@ -509,8 +461,8 @@ async def run_episode(
         instruction = ep["instruction"]
 
     auto_observe = bool(cfg.get("auto_observe", False))
-    briefing, skill_md5 = build_briefing(
-        instruction, cfg["step_budget"], bare=spec.bare, skill=spec.skill,
+    briefing = build_briefing(
+        instruction, cfg["step_budget"], bare=spec.bare,
         wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
         benchmark=spec.benchmark,
         hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
@@ -531,7 +483,6 @@ async def run_episode(
                       else FIRST_PROMPT),
         server_url=url,
         bare=spec.bare,
-        skill=spec.skill,
         model=spec.model_id,
         max_turns=cfg["max_turns"],
         step_budget=cfg["step_budget"],
@@ -542,7 +493,6 @@ async def run_episode(
         benchmark=spec.benchmark,
         hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
         max_budget_usd=cfg.get("max_budget_usd"),
-        persona=spec.persona,
         wp=spec.wp,
         go2=spec.go2,
         hybrid=spec.hybrid,
@@ -557,20 +507,15 @@ async def run_episode(
         sink.emit("episode_meta", {
             "index": index, "episode_id": ep.get("episode_id"),
             "scene_id": ep.get("scene_id"), "instruction": instruction,
-            "skill": spec.skill,
         })
         sink.emit("session_inputs", {
             "cell": spec.name,
             "harness": adapter.name,
             "model": spec.model_id,
-            "skill": spec.skill,
-            "skill_md5": skill_md5,
-            "persona": spec.persona,
             "system_prompt": briefing,
             "first_prompt": FIRST_PROMPT,
             "tool_schemas": await bridge_tool_schemas(
                 spec.bare, spec.wp, spec.go2,
-                spec.benchmark in OBJNAV_BENCHMARKS,
                 spec.benchmark == "hmeqa",
                 bool(cfg.get("tilt_actions", True)),
                 auto_observe, spec.hybrid),
@@ -602,11 +547,7 @@ async def run_episode(
                         (sink.last_step_result or {}).get("answer") or "")
                 }
             else:
-                evaluate_fn = (
-                    f"{objnav_verb_prefix(spec.benchmark)}__evaluate"
-                    if spec.benchmark in OBJNAV_BENCHMARKS
-                    else "env_habitat__evaluate"
-                )
+                evaluate_fn = "env_habitat__evaluate"
                 evaluate_inputs = {"trigger": "driver"}
             try:
                 metrics_out = await asyncio.to_thread(
@@ -760,9 +701,6 @@ async def run_cell(
         cfg["wp_max_moves"] = int(cfg["extra"].pop("wp_max_moves", WP_MAX_MOVES))
         # force substantive thinking (overridable via --set think_budget=N)
         cfg["extra"].setdefault("think_budget", WP_THINK_BUDGET)
-    if spec.skill:
-        skill_md5 = assert_std_skill_freeze(spec.skill)
-        print(f"[std] skill {spec.skill} md5 {skill_md5} (frozen OK)")
 
     # May raise (bad auth, unpinnable serving context) — that is the point.
     adapter.prepare(spec)
@@ -783,17 +721,14 @@ async def run_cell(
         else:
             server_name = health.json()["name"]
             print(f"[std] {url} healthy: {server_name}")
-            if spec.benchmark in OBJNAV_BENCHMARKS or spec.benchmark == "hmeqa":
-                # hm3d/mp3d need an env_objnav auto_host, ovon an env_ovon
-                # one, hmeqa an env_hmeqa one — a mismatched server would
-                # place the wrong episodes, so refuse rather than degrade
-                # silently.
-                want = ("env_hmeqa" if spec.benchmark == "hmeqa"
-                        else objnav_verb_prefix(spec.benchmark))
-                if server_name != want:
+            if spec.benchmark == "hmeqa":
+                # hmeqa needs an env_hmeqa auto_host — a mismatched server
+                # would place the wrong episodes, so refuse rather than
+                # degrade silently.
+                if server_name != "env_hmeqa":
                     raise RuntimeError(
                         f"{url} serves {server_name!r} but cell {spec.name} "
-                        f"({spec.benchmark}) needs {want!r}"
+                        f"({spec.benchmark}) needs 'env_hmeqa'"
                     )
 
     if spec.wp or spec.hybrid:
@@ -847,7 +782,6 @@ async def run_cell(
                 "harness_inherent": adapter.inherent,
                 "config": {**{k: v for k, v in cfg.items() if k != "extra"},
                            "model": spec.model_id, "bare": spec.bare,
-                           "skill": spec.skill, "persona": spec.persona,
                            "extra": json_safe(cfg["extra"])},
                 "servers": servers,
                 "run_stats": run_stats,

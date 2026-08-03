@@ -100,14 +100,8 @@ class ClaudeSdkAdapter:
     def _options(self, ctx: EpisodeContext) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
-        # persona ablation: keep the stock Claude Code system prompt and
-        # append the briefing, instead of replacing it wholesale
-        system_prompt: Any = (
-            {"type": "preset", "preset": "claude_code", "append": ctx.briefing}
-            if ctx.persona else ctx.briefing
-        )
         return ClaudeAgentOptions(
-            system_prompt=system_prompt,
+            system_prompt=ctx.briefing,
             mcp_servers={
                 "env": {
                     "type": "stdio",
@@ -139,7 +133,7 @@ class ClaudeSdkAdapter:
             # 1 MiB stdout buffer truncates it and kills the session mid-parse
             max_buffer_size=32 * 1024 * 1024,
             max_turns=ctx.max_turns,
-            # Per-episode USD fuse (objnav frozen: $18). The CLI checks between
+            # Per-episode USD fuse (hmeqa frozen: $18). The CLI checks between
             # API calls and ends the session with subtype error_max_budget_usd
             # — whitelisted below as a scored truncation, like error_max_turns.
             max_budget_usd=ctx.max_budget_usd,

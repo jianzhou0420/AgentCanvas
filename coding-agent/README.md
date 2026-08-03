@@ -11,8 +11,8 @@ reduces each harness to a ~100-line adapter, so the std board
 ONE core.
 
 ```
-prompts.py    briefing surfaces (bare/nav/wp/hybrid/hmeqa) + skill loader + md5 gate
-cells.py      the std board as code: 62 cells (std · go2 · hmeqa), frozen knobs, batches
+prompts.py    briefing surfaces (bare/wp/hybrid/hmeqa/go2)
+cells.py      the std board as code: 50 cells (std · go2 · hmeqa), frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
 harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each;
               mini/ = the mini harness's in-repo body (toolset/model/env/
@@ -32,12 +32,11 @@ ac_wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
 ```
 
 Trimmed 2026-08-03 to the MIP-paper surface: the ObjectNav-family pieces
-(objnav bridges, their split manifests, sample_episodes.py), skills/, and nodeset_mcp.py
-were deleted, and so was `legacy/` (the equivalence fixtures now come
-straight from git at `d10591e`) — recover any of it from git history. The
-cells/driver code
-for the skill cells remains, so they enumerate but cannot run until their
-files are restored.
+(objnav bridges, their split manifests, sample_episodes.py, the objnav cells
+and driver plumbing), skills/ and the nav / wp-nav / persona conditions, and
+nodeset_mcp.py were all deleted, and so was `legacy/` (the equivalence
+fixtures now come straight from git at `d10591e`) — recover any of it from
+git history (cells/plumbing last at `a942483`, files at `cecd19c`).
 
 ## Usage
 
@@ -63,7 +62,7 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
 # then (agentcanvas env):
 python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
 python coding-agent/stdrun.py run std_sdk_fable-5_wp   # reads --wp-server (default :9210)
-python coding-agent/stdrun.py batch A          # sdk × {sonnet,opus,fable} × {bare,nav}
+python coding-agent/stdrun.py batch A          # sdk × {sonnet,opus,fable} × bare_max
 python coding-agent/stdrun.py board            # grid status from summaries on disk
 python coding-agent/stdrun.py compare std_sdk_opus-4.8_bare std_mini_opus-4.8_bare
 ```
@@ -92,5 +91,5 @@ codex = ChatGPT subscription (`codex login`).
 - **Event vocabulary enforced by construction**: adapters can only emit
   through `driver.EventSink`, which also derives tool-call counts and
   env-step totals uniformly for all harnesses.
-- Freeze discipline: `prompts.py` refuses a nav run if the ledger-nav body
-  md5 drifts from `f7c74272`; changing any frozen knob is std-v2.
+- Freeze discipline: changing any frozen knob in `cells.py` is std-v2
+  territory — new cell names, never edits in place.
