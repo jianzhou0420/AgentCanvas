@@ -26,7 +26,7 @@ bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
 scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
 ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
               run_stats.py (stats backfill) — spawned by the backend
-wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
+ac_wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
 ```
 
 Trimmed 2026-08-03 to the TEAPS-paper surface: the ObjectNav-family pieces
@@ -48,11 +48,11 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
 
 # wp cells additionally need the waypoint-predictor server. It runs in the
 # ac-wp env (py3.10 + torch cu128 — GPU inference on sm_120 cards) against the
-# habitat-free shim tree; see coding-agent/wp_predictor_shim/README.md.
+# habitat-free shim tree; see coding-agent/ac_wp_predictor_shim/README.md.
 # Checkpoints: data/smartway/waypoint_ckpt/best.pth + data/smartway/ddppo/
 # gibson-2plus-resnet50.pth (symlink into VLN-MME's data).
 cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
-  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/wp_predictor_shim \
+  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/ac_wp_predictor_shim \
   TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
   ~/miniconda3/envs/ac-wp/bin/python -m app.server.auto_host \
   --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \
