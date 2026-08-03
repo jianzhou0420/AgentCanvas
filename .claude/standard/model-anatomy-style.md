@@ -1,11 +1,11 @@
 # Model-Anatomy Style（大厂具身基座解剖页）
 
-Fixed 2026-07-23. Exemplars:
-- `/data/git_all/info/blackboard/docs-site/pages/teaps/knowledge/hy-embodied.html`（首例）
-- `/data/git_all/info/blackboard/docs-site/pages/teaps/knowledge/qwen-robotnav.html`（含 agentic 层的完整形态，最新范式）
+Fixed 2026-07-23; paths updated 2026-08-03 (pages moved teaps/knowledge → general/anatomy). Exemplars:
+- `/data/git_all/info/blackboard/docs-site/pages/general/anatomy/hy-embodied.html`（首例）
+- `/data/git_all/info/blackboard/docs-site/pages/general/anatomy/qwen-robotnav.html`（含 agentic 层的完整形态，最新范式）
 
 适用于任何大公司具身/导航基座模型的论文解剖页（落位 blackboard
-`docs-site/pages/teaps/knowledge/`）。
+`docs-site/pages/general/anatomy/`）。
 
 **原则：机制卡片 · 忠实到句 · 未说明必标。** 页面回答四个问题：它是什么机制、
 能力从哪来、agency 在哪一层、和我们（coding-agent / harness）路线什么关系。
@@ -64,7 +64,7 @@ Fixed 2026-07-23. Exemplars:
 
 ## 落位与收编
 
-- 页面 `docs-site/pages/teaps/knowledge/<slug>.html`；图 `docs-site/assets/<slug>/`。
+- 页面 `docs-site/pages/general/anatomy/<slug>.html`；图 `docs-site/assets/<slug>/`。
 - 写完跑 `python3 docs-site/_lib/_wrap_handwritten.py`（blackboard 根下）收编
   chrome + nav + search。
 - 中文正文；术语、指标、模型名保留英文原文。
