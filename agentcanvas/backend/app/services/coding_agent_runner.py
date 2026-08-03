@@ -3,7 +3,7 @@
 Backs the Coding-Agent Monitor tab. One run at a time (v1, single worker):
 ``start()`` spawns a dedicated ``env_habitat`` auto_host (via ``BaseServer``,
 dynamic free port, PDEATHSIG) and then the UI driver entry
-(``coding-agent/uirun.py`` — the shared std core with the claude_sdk adapter)
+(``scripts/eval/uirun.py`` — the shared std core with the claude_sdk adapter)
 as a process-group child; ``stop()``
 tears both down (driver first). Run state beyond process liveness is derived
 from the driver's own artifacts under ``outputs/beta-coding-agent/{run_name}/`` —
@@ -31,7 +31,7 @@ from typing import Any
 log = logging.getLogger("agentcanvas.coding-agent")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DRIVER_PATH = REPO_ROOT / "coding-agent" / "uirun.py"
+DRIVER_PATH = REPO_ROOT / "scripts" / "eval" / "uirun.py"
 OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 
 NODESET_NAME = "env_habitat"

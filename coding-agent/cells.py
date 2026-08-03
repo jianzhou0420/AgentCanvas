@@ -84,23 +84,12 @@ def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
     }
 
 
-# hm3d: objectnav_hm3d_v1 (val: 2000 eps / 20 scenes / 6 categories)
-# mp3d: objectnav_mp3d_v1 (val: 2195 eps / 11 scenes / 21 categories)
-# ovon-*: HM3D-OVON (3000 eps / 36 scenes per val split); no dataset
-# selector on its panel (one dataset — the split IS the axis) -> None.
-BENCHMARK_FROZEN: dict[str, dict] = {
-    "hm3d": _objnav_frozen("hm3d", "hm3d_v1", "teaps100",
-                           "hm3d_val_n100_seed42"),
-    "mp3d": _objnav_frozen("mp3d", "mp3d_v1", "teaps100",
-                           "mp3d_val_n100_seed42"),
-    "ovon-seen": _objnav_frozen("ovon-seen", None, "teaps100_seen",
-                                "ovon_val_seen_n100_seed42"),
-    "ovon-syn": _objnav_frozen("ovon-syn", None, "teaps100_seen_synonyms",
-                               "ovon_val_seen_synonyms_n100_seed42"),
-    "ovon-unseen": _objnav_frozen("ovon-unseen", None, "teaps100_unseen",
-                                  "ovon_val_unseen_n100_seed42"),
-}
-OBJNAV_BENCHMARKS = tuple(BENCHMARK_FROZEN)  # the five ObjectNav-family lines
+# ObjectNav family (hm3d / mp3d / ovon-*) removed 2026-08-03 — the line never
+# entered the TEAPS paper; its bridges, splits and cells live in git history
+# (last present at cecd19c). Re-arming it = restore the _objnav_frozen entries
+# here plus bridges/objnav_bridge*.py, splits/, sample_episodes.py.
+BENCHMARK_FROZEN: dict[str, dict] = {}
+OBJNAV_BENCHMARKS = tuple(BENCHMARK_FROZEN)  # empty while the line is parked
                                              # (hmeqa is added below, after
                                              # this tuple is taken)
 
