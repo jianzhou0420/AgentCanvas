@@ -443,7 +443,7 @@ class HabitatToolSet(NodesetToolSet):
 
 # ── waypoint toolset — wp_bridge.py port ──
 #
-# In-process mirror of bridges/wp_bridge.py's action space: a
+# In-process mirror of coding-agent/bridges/wp_bridge.py's action space: a
 # depth-based predictor proposes ≤5 candidate waypoints, they are drawn as
 # numbered circles on a [Left|Front|Right|Back] strip, and the agent picks one
 # by number (goto) or stops. Tool descriptions + input schemas are byte-

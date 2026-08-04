@@ -1,10 +1,11 @@
 """Single source of truth for the std-v1 prompt surface.
 
 The BARE / FULL drafts below are the 2026-07-09 finalized texts, moved here
-verbatim from the legacy SDK driver (now frozen for provenance at
-legacy/beta-coding-agent/run_episodes.py — the legacy drivers are not edited). Any std run built
-through this module records the ledger-nav body md5 and refuses to run a nav
-cell whose skill text drifted from the freeze.
+verbatim from the legacy driver — d10591e:beta-coding-agent/run_episodes.py in
+git history (which keeps its own frozen copy for provenance — the legacy
+drivers are not edited). The skill loader + ledger-nav md5 freeze gate were
+retired 2026-08-03 with the nav/wp-nav conditions (never entered the MIP
+paper; last present at a942483, skills/ files at cecd19c).
 
 Observe/step coupling is toggled by ``auto_observe`` (build_briefing arg):
 - separate (default, R2R-CE): classic alternation — observe() after every
@@ -16,14 +17,6 @@ Observe/step coupling is toggled by ``auto_observe`` (build_briefing arg):
 """
 
 from __future__ import annotations
-
-import hashlib
-from pathlib import Path
-
-SKILLS_DIR = Path(__file__).resolve().parent / "skills"
-
-# std-v1 freeze: frontmatter-stripped body hash of ledger-nav/SKILL.md
-LEDGER_NAV_STD_MD5 = "f7c74272"
 
 # ── observe/step guidance fragments, selected by auto_observe ──
 # Inserted into the {obs_note}/{step_note}/{goto_line}/{loop_rule} slots below.
@@ -224,89 +217,9 @@ short deliberate batches over long speculative ones.
 - Work autonomously until you stop; nobody can answer questions.
 """
 
-# ObjectNav-family surface (2026-07-21, NOT part of the std freeze): shared
-# verbatim by the hm3d / mp3d / ovon benchmark lines — the goal slot carries a
-# fixed category ("tv monitor") or OVON's free-form text ("bathtub platform")
-# alike. Literally faithful to the ObjectNav benchmark agent: 0.25 m forward,
-# 30-degree turns AND camera tilt (actions 4/5), no route prior (exploration
-# is the task). Clearance saturates at 5.0 (the ObjectNav depth sensor caps
-# at 5 m; habitat-r2r's capped at 10), and look_around costs 12 turn steps
-# (30-degree turns).
-#
-# Stopping wording (user decision 2026-07-21, settled over three smokes):
-# the prompt quotes 0.5 m — HALF the benchmark's true 1 m radius — as a
-# deliberate safety margin. History: r1 quoted the honest "1 meter" and 4/10
-# episodes stopped 0.2-0.5 m outside the judged viewpoint zone (perceived
-# distance is noisy); r2 demanded "almost touching" and stop-commitment
-# collapsed instead (stop_rate 0.7 -> 0.3, agents wandered past the target
-# unable to self-verify contact from monocular RGB). r3 keeps r1's decisive
-# quantitative framing and just tightens the number.
-OBJNAV_SYSTEM_PROMPT = """\
-You are controlling a robot in a real indoor environment (a photorealistic \
-3D scan of a building). You interact only through these tools:
-
-- observe(): look through the robot's forward-facing camera (RGB image plus \
-a clearance readout: meters to the nearest obstacle in the left/center/right \
-thirds of the view; 5.0 = open).
-- step(actions): execute movement actions in order. 0 = STOP (permanently \
-ends the episode — declares you have found the target), 1 = move forward \
-0.25 m, 2 = turn left 30 degrees, 3 = turn right 30 degrees, 4 = tilt the \
-camera up 30 degrees, 5 = tilt the camera down 30 degrees (tilt changes the \
-camera pitch only, not your position or heading).
-- look_around(): one call returning four labeled views (ahead / right / \
-behind / left); rotates 360 degrees and restores your heading (costs 12 \
-turn steps).
-
-Your task is object-goal navigation: no route is given — search the \
-building until you find the target object, walk up to it, and stop there.
-
-Target object: "{goal}"
-
-Rules:
-- Alternate observing and stepping: look, decide where to search next, \
-move, look again.
-- Explore efficiently: sweep toward where a "{goal}" is most likely to be, \
-and avoid re-walking areas you have already ruled out.
-- You have a budget of {budget} movement actions; each step() result \
-reports roughly how many remain.
-- You succeed only if you issue action 0 (STOP) while within 0.5 meters \
-of a "{goal}". Any instance counts. STOP is permanent — issue it only when \
-you can see the target and are standing right next to it.
-- Turning in place (e.g. step([2,2,2])) is a cheap way to look around when \
-unsure; if you tilt the camera, level it again before moving on.
-- Work autonomously until you stop; nobody can answer questions.
-"""
-
-OBJNAV_BARE_SYSTEM_PROMPT = """\
-You are controlling a robot in a real indoor environment (a photorealistic \
-3D scan of a building). You interact only through these tools:
-
-- observe(): look through the robot's forward-facing camera (returns an RGB \
-image).
-- step(actions): execute movement actions in order. 0 = STOP (permanently \
-ends the episode — declares you have found the target), 1 = move forward \
-0.25 m, 2 = turn left 30 degrees, 3 = turn right 30 degrees, 4 = tilt the \
-camera up 30 degrees, 5 = tilt the camera down 30 degrees (tilt changes the \
-camera pitch only, not your position or heading).
-
-Your task is object-goal navigation: no route is given — search the \
-building until you find the target object, walk up to it, and stop there.
-
-Target object: "{goal}"
-
-Rules:
-- Alternate observing and stepping: look, decide where to search next, \
-move, look again.
-- Explore efficiently: sweep toward where a "{goal}" is most likely to be, \
-and avoid re-walking areas you have already ruled out.
-- You have a budget of {budget} movement actions.
-- You succeed only if you issue action 0 (STOP) while within 0.5 meters \
-of a "{goal}". Any instance counts. STOP is permanent — issue it only when \
-you can see the target and are standing right next to it.
-- Turning in place (e.g. step([2,2,2])) is a cheap way to look around when \
-unsure; if you tilt the camera, level it again before moving on.
-- Work autonomously until you stop; nobody can answer questions.
-"""
+# The ObjectNav-family surface (OBJNAV_*_SYSTEM_PROMPT) was removed
+# 2026-08-03 with the objnav line — never entered the MIP paper; last present
+# at a942483 (bridges/splits at cecd19c).
 
 # HM-EQA surface (2026-07-29, NOT part of the std freeze): embodied question
 # answering on HM3D (explore-eqa, Ren et al. 2024). Same bare toolface shape
@@ -476,32 +389,18 @@ HYBRID_FIRST_PROMPT = (
 )
 
 
-def load_skill(name: str) -> tuple[str, str]:
-    """Return (frontmatter-stripped body, md5[:8]) of a skill under
-    coding-agent/skills/ — the exact text the drivers feed the model."""
-    text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
-    if text.startswith("---"):
-        text = text.split("---", 2)[2]
-    body = text.strip()
-    return body, hashlib.md5(body.encode()).hexdigest()[:8]
-
-
 def build_briefing(
-    instruction: str, step_budget: int, *, bare: bool, skill: str | None,
+    instruction: str, step_budget: int, *, bare: bool,
     wp: bool = False, wp_max_moves: int = 30, go2: bool = False,
     benchmark: str = "r2r", hmeqa_tilt: bool = True,
     auto_observe: bool = False, hybrid: bool = False,
-) -> tuple[str, str | None]:
+) -> str:
     """Render the full task briefing (the SDK cell's system prompt; delivered
     as the first user message on harnesses whose builtin prompt is fixed).
 
-    For the ObjectNav family (hm3d/mp3d/ovon) ``instruction`` is the goal
-    text (category or OVON free-form), filling the prompts' {goal} slot.
-
     ``auto_observe`` MUST match the bridge's HABITAT_AUTO_OBSERVE: when True the
     prompt tells the model step()/goto() return the resulting view (observe()
-    is first-look only); when False it prescribes the classic alternation.
-    Returns (briefing, skill_md5)."""
+    is first-look only); when False it prescribes the classic alternation."""
     # Branch order (merged 2026-08-01): hybrid -> benchmark -> wp -> bare/std.
     # hybrid first because it owns the entire surface (own toolface, own first
     # prompt); the benchmark lines next because they replace the task framing
@@ -511,14 +410,9 @@ def build_briefing(
         # hybrid runs SEPARATE (non-auto-observe) on purpose: the model must
         # choose which lens to look through (forward camera vs waypoint
         # panorama), and that choice is the interface choice — see hybrid_bridge.
-        briefing = HYBRID_SYSTEM_PROMPT.format(
+        return HYBRID_SYSTEM_PROMPT.format(
             instruction=instruction, budget=step_budget,
         )
-        # hybrid is its own bare-style surface (no injected workflow, no skill)
-        return briefing, None
-    if benchmark in ("hm3d", "mp3d") or benchmark.startswith("ovon"):
-        base = OBJNAV_BARE_SYSTEM_PROMPT if bare else OBJNAV_SYSTEM_PROMPT
-        return base.format(goal=instruction, budget=step_budget), None
     if benchmark == "hmeqa":  # instruction = the formatted multi-choice question
         base = HMEQA_BARE_SYSTEM_PROMPT if bare else HMEQA_SYSTEM_PROMPT
         fills = (
@@ -529,57 +423,23 @@ def build_briefing(
             {"camera_sentence": HMEQA_FIXED_CAMERA_SENTENCE,
              "tilt_actions": "", "tilt_rule": ""}
         )
-        return base.format(question=instruction, budget=step_budget,
-                           **fills), None
+        return base.format(question=instruction, budget=step_budget, **fills)
     if wp:  # waypoint action space (wp_bridge.py) — its own tool surface
-        briefing = WP_SYSTEM_PROMPT.format(
+        return WP_SYSTEM_PROMPT.format(
             instruction=instruction, wp_max_moves=wp_max_moves,
             obs_note=(_OBS_NOTE_AUTO if auto_observe else _OBS_NOTE_SEP),
             goto_line=(_GOTO_LINE_AUTO if auto_observe else _GOTO_LINE_SEP),
             loop_rule=(_WP_LOOP_AUTO if auto_observe else _WP_LOOP_SEP),
         )
-        wp_skill_md5: str | None = None
-        # wp skills teach waypoint-selection discipline (anti-circling ledger,
-        # instruction sub-goal ticking), NOT step() batching — so they append
-        # regardless of the bare flag (wp is always its own surface).
-        if skill:
-            body, wp_skill_md5 = load_skill(skill)
-            briefing += (
-                "\n\nYou have been equipped with the following navigation skill."
-                " Follow its discipline exactly throughout the episode.\n\n"
-                f'<skill name="{skill}">\n{body}\n</skill>\n'
-            )
-        return briefing, wp_skill_md5
     if go2:  # real robot: its own literal-faithful surface, outside the freeze
         # the go2 prompts carry no auto-observe slots (the robot bridge has no
         # such mode), so they format with the plain pair
         base = GO2_BARE_SYSTEM_PROMPT if bare else GO2_SYSTEM_PROMPT
-        briefing = base.format(instruction=instruction, budget=step_budget)
-    else:
-        base = BARE_SYSTEM_PROMPT if bare else SYSTEM_PROMPT
-        briefing = base.format(
-            instruction=instruction, budget=step_budget,
-            obs_note=(_OBS_NOTE_AUTO if auto_observe else _OBS_NOTE_SEP),
-            step_note=(_STEP_NOTE_AUTO if auto_observe else _STEP_NOTE_SEP),
-            loop_rule=(_STEP_LOOP_AUTO if auto_observe else _STEP_LOOP_SEP),
-        )
-    skill_md5: str | None = None
-    if skill and not bare:
-        body, skill_md5 = load_skill(skill)
-        briefing += (
-            "\n\nYou have been equipped with the following navigation skill."
-            " Follow its discipline exactly throughout the episode.\n\n"
-            f'<skill name="{skill}">\n{body}\n</skill>\n'
-        )
-    return briefing, skill_md5
-
-
-def assert_std_skill_freeze(skill: str) -> str:
-    """Std conformance: the nav cell's skill body must match the frozen hash."""
-    _, md5 = load_skill(skill)
-    if skill == "ledger-nav" and md5 != LEDGER_NAV_STD_MD5:
-        raise RuntimeError(
-            f"ledger-nav body md5 {md5} != frozen {LEDGER_NAV_STD_MD5} — "
-            "the skill drifted; this is std-v2 territory, refusing to run"
-        )
-    return md5
+        return base.format(instruction=instruction, budget=step_budget)
+    base = BARE_SYSTEM_PROMPT if bare else SYSTEM_PROMPT
+    return base.format(
+        instruction=instruction, budget=step_budget,
+        obs_note=(_OBS_NOTE_AUTO if auto_observe else _OBS_NOTE_SEP),
+        step_note=(_STEP_NOTE_AUTO if auto_observe else _STEP_NOTE_SEP),
+        loop_rule=(_STEP_LOOP_AUTO if auto_observe else _STEP_LOOP_SEP),
+    )

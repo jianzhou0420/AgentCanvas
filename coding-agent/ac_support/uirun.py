@@ -17,7 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cells import CellSpec
 from driver import run_cell
@@ -41,15 +41,14 @@ def main() -> None:
         harness="sdk",
         model_key="ui",
         model_id=args.model or "",
-        condition="ui",  # full toolset, no skill — the legacy UI condition
+        condition="ui",  # full toolset — the legacy UI condition
         bare=False,
-        skill=None,
         max_turns=args.max_turns,
     )
     asyncio.run(run_cell(
         get_adapter("sdk"), spec, [args.server_url],
         episodes_spec=args.episodes, run_name=args.run_name,
-        cfg_overrides={"split": args.split},
+        extra={"split": args.split},
     ))
 
 

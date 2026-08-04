@@ -111,15 +111,15 @@ log = logging.getLogger("agentcanvas.env_ovon")
 # ══════════════════════════════════════════════════════════════════════
 
 # train omitted on purpose: HM3D train scenes are not staged (see docstring).
-# teaps{N}_* are DERIVED evaluation splits: N episodes of the matching val
+# mip{N}_* are DERIVED evaluation splits: N episodes of the matching val
 # split, scene-stratified proportional random sample (seed 42), materialized
-# as dataset files. N ranges over _TEAPS_N (TEAPS-100 = full board, TEAPS-60 =
-# V1.0 long-horizon indicator); keep this tuple in sync with
-# sample_episodes.py. Generator + audit manifests:
-# coding-agent/sample_episodes.py (--materialize) + coding-agent/splits/.
-_TEAPS_N: tuple[int, ...] = (100, 60)
+# as dataset files. N ranges over _MIP_N (MIP-100 = full board, MIP-60 =
+# V1.0 long-horizon indicator). Generator (coding-agent/sample_episodes.py
+# --materialize) + the ovon audit manifests were trimmed with the coding-agent
+# objnav line 2026-08-03 — both live in git history at cecd19c.
+_MIP_N: tuple[int, ...] = (100, 60)
 
-# The three OVON val splits, each contributing a suffix to the teaps{N}_* names.
+# The three OVON val splits, each contributing a suffix to the mip{N}_* names.
 _OVON_VAL_SUFFIX: dict[str, str] = {
     "val_seen": "seen",
     "val_seen_synonyms": "seen_synonyms",
@@ -128,27 +128,27 @@ _OVON_VAL_SUFFIX: dict[str, str] = {
 
 _SPLITS: list[str] = [
     "val_seen", "val_seen_synonyms", "val_unseen",
-    *(f"teaps{n}_{suf}"
-      for n in _TEAPS_N for suf in _OVON_VAL_SUFFIX.values()),
+    *(f"mip{n}_{suf}"
+      for n in _MIP_N for suf in _OVON_VAL_SUFFIX.values()),
 ]
 
 # Directory name → the json.gz actually inside it. Upstream's tarball uses the
 # generation-time names (easy/hard) for two of the three published splits;
-# the derived teaps{N}_* files are written by us, so names simply match.
+# the derived mip{N}_* files are written by us, so names simply match.
 _SPLIT_FILES: dict[str, str] = {
     "val_seen": "val_seen",
     "val_seen_synonyms": "val_unseen_easy",
     "val_unseen": "val_unseen_hard",
-    **{f"teaps{n}_{suf}": f"teaps{n}_{suf}"
-       for n in _TEAPS_N for suf in _OVON_VAL_SUFFIX.values()},
+    **{f"mip{n}_{suf}": f"mip{n}_{suf}"
+       for n in _MIP_N for suf in _OVON_VAL_SUFFIX.values()},
 }
 
 _SPLIT_LABELS: dict[str, str] = {
     "val_seen": "val_seen — seen categories",
     "val_seen_synonyms": "val_seen_synonyms — unseen synonyms",
     "val_unseen": "val_unseen — unseen categories",
-    **{f"teaps{n}_{suf}": f"teaps{n}_{suf} — rand{n} of {val}"
-       for n in _TEAPS_N for val, suf in _OVON_VAL_SUFFIX.items()},
+    **{f"mip{n}_{suf}": f"mip{n}_{suf} — rand{n} of {val}"
+       for n in _MIP_N for val, suf in _OVON_VAL_SUFFIX.items()},
 }
 
 # The agent/measure config is ObjectNav's paper standard; the dataset type,

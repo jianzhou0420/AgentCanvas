@@ -14,7 +14,7 @@ from wp_ddppo_resnet import resnet
 from wp_ddppo_resnet.resnet_policy import ResNetEncoder
 import torchvision
 
-logger = logging.getLogger("wp_predictor_shim.resnet_encoders")
+logger = logging.getLogger("ac_wp_predictor_shim.resnet_encoders")
 
 class VlnResnetDepthEncoder(nn.Module):
     def __init__(

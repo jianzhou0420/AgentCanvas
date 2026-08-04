@@ -1,8 +1,7 @@
 """Claude Agent SDK adapter — Anthropic's closed scaffolding.
 
-Session block ported verbatim from the legacy SDK driver, which keeps its
-frozen copy for provenance at legacy/beta-coding-agent/run_episodes.py.
-Auth rides the logged-in
+Session block ported verbatim from the legacy driver, frozen in git history
+at d10591e:beta-coding-agent/run_episodes.py (gated by harnesses/mini/check_equivalence). Auth rides the logged-in
 Claude subscription; a stray ANTHROPIC_API_KEY would silently switch billing
 to the API in headless mode, so prepare() strips it by default.
 
@@ -25,9 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from driver import (
-    EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe,
-)
+from driver import EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe
 
 
 def _tool_result_texts(block: Any) -> list[str]:
@@ -103,14 +100,8 @@ class ClaudeSdkAdapter:
     def _options(self, ctx: EpisodeContext) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
-        # persona ablation: keep the stock Claude Code system prompt and
-        # append the briefing, instead of replacing it wholesale
-        system_prompt: Any = (
-            {"type": "preset", "preset": "claude_code", "append": ctx.briefing}
-            if ctx.persona else ctx.briefing
-        )
         return ClaudeAgentOptions(
-            system_prompt=system_prompt,
+            system_prompt=ctx.briefing,
             mcp_servers={
                 "env": {
                     "type": "stdio",
@@ -142,12 +133,10 @@ class ClaudeSdkAdapter:
             # 1 MiB stdout buffer truncates it and kills the session mid-parse
             max_buffer_size=32 * 1024 * 1024,
             max_turns=ctx.max_turns,
-            # Per-episode USD fuse (objnav frozen: $18). The CLI checks between
+            # Per-episode USD fuse (hmeqa frozen: $18). The CLI checks between
             # API calls and ends the session with subtype error_max_budget_usd
-            # -- whitelisted below as a scored truncation, like error_max_turns.
+            # — whitelisted below as a scored truncation, like error_max_turns.
             max_budget_usd=ctx.max_budget_usd,
-            # empty model (Monitor UI run with the field blank) -> SDK default,
-            # the legacy driver's semantics
             model=ctx.model or None,
             cwd=str(ctx.workdir),
         )

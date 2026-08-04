@@ -21,7 +21,7 @@ gracefully: token/cost-curve sections are skipped, tables stay.
 Called automatically at the end of driver.run_cell (best-effort — a failed
 report never loses a run); backfill old runs via the CLI:
 
-    python coding-agent/run_stats.py <run_dir> [<run_dir> ...]
+    python coding-agent/ac_support/run_stats.py <run_dir> [<run_dir> ...]
 """
 from __future__ import annotations
 

@@ -1,9 +1,11 @@
-"""Coding-agent run manager — owns one coding-agent UI run (auto_host + driver).
+"""Coding-agent run manager — owns one Monitor-launched run (auto_host + driver).
 
 Backs the Coding-Agent Monitor tab. One run at a time (v1, single worker):
 ``start()`` spawns a dedicated ``env_habitat`` auto_host (via ``BaseServer``,
-dynamic free port, PDEATHSIG) and then the unified coding-agent driver's UI
-entry (``coding-agent/uirun.py``) as a process-group child; ``stop()``
+dynamic free port, PDEATHSIG) and then the UI driver entry
+(``coding-agent/ac_support/uirun.py`` — the shared std core with the
+claude_sdk adapter; artifact + scoring contract: ``coding-agent/monitor_api.py``)
+as a process-group child; ``stop()``
 tears both down (driver first). Run state beyond process liveness is derived
 from the driver's own artifacts under ``outputs/beta-coding-agent/{run_name}/`` —
 ``summary.json`` for finished episodes, ``episode_{i}.jsonl`` presence for the
@@ -30,62 +32,35 @@ from typing import Any
 log = logging.getLogger("agentcanvas.coding-agent")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DRIVER_PATH = REPO_ROOT / "coding-agent" / "uirun.py"
+DRIVER_PATH = REPO_ROOT / "coding-agent" / "ac_support" / "uirun.py"
 OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 
 NODESET_NAME = "env_habitat"
 
+# The artifact format and its scoring semantics are OWNED by coding-agent
+# (coding-agent/monitor_api.py) — this service is one consumer. Loaded lazily
+# by path (the dir is hyphenated, and a broken manifest on the coding-agent
+# side must fail the monitor endpoints, not backend boot).
+_monitor_api: Any = None
+
+
+def _api() -> Any:
+    global _monitor_api
+    if _monitor_api is None:
+        import importlib.util
+
+        path = REPO_ROOT / "coding-agent" / "monitor_api.py"
+        spec = importlib.util.spec_from_file_location("coding_agent_monitor_api", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _monitor_api = module
+    return _monitor_api
+
 
 def display_aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
-    """Recompute the board metrics from raw episodes for display, instead of
-    trusting whatever the driver wrote into summary.json — a live run's stored
-    aggregate lags, and an older run's may predate the current rule.
-
-    This is a FAITHFUL PORT of coding-agent/driver.py::aggregate (口径
-    2026-07-15). Keep the two in step: if the driver's rule changes, change
-    this with it, or the Monitor and the board will quietly disagree.
-
-      - a rate-limited episode is a subscription throttle, not a navigation
-        result -> excluded from the denominator entirely
-      - an episode with evaluated metrics is scored as-is, error tag or not
-        (cap-hit and cost truncations land here — they DID navigate), provided
-        the agent actually engaged (evaluate() also runs when a session died at
-        spawn, leaving spawn-position metrics)
-      - an unevaluated timeout scores success=0 — it ran and got nowhere
-      - any other unevaluated error (account block, server crash) is a non-run
-        and is reported under "excluded"
-    """
-    def _engaged(e: dict[str, Any]) -> bool:
-        a = e.get("agent") or {}
-        return bool(a.get("env_steps") or a.get("tool_calls") or a.get("called_stop"))
-
-    scored: list[dict[str, Any]] = []
-    for e in episodes:
-        if e.get("error") == "rate_limited":
-            continue
-        if e.get("metrics") and (not e.get("error") or _engaged(e)):
-            scored.append(e)
-        elif e.get("error") == "timeout":
-            scored.append({"metrics": {"success": 0.0}, "agent": e.get("agent") or {}})
-
-    agg: dict[str, Any] = {"episode_count": len(scored),
-                           "excluded": len(episodes) - len(scored)}
-    numeric: dict[str, list[float]] = {}
-    for rec in scored:
-        for key, value in (rec.get("metrics") or {}).items():
-            if isinstance(value, bool):
-                value = float(value)
-            if isinstance(value, (int, float)):
-                numeric.setdefault(key, []).append(float(value))
-        numeric.setdefault("env_steps", []).append(
-            float((rec.get("agent") or {}).get("env_steps", 0)))
-    for key, values in numeric.items():
-        if values:
-            agg[key] = round(sum(values) / len(values), 4)
-    agg["stop_rate"] = round(
-        sum(1 for r in scored if (r.get("agent") or {}).get("called_stop")) / max(1, len(scored)), 4
-    )
-    return agg
+    """Honest SR/SPL/stop recompute — delegated to coding-agent/monitor_api.py
+    (the single owner of the scoring rule)."""
+    return _api().display_aggregate(episodes)
 
 
 def _free_port() -> int:
@@ -95,7 +70,7 @@ def _free_port() -> int:
 
 
 class CodingAgentRunner:
-    """Singleton service (lifespan-owned) managing at most one coding-agent UI run."""
+    """Singleton service (lifespan-owned) managing at most one Monitor coding-agent run."""
 
     def __init__(self, registry: Any) -> None:
         self._registry = registry

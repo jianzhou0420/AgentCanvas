@@ -6,12 +6,11 @@ cell and WHICH env servers. Deviations require --nonstd, which renames the
 run so it can never sit on the standard board.
 
 Usage (agentcanvas env; the cell's env auto_host(s) must already be up —
-env_habitat for std_*, env_objnav for hm3d_*/mp3d_*, env_ovon for ovon_*):
+env_habitat for std_*, env_hmeqa for hmeqa_*):
     python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
     python coding-agent/stdrun.py run std_mini_gpt-5.6_bare --servers http://127.0.0.1:9200,http://127.0.0.1:9201
     python coding-agent/stdrun.py run std_codex_gpt-5.5_bare --episodes 3,7   # rerun/resume two indices
-    python coding-agent/stdrun.py run hm3d_sdk_fable-5 --episodes 0           # ObjectNav smoke
-    python coding-agent/stdrun.py batch A     # (OH / OM / OV = hm3d / mp3d / ovon boards)
+    python coding-agent/stdrun.py batch A
     python coding-agent/stdrun.py board
     python coding-agent/stdrun.py compare std_sdk_opus-4.8_bare std_mini_opus-4.8_bare
     python coding-agent/stdrun.py drain std_sdk_opus-4.8_bare   # finish in-flight eps, stop

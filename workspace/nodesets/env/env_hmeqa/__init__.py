@@ -108,17 +108,17 @@ _SCENE_ROOT = os.environ.get(
     "HMEQA_SCENE_ROOT", os.path.join(_REPO_ROOT, "data", "hm3d", "hm3dsem")
 )
 
-# Dataset-layer splits (2026-07-29, aligned with env_objnav's TEAPS
-# registration): "val" = the released 500-question CSV; "teaps{n}" = the
+# Dataset-layer splits (2026-07-29, aligned with env_objnav's MIP
+# registration): "val" = the released 500-question CSV; "mip{n}" = the
 # derived scene-stratified subsample written by
 # coding-agent/sample_episodes.py --materialize (row k of the derived CSV =
 # the k-th sampled original row, ascending original index). Selected via the
 # env panel split field, episodes indexed 0..N-1, exactly like the objnav
-# teaps splits. _TEAPS_N mirrors the sampler — keep the two in sync.
-_TEAPS_N = (100,)
+# mip splits. _MIP_N mirrors the sampler — keep the two in sync.
+_MIP_N = (100,)
 _SPLIT_FILES = {
     "val": "questions.csv",
-    **{f"teaps{n}": f"questions_teaps{n}.csv" for n in _TEAPS_N},
+    **{f"mip{n}": f"questions_mip{n}.csv" for n in _MIP_N},
 }
 
 
@@ -399,7 +399,7 @@ class HMEQAEnvManager:
             )
 
     def set_split(self, split: str) -> dict[str, Any]:
-        """Switch the active dataset-layer split (val / teaps100 / ...).
+        """Switch the active dataset-layer split (val / mip100 / ...).
 
         Reloads the question list and invalidates the loaded episode; the
         init-pose table is keyed by scene_floor and shared across splits.

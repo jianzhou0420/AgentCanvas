@@ -1,8 +1,8 @@
 """Equivalence checks: mini-swe-agent path vs the claude-SDK path.
 
 Offline (no env server, no LLM). Three checks, each against the SDK path's
-OWN source as the fixture (the frozen legacy drivers under
-coding-agent/legacy/ — kept unedited exactly so they can serve here):
+OWN source as the fixture (the frozen legacy drivers, taken verbatim
+from git history at FIXTURE_COMMIT — the tree no longer carries them):
 
 1. Tool schemas — HabitatToolSet's declared {name, description, input_schema}
    vs the MCP bridge introspected in-process (the exact schemas SDK sessions
@@ -14,7 +14,7 @@ coding-agent/legacy/ — kept unedited exactly so they can serve here):
 3. Clearance readout — same synthetic depth frame through both
    implementations.
 
-Run:  ~/miniforge3/envs/agentcanvas/bin/python coding-agent/mini/check_equivalence.py
+Run:  ~/miniforge3/envs/agentcanvas/bin/python coding-agent/harnesses/mini/check_equivalence.py
 Exit code 0 = all equivalent.
 """
 
@@ -26,32 +26,35 @@ import difflib
 import importlib.util
 import math
 import os
+import subprocess
 import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 from PIL import Image as PILImage
 
-HERE = Path(__file__).resolve().parent            # coding-agent/mini
-CODING_AGENT_DIR = HERE.parent
+HERE = Path(__file__).resolve().parent            # coding-agent/harnesses/mini
+CODING_AGENT_DIR = HERE.parents[1]
 BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "mcp_bridge.py"
 WP_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "wp_bridge.py"
-HYBRID_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "hybrid_bridge.py"
 PROMPTS_PATH = CODING_AGENT_DIR / "prompts.py"
-SDK_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-coding-agent" / "run_episodes.py"
-MINI_DRIVER_PATH = CODING_AGENT_DIR / "legacy" / "beta-react-harness" / "run_episodes.py"
+REPO_ROOT = CODING_AGENT_DIR.parent
+# The frozen legacy drivers left the tree on 2026-08-03 — git history is the
+# provenance store now. Fixtures are pinned to the two-machine merge d10591e,
+# whose copies were verified byte-identical to the last on-disk legacy/ at
+# deletion time. NEVER repoint this at a moving ref.
+FIXTURE_COMMIT = "d10591e"
+SDK_DRIVER_GITPATH = "beta-coding-agent/run_episodes.py"
+MINI_DRIVER_GITPATH = "beta-react-harness/run_episodes.py"
 
 sys.path.insert(0, str(HERE))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from jinja2 import StrictUndefined, Template
 
-from toolset import (
-    HYBRID_GOTO_DESC, HYBRID_OBSERVE_DESC, HYBRID_OBSERVE_WP_DESC,
-    HYBRID_STEP_DESC, HYBRID_STOP_DESC,
-    HabitatToolSet, HybridToolSet, WaypointToolSet,
-)
+from toolset import HabitatToolSet, WaypointToolSet
 
 FAILURES: list[str] = []
 
@@ -69,6 +72,18 @@ def _import_from_path(name: str, path: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _import_from_git(name: str, repo_path: str):
+    """Import a frozen fixture straight out of git history: materialize
+    FIXTURE_COMMIT:repo_path into a temp file and import that."""
+    src = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", f"{FIXTURE_COMMIT}:{repo_path}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    tmp = Path(tempfile.gettempdir()) / f"ce_fixture_{name}.py"
+    tmp.write_text(src)
+    return _import_from_path(name, tmp)
 
 
 def _bridge_schemas(bare: bool) -> list[dict]:
@@ -119,8 +134,8 @@ def check_schemas() -> None:
 
 
 def check_prompts() -> None:
-    sdk = _import_from_path("_sdk_driver", SDK_DRIVER_PATH)
-    ours = _import_from_path("_mini_legacy_driver", MINI_DRIVER_PATH)
+    sdk = _import_from_git("_sdk_driver", SDK_DRIVER_GITPATH)
+    ours = _import_from_git("_mini_legacy_driver", MINI_DRIVER_GITPATH)
     live = _import_from_path("_live_prompts", PROMPTS_PATH)
     instruction = 'Walk past the sofa, then "turn left" at the door.'
     budget = 500
@@ -142,21 +157,17 @@ def check_prompts() -> None:
     check("first_prompt", sdk.FIRST_PROMPT == ours.FIRST_PROMPT,
           _diff(sdk.FIRST_PROMPT, ours.FIRST_PROMPT))
     # The live prompt surface vs the frozen legacy source it was moved from.
-    #
-    # Compare what the model RECEIVES, not the raw template. Since auto-observe
-    # (2026-07-31) the std prompts carry {obs_note}/{step_note}/{loop_rule}
-    # slots, so the literal strings can no longer match — but at the frozen
-    # setting (auto_observe=False, the R2R-CE default) the rendered text must
-    # still be byte-identical to the legacy driver's, and that is the property
-    # the freeze was actually protecting. A real drift still fails here.
-    check("first_prompt verbatim", sdk.FIRST_PROMPT == live.FIRST_PROMPT,
-          _diff(sdk.FIRST_PROMPT, live.FIRST_PROMPT))
-    for label, attr, bare in (("SYSTEM_PROMPT", "SYSTEM_PROMPT", False),
-                              ("BARE_SYSTEM_PROMPT", "BARE_SYSTEM_PROMPT", True)):
-        sdk_text = getattr(sdk, attr).format(instruction=instruction, budget=budget)
-        live_text, _ = live.build_briefing(
-            instruction, budget, bare=bare, skill=None, auto_observe=False)
-        check(f"prompts.py {label} renders verbatim (auto_observe=False)",
+    # Since the auto-observe parameterization the live templates carry
+    # {obs_note}/{step_note}/{loop_rule} slots; the CLASSIC rendering
+    # (auto_observe off — R2R-CE std default) must still be byte-equal to the
+    # legacy text, which predates the slots.
+    for attr in ("SYSTEM_PROMPT", "BARE_SYSTEM_PROMPT", "FIRST_PROMPT"):
+        sdk_text, live_text = getattr(sdk, attr), getattr(live, attr)
+        live_text = (live_text
+                     .replace("{obs_note}", live._OBS_NOTE_SEP)
+                     .replace("{step_note}", live._STEP_NOTE_SEP)
+                     .replace("{loop_rule}", live._STEP_LOOP_SEP))
+        check(f"prompts.py {attr} verbatim (classic rendering)",
               sdk_text == live_text, _diff(sdk_text, live_text))
 
 
@@ -240,47 +251,10 @@ def check_wp() -> None:
           f"  len sdk={len(sdk_png)} mini={len(mini_png)}")
 
 
-def check_hybrid() -> None:
-    """hybrid_bridge.py (SDK path) vs toolset.HybridToolSet (mini path).
-
-    The hybrid experiment compares models ACROSS these two paths, so the two
-    surfaces must show the model the same thing. Nothing else enforces that:
-    the descriptions are hand-copied between the files.
-    """
-    hyb = _import_from_path("_hybrid_bridge_mod", HYBRID_BRIDGE_PATH)
-    pairs = [
-        ("observe", hyb._OBSERVE_DESC, HYBRID_OBSERVE_DESC),
-        ("observe_waypoints", hyb._OBSERVE_WP_DESC, HYBRID_OBSERVE_WP_DESC),
-        ("step", hyb._STEP_DESC, HYBRID_STEP_DESC),
-        ("goto", hyb._GOTO_DESC, HYBRID_GOTO_DESC),
-        ("stop", hyb._STOP_DESC, HYBRID_STOP_DESC),
-    ]
-    for name, sdk_desc, mini_desc in pairs:
-        check(f"hybrid {name}.description", sdk_desc == mini_desc,
-              _diff(sdk_desc, mini_desc))
-
-    # the registered tool set must match too (a tool present on one path only
-    # would be a silent capability difference)
-    sdk_tools = {t.name for t in asyncio.run(hyb.mcp.list_tools())}
-    mini_tools = {t["name"] for t in
-                  HybridToolSet("http://x", wp_server_url="http://y").tool_schemas()}
-    check("hybrid tool set", sdk_tools == mini_tools,
-          f"  sdk={sorted(sdk_tools)}\n  mini={sorted(mini_tools)}")
-
-    # look-then-move gate: the refusal text the model reads must be identical
-    ts = HybridToolSet("http://x", wp_server_url="http://y")
-    ts._pending = "forward"
-    hyb._pending = "forward"
-    check("hybrid already-looked message",
-          hyb._already_looked_msg() == ts._already_looked_msg(),
-          _diff(hyb._already_looked_msg(), ts._already_looked_msg()))
-
-
 if __name__ == "__main__":
     check_schemas()
     check_prompts()
     check_clearance()
     check_wp()
-    check_hybrid()
     print(f"\n{len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)

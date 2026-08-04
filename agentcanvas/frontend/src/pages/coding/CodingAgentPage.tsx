@@ -6,7 +6,8 @@ import { jsPDF } from "jspdf";
 import { usePersistentState } from "./usePersistentState";
 
 // Coding-Agent Monitor — control panel + live text/image logs for coding-agent
-// runs (vanilla coding agent driving env_habitat through the MCP bridge).
+// runs (vanilla coding agent driving env_habitat through the MCP bridge;
+// artifacts stay under the legacy outputs/beta-* roots).
 // v1: single worker, one run at a time. Live data is 1 Hz polling against
 // /api/coding-agent (the trajectory JSONL is flushed per event backend-side).
 
@@ -75,7 +76,7 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
       const texts = (line.texts as string[] | undefined) ?? [];
       return { icon: "↩", text: texts.join(" ").slice(0, 300), dim: true };
     }
-    // mini-swe-agent event kinds (mini-swe harness runs)
+    // mini-swe-agent event kinds (mini harness runs)
     case "user_text":
       return { icon: "👤", text: String(line.text ?? ""), dim: true };
     case "exit":
@@ -135,7 +136,8 @@ export default function CodingAgentPage() {
     "live",
   );
   // which harness's runs to browse: Agent SDK vs mini-swe-agent vs OpenAI
-  // Codex CLI (output roots outputs/beta-*). Live mode is SDK-runner-only.
+  // Codex CLI (runs live under outputs/beta-coding-agent / beta-react-harness /
+  // beta-codex-agent respectively). Live mode is SDK-runner-only.
   const [harness, setHarness] = usePersistentState<"claude-sdk" | "mini-swe" | "codex">(
     "agentcanvas.coding.harness",
     "claude-sdk",
@@ -618,7 +620,6 @@ export default function CodingAgentPage() {
             return (
               <button
                 key={i}
-                onClick={() => setViewEpisode(i)}
                 // one tooltip for the two ways an episode can carry an error,
                 // matching the badge above: excluded from SR vs scored but
                 // ended abnormally
@@ -629,6 +630,7 @@ export default function CodingAgentPage() {
                       : `ended abnormally: ${s.error}`
                     : undefined
                 }
+                onClick={() => setViewEpisode(i)}
                 className={clsx(
                   "rounded border px-2 py-0.5",
                   shownEpisode === i

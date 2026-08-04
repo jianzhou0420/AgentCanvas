@@ -1,28 +1,42 @@
 # coding-agent — unified std experiment runner
 
-The high-level interface over the three harness cells, and (since 2026-07-20)
-the ONE home of the whole coding-agent experiment: the former repo-root
+The high-level interface over the harness cells, and (since 2026-08-03) the
+ONE home of the whole coding-agent experiment: the former repo-root
 `beta-coding-agent/`, `beta-react-harness/`, and `beta-codex-agent/` dirs are
 unified here — live shared assets in subpackages, the frozen legacy drivers
-under `legacy/`. Each legacy driver used to carry a full copy of the driver
+in git history (`d10591e`). Each legacy driver used to carry a full copy of the driver
 skeleton and prompt drafts; this package collects that shared 90% once and
 reduces each harness to a ~100-line adapter, so the std board
 (docs → developer-guide/tmp/coding-agent/standard-experiments.html) runs from
 ONE core.
 
 ```
-prompts.py    BARE/FULL drafts (07-09 freeze) + skill loader + md5 gate
-cells.py      the std board as code: 12 cells + codex appendix, frozen knobs, batches
+prompts.py    briefing surfaces (bare/wp/hybrid/hmeqa/go2)
+cells.py      the std board as code: 53 cells (std · go2 · hmeqa · vlnverse), frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
-harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each
+harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each;
+              mini/ = the mini harness's in-repo body (toolset/model/env/
+              nav_agent) + check_equivalence.py, the bridges<->mini byte gate
 stdrun.py     CLI: run / batch / board / compare
-uirun.py      Coding-Agent Monitor's Run-button entry (spawned by the backend)
-bridges/      mcp_bridge.py + wp_bridge.py — the agent-facing tool surface (stdio MCP)
-skills/       SKILL.md texts appended to briefings (md5-gated by prompts.py)
-mini/         mini-swe-agent harness modules (toolset/model/env/nav_agent) + check_equivalence.py
-wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
-legacy/       the three frozen pre-unification drivers + opus-lab (provenance; never edited)
+monitor_api.py  the run-artifact + scoring contract — the ONE surface any
+              monitor consumes runs through (layout, honest-SR rule, roots,
+              uirun spawn contract); backend loads it by path
+bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
+              hmeqa · go2(+go2_host); splits/ = tracked sampling-provenance
+              manifests for the derived mip env splits (data/ is gitignored,
+              so these are the one versioned record of what each split holds)
+scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
+ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
+              run_stats.py (stats backfill) — spawned by the backend
+ac_wp_predictor_shim/  habitat-free SmartWay predictor tree for the wp auto_host
 ```
+
+Trimmed 2026-08-03 to the MIP-paper surface: the ObjectNav-family pieces
+(objnav bridges, their split manifests, sample_episodes.py, the objnav cells
+and driver plumbing), skills/ and the nav / wp-nav / persona conditions, and
+nodeset_mcp.py were all deleted, and so was `legacy/` (the equivalence
+fixtures now come straight from git at `d10591e`) — recover any of it from
+git history (cells/plumbing last at `a942483`, files at `cecd19c`).
 
 ## Usage
 
@@ -35,11 +49,11 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
 
 # wp cells additionally need the waypoint-predictor server. It runs in the
 # ac-wp env (py3.10 + torch cu128 — GPU inference on sm_120 cards) against the
-# habitat-free shim tree; see coding-agent/wp_predictor_shim/README.md.
+# habitat-free shim tree; see coding-agent/ac_wp_predictor_shim/README.md.
 # Checkpoints: data/smartway/waypoint_ckpt/best.pth + data/smartway/ddppo/
 # gibson-2plus-resnet50.pth (symlink into VLN-MME's data).
 cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
-  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/wp_predictor_shim \
+  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/ac_wp_predictor_shim \
   TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
   ~/miniconda3/envs/ac-wp/bin/python -m app.server.auto_host \
   --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \
@@ -59,13 +73,13 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
 # then (agentcanvas env):
 python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
 python coding-agent/stdrun.py run std_sdk_fable-5_wp   # reads --wp-server (default :9210)
-python coding-agent/stdrun.py batch A          # sdk × {sonnet,opus,fable} × {bare,nav}
+python coding-agent/stdrun.py batch A          # sdk × {sonnet,opus,fable} × bare_max
 python coding-agent/stdrun.py board            # grid status from summaries on disk
 python coding-agent/stdrun.py compare std_sdk_opus-4.8_bare std_mini_opus-4.8_bare
 ```
 
-Cells, not flags: 200 turns / 512 px / rand100 0-99 / 500 actions / 2400 s
-(std-v2) are pinned in `cells.py`. `run --episodes 3,7` reruns/resumes specific indices
+Cells, not flags: 80 turns / 224 px / rand100 0-49 / 500 actions / 2400 s are
+pinned in `cells.py`. `run --episodes 3,7` reruns/resumes specific indices
 into the same run dir (records merge). Anything else needs `--nonstd`, which
 renames the run `nonstd_*` so it can never sit on the board.
 
@@ -78,15 +92,15 @@ codex = ChatGPT subscription (`codex login`).
 - **Outputs land in the legacy per-harness roots** (`outputs/beta-coding-agent`
   etc.), same artifact layout — the Coding-Agent Monitor and its source
   toggle work unchanged.
-- **Legacy drivers are frozen, not edited** — they document how the pre-std
-  archived runs were produced, and `check_equivalence.py` uses them as its
-  fixtures. They live under `legacy/` with their in-file paths still naming
-  the pre-2026-07-20 layout; new runs go through this package only.
-- **The bridge stays the single tool surface**: `bridges/mcp_bridge.py`
+- **Legacy drivers are frozen in git history** (fixtures pinned at
+  `d10591e:beta-*/run_episodes.py` by `harnesses/mini/check_equivalence.py`) — they
+  document how the pre-std archived runs were produced. New runs go through
+  this package only.
+- **The bridge stays the single tool surface**: `coding-agent/bridges/mcp_bridge.py`
   (sdk + codex spawn it; mini's byte-equivalent port is still gated by
-  `mini/check_equivalence.py`).
+  `coding-agent/harnesses/mini/check_equivalence.py`).
 - **Event vocabulary enforced by construction**: adapters can only emit
   through `driver.EventSink`, which also derives tool-call counts and
   env-step totals uniformly for all harnesses.
-- Freeze discipline: `prompts.py` refuses a nav run if the ledger-nav body
-  md5 drifts from `f7c74272`; changing any frozen knob is std-v2.
+- Freeze discipline: changing any frozen knob in `cells.py` is std-v2
+  territory — new cell names, never edits in place.

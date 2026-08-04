@@ -1,8 +1,8 @@
 # Results-Page Style（极简数据页）
 
 Fixed 2026-07-22. Exemplar:
-`/data/git_all/info/blackboard/docs-site/pages/teaps/v1-eccv-workshop/results.html`
-(Blackboard V0.1 · TEAPS)。适用于任何 "results" 阅读页——展示实验数据的
+`/data/git_all/info/blackboard/docs-site/pages/mip/v1-eccv-workshop/results.html`
+(Blackboard V0.1 · MIP)。适用于任何 "results" 阅读页——展示实验数据的
 doc-site / blackboard 页面。
 
 **原则：信息全 · 零分析 · 字数最少。** 表格承载一切；散文只允许口径事实。
