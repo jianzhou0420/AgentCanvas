@@ -136,6 +136,11 @@ class LiberoWrapper:
                     obs["robot0_gripper_qpos"],
                 ]
             ).astype(np.float32),
+            # Full proprioception (2026-08-04): encoder-level readouts a real
+            # robot has natively — surfaced so the env nodeset can expose the
+            # complete EE pose and joint state, not just the 8-D VLA vector.
+            "joint_pos": np.asarray(obs["robot0_joint_pos"], dtype=np.float32),
+            "ee_quat_xyzw": np.asarray(obs["robot0_eef_quat"], dtype=np.float32),
         }
         return out
 

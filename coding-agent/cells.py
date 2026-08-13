@@ -98,7 +98,40 @@ def _hmeqa_frozen() -> dict:
     }
 
 
-BENCHMARK_FROZEN: dict[str, dict] = {"hmeqa": _hmeqa_frozen()}
+# ── LIBERO manipulation line (2026-08-03): coding-agent drives a robot arm ──
+# The minimal two-tool interface (observe + step) re-embodied on a Franka
+# Panda in LIBERO (Liu et al. 2023). step() takes the env's NATIVE 7-D
+# continuous action space (one action = one OSC control tick) — no bridge-side
+# discretization, unlike the nav lines' four primitives; see libero_bridge.py.
+# No terminal action: LIBERO detects success from scene state, so an episode
+# ends on task success or budget exhaustion, never by agent declaration.
+def _libero_frozen() -> dict:
+    return {
+        "benchmark": "libero",
+        "dataset": None,           # suite rides the split selector (env panel
+        "split": "libero_object",  # maps a suite-named split to the suite)
+        # Flat episode index over the suite: task_id = k % tasks_per_suite,
+        # init state = k // tasks_per_suite — episodes 0-9 run every task once
+        # at init state 0; 0-99 is 10 rollouts per task (init states 0-9), the
+        # same n=100 shape as the R2R board.
+        "episodes": "0-99",
+        "tasks_per_suite": 10,  # libero_spatial / object / goal / 10 all have 10
+        # Same turn/fuse posture as the hmeqa line (long tool-call episodes,
+        # full-history resend cost tail): 150 turns + $18/episode USD fuse.
+        "max_turns": 150,
+        "max_budget_usd": 18.0,
+        # The env's own per-episode cap (_SUITE_MAX_STEPS = 2500 control
+        # ticks); the bridge mirrors it to report remaining budget.
+        "step_budget": 2500,
+        "episode_timeout": 2400,
+        "rgb_resolution": 256,  # env_libero server render size (recorded, not a knob)
+    }
+
+
+BENCHMARK_FROZEN: dict[str, dict] = {
+    "hmeqa": _hmeqa_frozen(),
+    "libero": _libero_frozen(),
+}
 
 
 # ── VLNVerse line (2026-08-02): instruction-following VLN in Isaac Sim 5.1 ──
@@ -349,8 +382,7 @@ class CellSpec:
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
     go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
     hybrid: bool = False  # primitive + waypoint in one surface (hybrid_bridge.py)
-    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hm3d | mp3d | ovon*
-                            # | hmeqa | vlnverse
+    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hmeqa | vlnverse | libero
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
     max_turns: int | None = None  # None → STD_FROZEN's cap (std-v2: 200)
@@ -559,6 +591,59 @@ for _h, _m in SDK_TRIO:
                    benchmark="vlnverse")
     CELLS[spec.name] = spec
 
+# LIBERO board (2026-08-03): sdk trio, bare surface (observe + 7-D step only),
+# default effort — cell names carry the benchmark prefix (libero_sdk_fable-5),
+# parallel to std_* / go2_* / hmeqa_*. Servers: env_libero auto_host
+# (ac-libero env, MUJOCO_GL=egl); the driver refuses a mismatched server name.
+for _h, _m in SDK_TRIO:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"libero_{_h}_{_m}", condition="libero",
+                   benchmark="libero")
+    CELLS[spec.name] = spec
+
+# LIBERO full condition (2026-08-03): the SENSOR rung of the interface ladder,
+# after the fable ep0 anatomy showed the bare wall is the depth/height DoF.
+# Same two tools; observe adds the wrist view + proprio readout, step reports
+# measured EE movement, and auto-observe carries the post-move views (halves
+# the look-move turn cost, nav-line precedent). Sensors and feedback only —
+# no skills, no planner, no task logic; see libero_bridge.py.
+for _h, _m in SDK_TRIO:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"libero_{_h}_{_m}_full",
+                   condition="libero_full", benchmark="libero", bare=False,
+                   extra=_base.extra + (("auto_observe", 1),))
+    CELLS[spec.name] = spec
+
+# LIBERO toolbox condition (2026-08-04, user direction: max out the tool
+# surface first — "先跑通" — attribute downward later). Atomic tools —
+# observe_third_person / observe_wrist / get_state / get_objects (the
+# simulator's GT scene readout) / move_to servo / gripper macro — plus the
+# native step() escape hatch, all over the env's frozen VoxPoser-era nodes.
+# Deliberately PRIVILEGED (GT positions): this rung asks "does the loaded
+# surface complete tasks at all", not "is the interface minimal"; the
+# minimal-interface story keeps bare/full, and ablation walks down from
+# here one tool at a time. See libero_bridge.py TOOLBOX.
+for _h, _m in SDK_TRIO:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"libero_{_h}_{_m}_tb",
+                   condition="libero_toolbox", benchmark="libero", bare=False,
+                   extra=_base.extra + (("toolbox", 1),))
+    CELLS[spec.name] = spec
+
+# LIBERO toolbox-vision condition (2026-08-04, user: 不用 ground truth 的
+# 版本): the toolbox with its ONE privileged tool swapped out — get_objects
+# (sim GT) → pixel_to_3d (depth backprojection over the new
+# env_libero__pixel_to_3d node; camera geometry + depth buffer only).
+# Everything else identical, so _tb vs _tbv prices exactly the perception
+# privilege. sonnet _tb baseline: 9/10.
+for _h, _m in SDK_TRIO:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"libero_{_h}_{_m}_tbv",
+                   condition="libero_toolbox_vision", benchmark="libero",
+                   bare=False,
+                   extra=_base.extra + (("toolbox", 1), ("toolbox_gt", 0)))
+    CELLS[spec.name] = spec
+
 # batches: the tiered main board carries the effort tier in the cell name
 # (*_default = vendor-default main experiment, *_max = elevated ablation);
 # Q/W/WQ are the untier-ed wp/local line.
@@ -587,6 +672,8 @@ BATCHES = {
     "WQ": ["std_mini_qwen3.5-4b_wp", "std_mini_qwen3.5-9b_wp"],
     # HM-EQA board — servers: env_hmeqa auto_host (ac-hmeqa env)
     "EQ": [f"hmeqa_sdk_{m}" for m in CLAUDE_MODELS],
+    # LIBERO board — servers: env_libero auto_host (ac-libero env)
+    "LB": [f"libero_sdk_{m}" for m in CLAUDE_MODELS],
 }
 
 

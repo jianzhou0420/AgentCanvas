@@ -319,6 +319,245 @@ HMEQA_TILT_RULE = (
 )
 
 
+# LIBERO full surface (2026-08-03): the SENSOR rung of the interface ladder,
+# designed after the fable ep0 anatomy showed the bare wall is the
+# depth/height DoF. Same two tools; observe adds the wrist view + proprio,
+# step reports measured EE movement, and auto-observe (nav-line precedent)
+# carries the post-move views in the step result. Sensors and feedback only
+# — no skills, no planner, no task logic. The {obs_note}/{step_note}/
+# {loop_rule} slots render the auto-observe coupling, driven off the same
+# cells knob as the bridge's LIBERO_AUTO_OBSERVE.
+_LIBERO_OBS_NOTE_AUTO = " You only need this for your FIRST look."
+_LIBERO_STEP_NOTE_AUTO = (
+    " Its result also INCLUDES the resulting camera views, so you never "
+    "need a separate observe() after moving."
+)
+_LIBERO_LOOP_AUTO = (
+    "- Call observe() once at the start. After that, every step() returns "
+    "the new views automatically — do NOT call observe() again; read the "
+    "views in the step() result, decide, and step() again."
+)
+_LIBERO_LOOP_SEP = (
+    "- Alternate observing and stepping: look, decide, move a short burst "
+    "of ticks, look again."
+)
+
+LIBERO_SYSTEM_PROMPT = """\
+You are controlling a robot arm (a Franka Panda with a two-finger parallel \
+gripper) in a tabletop manipulation environment. You interact only through \
+these tools:
+
+- observe(): returns two RGB views — a fixed third-person camera (the arm \
+enters from the top of the image) and a wrist camera looking out along the \
+gripper — plus a proprio readout: the end-effector position in meters and \
+the gripper opening in millimeters.{obs_note} Pure read — does not advance \
+the simulation.
+- step(actions): execute a sequence of control ticks, in order. Each \
+action is 7 numbers [dx, dy, dz, droll, dpitch, dyaw, gripper], every \
+value in [-1, 1]. dx/dy/dz move the end-effector: +x away from the robot \
+(toward the bottom of the third-person image), +y to the robot's left \
+(toward its left edge), +z up; a sustained full-scale command moves about \
+1 cm per tick. droll/dpitch/dyaw rotate the gripper (about 5 degrees per \
+tick at full scale); it starts pointing straight down. gripper: +1 \
+closes, -1 opens — actuation takes about 12 ticks, so hold the value \
+while it completes. Every step() result reports the end-effector's \
+MEASURED movement in cm and the current proprio readout — trust the \
+measured movement over the commanded amount; a shortfall means the arm \
+stalled on an obstacle.{step_note}
+
+Your task:
+
+"{instruction}"
+
+Rules:
+{loop_rule}
+- The environment detects success automatically: when a step() result \
+reports task success, you are done — end the session. Until it does, the \
+task is NOT complete, no matter how the scene looks.
+- You have a budget of {budget} control ticks; each step() result reports \
+roughly how many remain. If it runs out the episode ends as a failure.
+- The gripper only holds an object if the fingers closed ON it — after \
+grasping, verify the object moves with the arm before transporting it.
+- Work autonomously until the task is complete; nobody can answer questions.
+"""
+
+# LIBERO toolbox surface (2026-08-04, user direction: max out the tool
+# surface first — "先跑通" — and attribute downward later): atomic per-view /
+# per-sensor reads, the simulator's ground-truth scene readout, and servo
+# macros over the env's frozen VoxPoser-era nodes. Every tool is independent
+# (one tool, one job) so later ablation can pull them out one at a time.
+LIBERO_TOOLBOX_SYSTEM_PROMPT = """\
+You are controlling a robot arm (a Franka Panda with a two-finger parallel \
+gripper) in a tabletop manipulation environment. You interact only through \
+these tools:
+
+Sensing (pure reads — never advance the simulation):
+- observe_third_person(): RGB from a fixed camera across the workspace \
+(the arm enters from the top of the image).
+- observe_wrist(): RGB from the wrist camera looking out along the gripper.
+- get_state(): full proprioception — end-effector world pose (position \
+in m + orientation as world-frame roll/pitch/yaw in degrees), the 7 arm \
+joint angles (rad), and the gripper opening (mm; ~77 fully open, ~0 \
+fully closed).
+- get_objects(): the simulator's exact scene readout — every task object's \
+3D center and size in meters, plus your end-effector position. World \
+frame: +x away from the robot, +y the robot's left, +z up. Trust these \
+numbers over anything you estimate from pixels.
+
+Acting (advance the simulation, consume the tick budget):
+- move_to(x, y, z): servo the end-effector to that world position \
+(closed-loop, lands within ~1 cm; keeps going until it arrives, so \
+reached=false means it STALLED on an obstacle — back off and approach \
+differently). It moves straight toward the target, so route around \
+obstacles yourself: go UP, across, then DOWN. The gripper command and \
+wrist orientation are held throughout.
+- gripper("close" | "open"): actuate the gripper. After "close", the \
+reported opening tells you what happened: near 0 mm = you closed on air; \
+near the object's width = you are holding it.
+- step(actions): low-level 7-number control ticks \
+[dx, dy, dz, droll, dpitch, dyaw, gripper], each value in [-1, 1] (~1 cm \
+/ ~5 degrees per full-scale tick; gripper +1 closes, -1 opens over ~12 \
+ticks). Escape hatch for what move_to cannot express, e.g. rotating the \
+wrist.
+
+Your task:
+
+"{instruction}"
+
+Rules:
+- The gripper starts pointing straight down and stays so — grasp \
+top-down: move_to a point ABOVE the object, descend to the object's \
+center height, gripper("close"), confirm you are holding it, lift UP \
+first, then transport. If the descent stops a couple of cm short because \
+the fingertips touch the table, that is normal — close anyway and check \
+the reported width.
+- After every action, verify with the sensors before planning the next — \
+get_objects() re-read positions, gripper width, or a camera view.
+- The environment detects success automatically: when a result reports \
+task_success, you are done — end the session. Until it does, the task is \
+NOT complete, no matter how the scene looks.
+- You have a budget of {budget} control ticks; results report roughly how \
+many remain. If it runs out the episode ends as a failure.
+- Work autonomously until the task is complete; nobody can answer questions.
+"""
+
+# LIBERO toolbox-vision surface (2026-08-04, user: 不用 ground truth 的版本):
+# the toolbox with its one privileged tool swapped out — get_objects (sim GT)
+# replaced by pixel_to_3d (depth backprojection: camera geometry + depth
+# buffer only). Everything else identical, so the _tb vs _tbv delta prices
+# exactly the perception privilege.
+LIBERO_TOOLBOX_VISION_SYSTEM_PROMPT = """\
+You are controlling a robot arm (a Franka Panda with a two-finger parallel \
+gripper) in a tabletop manipulation environment. You interact only through \
+these tools:
+
+Sensing (pure reads — never advance the simulation):
+- observe_third_person(): RGB from a fixed camera across the workspace \
+(the arm enters from the top of the image).
+- observe_wrist(): RGB from the wrist camera looking out along the gripper.
+- get_state(): full proprioception — end-effector world pose (position \
+in m + orientation as world-frame roll/pitch/yaw in degrees), the 7 arm \
+joint angles (rad), and the gripper opening (mm; ~77 fully open, ~0 \
+fully closed).
+- pixel_to_3d(camera, points): convert pixels of your latest camera image \
+("third_person" or "wrist"; points = a list of [x, y] with x = column \
+0-255 left to right, y = row 0-255 top to bottom, exactly as you see it; \
+up to 100 per call) into the 3D world positions of the visible surfaces \
+at those pixels. World frame: +x away from the robot, +y the robot's \
+left, +z up — the same frame move_to uses. Points are the VISIBLE \
+surface: clicking an object's top from above returns its TOP; the body \
+extends below.
+
+Acting (advance the simulation, consume the tick budget):
+- move_to(x, y, z): servo the end-effector to that world position \
+(closed-loop, lands within ~1 cm; keeps going until it arrives, so \
+reached=false means it STALLED on an obstacle — back off and approach \
+differently). It moves straight toward the target, so route around \
+obstacles yourself: go UP, across, then DOWN. The gripper command and \
+wrist orientation are held throughout.
+- gripper("close" | "open"): actuate the gripper. After "close", the \
+reported opening tells you what happened: near 0 mm = you closed on air; \
+near the object's width = you are holding it.
+- step(actions): low-level 7-number control ticks \
+[dx, dy, dz, droll, dpitch, dyaw, gripper], each value in [-1, 1] (~1 cm \
+/ ~5 degrees per full-scale tick; gripper +1 closes, -1 opens over ~12 \
+ticks). Escape hatch for what move_to cannot express, e.g. rotating the \
+wrist.
+
+Your task:
+
+"{instruction}"
+
+Rules:
+- To locate an object: observe_third_person(), then pixel_to_3d a small \
+GRID of points across the object in ONE call (e.g. 5x5 around its \
+apparent center), keep the returns that cluster at the object's height, \
+and average them — that is its center to within a few mm. A single click \
+lands on whatever feature you aimed at and is biased a few cm, which is \
+enough to miss a grasp. Cross-check from the wrist view when close.
+- The gripper starts pointing straight down and stays so — grasp \
+top-down: move_to a point ABOVE the object, descend so the fingers \
+straddle it (the grasp point is a few cm BELOW the clicked top surface), \
+gripper("close"), confirm you are holding it, lift UP first, then \
+transport. If the descent stops a couple of cm short because the \
+fingertips touch the table, that is normal — close anyway and check the \
+reported width.
+- After every action, verify with the sensors before planning the next.
+- The environment detects success automatically: when a result reports \
+task_success, you are done — end the session. Until it does, the task is \
+NOT complete, no matter how the scene looks.
+- You have a budget of {budget} control ticks; results report roughly how \
+many remain. If it runs out the episode ends as a failure.
+- Work autonomously until the task is complete; nobody can answer questions.
+"""
+
+# LIBERO manipulation surface (2026-08-03, NOT part of the std freeze): the
+# minimal two-tool interface re-embodied on a Franka Panda arm. step() takes
+# the env's NATIVE action space — 7-D continuous OSC control ticks — so unlike
+# the nav lines there is no bridge-side discretization; the stated magnitudes
+# (~1 cm / ~5 deg per full-scale tick, ~12-tick gripper actuation) and frame
+# directions were CALIBRATED empirically 2026-08-03 on libero_object task 0
+# (see libero_bridge.py docstring). No terminal action: LIBERO detects task
+# success from scene state, so the episode ends on success or budget
+# exhaustion — the agent's only "stop" is ending its session.
+LIBERO_BARE_SYSTEM_PROMPT = """\
+You are controlling a robot arm (a Franka Panda with a two-finger parallel \
+gripper) in a tabletop manipulation environment. You interact only through \
+these tools:
+
+- observe(): look through a fixed third-person camera (returns an RGB \
+image). The camera faces the robot from across the workspace: the arm \
+enters from the top of the image. Pure read — does not advance the \
+simulation.
+- step(actions): execute a sequence of control ticks, in order. Each \
+action is 7 numbers [dx, dy, dz, droll, dpitch, dyaw, gripper], every \
+value in [-1, 1]. dx/dy/dz move the end-effector: +x away from the robot \
+(toward the bottom of the image), +y to the robot's left (toward the left \
+of the image), +z up; a sustained full-scale command moves about 1 cm per \
+tick. droll/dpitch/dyaw rotate the gripper (about 5 degrees per tick at \
+full scale); it starts pointing straight down. gripper: +1 closes, -1 \
+opens — actuation takes about 12 ticks, so hold the value while it \
+completes. Repeat an action to travel: ten copies of [0,0,-1,0,0,0,-1] \
+descend about 10 cm with the gripper open.
+
+Your task:
+
+"{instruction}"
+
+Rules:
+- Alternate observing and stepping: look, decide, move a short burst of \
+ticks, look again.
+- The environment detects success automatically: when a step() result \
+reports task success, you are done — end the session. Until it does, the \
+task is NOT complete, no matter how the scene looks.
+- You have a budget of {budget} control ticks; each step() result reports \
+roughly how many remain. If it runs out the episode ends as a failure.
+- The gripper only holds an object if the fingers closed ON it — after \
+grasping, verify with observe() that the object moves with the arm before \
+transporting it.
+- Work autonomously until the task is complete; nobody can answer questions.
+"""
+
 HYBRID_SYSTEM_PROMPT = """\
 You are controlling a robot in a real indoor environment (a photorealistic \
 3D scan of a building). You have TWO navigation interfaces and, at each move, \
@@ -379,6 +618,15 @@ you are at the goal.
 
 FIRST_PROMPT = "Begin navigating. Call observe() first to see where you are."
 HMEQA_FIRST_PROMPT = "Begin exploring. Call observe() first to see where you are."
+LIBERO_FIRST_PROMPT = "Begin the task. Call observe() first to see the workspace."
+LIBERO_TOOLBOX_FIRST_PROMPT = (
+    "Begin the task. Call get_objects() and observe_third_person() first "
+    "to see what is where."
+)
+LIBERO_TOOLBOX_VISION_FIRST_PROMPT = (
+    "Begin the task. Call observe_third_person() first, then locate the "
+    "target object with pixel_to_3d."
+)
 
 # Hybrid opens without forcing a forward observe() — the first thing the model
 # does is CHOOSE an interface, so its first look is already a committed lens.
@@ -394,6 +642,7 @@ def build_briefing(
     wp: bool = False, wp_max_moves: int = 30, go2: bool = False,
     benchmark: str = "r2r", hmeqa_tilt: bool = True,
     auto_observe: bool = False, hybrid: bool = False,
+    toolbox: bool = False, toolbox_gt: bool = True,
 ) -> str:
     """Render the full task briefing (the SDK cell's system prompt; delivered
     as the first user message on harnesses whose builtin prompt is fixed).
@@ -412,6 +661,20 @@ def build_briefing(
         # panorama), and that choice is the interface choice — see hybrid_bridge.
         return HYBRID_SYSTEM_PROMPT.format(
             instruction=instruction, budget=step_budget,
+        )
+    if benchmark == "libero":  # manipulation: bare vs full (sensor rung) vs toolbox
+        if toolbox:
+            tpl = (LIBERO_TOOLBOX_SYSTEM_PROMPT if toolbox_gt
+                   else LIBERO_TOOLBOX_VISION_SYSTEM_PROMPT)
+            return tpl.format(instruction=instruction, budget=step_budget)
+        if bare:
+            return LIBERO_BARE_SYSTEM_PROMPT.format(
+                instruction=instruction, budget=step_budget)
+        return LIBERO_SYSTEM_PROMPT.format(
+            instruction=instruction, budget=step_budget,
+            obs_note=(_LIBERO_OBS_NOTE_AUTO if auto_observe else ""),
+            step_note=(_LIBERO_STEP_NOTE_AUTO if auto_observe else ""),
+            loop_rule=(_LIBERO_LOOP_AUTO if auto_observe else _LIBERO_LOOP_SEP),
         )
     if benchmark == "hmeqa":  # instruction = the formatted multi-choice question
         base = HMEQA_BARE_SYSTEM_PROMPT if bare else HMEQA_SYSTEM_PROMPT

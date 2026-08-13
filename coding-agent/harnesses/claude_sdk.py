@@ -115,12 +115,30 @@ class ClaudeSdkAdapter:
             # and injects the repo CLAUDE.md into every session.
             setting_sources=[],
             thinking=self._thinking_config(ctx),
+            # Restored 2026-08-03: the two-machine merge dropped this line
+            # (present at 6d0bf63) — without it every sdk *_max cell silently
+            # ran at default effort. Same casualty family as is_rate_limited
+            # (see driver.py) and the SessionOutcome error whitelist.
+            effort=ctx.extra.get("effort"),
             betas=ctx.extra.get("betas", []),
             # ONLY our bridge — never the user's global MCP config.
             strict_mcp_config=True,
             allowed_tools=(
-                ["mcp__env__observe", "mcp__env__observe_waypoints",
-                 "mcp__env__step", "mcp__env__goto", "mcp__env__stop"]
+                # libero toolbox: atomic reads + scene locator + servo macros
+                # (libero_bridge.py TOOLBOX surface); the locator is
+                # get_objects (GT) or pixel_to_3d (vision) per toolbox_gt
+                ["mcp__env__observe_third_person", "mcp__env__observe_wrist",
+                 "mcp__env__get_state",
+                 ("mcp__env__get_objects" if ctx.toolbox_gt
+                  else "mcp__env__pixel_to_3d"),
+                 "mcp__env__move_to", "mcp__env__gripper", "mcp__env__step"]
+                if ctx.benchmark == "libero" and ctx.toolbox
+                # libero bare/full share the two-tool surface (the full
+                # condition adds sensors to the same tools, not new tools)
+                else ["mcp__env__observe", "mcp__env__step"]
+                if ctx.benchmark == "libero"
+                else ["mcp__env__observe", "mcp__env__observe_waypoints",
+                      "mcp__env__step", "mcp__env__goto", "mcp__env__stop"]
                 if ctx.hybrid
                 else ["mcp__env__observe", "mcp__env__goto", "mcp__env__stop"]
                 if ctx.wp
@@ -244,6 +262,6 @@ class ClaudeSdkAdapter:
             usage=json_safe(getattr(result_msg, "usage", None)),
             cost_usd=getattr(result_msg, "total_cost_usd", None),
             turns=getattr(result_msg, "num_turns", None),
-            error=("sdk result is_error" if getattr(result_msg, "is_error", False) else None),
+            error=error,
             extra={"duration_ms": getattr(result_msg, "duration_ms", None)},
         )

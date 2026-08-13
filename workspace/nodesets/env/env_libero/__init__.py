@@ -491,6 +491,9 @@ class LiberoEnvManager:
         return {
             "agentview_image": agent_img,
             "wrist_image": wrist_img,
+            # Full proprioception (encoder-level; see _wrapper._process_obs)
+            "joint_pos": obs.get("joint_pos"),
+            "ee_quat_xyzw": obs.get("ee_quat_xyzw"),
             # Tier-1 contract: ``observation`` is a list of images so the
             # canonical reset/step bundle is uniform across env types.
             "observation": (
@@ -739,6 +742,8 @@ class ObserveEgocentricLiberoTool(BaseCanvasNode):
         PortDef("agentview_image", "IMAGE", "Third-person view (180°-flipped)"),
         PortDef("wrist_image", "IMAGE", "Wrist camera (180°-flipped)"),
         PortDef("state", "ANY", "8-D float32: eef_pos + axis-angle + gripper_qpos"),
+        PortDef("joint_pos", "ANY", "7 arm joint positions (rad) — encoder-level proprio"),
+        PortDef("ee_quat_xyzw", "ANY", "EE orientation quaternion (xyzw, robosuite convention)"),
         PortDef("observation", "LIST[IMAGE]", "[agentview_image, wrist_image]"),
         PortDef("pose", "POSE", "None (manipulation, no nav pose)"),
         PortDef("intrinsics", "ANY", "Reserved — always None (no camera intrinsics surface)"),
@@ -750,7 +755,8 @@ class ObserveEgocentricLiberoTool(BaseCanvasNode):
             self._self_log("error", cur["error"])
             return {
                 "rgb": None, "agentview_image": None, "wrist_image": None,
-                "state": None, "observation": [], "pose": None, "intrinsics": None,
+                "state": None, "joint_pos": None, "ee_quat_xyzw": None,
+                "observation": [], "pose": None, "intrinsics": None,
             }
         av = cur.get("agentview_image")
         self._self_log("has_rgb", av is not None)
@@ -759,6 +765,8 @@ class ObserveEgocentricLiberoTool(BaseCanvasNode):
             "agentview_image": av,
             "wrist_image": cur.get("wrist_image"),
             "state": cur.get("state"),
+            "joint_pos": cur.get("joint_pos"),
+            "ee_quat_xyzw": cur.get("ee_quat_xyzw"),
             "observation": cur.get("observation", []),
             "pose": cur.get("pose"),
             "intrinsics": None,
@@ -1080,6 +1088,120 @@ class ObserveObjectsLiberoTool(BaseCanvasNode):
         else:
             self._self_log("n_objects", len(snapshot.get("object_names") or []))
         return {"snapshot": snapshot, "error": err}
+
+
+# ── env_libero__pixel_to_3d (depth-backprojection locator) ────────────
+
+
+class PixelTo3DLiberoTool(BaseCanvasNode):
+    node_type = "env_libero__pixel_to_3d"
+    display_name = "LIBERO: Pixel → 3D"
+    description = (
+        "Backproject a pixel of the DELIVERED camera image (the 180°-flipped "
+        "view observe_egocentric returns; origin top-left, x right, y down) "
+        "to the world-frame 3D point of the visible surface at that pixel, "
+        "via an on-demand depth render + robosuite camera transforms. "
+        "Read-only — no env step. Non-privileged: uses only camera geometry "
+        "and the depth buffer, never sim object state."
+    )
+    category = "environment"
+    icon = "Crosshair"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="amber")
+    input_ports = [
+        PortDef("camera", "TEXT", '"agentview" (third-person) or "wrist"'),
+        PortDef("points", "ANY",
+                "[[x, y], ...] pixel coords in the delivered image "
+                "(x = column 0..W-1, y = row 0..H-1); a single [x, y] pair "
+                "is also accepted. One depth render serves the whole batch."),
+    ]
+    output_ports = [
+        PortDef("results", "ANY",
+                "Per input point, aligned by index: {point: [x,y,z] world "
+                "meters, depth_m} or {error}"),
+        PortDef("error", "TEXT", "Whole-call error (bad camera / no episode)"),
+    ]
+
+    _CAMERA_NAMES: ClassVar[dict[str, str]] = {
+        "agentview": "agentview",
+        "third_person": "agentview",
+        "wrist": "robot0_eye_in_hand",
+        "robot0_eye_in_hand": "robot0_eye_in_hand",
+    }
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        mgr = _get_mgr()
+        if (err := _need_active(mgr)):
+            self._self_log("error", err)
+            return {"results": None, "error": err}
+        cam_key = str(inputs.get("camera") or "").strip().lower()
+        cam_name = self._CAMERA_NAMES.get(cam_key)
+        if cam_name is None:
+            err = f"unknown camera {inputs.get('camera')!r} — use 'agentview' or 'wrist'"
+            self._self_log("error", err)
+            return {"results": None, "error": err}
+        raw_pts = inputs.get("points")
+        if isinstance(raw_pts, str):
+            try:
+                raw_pts = json.loads(raw_pts)
+            except json.JSONDecodeError:
+                raw_pts = None
+        if (isinstance(raw_pts, (list, tuple)) and len(raw_pts) == 2
+                and all(isinstance(v, (int, float)) for v in raw_pts)):
+            raw_pts = [raw_pts]  # single [x, y] pair
+        if not isinstance(raw_pts, (list, tuple)) or not raw_pts:
+            err = f"points must be [[x, y], ...], got {inputs.get('points')!r}"
+            self._self_log("error", err)
+            return {"results": None, "error": err}
+
+        def _backproject():
+            from robosuite.utils import camera_utils
+            sim = mgr._wrapper.env.sim
+            h = w = int(mgr._config["resolution"])
+            # One depth render serves the whole batch — rendering dominates
+            # the cost, per-point transforms are trivial.
+            _, depth_gl = sim.render(
+                camera_name=cam_name, width=w, height=h, depth=True
+            )
+            # camera_utils expects depth of shape (H, W, 1) (trailing
+            # channel axis) alongside (row, col) pixels.
+            depth_std = camera_utils.get_real_depth_map(
+                sim, depth_gl[::-1]
+            ).reshape(h, w, 1)
+            pix_to_world = np.linalg.inv(
+                camera_utils.get_camera_transform_matrix(sim, cam_name, h, w)
+            )
+            results: list[dict[str, Any]] = []
+            for pt in raw_pts:
+                try:
+                    px, py = int(pt[0]), int(pt[1])
+                except (TypeError, ValueError, IndexError):
+                    results.append({"error": f"bad point {pt!r}"})
+                    continue
+                if not (0 <= px < w and 0 <= py < h):
+                    results.append(
+                        {"error": f"pixel ({px}, {py}) outside the {w}x{h} image"})
+                    continue
+                # Delivered image = raw robosuite obs flipped 180° (see
+                # _wrapper._process_obs: obs[cam][::-1, ::-1]) and the raw
+                # obs is the GL render vertically flipped into top-left-
+                # origin convention — the orientation robosuite's camera
+                # transforms assume. So delivered (x right, y down) →
+                # standard (row, col) = (H-1-y, W-1-x).
+                row, col = h - 1 - py, w - 1 - px
+                point = camera_utils.transform_from_pixels_to_world(
+                    np.array([row, col]), depth_std, pix_to_world
+                )
+                results.append({
+                    "point": [round(float(v), 4)
+                              for v in np.asarray(point).reshape(-1)[:3]],
+                    "depth_m": round(float(depth_std[row, col, 0]), 4),
+                })
+            return results
+
+        results = await _run_sync(_backproject)
+        n_ok = sum(1 for r in results if "point" in r)
+        self._self_log("points", f"{n_ok}/{len(results)} backprojected")
+        return {"results": results, "error": ""}
 
 
 # ── env_libero__step_ee_pose ─────────────────────────────────────────
@@ -1734,6 +1856,7 @@ class EnvLiberoNodeSet(BaseNodeSet):
             StepEEPoseLiberoTool(),
             ObserveEgocentricLiberoTool(),
             ObserveObjectsLiberoTool(),
+            PixelTo3DLiberoTool(),
             EvaluateLiberoTool(),
             # EE-control extras (sim-mutating helpers outside the gym verbs)
             ResetToHomeLiberoTool(),

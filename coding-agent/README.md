@@ -11,8 +11,8 @@ reduces each harness to a ~100-line adapter, so the std board
 ONE core.
 
 ```
-prompts.py    briefing surfaces (bare/wp/hybrid/hmeqa/go2)
-cells.py      the std board as code: 53 cells (std · go2 · hmeqa · vlnverse), frozen knobs, batches
+prompts.py    briefing surfaces (bare/wp/hybrid/hmeqa/go2/libero)
+cells.py      the std board as code: the cells (std · go2 · hmeqa · vlnverse · libero), frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
 harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each;
               mini/ = the mini harness's in-repo body (toolset/model/env/
@@ -22,7 +22,7 @@ monitor_api.py  the run-artifact + scoring contract — the ONE surface any
               monitor consumes runs through (layout, honest-SR rule, roots,
               uirun spawn contract); backend loads it by path
 bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
-              hmeqa · go2(+go2_host); splits/ = tracked sampling-provenance
+              hmeqa · go2(+go2_host) · libero; splits/ = tracked sampling-provenance
               manifests for the derived mip env splits (data/ is gitignored,
               so these are the one versioned record of what each split holds)
 scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
@@ -70,9 +70,20 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
   --file ../../workspace/nodesets/env/env_vlnverse/__init__.py \
   --class EnvVLNVerseNodeSet --port 9260
 
+# LIBERO manipulation cells (libero_sdk_*) need the env_libero auto_host
+# instead (ac-libero env; MUJOCO_GL=egl for offscreen MuJoCo rendering):
+cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. MUJOCO_GL=egl \
+  ~/miniforge3/envs/ac-libero/bin/python -m app.server.auto_host \
+  --file ../../workspace/nodesets/env/env_libero/__init__.py \
+  --class EnvLiberoNodeSet --port 9270
+
 # then (agentcanvas env):
 python coding-agent/stdrun.py run std_sdk_opus-4.8_bare
 python coding-agent/stdrun.py run std_sdk_fable-5_wp   # reads --wp-server (default :9210)
+python coding-agent/stdrun.py run libero_sdk_sonnet-5 --servers http://127.0.0.1:9270
+python coding-agent/stdrun.py run libero_sdk_sonnet-5_full --servers http://127.0.0.1:9270  # sensor rung: +wrist/proprio/measured-movement/auto-observe
+python coding-agent/stdrun.py run libero_sdk_sonnet-5_tb --servers http://127.0.0.1:9270    # toolbox rung: atomic views + GT scene readout + move_to/gripper macros
+python coding-agent/stdrun.py run libero_sdk_sonnet-5_tbv --servers http://127.0.0.1:9270   # vision toolbox: pixel_to_3d depth backprojection instead of GT get_objects
 python coding-agent/stdrun.py batch A          # sdk × {sonnet,opus,fable} × bare_max
 python coding-agent/stdrun.py board            # grid status from summaries on disk
 python coding-agent/stdrun.py compare std_sdk_opus-4.8_bare std_mini_opus-4.8_bare

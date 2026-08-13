@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -33,7 +34,8 @@ import requests
 from cells import (BENCHMARK_FROZEN, STD_FROZEN,
                    WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec)
 from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT, HYBRID_FIRST_PROMPT,
-                     build_briefing)
+                     LIBERO_FIRST_PROMPT, LIBERO_TOOLBOX_FIRST_PROMPT,
+                     LIBERO_TOOLBOX_VISION_FIRST_PROMPT, build_briefing)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "mcp_bridge.py"
@@ -52,6 +54,11 @@ HMEQA_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "hmeqa_bridge.py"
 # choice of interface. Same habitat auto_host peer as mcp_bridge, plus the
 # waypoint predictor that wp uses.
 HYBRID_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "hybrid_bridge.py"
+# LIBERO manipulation (Liu et al. 2023): the arm line. Same two-tool minimal
+# surface, but step() takes the env's native 7-D continuous control ticks and
+# there is no terminal action — LIBERO detects success from scene state, so
+# the episode ends on task success or budget exhaustion (libero_bridge.py).
+LIBERO_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "libero_bridge.py"
 
 
 def env_verb_prefix(benchmark: str) -> str:
@@ -66,6 +73,8 @@ def env_verb_prefix(benchmark: str) -> str:
         return "env_hmeqa"
     if benchmark == "vlnverse":
         return "env_vlnverse"
+    if benchmark == "libero":
+        return "env_libero"
     return "env_habitat"
 
 
@@ -147,42 +156,56 @@ def is_rate_limited(text: str) -> bool:
     return any(m in low for m in RATE_LIMIT_MARKERS)
 
 
-_TOOL_SCHEMAS_CACHE: dict[tuple[bool, bool, bool, bool, bool, bool], Any] = {}
+_TOOL_SCHEMAS_CACHE: dict[tuple[bool, ...], Any] = {}
 
 
 async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                               hmeqa: bool = False,
                               hmeqa_tilt: bool = True,
                               auto_observe: bool = False,
-                              hybrid: bool = False) -> Any:
+                              hybrid: bool = False,
+                              libero: bool = False,
+                              toolbox: bool = False,
+                              toolbox_gt: bool = True) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
     wp_bridge.py for the wp condition, hybrid_bridge.py for the hybrid
-    condition, go2_bridge.py for the real robot, or hmeqa_bridge.py for
-    HM-EQA, whose step description also keys off the tilt mask; mini's port
-    is byte-equivalent, gated by check_equivalence.py). Cached per
-    (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid); never
+    condition, go2_bridge.py for the real robot, hmeqa_bridge.py for
+    HM-EQA — whose step description also keys off the tilt mask — or
+    libero_bridge.py for the LIBERO arm line; mini's port is
+    byte-equivalent, gated by check_equivalence.py). Cached per
+    (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid, libero); never
     raises (logging must not break a run).
     ``auto_observe`` mirrors the session's HABITAT_AUTO_OBSERVE so the recorded
     step()/goto() descriptions match."""
-    key = (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid)
+    key = (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid, libero,
+           toolbox, toolbox_gt)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
     bridge_path = (GO2_BRIDGE_PATH if go2
                    else HMEQA_BRIDGE_PATH if hmeqa
+                   else LIBERO_BRIDGE_PATH if libero
                    else HYBRID_BRIDGE_PATH if hybrid
                    else WP_BRIDGE_PATH if wp else BRIDGE_PATH)
     # Each bridge reads its own prefix; introspecting go2 with HABITAT_BARE set
     # would silently return the non-bare toolset. (hybrid is a habitat bridge,
     # so it stays on HABITAT_BARE.)
     bare_var = ("GO2_BARE" if go2
-                else "HMEQA_BARE" if hmeqa else "HABITAT_BARE")
+                else "HMEQA_BARE" if hmeqa
+                else "LIBERO_BARE" if libero else "HABITAT_BARE")
     saved = os.environ.get(bare_var)
     saved_tilt = os.environ.get("HMEQA_TILT")
     saved_ao = os.environ.get("HABITAT_AUTO_OBSERVE")
+    saved_lao = os.environ.get("LIBERO_AUTO_OBSERVE")
+    saved_ltb = os.environ.get("LIBERO_TOOLBOX")
+    saved_ltg = os.environ.get("LIBERO_TOOLBOX_GT")
     try:
         os.environ[bare_var] = "1" if bare else "0"
         os.environ["HABITAT_AUTO_OBSERVE"] = "1" if auto_observe else "0"
+        if libero:
+            os.environ["LIBERO_AUTO_OBSERVE"] = "1" if auto_observe else "0"
+            os.environ["LIBERO_TOOLBOX"] = "1" if toolbox else "0"
+            os.environ["LIBERO_TOOLBOX_GT"] = "1" if toolbox_gt else "0"
         if hmeqa:
             os.environ["HMEQA_TILT"] = "1" if hmeqa_tilt else "0"
         spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
@@ -199,7 +222,10 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
         _TOOL_SCHEMAS_CACHE[key] = {"error": f"tool-schema introspection failed: {exc!r}"}
     finally:
         for _name, _saved in ((bare_var, saved), ("HMEQA_TILT", saved_tilt),
-                              ("HABITAT_AUTO_OBSERVE", saved_ao)):
+                              ("HABITAT_AUTO_OBSERVE", saved_ao),
+                              ("LIBERO_AUTO_OBSERVE", saved_lao),
+                              ("LIBERO_TOOLBOX", saved_ltb),
+                              ("LIBERO_TOOLBOX_GT", saved_ltg)):
             if _saved is None:
                 os.environ.pop(_name, None)
             else:
@@ -286,7 +312,7 @@ class EpisodeContext:
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
     go2: bool = False      # real Unitree Go2 (go2_bridge.py); server_url points
                            # at go2_host.py on the robot's machine, not localhost
-    benchmark: str = "r2r"  # r2r | hmeqa | vlnverse
+    benchmark: str = "r2r"  # r2r | hmeqa | vlnverse | libero
     hmeqa_tilt: bool = True  # hmeqa only: camera-tilt actions 4/5 on the
                              # toolface (cells tilt_actions; --set tilt_actions=0
                              # masks them — bridge + briefing follow together)
@@ -297,6 +323,12 @@ class EpisodeContext:
     # only). RxR default (its long instructions double the turn count under the
     # classic alternation); off for R2R-CE so its frozen baselines still hold.
     auto_observe: bool = False
+    # libero loaded-toolbox surface (atomic reads + GT readout + servo macros;
+    # cells condition libero_toolbox — see libero_bridge.py TOOLBOX)
+    toolbox: bool = False
+    # toolbox GT switch: False = pixel_to_3d replaces get_objects
+    # (condition libero_toolbox_vision)
+    toolbox_gt: bool = True
     extra: dict[str, Any] = field(default_factory=dict)  # harness-specific knobs
 
     @property
@@ -311,6 +343,8 @@ class EpisodeContext:
             return GO2_BRIDGE_PATH
         if self.benchmark == "hmeqa":
             return HMEQA_BRIDGE_PATH
+        if self.benchmark == "libero":
+            return LIBERO_BRIDGE_PATH
         if self.hybrid:
             return HYBRID_BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
@@ -339,6 +373,17 @@ class EpisodeContext:
                 "HMEQA_BARE": "1" if self.bare else "0",
                 "HMEQA_TILT": "1" if self.hmeqa_tilt else "0",
                 "HMEQA_LIVE_DIR": str(self.live_dir),
+            }
+        if self.benchmark == "libero":
+            return {
+                "LIBERO_SERVER_URL": self.server_url,
+                "LIBERO_STEP_BUDGET": str(self.step_budget),
+                "LIBERO_TURN_BUDGET": str(self.turn_budget),
+                "LIBERO_BARE": "1" if self.bare else "0",
+                "LIBERO_AUTO_OBSERVE": "1" if self.auto_observe else "0",
+                "LIBERO_TOOLBOX": "1" if self.toolbox else "0",
+                "LIBERO_TOOLBOX_GT": "1" if self.toolbox_gt else "0",
+                "LIBERO_LIVE_DIR": str(self.live_dir),
             }
         env = {
             "HABITAT_SERVER_URL": self.server_url,
@@ -472,6 +517,26 @@ async def run_episode(
         instruction = raw_q + "".join(
             f"\n{letter}. {c}" for letter, c in zip("ABCD", choices)
         )
+    elif spec.benchmark == "libero":
+        # Flat episode index over the suite: task_id = k % tasks_per_suite,
+        # init state = k // tasks_per_suite (episodes 0-9 = every task once).
+        # The panel's task_id / episode_index cascade places via set_episode;
+        # reset (ensure_live) then reads the placed episode untouched. The
+        # suite itself was selected once per run via the split field.
+        tasks_per_suite = int(cfg["tasks_per_suite"])
+        await asyncio.to_thread(
+            panel_field, url, "task_id", index % tasks_per_suite)
+        await asyncio.to_thread(
+            panel_field, url, "episode_index", index // tasks_per_suite)
+        ep = await asyncio.to_thread(
+            call_function, url, "env_libero__reset", {"trigger": "driver"}
+        )
+        instruction = str(ep.get("instruction") or "")
+        if not instruction:
+            raise RuntimeError(
+                f"libero reset returned empty instruction (episode {index}) "
+                "— episode placement failed?"
+            )
     else:
         await asyncio.to_thread(panel_field, url, "episode_index", index)
         await asyncio.to_thread(panel_action, url, "play")
@@ -488,12 +553,15 @@ async def run_episode(
         instruction = ep["instruction"]
 
     auto_observe = bool(cfg.get("auto_observe", False))
+    toolbox = bool(cfg.get("toolbox", False))
+    toolbox_gt = bool(cfg.get("toolbox_gt", True))
     briefing = build_briefing(
         instruction, cfg["step_budget"], bare=spec.bare,
         wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
         benchmark=spec.benchmark,
         hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
-        auto_observe=auto_observe, hybrid=spec.hybrid,
+        auto_observe=auto_observe, hybrid=spec.hybrid, toolbox=toolbox,
+        toolbox_gt=toolbox_gt,
     )
 
     workdir = run_dir / f"workdir_{index}"
@@ -507,6 +575,10 @@ async def run_episode(
         briefing=briefing,
         first_prompt=(HYBRID_FIRST_PROMPT if spec.hybrid
                       else HMEQA_FIRST_PROMPT if spec.benchmark == "hmeqa"
+                      else (LIBERO_TOOLBOX_FIRST_PROMPT if toolbox_gt
+                            else LIBERO_TOOLBOX_VISION_FIRST_PROMPT)
+                      if spec.benchmark == "libero" and toolbox
+                      else LIBERO_FIRST_PROMPT if spec.benchmark == "libero"
                       else FIRST_PROMPT),
         server_url=url,
         bare=spec.bare,
@@ -524,6 +596,8 @@ async def run_episode(
         go2=spec.go2,
         hybrid=spec.hybrid,
         auto_observe=auto_observe,
+        toolbox=toolbox,
+        toolbox_gt=toolbox_gt,
         wp_server_url=cfg.get("wp_server") or "",
         wp_max_moves=cfg.get("wp_max_moves", 30),
         extra=dict(cfg.get("extra") or {}),
@@ -545,7 +619,9 @@ async def run_episode(
                 spec.bare, spec.wp, spec.go2,
                 spec.benchmark == "hmeqa",
                 bool(cfg.get("tilt_actions", True)),
-                auto_observe, spec.hybrid),
+                auto_observe, spec.hybrid,
+                libero=spec.benchmark == "libero",
+                toolbox=toolbox, toolbox_gt=toolbox_gt),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -573,6 +649,11 @@ async def run_episode(
                     "pred_letter": str(
                         (sink.last_step_result or {}).get("answer") or "")
                 }
+            elif spec.benchmark == "libero":
+                # Success lives in the env manager's episode state (LIBERO's
+                # own done flag) — no agent-side terminal to read back.
+                evaluate_fn = "env_libero__evaluate"
+                evaluate_inputs = {"trigger": "driver"}
             else:
                 evaluate_fn = f"{env_verb_prefix(spec.benchmark)}__evaluate"
                 evaluate_inputs = {"trigger": "driver"}
@@ -661,6 +742,23 @@ def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     return agg
 
 
+def format_episodes(indices: list[int]) -> str:
+    """Inverse of parse_episodes: [7,8,9,14,44] -> '7-9,14,44'."""
+    xs = sorted(set(indices))
+    if not xs:
+        return ""
+    out: list[str] = []
+    start = prev = xs[0]
+    for x in xs[1:]:
+        if x == prev + 1:
+            prev = x
+            continue
+        out.append(f"{start}-{prev}" if start != prev else f"{start}")
+        start = prev = x
+    out.append(f"{start}-{prev}" if start != prev else f"{start}")
+    return ",".join(out)
+
+
 def parse_episodes(spec: str) -> list[int]:
     indices: list[int] = []
     for part in spec.split(","):
@@ -693,11 +791,16 @@ async def run_cell(
     # absent → the frozen defaults for this benchmark line.
     # (Merged 2026-08-01: this loop is the superset of the separate max_turns /
     # split pops that used to sit here — one place, not three.)
-    for _k in ("dataset", "split", "max_turns"):
+    for _k in ("dataset", "split", "max_turns", "max_budget_usd",
+               "episode_timeout"):
         if _k in cfg["extra"]:
             cfg[_k] = cfg["extra"].pop(_k)
     if "max_turns" in cfg:
         cfg["max_turns"] = int(cfg["max_turns"])
+    if cfg.get("max_budget_usd") is not None:
+        cfg["max_budget_usd"] = float(cfg["max_budget_usd"])
+    if "episode_timeout" in cfg:
+        cfg["episode_timeout"] = int(cfg["episode_timeout"])
     # hmeqa tilt mask: `--nonstd --set tilt_actions=0` drops actions 4/5 from
     # the toolface (bridge validation + tool description + briefing together).
     if "tilt_actions" in cfg["extra"]:
@@ -708,6 +811,14 @@ async def run_cell(
     # the classic observe/step alternation (and its frozen baselines). Override
     # either way with `--set auto_observe=1|0`. The bridge (HABITAT_AUTO_OBSERVE)
     # and the prompt are both driven off this single flag so they can't disagree.
+    # libero toolbox surface: cells knob (condition libero_toolbox) — popped
+    # so it drives the bridge/briefing/allowed-tools trio, never the model.
+    cfg["toolbox"] = str(
+        cfg["extra"].pop("toolbox", 0)).lower() in ("1", "true", "yes")
+    # GT switch within the toolbox: 0 = pixel_to_3d instead of get_objects
+    # (condition libero_toolbox_vision)
+    cfg["toolbox_gt"] = str(
+        cfg["extra"].pop("toolbox_gt", 1)).lower() not in ("0", "false", "no")
     _ao = cfg["extra"].pop("auto_observe", None)
     if spec.hybrid:
         # hybrid is ALWAYS separate (non-auto-observe): the model must choose
@@ -749,9 +860,10 @@ async def run_cell(
             server_name = health.json()["name"]
             print(f"[std] {url} healthy: {server_name}")
             # hmeqa needs an env_hmeqa auto_host, vlnverse an env_vlnverse
-            # one — a mismatched server would place the wrong episodes, so
-            # refuse rather than degrade silently. The habitat lines are
-            # checked too now that the prefix is computed rather than assumed.
+            # one, libero an env_libero one — a mismatched server would place
+            # the wrong episodes, so refuse rather than degrade silently. The
+            # habitat lines are checked too now that the prefix is computed
+            # rather than assumed.
             want = env_verb_prefix(spec.benchmark)
             if server_name != want:
                 raise RuntimeError(
@@ -803,6 +915,21 @@ async def run_cell(
     run_dir.mkdir(parents=True, exist_ok=True)
     summary_path = run_dir / "summary.json"
 
+    # Graceful drain (restored 2026-08-03 from 6d0bf63 — the two-machine merge
+    # dropped it while stdrun.py kept advertising the `drain` command):
+    # `touch <run_dir>/DRAIN` (or `stdrun.py drain <cell>`, or SIGUSR1) asks
+    # every worker to finish its current episode, flush, and exit WITHOUT
+    # pulling a new one — in-flight work is never cut, un-pulled indices stay
+    # pending for the next resume.
+    drain = asyncio.Event()
+    drain_sentinel = run_dir / "DRAIN"
+    if drain_sentinel.exists():
+        drain_sentinel.unlink()  # clear a stale sentinel from a prior run
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, drain.set)
+    except (NotImplementedError, RuntimeError):
+        pass  # signal handlers unavailable on this platform / thread
+
     # resume: keep prior records for indices not being re-run
     prior: dict[int, dict[str, Any]] = {}
     if summary_path.exists():
@@ -852,24 +979,45 @@ async def run_cell(
     async def worker(position: int, url: str) -> None:
         await asyncio.sleep(position * 2)  # stagger cold-server scene loads
         while True:
+            if drain.is_set() or drain_sentinel.exists():
+                print(f"[std] worker {position} ({url}) draining — "
+                      f"no new episode pulled")
+                return
             try:
                 index = queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
             print(f"[std] episode {index} starting on {url}")
-            try:
-                episode = await asyncio.wait_for(
-                    run_episode(adapter, spec, cfg, url, index, run_dir),
-                    timeout=cfg["episode_timeout"] + 600,  # backstop over in-session caps
-                )
-            except asyncio.TimeoutError:
-                print(f"[std] episode {index} TIMED OUT (backstop)")
-                episode = {"index": index, "error": "timeout", "metrics": {},
-                           "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
-            except Exception as exc:  # noqa: BLE001 — one bad episode must not kill the run
-                print(f"[std] episode {index} FAILED: {exc!r}")
-                episode = {"index": index, "error": repr(exc), "metrics": {},
-                           "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
+            # Rate-limit retry (restored 2026-08-03 from 6d0bf63 — the merge
+            # dropped it, so a throttled episode landed as a contaminated
+            # partial record instead of re-running; the libero full ep0-9 run
+            # was the casualty that surfaced it): back off OUTSIDE the timed
+            # scope and re-run the episode fresh, so the wait never eats the
+            # episode's wall-clock budget.
+            episode: dict[str, Any] = {}
+            for attempt in range(1, RATE_LIMIT_MAX_ATTEMPTS + 1):
+                try:
+                    episode = await asyncio.wait_for(
+                        run_episode(adapter, spec, cfg, url, index, run_dir),
+                        timeout=cfg["episode_timeout"] + 600,  # backstop over in-session caps
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[std] episode {index} TIMED OUT (backstop)")
+                    episode = {"index": index, "error": "timeout", "metrics": {},
+                               "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
+                except Exception as exc:  # noqa: BLE001 — one bad episode must not kill the run
+                    tag = "rate_limited" if is_rate_limited(repr(exc)) else repr(exc)
+                    print(f"[std] episode {index} FAILED: {exc!r}")
+                    episode = {"index": index, "error": tag, "metrics": {},
+                               "agent": {"env_steps": 0, "called_stop": False, "tool_calls": {}}}
+                if episode.get("error") != "rate_limited" or attempt == RATE_LIMIT_MAX_ATTEMPTS:
+                    break
+                backoff = min(RATE_LIMIT_BASE_BACKOFF * (2 ** (attempt - 1)),
+                              RATE_LIMIT_MAX_BACKOFF)
+                print(f"[std] episode {index} RATE-LIMITED (attempt {attempt}/"
+                      f"{RATE_LIMIT_MAX_ATTEMPTS}) — backing off {backoff}s "
+                      f"(episode countdown paused) then retrying")
+                await asyncio.sleep(backoff)  # OUTSIDE wait_for: excluded from episode_timeout
             episodes[index] = episode
             await flush_summary()
             m = episode.get("metrics") or {}
@@ -891,6 +1039,16 @@ async def run_cell(
                 run_stats["finalize_error"] = repr(exc)
         await flush_summary()
 
+    if drain.is_set() or drain_sentinel.exists():
+        left: list[int] = []
+        while not queue.empty():
+            left.append(queue.get_nowait())
+        print(f"[std] DRAINED — in-flight episodes finished; "
+              f"{len(left)} un-run, resume with --episodes {format_episodes(left)}"
+              if left else "[std] DRAINED — queue already empty")
+    if drain_sentinel.exists():
+        drain_sentinel.unlink()
+
     final = aggregate([e for e in episodes.values() if is_scored(e)])
     print(f"[std] cell complete -> {summary_path}")
     if run_stats:
@@ -900,7 +1058,7 @@ async def run_cell(
     # every run — user decision 2026-07-23. Best-effort: a failed report
     # must never lose a completed run.
     try:
-        from run_stats import generate as _generate_stats
+        from ac_support.run_stats import generate as _generate_stats
         print(f"[std] stats report -> {_generate_stats(run_dir)}")
     except Exception as exc:  # noqa: BLE001
         print(f"[std] stats report failed (non-fatal): {exc!r}")

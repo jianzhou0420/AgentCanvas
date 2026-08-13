@@ -77,8 +77,11 @@ async def _batch(args: argparse.Namespace) -> None:
     for name in names:
         spec = get_cell(name)
         adapter = get_adapter(spec.harness)
+        # registry-declared knobs are part of the cell, same as in _run —
+        # without this a batched cell silently drops them (e.g. a full
+        # condition's auto_observe, a local model's api_base)
         await run_cell(adapter, spec, _servers(args.servers),
-                       wp_server=args.wp_server)
+                       extra=dict(spec.extra_dict), wp_server=args.wp_server)
 
 
 def _load_summary(cell_name: str) -> dict | None:
