@@ -188,6 +188,10 @@ if [ "$DO_ENV" = "1" ]; then
     "$OCTO_PYTHON" -m pip install \
         'fastapi' 'uvicorn' 'httpx' 'pydantic' 'websockets' 'msgpack' \
         'huggingface_hub'
+    # MCP projection (/mcp on auto_host): mcp 1.x only — 2.0 removed the
+    # lowlevel Server API the projection is written against
+    # (app/server/mcp_projection.py).
+    "$OCTO_PYTHON" -m pip install 'mcp==1.27.0'
 
     # ── Step 6: Verify ──
 

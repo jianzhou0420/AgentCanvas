@@ -314,6 +314,11 @@ echo ""
 echo "=== Step 2g: Pin numpy<2.0 (jax/jaxlib/TF compiled against 1.x) ==="
 "$VLA_PYTHON" -m pip install --upgrade 'numpy<2.0'
 
+# ── Step 2h: MCP projection (/mcp on auto_host) ──
+# mcp 1.x only — 2.0 removed the lowlevel Server API the projection is
+# written against (app/server/mcp_projection.py). Purely additive deps.
+"$VLA_PYTHON" -m pip install 'mcp==1.27.0'
+
 # ── Step 3: Verify ──
 #
 # Export the same runtime env the activation hook / nodeset server_env set, so

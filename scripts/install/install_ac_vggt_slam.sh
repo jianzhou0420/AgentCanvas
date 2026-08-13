@@ -148,6 +148,9 @@ pip install gdown evo \
     "fastapi==0.128.8" \
     "httpx==0.28.1" \
     "msgpack==1.2.1"
+# MCP projection (/mcp on auto_host): mcp 1.x only — 2.0 removed the lowlevel
+# Server API the projection is written against (app/server/mcp_projection.py).
+pip install "mcp==1.27.0"
 
 HUB_CKPT_DIR="$(python -c 'import torch; print(torch.hub.get_dir())')/checkpoints"
 mkdir -p "${HUB_CKPT_DIR}"

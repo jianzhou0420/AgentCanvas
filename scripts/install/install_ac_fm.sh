@@ -91,6 +91,9 @@ pip install \
     "fastapi==0.128.8" \
     "httpx==0.28.1" \
     msgpack
+# MCP projection (/mcp on auto_host): mcp 1.x only — 2.0 removed the lowlevel
+# Server API the projection is written against (app/server/mcp_projection.py).
+pip install "mcp==1.27.0"
 
 echo "[4/5] flash-attn (best-effort; sdpa fallback if import fails)"
 pip install flash-attn==2.8.3 --no-build-isolation || \
