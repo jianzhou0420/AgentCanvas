@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Define a NodeSet — AgentCanvas</title>
+<meta name="description" content="BaseNodeSet — placement, lifecycle, deployment contracts, three ways to load">
+<meta property="og:title" content="Define a NodeSet — AgentCanvas">
+<meta property="og:description" content="BaseNodeSet — placement, lifecycle, deployment contracts, three ways to load">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/tutorial/define-a-nodeset.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/tutorial/define-a-nodeset.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Tutorial</a>
+    <span class="sep">/</span>
+    <span class="here">Define a NodeSet</span>
+  </div>
+  <div class="last-updated">2026-08-13</div>
+</div>
+  <header class="page-header guide">
+  <h1>Define a NodeSet</h1>
+  <p class="tagline">BaseNodeSet — placement, lifecycle, deployment contracts, three ways to load</p>
+</header>
+
+<p class="lede">A <strong>nodeset</strong> is the deployment unit: an atomic group of nodes that share initialization and shutdown — a loaded model, a simulator connection, a family of related tools. Every node must belong to one to be discoverable. The nodeset class is also where deployment is declared: which interpreter serves it (<code>server_python</code>), whether it's stateful under parallel eval (<code>parallelism</code>), and its MCP session policy (<code>mcp_exclusive</code>). Nodes themselves are the <a href="define-a-node.html">previous tutorial</a>; the hosting machinery is <a href="../design-docs/operations/server-mode.html">Server Mode</a>.</p>
+
+<h2 id="1-placement"><span class="num">1.</span> Placement and naming</h2>
+<ul>
+<li><strong>Role directory first</strong>: every nodeset lives under one of <code>workspace/nodesets/{env, method, policy, model, common, other}/</code>. Deployment (own conda env) is <em>not</em> a directory concern — that's the <code>server_python</code> ClassVar.</li>
+<li><strong>Single file</strong> <code>{role}/{name}.py</code> by default; <strong>folder package</strong> <code>{role}/{name}/__init__.py</code> when there are sidecars (a simulator wrapper, vendored model code, presets) — sidecars live <em>inside</em> the folder with relative imports, never as <code>_xxx.py</code> siblings.</li>
+<li><strong><code>name</code> equals the file/folder stem exactly, role prefix included</strong>: <code>model/model_sam.py</code> → <code>name = "model_sam"</code>; <code>env/env_libero/__init__.py</code> → <code>name = "env_libero"</code>.</li>
+<li>All node classes live in the entry module, above the NodeSet class; the module docstring carries the load line.</li>
+</ul>
+
+<h2 id="2-skeleton"><span class="num">2.</span> The skeleton</h2>
+<pre class="hl">
+<span class="sd">&quot;&quot;&quot;My Tools NodeSet — greeting utilities.</span>
+
+<span class="sd">Load:  POST /api/components/nodesets/my_tools/load</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseNodeSet</span>
+
+
+<span class="c1"># ... node classes above (see Define a Node) ...</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyToolsNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Greeting utilities.&quot;&quot;&quot;</span>
+
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">my_tools</span><span class="s2">&quot;</span>             <span class="c1"># must equal the file/folder stem</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Greeting utilities</span><span class="s2">&quot;</span>
+
+    <span class="c1"># Deployment &amp; eval contracts — all optional, defaults shown:</span>
+    <span class="c1"># server_python = None        # interpreter for server mode (own conda env)</span>
+    <span class="c1"># parallelism = &quot;shared&quot;      # &quot;replicated&quot; for stateful env nodesets</span>
+    <span class="c1"># mcp_exclusive = None        # /mcp session policy; None derives from parallelism</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">list</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">GreetNode</span><span class="p">(</span><span class="p">)</span><span class="p">]</span>      <span class="c1"># instances, not classes</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">initialize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="o">*</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>                      <span class="c1"># heavyweight setup (models, connections)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>                      <span class="c1"># release GPU memory / close handles</span>
+</pre>
+
+<h2 id="3-fields"><span class="num">3.</span> Fields and contracts</h2>
+<table>
+<thead><tr><th>Field</th><th>Default</th><th>What it decides</th></tr></thead>
+<tbody>
+<tr><td><code>name</code></td><td>required</td><td>Unique identifier; must match the file/folder stem.</td></tr>
+<tr><td><code>get_tools()</code></td><td>required</td><td>Returns node <strong>instances</strong>, not classes.</td></tr>
+<tr><td><code>description</code></td><td><code>""</code></td><td>Shown in the NodeSet Manager UI — always set it.</td></tr>
+<tr><td><code>server_python</code></td><td><code>None</code></td><td>Interpreter for server mode. Set when the nodeset needs its own conda env (pinned simulator, different torch); <code>None</code> = the backend's interpreter.</td></tr>
+<tr><td><code>parallelism</code></td><td><code>"shared"</code></td><td>Eval-time contract (ADR-server-003). <code>"shared"</code>: one instance, K callers may rendezvous through batched inference — right for stateless tools. <code>"replicated"</code>: N tagged subprocesses, one per worker — <em>required</em> for stateful nodesets (env scene state, simulator handles).</td></tr>
+<tr><td><code>mcp_exclusive</code></td><td><code>None</code></td><td><code>/mcp</code> session policy. <code>None</code> derives from <code>parallelism</code> (<code>"replicated"</code> ⇒ one live MCP session, second initialize gets 409); pin <code>True</code>/<code>False</code> to override. See <a href="../design-docs/operations/mcp-projection.html">MCP Projection</a> §5.</td></tr>
+<tr><td><code>env_panel</code></td><td><code>None</code></td><td>A <code>BaseEnvPanel</code> subclass for runtime control (episode picker, dataset switcher) — lives inside the server subprocess.</td></tr>
+<tr><td><code>default_per_step_budget_sec</code></td><td><code>30.0</code></td><td>Per-episode timeout knob for batch eval: episodes are clamped at <code>max_steps × budget</code>. Override when step latency genuinely diverges.</td></tr>
+<tr><td><code>initialize()</code> / <code>shutdown()</code></td><td>no-op</td><td>Heavyweight setup / teardown. Eager-load what's always needed; lazy-load expensive maybe-unused resources in first <code>forward()</code>.</td></tr>
+</tbody>
+</table>
+
+<h2 id="4-loading"><span class="num">4.</span> Three ways to load it</h2>
+<p>The same class serves all three — no per-face code. Local for same-env tools; server mode for isolation (own interpreter, GPU, parallel workers); standalone auto_host when a coding agent or MCP client should call the tools directly:</p>
+<pre class="hl">
+<span class="c1"># canvas, same process</span>
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/api/components/nodesets/my_tools/load
+
+<span class="c1"># canvas, own subprocess (server mode)</span>
+curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;http://127.0.0.1:8000/api/components/nodesets/my_tools/load?mode=server&quot;</span>
+
+<span class="c1"># standalone server — manifest protocol + native MCP face</span>
+python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<span class="w"> </span>--file<span class="w"> </span>workspace/nodesets/common/my_tools.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--class<span class="w"> </span>MyToolsNodeSet<span class="w"> </span>--port<span class="w"> </span><span class="m">9200</span>
+claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--transport<span class="w"> </span>http<span class="w"> </span>my-tools<span class="w"> </span>http://127.0.0.1:9200/mcp
+</pre>
+<p>In the standalone form the process serves <code>GET /manifest</code>, <code>POST /call/{fn}</code>, <code>GET /health</code> — and, when the <code>mcp</code> SDK (<code>mcp==1.27.0</code>, py≥3.10) is importable in its env, the native <code>/mcp</code> endpoint. Under batch eval, <code>worker_count &gt; 1</code> auto-routes <code>"replicated"</code> nodesets to server mode with N tagged subprocesses.</p>
+
+<h2 id="5-state"><span class="num">5.</span> Where state lives</h2>
+<ul>
+<li><strong>Per-node, cross-fire</strong>: the <code>ctx</code> proxy passed to <code>forward()</code> (loaded checkpoints, RNN hidden).</li>
+<li><strong>Shared between the set's nodes</strong>: module-level dicts (scratch pads, caches) — clean them up in <code>shutdown()</code>.</li>
+<li><strong>Per-episode, partitionable</strong>: nodeset-owned state containers (declared via <code>get_containers()</code>), evictable per episode key.</li>
+<li>If per-episode state <em>cannot</em> be partitioned (a simulator's scene), that is exactly the <code>parallelism = "replicated"</code> signal — and, derived from it, MCP session exclusivity.</li>
+</ul>
+
+<h2 id="6-checklist"><span class="num">6.</span> Checklist</h2>
+<ul class="checklist">
+<li>Exactly one <code>BaseNodeSet</code> subclass per nodeset; <code>name</code> matches the file/folder stem</li>
+<li>All node <code>node_type</code> values start with <code>{nodeset_name}__</code>; <code>get_tools()</code> returns instances</li>
+<li>Module docstring includes <code>Load: POST /api/components/nodesets/{name}/load</code></li>
+<li><code>from __future__ import annotations</code> at file top</li>
+<li><code>parallelism</code> honest: <code>"shared"</code> for stateless tools, <code>"replicated"</code> for stateful envs (it now also drives <code>mcp_exclusive</code>)</li>
+<li><code>shutdown()</code> releases GPU memory and module-level state</li>
+<li>Sidecars live inside the folder package, not as siblings</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-placement">1. Placement and naming</a>
+      <a class="toc-h2" href="#2-skeleton">2. The skeleton</a>
+      <a class="toc-h2" href="#3-fields">3. Fields and contracts</a>
+      <a class="toc-h2" href="#4-loading">4. Three ways to load it</a>
+      <a class="toc-h2" href="#5-state">5. Where state lives</a>
+      <a class="toc-h2" href="#6-checklist">6. Checklist</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>
