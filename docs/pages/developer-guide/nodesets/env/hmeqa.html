@@ -61,7 +61,7 @@
     <span class="sep">/</span>
     <span class="here">HM-EQA</span>
   </div>
-  <div class="last-updated">2026-06-11 15:37</div>
+  <div class="last-updated">2026-08-13 16:30</div>
 </div>
   <header class="page-header guide">
   <h1>HM-EQA NodeSet</h1>
@@ -325,7 +325,7 @@ data/hm3d/hm3dsem/{scene}/{scene[6:]}.basis.navmesh   navmesh
 </tbody>
 </table>
 <p>Actions: <code>play</code>, <code>pause</code>, <code>stop</code>, <code>reset</code>. The <code>play</code> button triggers <code>run_start</code>; Reset re-applies the currently-selected episode without touching graph state.</p>
-<p>The <code>split</code> field is retained as a single-option select to give future train/test splits a zero-migration path.</p>
+<p><em>Superseded 2026-07-29:</em> the cascade is now three-deep — <strong>dataset</strong> (<code>hmeqa</code> / <code>mt_hm3d</code>) → <strong>split</strong> → <strong>episode_index</strong> — since the dataset-spec extension in §8. Eval submissions select MT-HM3D with <code>dataset=mt_hm3d</code>, like ObjectNav's <code>mp3d_v1</code>.</p>
 <hr>
 <h2 id="7-environment-setup"><span class="num">7.</span> Environment Setup</h2>
 <p>One-time install:</p>
@@ -343,6 +343,40 @@ bash<span class="w"> </span>scripts/data/fetch_episodes_vln.sh<span class="w"> <
 <li><a href="../method/explore-eqa.html">ExploreEQA NodeSet</a> — the method side that consumes this env</li>
 <li><a href="habitat.html">Habitat NodeSet</a> — the VLN-CE sibling</li>
 </ul>
+<hr>
+<h2 id="8-datasets"><span class="num">8.</span> Datasets: <code>hmeqa</code> / <code>mt_hm3d</code></h2>
+
+<p>Since 2026-07-29 the nodeset carries a <code>_DATASET_SPECS</code> table and serves two benchmarks through one env. Selecting a dataset is an episode-corpus choice, not a task change — the verified <code>explore_eqa_hmeqa</code> graph runs MT-HM3D unmodified via the panel's dataset field (or <code>dataset=mt_hm3d</code> on an eval submission).</p>
+
+<table>
+<thead><tr><th>Spec</th><th>Benchmark</th><th>Corpus</th><th>Scoring</th></tr></thead>
+<tbody>
+<tr><td><code>hmeqa</code></td><td><a href="https://arxiv.org/abs/2403.15941">HM-EQA</a> (24.03, Explore-until-Confident)</td><td>500 multi-choice questions / 266 scenes, val only</td><td>letter-match SR</td></tr>
+<tr><td><code>mt_hm3d</code></td><td><a href="https://arxiv.org/abs/2505.13948">MT-HM3D</a> (25.05, MemoryEQA, BIT; preprint)</td><td>1,587 multi-choice questions / 828 scenes (737 train + 91 val; both eval-only — "train" is the HM3D scene split)</td><td>letter-match SR + <code>norm_step</code>; <code>steps_taken</code> added to the metrics dict (<code>num_steps</code> stays = budget for the verified graph)</td></tr>
+</tbody>
+</table>
+
+<p>Each spec names its own questions/init-pose CSVs, its own choices parser, and a <code>force_floor0_init</code> flag. Three upstream behaviours are <strong>deliberate benchmark-native mirrors — do not "fix"</strong>:</p>
+
+<ul>
+<li>MT's init-pose key forces floor 0 (<code>memory_eqa.py:165</code>) even though 260/1,587 questions target floor 1/2.</li>
+<li>MT choices parse with MemoryEQA's <code>strip/split(", ")</code> (<code>memory_eqa.py:167</code>) — differs from explore-eqa's parser on 38 rows and from <code>literal_eval</code> too.</li>
+<li>The evaluated <code>MT-HM3D-filtered*.csv</code> from the paper is not public; we run the 1,587-row contextual release and state that口径 when reporting.</li>
+</ul>
+
+<div class="callout warn"><strong>Answer-distribution skew.</strong> 67.4% of MT-HM3D answers are "A" — a constant-A agent beats every published baseline. Always report per-category numbers alongside SR, and keep a blind baseline column for calibration.</div>
+
+<h3 id="mt-verification">MT-HM3D verification evidence</h3>
+
+<table>
+<thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Loader + sim smokes</td><td>2026-07-29, agentcanvas env (loader) + ac-hmeqa (sim)</td><td>both specs load; scene pool audited 828/828 MT scenes with non-empty glb + navmesh</td></tr>
+<tr><td><strong>Graph run on MT-HM3D</strong></td><td>run <code>20260813_155648</code> — <code>explore_eqa_hmeqa</code>, <code>dataset=mt_hm3d</code>, 1 episode, slot-b</td><td><strong>completed</strong>: 47 steps to budget, Prismatic in the loop, metrics harvested — <code>success=0, norm_step=1.0, steps_taken=47</code>. Single episode; not comparable to the paper's full-set rows (ExploreEQA/Prismatic 30.22%, MemoryEQA 54.5%)</td></tr>
+</tbody>
+</table>
+
+<p>Not yet: any multi-episode MT-HM3D number; the MemoryEQA method itself (YOLOv11 + CLIP + RAG memory — reference clone at <code>tmp/thirdparty/MemoryEQA</code>). The sibling benchmark from the same lineage, EXPRESS-Bench, is a separate nodeset — see <a href="express.html">EXPRESS-Bench</a>.</p>
 
   <footer>
     <span>AgentCanvas docs</span>
@@ -365,6 +399,8 @@ bash<span class="w"> </span>scripts/data/fetch_episodes_vln.sh<span class="w"> <
       <a class="toc-h2" href="#5-configuration">5. Configuration</a>
       <a class="toc-h2" href="#6-env panel-integration">6. Env panel Integration</a>
       <a class="toc-h2" href="#7-environment-setup">7. Environment Setup</a>
+      <a class="toc-h2" href="#8-datasets">8. Datasets: hmeqa / mt_hm3d</a>
+      <a class="toc-h3" href="#mt-verification">MT-HM3D verification evidence</a>
     </nav>
   </div>
 </aside>

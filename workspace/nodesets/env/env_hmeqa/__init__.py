@@ -54,14 +54,34 @@ Observation bundle (emitted by both reset and step):
                                   the env panel publishes from on_load.
     step_index       (ANY)    — current step counter (step only)
 
+Datasets — one nodeset, two question corpora (``_DATASET_SPECS``):
+
+    hmeqa    — HM-EQA (Ren et al. 2024), 500 questions / 266 scenes.
+    mt_hm3d  — MT-HM3D (MemoryEQA, Zhai et al. 2025, arXiv 2505.13948),
+               1,587 multi-target questions / 828 scenes. Same CSV schema
+               as HM-EQA plus 4 extra columns (target_objects, …), same
+               init-pose convention, same sim/camera config — MemoryEQA's
+               codebase is a fork of explore-eqa. Two deliberate mirrors
+               of upstream behavior (memory_eqa.py): the init-pose lookup
+               key forces floor 0 (``scene + "_0"``, line 165) even for
+               questions whose ``floor`` column is 1/2, and choices are
+               parsed with MemoryEQA's own naive split (line 167), which
+               differs from explore-eqa's on 38/1,587 rows. Both are
+               benchmark-native; do not "fix" them.
+
 Data layout (ADR-platform-005):
     data/hm3d/hmeqa/questions.csv           — HM-EQA Q&A
     data/hm3d/hmeqa/scene_init_poses.csv    — per-(scene, floor) init
     data/hm3d/hmeqa/Open_Sans/              — annotation font (method-side)
+    data/hm3d/mt_hm3d/MT-HM3D-contextual.csv     — MT-HM3D Q&A
+    data/hm3d/mt_hm3d/scene_init_poses_all.csv   — 900-scene init poses
     data/hm3d/hm3dsem/{scene}/{scene[6:]}.basis.glb      — meshes
     data/hm3d/hm3dsem/{scene}/{scene[6:]}.basis.navmesh  — navmesh
+    (hm3dsem also holds symlinks into ../../scene_datasets/hm3d/val for
+    the 96 val scenes shared with the ObjectNav tree, plus extracted
+    train scenes beyond HM-EQA's 266 — one flat scene pool.)
 
-last updated: 2026-04-24
+last updated: 2026-07-29
 """
 
 
@@ -102,6 +122,9 @@ _REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..")
 )
 _DATA_ROOT = os.environ.get("HMEQA_DATA_ROOT", os.path.join(_REPO_ROOT, "data", "hm3d", "hmeqa"))
+_MT_DATA_ROOT = os.environ.get(
+    "MTHM3D_DATA_ROOT", os.path.join(_REPO_ROOT, "data", "hm3d", "mt_hm3d")
+)
 _SCENE_ROOT = os.environ.get(
     "HMEQA_SCENE_ROOT", os.path.join(_REPO_ROOT, "data", "hm3d", "hm3dsem")
 )
@@ -256,6 +279,42 @@ def _parse_choices(raw: str) -> list[str]:
     return [c.split("'")[1] for c in raw.split("',")]
 
 
+def _parse_choices_memoryeqa(raw: str) -> list[str]:
+    """MT-HM3D choices parse — verbatim mirror of ``memory_eqa.py:167``.
+
+    Disagrees with :func:`_parse_choices` on rows whose choice strings
+    contain ", " (38/1,587 in the release); MemoryEQA's split is the
+    benchmark-native one for MT-HM3D, so we keep both.
+    """
+    return [c.strip("'\"") for c in raw.strip("[]").split(", ")]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Dataset specs — one nodeset, multiple question corpora
+# ══════════════════════════════════════════════════════════════════════
+
+_DATASET_SPECS: dict[str, dict[str, Any]] = {
+    "hmeqa": {
+        "label": "HM-EQA",
+        "questions_csv": os.path.join(_DATA_ROOT, "questions.csv"),
+        "init_poses_csv": os.path.join(_DATA_ROOT, "scene_init_poses.csv"),
+        "parse_choices": _parse_choices,
+        # HM-EQA looks the init pose up by the question's own floor.
+        "force_floor0_init": False,
+    },
+    "mt_hm3d": {
+        "label": "MT-HM3D",
+        "questions_csv": os.path.join(_MT_DATA_ROOT, "MT-HM3D-contextual.csv"),
+        "init_poses_csv": os.path.join(_MT_DATA_ROOT, "scene_init_poses_all.csv"),
+        "parse_choices": _parse_choices_memoryeqa,
+        # memory_eqa.py:165 — scene_floor = scene + "_0" regardless of the
+        # question's floor column (260/1,587 questions have floor 1/2).
+        "force_floor0_init": True,
+    },
+}
+_DEFAULT_DATASET = "hmeqa"
+
+
 def _format_multichoice_question(question: str, choices: list[str]) -> str:
     """LLaMA-style A/B/C/D formatting used by explore-eqa.
 
@@ -294,7 +353,8 @@ class HMEQAEnvManager:
             thread_name_prefix="hmeqa",
         )
 
-        # Static data (loaded once on initialize)
+        # Static data (loaded once on initialize / switch_dataset)
+        self._dataset: str = _DEFAULT_DATASET
         self._questions: list[dict[str, Any]] = []
         self._init_poses: dict[str, dict[str, Any]] = {}
         self._config: dict[str, Any] = dict(_DEFAULTS)
@@ -339,16 +399,44 @@ class HMEQAEnvManager:
     def initialize(self, **kwargs: Any) -> None:
         """Load static CSVs. Does NOT open a scene — that happens on set_episode."""
         with self._lock:
+            dataset = str(kwargs.pop("dataset", self._dataset))
             self._config.update({k: v for k, v in kwargs.items() if k in _DEFAULTS})
-            q_path = os.path.join(_DATA_ROOT, "questions.csv")
-            p_path = os.path.join(_DATA_ROOT, "scene_init_poses.csv")
-            self._questions = _load_questions(q_path)
-            self._init_poses = _load_init_poses(p_path)
-            log.info(
-                "HMEQAEnvManager: loaded %d questions, %d init poses",
-                len(self._questions),
-                len(self._init_poses),
-            )
+            self._load_dataset_unlocked(dataset)
+
+    def _load_dataset_unlocked(self, dataset: str) -> None:
+        spec = _DATASET_SPECS.get(dataset)
+        if spec is None:
+            log.error("unknown dataset %r — keeping %r", dataset, self._dataset)
+            return
+        self._dataset = dataset
+        self._questions = _load_questions(spec["questions_csv"])
+        self._init_poses = _load_init_poses(spec["init_poses_csv"])
+        log.info(
+            "HMEQAEnvManager: dataset=%s — loaded %d questions, %d init poses",
+            dataset,
+            len(self._questions),
+            len(self._init_poses),
+        )
+
+    def switch_dataset(self, dataset: str) -> dict[str, Any]:
+        """Swap the question corpus; tears down any live simulator."""
+        with self._lock:
+            if dataset not in _DATASET_SPECS:
+                return {"error": f"unknown dataset {dataset!r}"}
+            if dataset == self._dataset and self._questions:
+                return {"dataset": dataset, "episode_count": len(self._questions)}
+            self._close_simulator_unlocked()
+            self._current_episode_idx = -1
+            self._load_dataset_unlocked(dataset)
+            return {"dataset": dataset, "episode_count": len(self._questions)}
+
+    def _scene_floor_key_unlocked(self, scene: str, floor: str) -> str:
+        if _DATASET_SPECS[self._dataset]["force_floor0_init"]:
+            return f"{scene}_0"
+        return f"{scene}_{floor}"
+
+    def _parse_choices_unlocked(self, raw: str) -> list[str]:
+        return _DATASET_SPECS[self._dataset]["parse_choices"](raw)
 
     def shutdown(self) -> None:
         with self._lock:
@@ -383,8 +471,8 @@ class HMEQAEnvManager:
         row = self._questions[index]
         scene = row.get("scene", "")
         floor = row.get("floor", "")
-        scene_floor = f"{scene}_{floor}"
-        choices = _parse_choices(row.get("choices", ""))
+        scene_floor = self._scene_floor_key_unlocked(scene, floor)
+        choices = self._parse_choices_unlocked(row.get("choices", ""))
         vlm_q = _format_multichoice_question(row.get("question", ""), choices)
         init = self._init_poses.get(scene_floor, {})
         return {
@@ -414,7 +502,7 @@ class HMEQAEnvManager:
             row = self._questions[index]
             scene = row.get("scene", "")
             floor = row.get("floor", "")
-            scene_floor = f"{scene}_{floor}"
+            scene_floor = self._scene_floor_key_unlocked(scene, floor)
             init = self._init_poses.get(scene_floor)
             if init is None:
                 return {"error": f"init pose missing for {scene_floor}"}
@@ -476,7 +564,7 @@ class HMEQAEnvManager:
             self._ep_scene = scene
             self._ep_floor = floor
             self._ep_question = row.get("question", "")
-            self._ep_choices = _parse_choices(row.get("choices", ""))
+            self._ep_choices = self._parse_choices_unlocked(row.get("choices", ""))
             self._ep_answer = row.get("answer", "")
             self._ep_init_pts = init["init_pts"]
             self._ep_init_angle = init_angle
@@ -596,6 +684,7 @@ class HMEQAEnvManager:
             return {
                 "index": self._current_episode_idx,
                 "episode_id": str(self._current_episode_idx),
+                "dataset": self._dataset,
                 "scene": self._ep_scene,
                 "floor": self._ep_floor,
                 "scene_floor": f"{self._ep_scene}_{self._ep_floor}",
@@ -606,6 +695,7 @@ class HMEQAEnvManager:
                 "init_angle": self._ep_init_angle,
                 "floor_height": self._ep_floor_height,
                 "num_step": self._ep_num_step,
+                "step_index": int(self._step_index),
                 "tsdf_bnds": (
                     self._ep_tsdf_bnds.tolist() if self._ep_tsdf_bnds is not None else None
                 ),
@@ -882,7 +972,11 @@ class EvaluateHMEQATool(BaseCanvasNode):
     output_ports = [
         PortDef("success", "BOOL", "pred_letter == ground_truth"),
         PortDef("gt", "TEXT", "Ground-truth letter"),
-        PortDef("metrics", "METRICS", "{success, num_steps, scene, floor}"),
+        PortDef(
+            "metrics",
+            "METRICS",
+            "{success, num_steps, steps_taken, norm_step, scene, floor}",
+        ),
     ]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
@@ -893,12 +987,19 @@ class EvaluateHMEQATool(BaseCanvasNode):
         self._self_log("pred", pred)
         self._self_log("gt", gt)
         self._self_log("success", success)
+        # ``num_steps`` is the per-episode budget (historical name, kept for
+        # the verified explore_eqa_hmeqa graph); ``steps_taken``/``norm_step``
+        # are the actual step count and MemoryEQA's Norm_step = taken/budget.
+        num_step = int(info.get("num_step", 0) or 0) if "error" not in info else 0
+        steps_taken = int(info.get("step_index", 0) or 0) if "error" not in info else 0
         return {
             "success": success,
             "gt": gt,
             "metrics": {
                 "success": 1.0 if success else 0.0,
-                "num_steps": info.get("num_step", 0) if "error" not in info else 0,
+                "num_steps": num_step,
+                "steps_taken": steps_taken,
+                "norm_step": (steps_taken / num_step) if num_step else 0.0,
                 "scene": info.get("scene", "") if "error" not in info else "",
                 "floor": info.get("floor", "") if "error" not in info else "",
             },
@@ -911,17 +1012,18 @@ class EvaluateHMEQATool(BaseCanvasNode):
 
 
 class HMEQAEnvPanel(BaseEnvPanel):
-    """Canvas panel env panel for HM-EQA.
+    """Canvas panel env panel for HM-EQA / MT-HM3D.
 
-    Two-field cascade: ``split → episode_index``. HM-EQA ships only one
-    split (``val``) in the questions CSV, so the split selector has a
-    single option today — the field is retained for future train/test
-    splits without an env panel-schema migration.
+    Three-field cascade: ``dataset → split → episode_index``. Each dataset
+    ships a single ``val`` split in its questions CSV, so the split
+    selector has one option today — the field is retained for future
+    train/test splits without an env panel-schema migration.
     """
 
     name = "env_hmeqa"
     display_name = "HM-EQA"
     fields = [
+        EnvPanelField("dataset", "select", "Dataset"),
         EnvPanelField("split", "select", "Split"),
         EnvPanelField("episode_index", "select", "Episode"),
     ]
@@ -934,6 +1036,7 @@ class HMEQAEnvPanel(BaseEnvPanel):
 
     def __init__(self) -> None:
         self._state: dict[str, Any] = {
+            "dataset": _DEFAULT_DATASET,
             "split": "val",
             "episode_index": 0,
         }
@@ -947,6 +1050,7 @@ class HMEQAEnvPanel(BaseEnvPanel):
 
     def _episode_reset_payload(self) -> dict[str, Any]:
         return {
+            "dataset": self._state.get("dataset", _DEFAULT_DATASET),
             "split": self._state.get("split", "val"),
             "episode_index": int(self._state.get("episode_index", 0)),
         }
@@ -963,9 +1067,11 @@ class HMEQAEnvPanel(BaseEnvPanel):
         if not mgr.initialized:
             return {
                 "available": False,
+                "dataset": self._state.get("dataset", _DEFAULT_DATASET),
                 "split": "val",
                 "episode_index": 0,
                 "episode_count": 0,
+                "datasets": list(_DATASET_SPECS),
                 "splits": ["val"],
                 "message": (
                     "HM-EQA not initialized. Load env_hmeqa from the "
@@ -974,6 +1080,7 @@ class HMEQAEnvPanel(BaseEnvPanel):
             }
         total = mgr.get_total_episodes()
         current_idx = mgr._current_episode_idx if mgr._current_episode_idx >= 0 else 0
+        self._state["dataset"] = mgr._dataset
         self._state["episode_index"] = current_idx
         ep_info = mgr.get_episode_info(current_idx)
         # ``num_step`` is computed from ``scene_size``, which requires the
@@ -988,9 +1095,11 @@ class HMEQAEnvPanel(BaseEnvPanel):
             step_budget = None
         return {
             "available": True,
+            "dataset": mgr._dataset,
             "split": self._state.get("split", "val"),
             "episode_index": current_idx,
             "episode_count": total,
+            "datasets": list(_DATASET_SPECS),
             "splits": ["val"],
             # Per-episode dynamic budget — int(sqrt(scene_size) * 3) per
             # Ren et al. 2024 §VI. Read by the framework's eval-batch
@@ -1003,7 +1112,17 @@ class HMEQAEnvPanel(BaseEnvPanel):
 
     async def on_field_change(self, name: str, value: Any) -> dict[str, Any]:
         mgr = self._mgr()
-        if name == "split":
+        if name == "dataset":
+            dataset = str(value)
+            self._state["dataset"] = dataset
+            self._state["episode_index"] = 0
+            if mgr.initialized:
+                res = await self._run(mgr.switch_dataset, dataset)
+                if isinstance(res, dict) and "error" in res:
+                    state = await self.on_load()
+                    state["error"] = res["error"]
+                    return state
+        elif name == "split":
             self._state["split"] = str(value)
             self._state["episode_index"] = 0
         elif name == "episode_index":
@@ -1047,8 +1166,14 @@ class HMEQAEnvPanel(BaseEnvPanel):
         return {"ok": False, "side_effect": "none", "error": f"Unknown action '{name}'"}
 
     async def get_options(self, field: str) -> list[dict[str, Any]]:
+        if field == "dataset":
+            return [
+                {"value": key, "label": spec["label"]} for key, spec in _DATASET_SPECS.items()
+            ]
         if field == "split":
-            return [{"value": "val", "label": "val (500 questions)"}]
+            mgr = self._mgr()
+            count = mgr.get_total_episodes() if mgr.initialized else 0
+            return [{"value": "val", "label": f"val ({count} questions)"}]
         if field == "episode_index":
             mgr = self._mgr()
             if not mgr.initialized:
@@ -1084,7 +1209,7 @@ class EnvHMEQANodeSet(BaseNodeSet):
     """
 
     name = "env_hmeqa"
-    description = "HM-EQA — HM3D semantic scenes + explore-eqa question-answering"
+    description = "HM-EQA / MT-HM3D — HM3D scenes + explore-eqa-style question-answering"
     server_python = conda_env_python("ac-hmeqa", "HMEQA_PYTHON")
     # NVIDIA driver-570 workaround. habitat-sim 0.3.x SIGSEGVs at Simulator()
     # construction because driver 570 returns a bogus pointer from
@@ -1134,11 +1259,11 @@ class EnvHMEQANodeSet(BaseNodeSet):
         ]
 
     async def initialize(self, **kwargs: Any) -> None:
-        """Load HM-EQA CSVs. Simulator opens lazily on first set_episode.
+        """Load the question CSVs. Simulator opens lazily on first set_episode.
 
         Accepted kwargs (all optional):
-            img_height, img_width, hfov, camera_height, camera_tilt_deg,
-            max_step_room_size_ratio, seed
+            dataset ("hmeqa" | "mt_hm3d"), img_height, img_width, hfov,
+            camera_height, camera_tilt_deg, max_step_room_size_ratio, seed
         """
         if self._mgr.initialized:
             log.info("HM-EQA already initialized — skipping")
@@ -1154,10 +1279,11 @@ class EnvHMEQANodeSet(BaseNodeSet):
         count = self._mgr.get_total_episodes() if self._mgr.initialized else 0
         return {
             "env_name": "hmeqa",
-            "datasets": ["HM-EQA"],
+            "datasets": list(_DATASET_SPECS),
+            "dataset": self._mgr._dataset,
             "splits": ["val"],
             "episode_counts": {"val": count},
-            "metrics": ["success", "num_steps"],
+            "metrics": ["success", "num_steps", "steps_taken", "norm_step"],
             "supports_set_episode": self._mgr.initialized,
             # HM-EQA episode length is scene-size-dependent — this is an
             # upper bound for batch-eval timeout budgeting. Per-episode

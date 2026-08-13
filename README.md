@@ -232,7 +232,7 @@ AgentCanvas is designed for portability: a single agent graph can execute agains
 
 ### Today: Simulator Nodesets
 
-The shipped environments — Habitat (VLN-CE), MatterSim / MP3D, HM3D ObjectNav, HM-EQA, OpenEQA, SIMPLER (real-to-sim VLA), and LIBERO (manipulation) — are each implemented as a `BaseNodeSet` that exposes observation and action ports. The agent graph connects to these ports and never imports the simulator directly, which keeps the graph independent of any specific environment implementation.
+The shipped environments — Habitat (VLN-CE), MatterSim / MP3D, HM3D ObjectNav, HM-EQA / MT-HM3D, EXPRESS-Bench, OpenEQA, SIMPLER (real-to-sim VLA), and LIBERO (manipulation) — are each implemented as a `BaseNodeSet` that exposes observation and action ports. The agent graph connects to these ports and never imports the simulator directly, which keeps the graph independent of any specific environment implementation.
 
 ### Tomorrow: A ROS Nodeset with the Same Interface
 
@@ -395,7 +395,8 @@ Every nodeset and graph is credited to its author/maintainer on the board below 
         <ul>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/habitat.html">Habitat (VLN-CE)</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/matterport3d.html">MatterSim / MP3D</a> ✅</li>
-          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">HM-EQA</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">HM-EQA / MT-HM3D</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/express.html">EXPRESS-Bench</a> 🚧</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">OpenEQA (EM-EQA)</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/simpler.html">SIMPLER</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/libero.html">LIBERO</a> ✅</li>

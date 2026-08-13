@@ -1,0 +1,340 @@
+{
+  "name": "EXPRESS-Bench RE baseline (random exploration)",
+  "description": "Paper's Random Exploration baseline on env_express: each step teleports to a random navigable point within 3 m of the agent (env_express__sample_waypoint mirrors main.py's get_random_navigable_point_near hop) with a uniform random yaw. No LLM in the loop. After budget truncation the verdict band answers the question from the FINAL frame only, judges with an llmCall (use a gpt-4o-mini profile - benchmark-native scoring; profiles are user-level, never baked into the JSON), and env_express__evaluate folds delta/sigma into C / C* / E_path / d_T. Paper reference: RE C 36.95 / C* 62.75 / E_path 12.06.",
+  "step_budget": 50,
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_express__reset",
+      "label": "EXPRESS: Reset",
+      "position": { "x": 0, "y": 0 },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_express__observe_egocentric",
+      "label": "EXPRESS: Observe (seed)",
+      "position": { "x": 0, "y": 220 },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": { "x": 280, "y": 200 },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "sample_waypoint",
+      "type": "env_express__sample_waypoint",
+      "label": "EXPRESS: Sample Waypoint",
+      "position": { "x": 560, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "env_step",
+      "type": "env_express__step_pose",
+      "label": "EXPRESS: Step",
+      "position": { "x": 840, "y": 200 },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_express__observe_egocentric",
+      "label": "EXPRESS: Observe (loop)",
+      "position": { "x": 1120, "y": 320 },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": { "x": 1400, "y": 200 },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer_llm",
+      "type": "llmCall",
+      "label": "LLM: Answer (final frame)",
+      "position": { "x": 1680, "y": 360 },
+      "config": {
+        "ports": [
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "required": true
+          }
+        ],
+        "template": "Answer the question about this indoor scene based on the image. Reply with one short sentence - the answer only, no preamble.\n\nQ: {question}\nA: ",
+        "system_prompt": "You are an embodied question answering assistant. You answer questions about a house based on what the robot's camera observes.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "judge_prompt",
+      "type": "env_express__judge_prompt",
+      "label": "EXPRESS: Judge prompt",
+      "position": { "x": 1960, "y": 360 },
+      "config": {}
+    },
+    {
+      "id": "judge_llm",
+      "type": "llmCall",
+      "label": "LLM: Judge (use gpt-4o-mini profile)",
+      "position": { "x": 2240, "y": 360 },
+      "config": {
+        "ports": [
+          {
+            "name": "user",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "required": true
+          }
+        ],
+        "template": "{user}",
+        "system_prompt": "You are an AI assistant who will help me to evaluate the response given the question, the correct answer and the scene observed by the robot.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_express__evaluate",
+      "label": "EXPRESS: Evaluate",
+      "position": { "x": 2520, "y": 360 },
+      "config": {}
+    },
+    {
+      "id": "obs_viewer",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": { "x": 1400, "y": 560 },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer_scroll",
+      "type": "textScroll",
+      "label": "Answer + Judge",
+      "position": { "x": 2240, "y": 560 },
+      "config": {}
+    },
+    {
+      "id": "metrics_viewer",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": { "x": 2520, "y": 600 },
+      "config": {}
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": { "x": 2800, "y": 400 },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "note_re",
+      "type": "note",
+      "label": "RE baseline graph",
+      "position": { "x": 560, "y": -300 },
+      "config": {
+        "markdown": "**Random Exploration (paper baseline)**\n\nLoop is LLM-free: `sample_waypoint` draws a navigable point within 3 m of the agent (same `get_random_navigable_point_near` call as upstream's hop) plus a uniform random yaw, and `step_pose` teleports there, accumulating geodesic path length. The loop ends on the env's per-episode `num_step` budget.\n\n**Verdict band** (fires once, off `final_*`): answer from the FINAL frame only -> `judge_prompt` assembles the benchmark's evaluation.txt prompt -> judge llmCall returns `delta, sigma` -> `evaluate` computes C / C* / E_path / d_T.\n\n**Judge model**: gpt-4o-mini (benchmark-native). Select the profile on the judge node at run time.\n\n**Paper reference**: RE C 36.95 / C* 62.75 / E_path 12.06 (Table 2).\n\n**Episode selection** is env-panel-owned (split -> episode)."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_question_to_init",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "question",
+      "targetHandle": "init_question"
+    },
+    {
+      "id": "e_reset_to_seedobs",
+      "source": "env_reset",
+      "target": "seed_obs",
+      "sourceHandle": "episode_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_seedobs_rgb_to_iterin",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "rgb",
+      "targetHandle": "iterout_rgb"
+    },
+    {
+      "id": "e_iterin_rgb_to_sample",
+      "source": "iter_in",
+      "target": "sample_waypoint",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_sample_to_step",
+      "source": "sample_waypoint",
+      "target": "env_step",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_step_info_to_loopobs",
+      "source": "env_step",
+      "target": "loop_obs",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_loopobs_rgb_to_iterout",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_loopobs_rgb_to_viewer",
+      "source": "loop_obs",
+      "target": "obs_viewer",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iterin_question_to_iterout",
+      "source": "iter_in",
+      "target": "iter_out",
+      "sourceHandle": "init_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_step_truncated_to_iterout_stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "truncated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_final_question_to_answerllm",
+      "source": "iter_out",
+      "target": "answer_llm",
+      "sourceHandle": "final_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_final_rgb_to_answerllm",
+      "source": "iter_out",
+      "target": "answer_llm",
+      "sourceHandle": "final_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_answerllm_to_judgeprompt",
+      "source": "answer_llm",
+      "target": "judge_prompt",
+      "sourceHandle": "response",
+      "targetHandle": "pred_answer"
+    },
+    {
+      "id": "e_judgeprompt_user_to_judgellm",
+      "source": "judge_prompt",
+      "target": "judge_llm",
+      "sourceHandle": "user",
+      "targetHandle": "user"
+    },
+    {
+      "id": "e_final_rgb_to_judgellm",
+      "source": "iter_out",
+      "target": "judge_llm",
+      "sourceHandle": "final_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_answerllm_to_evaluate",
+      "source": "answer_llm",
+      "target": "evaluate",
+      "sourceHandle": "response",
+      "targetHandle": "pred_answer"
+    },
+    {
+      "id": "e_judgellm_to_evaluate",
+      "source": "judge_llm",
+      "target": "evaluate",
+      "sourceHandle": "response",
+      "targetHandle": "judge_text"
+    },
+    {
+      "id": "e_answerllm_to_answerscroll",
+      "source": "answer_llm",
+      "target": "answer_scroll",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_evaluate_to_metricsviewer",
+      "source": "evaluate",
+      "target": "metrics_viewer",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_evaluate_to_graphout",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    }
+  ]
+}
