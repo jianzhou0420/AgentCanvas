@@ -464,6 +464,14 @@ class BaseNodeSet(ABC):
     # Default "shared" keeps non-env nodesets singleton; env nodesets must
     # opt in to "replicated".
     parallelism: ClassVar[Literal["shared", "replicated"]] = "shared"
+    # Native MCP projection session policy (server mode, /mcp endpoint).
+    #   True  → at most one live MCP session; a second initialize is
+    #           rejected until the first disconnects (stateful envs: a
+    #           singleton simulator can't serve interleaved episodes).
+    #   False → stateless projection, concurrent MCP clients allowed.
+    #   None  → derived from ``parallelism``: "replicated" (stateful) ⇒
+    #           exclusive, "shared" (stateless tools) ⇒ concurrent.
+    mcp_exclusive: ClassVar[bool | None] = None
     # Author-declared steady-state VRAM footprint of this nodeset's loaded
     # process, in MB (e.g. SAM vit_b ≈ 600). Used by the admission
     # estimator as a fallback when no measured calibration exists on this
