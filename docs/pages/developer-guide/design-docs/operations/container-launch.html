@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Container Launch — AgentCanvas</title>
+<meta name="description" content="ContainerServer, server_image, docker-run launch vehicle, image contract">
+<meta property="og:title" content="Container Launch — AgentCanvas">
+<meta property="og:description" content="ContainerServer, server_image, docker-run launch vehicle, image contract">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/container-launch.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="ps-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:760px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#csa); }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/container-launch.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">Container Launch</span>
+  </div>
+  <div class="last-updated">2026-08-13</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>Container Launch</h1>
+  <p class="tagline">ContainerServer, server_image, docker-run launch vehicle, image contract</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="csa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede"><strong>Container launch</strong> is one of server mode’s two launch vehicles (the other is <strong>Native Launch</strong>, a host subprocess on <code>server_python</code>): a nodeset that declares <code>server_image</code> is auto-hosted inside <code>docker run</code> instead of a native host process. The hard promise: <strong>the container serves the exact same protocol on the same kind of port, so everything downstream — proxy-node generation, env-panel bridge, multi-worker fan-out, the <code>/mcp</code> projection — is byte-identical to a conda-launched server, and images never contain framework code</strong> (the repo is bind-mounted read-only; the image carries only the model's dependencies). For the protocol itself and the conda path read <a href="server-mode.html">Server Mode</a>; for what a nodeset is read <a href="../components/nodesets.html">NodeSets</a>.</p>
+
+<p class="diagram-label"><strong>How the code launches a <code>server_image</code> nodeset.</strong></p>
+<svg class="rxsvg" viewBox="0 0 760 300" role="img" aria-label="Launch path. In the AgentCanvas process, registry.load_nodeset detects server_image and calls _build_container_server, which assembles a ContainerServer. ContainerServer.start spawns a foreground docker run as a direct child. Inside the container, the stock auto_host plus AutoServerApp run from the read-only repo mount at /opt/agentcanvas-workspace and serve manifest, call, health, and mcp on a port published to 127.0.0.1. BaseServer polls health and fetches the manifest over HTTP; proxy nodes are generated exactly as for a conda-launched server.">
+  <rect class="ghost" x="12" y="34" width="330" height="250" rx="10"/>
+  <text class="dim" x="24" y="26">AgentCanvas process</text>
+  <rect class="accent" x="46" y="52" width="260" height="34" rx="7"/>
+  <text class="at" x="176" y="74" text-anchor="middle">registry.load_nodeset</text>
+  <text class="mono" x="176" y="102" text-anchor="middle">server_image set → mode="server"</text>
+  <rect class="accent" x="46" y="116" width="260" height="34" rx="7"/>
+  <text class="at" x="176" y="138" text-anchor="middle">_build_container_server</text>
+  <text class="mono" x="176" y="166" text-anchor="middle">path translate · mounts · executor URL</text>
+  <rect class="accent" x="46" y="180" width="260" height="34" rx="7"/>
+  <text class="at" x="176" y="202" text-anchor="middle">ContainerServer.start()</text>
+  <text class="mono" x="176" y="230" text-anchor="middle">reap stale · docker run (foreground child)</text>
+  <text class="mono" x="176" y="262" text-anchor="middle">then: /health poll · /manifest · proxy-node gen</text>
+  <path class="edge" d="M176,86 L176,116"/>
+  <path class="edge" d="M176,150 L176,180"/>
+
+  <rect class="ghost" x="408" y="34" width="340" height="250" rx="10"/>
+  <text class="dim" x="420" y="26">Container (server_image)</text>
+  <rect class="box" x="436" y="52" width="284" height="34" rx="7"/>
+  <text x="578" y="74" text-anchor="middle">repo mount (read-only)</text>
+  <text class="mono" x="578" y="100" text-anchor="middle">/opt/agentcanvas-workspace</text>
+  <rect class="accent" x="436" y="116" width="284" height="34" rx="7"/>
+  <text class="at" x="578" y="138" text-anchor="middle">auto_host + AutoServerApp</text>
+  <text class="mono" x="578" y="166" text-anchor="middle">stock code, run FROM the mount</text>
+  <rect class="box" x="436" y="180" width="284" height="34" rx="7"/>
+  <text x="578" y="202" text-anchor="middle">manifest protocol</text>
+  <text class="mono" x="578" y="230" text-anchor="middle">/manifest · /call · /health · /mcp</text>
+  <text class="mono" x="578" y="262" text-anchor="middle">-p 127.0.0.1:port:port</text>
+  <path class="edge" d="M578,86 L578,116"/>
+  <path class="edge" d="M578,150 L578,180"/>
+
+  <path class="edge" d="M306,197 L408,197"/>
+  <text class="dim" x="357" y="189" text-anchor="middle">docker run</text>
+  <path class="edge" style="marker-start:url(#csa)" d="M342,246 L432,246"/>
+  <text class="dim" x="387" y="238" text-anchor="middle">HTTP</text>
+</svg>
+<hr>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>Some systems can't be expressed as a conda environment at all — a C++ SLAM stack with its own compiled world (ORB-SLAM3), or a GPL codebase that must stay out of the framework's process and env (pySLAM). Container launch lets such a system join the canvas the same way every server-mode nodeset does: the registry launches it, reads its <code>/manifest</code>, and generates proxy nodes. The only thing that changes is the launch vehicle — <code>docker run</code> instead of a conda interpreter. The container runs the <em>stock</em> <code>auto_host.py</code> from a read-only bind mount of the repo, so there is no per-nodeset bridge code, no in-image copy of the framework, and a framework upgrade never requires an image rebuild.</p>
+<p>Before this existed, the one containerized nodeset (<code>model_pyslam</code>) carried its own private bridge — a hand-written <code>_client.py</code>/<code>_server.py</code> pair pretending to be a local-mode nodeset, invisible to the registry, the scheduler, and GPU admission. Container launch moves that mechanism into the framework: declare an image, get the whole server-mode feature set.</p>
+
+<h2 id="2-smallest-x"><span class="num">2.</span> The smallest container nodeset</h2>
+<p>One ClassVar is the whole trigger — everything else is ordinary nodeset authoring:</p>
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">OrbSlam3NodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">model_orbslam3</span><span class="s2">&quot;</span>
+    <span class="n">server_image</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">agentcanvas/orbslam3:latest</span><span class="s2">&quot;</span>   <span class="c1"># ← the whole trigger</span>
+    <span class="n">server_image_gpu</span> <span class="o">=</span> <span class="kc">False</span>                        <span class="c1"># CPU SLAM core</span>
+    <span class="n">server_mounts</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">data/tum</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">/opt/data/tum:ro</span><span class="s2">&quot;</span><span class="p">}</span>
+    <span class="c1"># get_tools() returns the reset / track / get_trajectory nodes as usual</span>
+</pre>
+<p>Loading it (<code>POST /api/components/nodesets/model_orbslam3/load</code>) auto-routes to server mode (<code>registry.py · load_nodeset</code> — the <code>server_image</code> check sits above the <code>server_python</code> one and wins when both are set) and ultimately runs this real command as a direct child of the backend:</p>
+<pre class="hl">
+docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>--init<span class="w"> </span>--name<span class="w"> </span>ac_auto_model_orbslam3_9204<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-p<span class="w"> </span><span class="m">127</span>.0.0.1:9204:9204<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--add-host<span class="w"> </span>host.docker.internal:host-gateway<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-v<span class="w"> </span>/path/to/agentcanvas:/opt/agentcanvas-workspace:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-v<span class="w"> </span>/path/to/agentcanvas/data/tum:/opt/data/tum:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-e<span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span>/opt/agentcanvas-workspace/agentcanvas/backend:/opt/agentcanvas-workspace<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-e<span class="w"> </span><span class="nv">AGENTCANVAS_EXECUTOR_URL</span><span class="o">=</span>http://host.docker.internal:8000<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>agentcanvas/orbslam3:latest<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>python3<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<span class="w"> </span><span class="se">\</span>
+<span class="w">        </span>--module<span class="w"> </span>workspace.nodesets.model.model_orbslam3<span class="w"> </span><span class="se">\</span>
+<span class="w">        </span>--class<span class="w"> </span>OrbSlam3NodeSet<span class="w"> </span>--port<span class="w"> </span><span class="m">9204</span>
+</pre>
+
+<h2 id="3-declaration-surface"><span class="num">3.</span> Declaration surface</h2>
+<p>Four ClassVars on <code>BaseNodeSet</code> (<code>bases.py · BaseNodeSet</code>) steer the container launch; <code>server_env</code> from the conda path also applies (its vars ride into the <em>container's</em> environment via <code>-e</code>):</p>
+<table>
+<thead><tr><th>ClassVar</th><th>Default</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>server_image</code></td><td><code>None</code></td><td>Docker image tag. Non-None auto-routes the nodeset to server mode and selects the container vehicle; takes precedence over <code>server_python</code>.</td></tr>
+<tr><td><code>server_image_gpu</code></td><td><code>False</code></td><td>Adds <code>--device nvidia.com/gpu=all</code> (CDI — the recipe that works on rootless docker; legacy <code>--gpus</code> does not). A failed GPU start is retried once without the flag.</td></tr>
+<tr><td><code>server_mounts</code></td><td><code>{}</code></td><td><code>{host_path: "container_path[:ro]"}</code>. Host paths may be absolute, <code>~</code>-prefixed, <code>$VAR</code>-bearing, or repo-root-relative. A missing host path is skipped with a warning — the capability that needed it errors at call time, the server still starts.</td></tr>
+<tr><td><code>server_container_python</code></td><td><code>"python3"</code></td><td>Interpreter path <em>inside</em> the image (images with a baked venv name its exact python).</td></tr>
+</tbody>
+</table>
+
+<h2 id="4-launch-pipeline"><span class="num">4.</span> Launch pipeline — what the registry assembles</h2>
+<p><code>registry.py · _build_container_server</code> turns the nodeset declaration into a <code>ContainerServer</code>; three translations happen there, and only there:</p>
+<ul>
+<li><strong>Path translation.</strong> The repo root is mounted at <code>/opt/agentcanvas-workspace</code> (<code>container_server.py · WORKSPACE_MOUNT</code>); every host path riding the inner command line (<code>--file</code>) or <code>PYTHONPATH</code> is rewritten under that prefix. A source file outside the repo root is a hard <code>RuntimeError</code>, not a silently wrong path.</li>
+<li><strong>Mount resolution.</strong> <code>server_mounts</code> entries are expanded (<code>expandvars</code> + <code>expanduser</code>, relative → repo-root-relative) and appended after the repo mount; missing host paths are skipped with a warning.</li>
+<li><strong>Executor-URL rewrite.</strong> Loopback executor URLs (<code>127.0.0.1</code>/<code>localhost</code>) are unreachable from inside a container, so <code>AGENTCANVAS_EXECUTOR_URL</code> is rewritten to <code>host.docker.internal</code>, which <code>ContainerServer</code> maps to the host via <code>--add-host host.docker.internal:host-gateway</code>. This keeps the reverse log/error channel and cross-nodeset container access working from inside the container.</li>
+</ul>
+<p><code>ContainerServer</code> (<code>container_server.py · ContainerServer</code>) is a <code>BaseServer</code> subclass whose command is a <em>foreground</em> <code>docker run</code>: health polling, startup timeout, manifest fetch, and the pdeathsig chain all apply unchanged to the docker client, which proxies SIGTERM to PID 1 in the container (<code>--init</code> reaps). Everything after <code>start()</code> — proxy generation, env-panel bridge, worker fan-out bookkeeping, rollback on partial failure — is the shared server-mode path in <code>registry.py · _load_nodeset_as_server</code>, byte-identical for both vehicles.</p>
+
+<h2 id="5-lifecycle-and-orphans"><span class="num">5.</span> Lifecycle, orphans, rootless</h2>
+<p>Container mode has one failure surface the conda path doesn't: <strong>the docker client can die (SIGKILL, OOM) while the container lives on</strong> — pdeathsig kills the client, not the daemon-owned container. Three mechanisms close it (<code>container_server.py · ContainerServer</code>):</p>
+<ul>
+<li><strong>Deterministic names + pre-start reap.</strong> Every container is named <code>ac_&lt;label&gt;_&lt;port&gt;</code>; <code>start()</code> first runs <code>docker rm -f</code> on that name, so a leftover from a killed client is removed before the next launch (docker ≥ 23 exits 0 either way; the reap is logged only when something was actually removed).</li>
+<li><strong><code>--rm</code> + signal proxying.</strong> The attached client forwards SIGTERM; a normal stop removes the container.</li>
+<li><strong><code>docker stop</code> in <code>stop()</code>.</strong> The authoritative path goes through the daemon first, then falls back to <code>BaseServer.stop()</code> killing the client's process group.</li>
+</ul>
+<p>The docker client always talks to the <strong>rootless</strong> daemon: <code>DOCKER_HOST</code> and <code>XDG_RUNTIME_DIR</code> are forced to the user socket (<code>container_server.py · rootless_docker_env</code>) regardless of what the backend inherited, because images live only in the rootless store. A missing image fails fast at <code>start()</code> with an actionable error (<code>container_server.py · image_exists</code>) instead of a docker-pull hang.</p>
+
+<h2 id="6-image-contract"><span class="num">6.</span> Image contract</h2>
+<p>An image is valid for container launch when the interpreter named by <code>server_container_python</code> can import the model's own dependencies <em>plus</em> the small serve set in <code>agentcanvas/backend/requirements-serve.txt</code> (fastapi, uvicorn, httpx, msgpack, numpy, pydantic, pyyaml; <code>mcp</code> optionally adds the <code>/mcp</code> projection). Framework code is never baked in — it arrives at run time via the read-only repo mount. Consequences worth stating:</p>
+<ul>
+<li>Framework upgrades reach containers with no image rebuild (same property the conda envs have).</li>
+<li>The image cannot be started standalone against a stale framework copy — there is none inside it.</li>
+<li>Model weights follow the established external-weights pattern: keep them under <code>data/</code> and mount via <code>server_mounts</code>, so images stay code-only.</li>
+</ul>
+
+<h2 id="7-deviations"><span class="num">7.</span> Where it deviates from the clean model</h2>
+<div class="callout warn"><strong>model_pyslam is not migrated yet.</strong> The model says "declare an image, delete your bridge" — but the one pre-existing containerized nodeset still runs its private <code>_client.py</code>/<code>_server.py</code> bridge in local mode. Migration to <code>server_image</code> is planned, not done.</div>
+<div class="callout warn"><strong>GPU degrade is coarser than "CDI absent".</strong> The model says GPU falls back when CDI is unavailable; the code retries the whole start once on <em>any</em> <code>RuntimeError</code> from the GPU attempt (<code>container_server.py · ContainerServer.start</code>) — a GPU-unrelated startup failure inside a <code>server_image_gpu</code> nodeset therefore gets one redundant CPU retry before surfacing.</div>
+<div class="callout warn"><strong>Multi-worker fan-out with containers is assembled but not integration-tested.</strong> The shared <code>_load_nodeset_as_server</code> loop constructs N ContainerServers exactly as it does BaseServers (unit-tested), but no <code>worker_count &gt; 1</code> container run has been exercised end-to-end; the validated smoke is single-worker.</div>
+<div class="callout warn"><strong>VRAM admission sees the declaration, not a container measurement.</strong> <code>expected_vram_mb</code> presets work as for any nodeset, but the measured-calibration path has not been exercised against a containerized process; whether measurement attributes a container's GPU memory correctly is unverified.</div>
+<div class="callout warn"><strong>Only loopback executor URLs are rewritten.</strong> A non-loopback <code>AGENTCANVAS_EXECUTOR_URL</code> passes through untouched — correct for a real LAN address, but a hostname that only resolves on the host will silently break the reverse channel inside the container.</div>
+
+<h2 id="8-file-reference"><span class="num">8.</span> File reference</h2>
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>app/server/container_server.py</code></td><td><code>ContainerServer</code>, <code>rootless_docker_env</code>, <code>container_name</code>, <code>image_exists</code>, <code>WORKSPACE_MOUNT</code></td></tr>
+<tr><td><code>app/components/bases.py</code></td><td><code>server_image</code> / <code>server_image_gpu</code> / <code>server_mounts</code> / <code>server_container_python</code> ClassVars</td></tr>
+<tr><td><code>app/components/registry.py</code></td><td>auto-route in <code>load_nodeset</code>; assembly in <code>_build_container_server</code>; shared launch loop in <code>_load_nodeset_as_server</code></td></tr>
+<tr><td><code>agentcanvas/backend/requirements-serve.txt</code></td><td>minimal in-image dependency set for running the stock <code>auto_host</code></td></tr>
+<tr><td><code>app/server/test_container_server.py</code> · <code>app/components/test_registry_container_mode.py</code></td><td>command-assembly and translation unit tests</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-smallest-x">2. The smallest container nodeset</a>
+      <a class="toc-h2" href="#3-declaration-surface">3. Declaration surface</a>
+      <a class="toc-h2" href="#4-launch-pipeline">4. Launch pipeline — what the registry assembles</a>
+      <a class="toc-h2" href="#5-lifecycle-and-orphans">5. Lifecycle, orphans, rootless</a>
+      <a class="toc-h2" href="#6-image-contract">6. Image contract</a>
+      <a class="toc-h2" href="#7-deviations">7. Where it deviates from the clean model</a>
+      <a class="toc-h2" href="#8-file-reference">8. File reference</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
