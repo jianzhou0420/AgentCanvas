@@ -146,6 +146,10 @@ if [ -n "${OLD_LD_PRELOAD+x}" ]; then
 fi
 EOF
 
+# MCP projection (/mcp on auto_host): official mcp SDK needs py>=3.10, this
+# env is py3.9 — install the vendored 1.27.0 backport instead (see its README).
+"$HMEQA_PYTHON" -m pip install "$PROJECT_ROOT/agentcanvas/backend/vendor/mcp-backport"
+
 # ── Step 6: Verify installation ──
 
 echo ""

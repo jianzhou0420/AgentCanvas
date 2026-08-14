@@ -1,0 +1,4 @@
+from __future__ import annotations
+from mcp.types import LATEST_PROTOCOL_VERSION
+
+SUPPORTED_PROTOCOL_VERSIONS: list[str] = ["2024-11-05", "2025-03-26", "2025-06-18", LATEST_PROTOCOL_VERSION]

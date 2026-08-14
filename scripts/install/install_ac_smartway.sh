@@ -152,6 +152,10 @@ echo "=== Step 5: Downloading SmartWay checkpoints ==="
 PYTHON="$SMARTWAY_PYTHON" bash "$SCRIPT_DIR/../data/fetch_ckpt_smartway.sh" \
     || echo "[WARN] SmartWay ckpt fetch failed — env installed OK; fetch later: bash scripts/data/fetch_ckpt_smartway.sh"
 
+# MCP projection (/mcp on auto_host): official mcp SDK needs py>=3.10, this
+# env is py3.8 — install the vendored 1.27.0 backport instead (see its README).
+"$SMARTWAY_PYTHON" -m pip install "$PROJECT_ROOT/agentcanvas/backend/vendor/mcp-backport"
+
 # ── Step 6: Verify ──
 echo ""
 echo "=== Step 6: Verifying installation ==="

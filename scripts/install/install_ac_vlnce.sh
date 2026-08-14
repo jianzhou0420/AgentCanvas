@@ -133,6 +133,10 @@ export LD_LIBRARY_PATH="$OLD_LD_LIBRARY_PATH"
 unset OLD_LD_LIBRARY_PATH
 EOF
 
+# MCP projection (/mcp on auto_host): official mcp SDK needs py>=3.10, this
+# env is py3.8 — install the vendored 1.27.0 backport instead (see its README).
+"$VLNCE_PYTHON" -m pip install "$PROJECT_ROOT/agentcanvas/backend/vendor/mcp-backport"
+
 # ── Step 6: Verify installation ──
 
 echo ""

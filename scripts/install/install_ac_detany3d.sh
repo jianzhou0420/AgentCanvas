@@ -140,6 +140,10 @@ echo ""
 echo "=== Step 6: Installing Segment Anything ==="
 $DETANY3D_PIP install "git+https://github.com/facebookresearch/segment-anything.git"
 
+# MCP projection (/mcp on auto_host): official mcp SDK needs py>=3.10, this
+# env is py3.9 — install the vendored 1.27.0 backport instead (see its README).
+$DETANY3D_PIP install "$PROJECT_ROOT/agentcanvas/backend/vendor/mcp-backport"
+
 # ── Step 7: Download model weights ──
 
 echo ""

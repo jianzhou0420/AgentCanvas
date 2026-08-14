@@ -324,6 +324,10 @@ DEACTIVATE
 
     print_info "PYTHONPATH will include: ${MP3D_DIR}/build"
     print_info "MATTERPORT_DATA_DIR defaults to: ${REPO_ROOT}/data/mp3d/v1/scans"
+
+    # MCP projection (/mcp on auto_host): official mcp SDK needs py>=3.10, this
+    # env is py3.9 — install the vendored 1.27.0 backport instead (see README).
+    conda run -n "$ENV_NAME" python -m pip install "$REPO_ROOT/agentcanvas/backend/vendor/mcp-backport"
 }
 
 # =============================================================================
