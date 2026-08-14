@@ -45,7 +45,7 @@ HARNESSES = {
     "codex": ("codex", OUTPUT_ROOT.parent / "beta-codex-agent"),
 }
 
-CONDITIONS = ("ui", "bare", "wp", "hybrid")
+CONDITIONS = ("bare", "wp", "hybrid")
 TIERS = ("default", "max")
 
 NODESET_NAME = "env_habitat"
@@ -101,7 +101,7 @@ class CodingAgentRunner:
     # ── lifecycle ──
 
     def start(self, *, episodes: str, split: str, max_turns: int, model: str | None,
-              harness: str = "claude-sdk", condition: str = "ui",
+              harness: str = "claude-sdk", condition: str = "bare",
               tier: str = "default", extra: dict[str, str] | None = None) -> str:
         """Spawn auto_host(s) + driver. Blocking (call via asyncio.to_thread).
 

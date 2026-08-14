@@ -38,7 +38,7 @@ class StartRequest(BaseModel):
     max_turns: int = 80
     model: str | None = None
     harness: str = "claude-sdk"   # claude-sdk | mini-swe | codex (SOURCE_ROOTS keys)
-    condition: str = "ui"         # ui (full toolset) | bare | wp | hybrid (MIP paper grid)
+    condition: str = "bare"       # bare | wp | hybrid (MIP paper grid)
     tier: str = "default"         # effort tier: default | max
     extra: dict[str, str] = {}    # harness extra knobs (--set KEY=VAL), override tier's
 

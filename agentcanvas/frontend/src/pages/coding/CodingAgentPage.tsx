@@ -13,6 +13,39 @@ import { usePersistentState } from "./usePersistentState";
 
 const POLL_MS = 1000;
 
+// board model keys per harness (mirrors coding-agent/cells.py: MODELS + the
+// BOARD / WP_BOARD / QWEN_API_BOARD / LOCAL_BOARD pairings; the driver
+// resolves a key to its concrete slug + per-model knobs via cells.py).
+// "" = the harness's own default model (sdk account / codex CLI); mini-swe
+// has no default — litellm needs an explicit model.
+const MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
+  "claude-sdk": [
+    { value: "", label: "(account default)" },
+    { value: "sonnet-5", label: "sonnet-5" },
+    { value: "opus-4.8", label: "opus-4.8" },
+    { value: "opus-5", label: "opus-5" },
+    { value: "fable-5", label: "fable-5" },
+  ],
+  codex: [
+    { value: "", label: "(CLI default)" },
+    { value: "gpt-5.5", label: "gpt-5.5" },
+    { value: "gpt-5.6", label: "gpt-5.6" },
+  ],
+  "mini-swe": [
+    { value: "sonnet-5", label: "sonnet-5" },
+    { value: "opus-4.8", label: "opus-4.8" },
+    { value: "fable-5", label: "fable-5" },
+    { value: "gpt-5.5", label: "gpt-5.5" },
+    { value: "gpt-5.6", label: "gpt-5.6" },
+    { value: "qwen3.5-plus", label: "qwen3.5-plus" },
+    { value: "qwen3.6-plus", label: "qwen3.6-plus" },
+    { value: "qwen3.7-plus", label: "qwen3.7-plus" },
+    { value: "qwen3.8-plus", label: "qwen3.8-plus" },
+    { value: "qwen3.5-4b", label: "qwen3.5-4b (local)" },
+    { value: "qwen3.5-9b", label: "qwen3.5-9b (local)" },
+  ],
+};
+
 interface EpisodeSummary {
   index: number;
   success: number | null;
@@ -123,8 +156,10 @@ export default function CodingAgentPage() {
   const [episodes, setEpisodes] = usePersistentState("agentcanvas.coding.episodes", "0-9");
   const [split, setSplit] = usePersistentState("agentcanvas.coding.split", "rand100");
   const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 80);
-  const [model, setModel] = usePersistentState("agentcanvas.coding.model", "");
-  const [condition, setCondition] = usePersistentState("agentcanvas.coding.condition", "ui");
+  const [modelRaw, setModel] = usePersistentState("agentcanvas.coding.model", "");
+  const [conditionRaw, setCondition] = usePersistentState("agentcanvas.coding.condition", "bare");
+  // "ui" was retired; a stale persisted value falls back to bare
+  const condition = ["bare", "wp", "hybrid"].includes(conditionRaw) ? conditionRaw : "bare";
   const [tier, setTier] = usePersistentState("agentcanvas.coding.tier", "default");
   // free-form harness knobs, "k=v k=v" (forwarded as --set pairs, override tier's)
   const [extraText, setExtraText] = usePersistentState("agentcanvas.coding.extra", "");
@@ -155,6 +190,13 @@ export default function CodingAgentPage() {
     "agentcanvas.coding.harness",
     "claude-sdk",
   );
+  // launch model, constrained to the selected harness's board options; a
+  // persisted value from another harness (or the retired free-text era)
+  // falls back to the harness's first option
+  const modelOpts = MODEL_OPTIONS[harness];
+  const model = modelOpts.some((o) => o.value === modelRaw)
+    ? modelRaw
+    : modelOpts[0].value;
   const [runsList, setRunsList] = useState<RunInfo[]>([]);
   const [browseRun, setBrowseRun] = usePersistentState<string | null>(
     "agentcanvas.coding.browseRun",
@@ -447,10 +489,9 @@ export default function CodingAgentPage() {
             value={condition}
             onChange={(e) => setCondition(e.target.value)}
             disabled={running}
-            title="ui = legacy full toolset · bare / wp / hybrid = the MIP paper conditions"
+            title="the MIP paper conditions"
             className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
           >
-            <option value="ui">ui (full)</option>
             <option value="bare">bare</option>
             <option value="wp">wp</option>
             <option value="hybrid">hybrid</option>
@@ -502,19 +543,18 @@ export default function CodingAgentPage() {
         </label>
         <label className="flex items-center gap-1 text-xs text-gray-400">
           model
-          <input
+          <select
             value={model}
             onChange={(e) => setModel(e.target.value)}
             disabled={running}
-            placeholder={
-              harness === "mini-swe"
-                ? "litellm id (required)"
-                : harness === "codex"
-                  ? "(CLI default)"
-                  : "(account default)"
-            }
-            className="w-36 rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
-          />
+            className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
+          >
+            {modelOpts.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="flex items-center gap-1 text-xs text-gray-400">
           extra
