@@ -94,7 +94,7 @@
 
 <ol>
 <li><strong><code>ExpressEnvManager</code></strong> (singleton) — owns one habitat-sim simulator, a lock, and a single-thread executor pinning simulator work to one OS thread. Scenes load as bare <code>.basis.glb</code> (upstream's <code>semantic_sensor</code> flag is dead code — its <code>make_simple_cfg</code> builds color+depth only; mirrored deliberately).</li>
-<li><strong>Canvas nodes</strong> — six verbs, thin adapters over the manager (§2).</li>
+<li><strong>Canvas nodes</strong> — nine: six gym verbs plus the FBE frontier sampler and the two baseline-loop routing nodes, all thin adapters over the manager (§2).</li>
 <li><strong><code>EnvExpressNodeSet</code></strong> — <code>server_python = conda_env_python("ac-hmeqa", "EXPRESS_PYTHON")</code>, auto-hosted server-mode with the same NVIDIA driver-570 EGL <code>LD_PRELOAD</code> shim as <a href="hmeqa.html">HM-EQA</a>. <code>default_per_step_budget_sec = 30.0</code> (LLM-in-the-loop sizing, same rationale as ObjectNav's).</li>
 </ol>
 
@@ -127,6 +127,27 @@
 <td><code>trigger</code> (ANY)</td>
 <td><code>action</code> (TEXT)</td>
 <td>Random-exploration action source (the paper's RE baseline hop): navigable point within 3 m of the agent — the same <code>get_random_navigable_point_near</code> call as upstream — plus a uniform random yaw from a seed-derived RNG, emitted as <code>step_pose</code>'s free-pose JSON.</td>
+</tr>
+<tr>
+<td><code>env_express__sample_frontier</code></td>
+<td>EXPRESS: Sample Frontier (FBE)</td>
+<td><code>trigger</code> (ANY)</td>
+<td><code>action</code> (TEXT)</td>
+<td>Frontier-exploration action source (the paper's FBE baseline): TSDF-fuses the current depth frame (<code>TSDFPlanner.integrate</code>, skipped on black frames) then picks the next frontier pose (<code>find_next_pose</code> with the <code>fine_eqa.yaml</code> planner block), emitted as <code>step_pose</code>'s free-pose JSON. Planner state is vendored verbatim (<code>_tsdf.py</code> / <code>_geom.py</code> from upstream <code>src/</code>) and rebuilt per episode; <code>regs_list=[]</code> keeps the GOE branch permanently off. Planner failure falls back to the RE random hop.</td>
+</tr>
+<tr>
+<td><code>env_express__stop_gate</code></td>
+<td>EXPRESS: Stop Gate</td>
+<td><code>rgb</code>, <code>stop_text</code></td>
+<td><code>continue</code>, <code>stop</code>, <code>rgb_final</code>, <code>stopped_early</code></td>
+<td>Routes the per-step early-stop decision (upstream <code>main.py:200-210</code>): "yes" from the stop LLM on a non-black frame emits <code>stop</code> + the decision frame to <code>iterOut</code>; otherwise <code>continue</code> triggers the next hop. Black frames never stop — upstream skips the check entirely on black frames.</td>
+</tr>
+<tr>
+<td><code>env_express__answer_router</code></td>
+<td>EXPRESS: Answer Router</td>
+<td><code>question</code>, <code>stopped_early</code>, <code>rgb</code></td>
+<td><code>question_stop</code>, <code>rgb_stop</code>, <code>question_trunc</code></td>
+<td>Post-loop branch (upstream <code>main.py:204-210</code> vs <code>419-422</code>): early stop → <code>answer.txt</code> prompt WITH the decision frame; budget truncation → <code>random_answer.txt</code> prompt WITHOUT any image. Emits exactly one branch, so exactly one of the two answer <code>llmCall</code>s fires.</td>
 </tr>
 <tr>
 <td><code>env_express__observe_egocentric</code></td>
@@ -181,14 +202,17 @@
 
 <hr>
 
-<h2 id="5-graphs"><span class="num">5.</span> Graphs: <code>express_probe</code> and <code>express_re</code></h2>
+<h2 id="5-graphs"><span class="num">5.</span> Graphs: <code>express_probe</code>, <code>express_re</code>, <code>express_fbe</code></h2>
 
-<p>Both in <code>workspace/graphs/eqa/unverified/</code>; both share the same verdict band — answer from the <strong>final frame only</strong> (upstream Fine-EQA answers from a single frame too) → <code>judge_prompt</code> → gpt-4o-mini judge <code>llmCall</code> → <code>evaluate</code> — hanging off <code>iter_out.final_*</code> so it fires exactly once, whether the loop ended on budget or on a bad action.</p>
+<p>All in <code>workspace/graphs/eqa/unverified/</code>. The two baseline graphs are <strong>step-for-step faithful to upstream <code>main.py</code></strong> (2026-08-14 rework): each iteration first runs the gpt-4o-mini <strong>stop check</strong> (<code>explore.txt</code> verbatim) on the current frame — starting with the seed frame, matching upstream's <code>cnt_step=0</code> — then <code>stop_gate</code> either exits the loop or triggers the exploration hop. The verdict band branches on how the loop ended: early stop → <code>answer.txt</code> WITH the decision frame; budget truncation → <code>random_answer.txt</code> WITHOUT any image (<code>main.py:421</code>). Judge = <code>evaluation.txt</code> + final frame → δ, σ → C / C* / E_path / d_T. All prompts are verbatim from upstream <code>prompt/*.txt</code>, assembled the way <code>gpt.py:prompt_make</code> does.</p>
 
 <ul>
-<li><strong><code>express_probe</code></strong> — built-ins-only wiring probe: observe → <code>basic_agent__image_analyze</code> caption → <code>llmCall</code> proposes a waypoint JSON → <code>textParse</code> → <code>step_pose</code>. Exists to exercise the env end to end; its score is not meaningful.</li>
-<li><strong><code>express_re</code></strong> — the paper's <strong>Random Exploration baseline</strong>: the loop is LLM-free (<code>sample_waypoint</code> → <code>step_pose</code>), so the only API cost is the verdict band. Paper reference: RE C 36.95 / C* 62.75 / E_path 12.06 over the full 2,044 set.</li>
+<li><strong><code>express_probe</code></strong> — built-ins-only wiring probe: observe → <code>basic_agent__image_analyze</code> caption → <code>llmCall</code> proposes a waypoint JSON → <code>textParse</code> → <code>step_pose</code>. Exists to exercise the env end to end; its score is not meaningful. (Keeps the old always-truncate verdict band — it is not a paper baseline.)</li>
+<li><strong><code>express_re</code></strong> — the paper's <strong>Random Exploration baseline</strong>: stop check → <code>sample_waypoint</code> random hop within 3 m + uniform yaw → <code>step_pose</code>. Paper reference: RE C 36.95 / C* 62.75 / E_path 12.06 over the full 2,044 set.</li>
+<li><strong><code>express_fbe</code></strong> — the paper's <strong>Frontier-Based Exploration baseline</strong>: stop check → <code>sample_frontier</code> (TSDF fusion + frontier pick) → <code>step_pose</code>. Paper reference: FBE C 38.60 / C* 63.03 / E_path 12.20.</li>
 </ul>
+
+<p><strong>Known deviation</strong> (both baselines): on budget truncation the judge image is one frame later than upstream's — the frame after the final hop rather than the frame at the final stop check. Fidelity to the initial view is exact the other way: <code>reset</code> now poses the agent with the record's <code>start_rotation</code> verbatim (upstream <code>main.py:77+111</code>), not an identity yaw.</p>
 
 <div class="callout"><strong>Judge model is a run-time choice.</strong> The benchmark judges with gpt-4o-mini; select a gpt-4o-mini profile on the judge node (profiles are user-level and never baked into graph JSON). And beware the active-profile trap in §6.</div>
 
@@ -196,7 +220,7 @@
 
 <h2 id="6-verification"><span class="num">6.</span> Verification evidence</h2>
 
-<p>All rows single-episode smokes on slot-b (<code>/experiment:run</code>, RTX 3090, <code>ac-hmeqa</code> env). <strong>No multi-episode numbers exist yet</strong> — nothing here is comparable to the paper's full-set rows.</p>
+<p>All rows on slot-b (<code>/experiment:run</code>, RTX 3090, <code>ac-hmeqa</code> env). The 30-episode rows are the first 30 <code>val_unseen</code> episodes — a small, easy-skewed subset, not comparable to the paper's 2,044-question rows.</p>
 
 <table>
 <thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
@@ -205,6 +229,9 @@
 <tr><td>First end-to-end run</td><td>run <code>20260729_130050</code> — probe, 1 val episode</td><td>completed: 4 teleport steps, 5th planner output unparseable → designed bad-action truncate → full verdict band (judge "δ, σ" parsed, <code>judge_ok=1</code>) → C/C*/E_path/d_T harvested</td></tr>
 <tr><td>Full-budget probe run</td><td>run <code>20260813_151848</code> — probe, 1 val episode, gpt-4o-mini active profile</td><td>completed: all 40 budget steps (clean budget truncation), <code>judge_ok=1</code>, σ=2 → C*=40, δ=0 → C=0, d_T 7.01 m valid, path_len 262 m</td></tr>
 <tr><td><strong>RE baseline run</strong></td><td>run <code>20260813_155735</code> — <code>express_re</code>, 1 val episode</td><td>completed: 40 random hops, no LLM in loop, verdict band OK — σ=3 → C*=60, δ=0 → C=0, d_T 4.10 m valid, path_len 121.5 m. Same episode, random beat the probe's LLM waypoints on final distance — consistent with the paper's high RE floor</td></tr>
+<tr><td><strong>Faithful-loop smokes</strong></td><td>runs <code>20260814_214556</code> / <code>20260814_214557</code> — reworked <code>express_re</code> / <code>express_fbe</code>, 1 val episode each</td><td>both completed with the stop module live: RE stopped early at step 6 (E_path 38.1), FBE at step 18 (E_path 21.4); <code>stop_llm</code>/<code>stop_gate</code> fired every step incl. the seed frame; <code>answer_stop_llm</code> (with-image branch) fired</td></tr>
+<tr><td><strong>RE 30-episode run</strong></td><td>run <code>20260814_220732</code> — <code>express_re</code>, 30 val episodes, 6 workers</td><td>C 42.3 / C* 63.3 / E_path 25.5 / d_T 3.20 m; 13 early-stop vs 17 truncated episodes (both answer branches exercised). Paper full-set: C 36.95 / C* 62.75 / E_path 12.06</td></tr>
+<tr><td><strong>FBE 30-episode run</strong></td><td>run <code>20260814_220734</code> — <code>express_fbe</code>, 30 val episodes, 6 workers</td><td>C 47.7 / C* 67.3 / E_path 24.6 / d_T 6.60 m; 12 early-stop vs 18 truncated. Paper full-set: C 38.60 / C* 63.03 / E_path 12.20. C* tracks the paper closely on both baselines; C and E_path run high on this easy-skewed head subset</td></tr>
 </tbody>
 </table>
 
@@ -221,8 +248,8 @@
 <h2 id="7-gaps"><span class="num">7.</span> Not yet verified</h2>
 
 <ul>
-<li><strong>Any multi-episode number.</strong> Every run above is a single val episode; nothing is comparable to the paper's 2,044-question rows yet.</li>
-<li><strong>FBE and Fine-EQA.</strong> The paper's frontier baseline (TSDF planner with semantic value weighting off) and its Fine-EQA method are not ported; only RE is. Upstream reference clone: <code>tmp/thirdparty/EXPRESS-Bench</code>.</li>
+<li><strong>Full-set numbers.</strong> The largest run is 30 episodes (first-30 head of val_unseen); nothing is yet comparable to the paper's 2,044-question rows.</li>
+<li><strong>Fine-EQA.</strong> The paper's own method (region-guided GOE + semantic value weighting, Prismatic VLM) is not ported; both detector-free baselines (RE, FBE) are. Upstream reference clone: <code>tmp/thirdparty/EXPRESS-Bench</code>.</li>
 <li><strong>d_T on inf-geodesic episodes.</strong> The <code>d_t_valid=0</code> path is implemented as an upstream mirror but no smoke episode has exercised it.</li>
 <li><strong>Canvas Play.</strong> Verified through the eval-batch path only; viewer nodes executed but never watched in the GUI.</li>
 </ul>
@@ -243,7 +270,7 @@
       <a class="toc-h3" href="#action-contract">Action contract</a>
       <a class="toc-h2" href="#3-env-panel">3. Env panel</a>
       <a class="toc-h2" href="#4-data">4. Data staging</a>
-      <a class="toc-h2" href="#5-graphs">5. Graphs: express_probe and express_re</a>
+      <a class="toc-h2" href="#5-graphs">5. Graphs: probe, RE, FBE</a>
       <a class="toc-h2" href="#6-verification">6. Verification evidence</a>
       <a class="toc-h3" href="#empty-response-trap">The gpt-5-nano empty-response trap</a>
       <a class="toc-h3" href="#run-pool-split">Slot-pool artefact split (framework hole, observed here)</a>
