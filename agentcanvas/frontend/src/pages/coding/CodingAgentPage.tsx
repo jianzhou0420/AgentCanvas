@@ -484,6 +484,21 @@ export default function CodingAgentPage() {
           </select>
         </label>
         <label className="flex items-center gap-1 text-xs text-gray-400">
+          model
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            disabled={running}
+            className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
+          >
+            {modelOpts.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-xs text-gray-400">
           condition
           <select
             value={condition}
@@ -540,21 +555,6 @@ export default function CodingAgentPage() {
             disabled={running}
             className="w-16 rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
           />
-        </label>
-        <label className="flex items-center gap-1 text-xs text-gray-400">
-          model
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={running}
-            className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
-          >
-            {modelOpts.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
         </label>
         <label className="flex items-center gap-1 text-xs text-gray-400">
           extra
