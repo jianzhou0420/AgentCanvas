@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HM3D-OVON NodeSet — AgentCanvas</title>
+<meta name="description" content="The HM3D-OVON NodeSet ( EnvOvonNodeSet , workspace/nodesets/env/env_ovon/ ) wraps habitat-lab 0.2.4 for HM3D-OVON (24.09, IROS 2024, Yokoyama et al.) — open-vocabulary object-goal navigation. Where…">
+<meta property="og:title" content="HM3D-OVON NodeSet — AgentCanvas">
+<meta property="og:description" content="The HM3D-OVON NodeSet ( EnvOvonNodeSet , workspace/nodesets/env/env_ovon/ ) wraps habitat-lab 0.2.4 for HM3D-OVON (24.09, IROS 2024, Yokoyama et al.) — open-vocabulary object-goal navigation. Where…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/ovon.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="HM3D-OVON">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/ovon.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">HM3D-OVON</span>
+  </div>
+  <div class="last-updated">2026-08-14 18:00</div>
+</div>
+  <header class="page-header guide">
+  <h1>HM3D-OVON NodeSet</h1>
+</header>
+
+<p class="lede">The <strong>HM3D-OVON NodeSet</strong> (<code>EnvOvonNodeSet</code>, <code>workspace/nodesets/env/env_ovon/</code>) wraps <strong>habitat-lab 0.2.4</strong> for <a href="https://arxiv.org/abs/2409.14296">HM3D-OVON</a> (24.09, IROS 2024, Yokoyama et al.) — <strong>open-vocabulary</strong> object-goal navigation. Where <a href="objnav.html">ObjectNav</a> draws goals from a fixed 6-category set, OVON names the goal as free-form text at test time, and three val splits grade generalisation: <code>val_seen</code> (categories seen in training), <code>val_seen_synonyms</code> (same objects, unseen synonyms), <code>val_unseen</code> (categories never seen) — 36 scenes × 3,000 episodes each, 79 / 50 / 49 distinct goal categories.</p>
+
+<p>Port-compatible sibling of <a href="objnav.html">ObjectNav</a>: the node surface mirrors <code>env_objnav</code> <strong>verb-for-verb</strong>, so a graph binds to either env by swapping the node_type prefix. It shares the <code>ac-objnav</code> conda env (<code>$OVON_PYTHON</code> overrides) and the already-staged 36 semantically-annotated HM3D val scenes — no new scene download, no new compat symlinks.</p>
+
+<hr>
+
+<h2 id="1-canvas-nodes"><span class="num">1.</span> Canvas nodes</h2>
+
+<p>Seven nodes on the <a href="template.html">gym contract</a>, identical port shapes to <a href="objnav.html">ObjectNav</a>'s table — <code>reset</code> / <code>step_discrete</code> / <code>step_pose</code> / <code>observe_egocentric</code> / <code>observe_camera_pose</code> / <code>observe_panorama</code> / <code>evaluate</code>, prefixed <code>env_ovon__</code>. The differences are semantic, not structural:</p>
+
+<ul>
+<li><strong>Goal is free text.</strong> <code>reset.object_category</code> carries the open-vocabulary goal phrase, not a category id.</li>
+<li><strong>No <code>objectgoal_sensor</code>.</strong> habitat's sensor demands <code>category_to_task_category_id</code>, a fixed category→int table an open vocabulary does not have; leaving it in aborts task construction. <code>gps</code>/<code>compass</code> are kept.</li>
+<li><strong><code>success_distance</code> = 0.25 m</strong>, HM3D-OVON's official threshold — <em>not</em> habitat's stock 0.1 m. The stock value is smaller than the 0.25 m step size, so success becomes a coin flip on sparse-viewpoint goals (oracle at 0.1: SR 0.50 with every failure 0.106–0.179 m out; at 0.25: SR 1.00). ObjectNav's dense furniture viewpoints mask the bug; OVON's small-object tail (e.g. <em>clothes</em>, 9 viewpoints) exposed it. Upstream OVON makes the same override. This is the one place env_ovon is deliberately not comparable to a stock ObjectNav run.</li>
+</ul>
+
+<hr>
+
+<h2 id="2-data"><span class="num">2.</span> Data staging</h2>
+
+<table>
+<thead><tr><th>Path</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>data/datasets/ovon/hm3d/{train, val_seen, val_seen_synonyms, val_unseen}/</code></td><td>Episodes from HuggingFace <code>nyokoyama/hm3d_ovon</code> (<code>hm3d.tar.gz</code>, 158 MB)</td></tr>
+<tr><td><code>data/scene_datasets/hm3d/val/</code></td><td>Scenes shared with <a href="objnav.html">ObjectNav</a> (<code>scene_id</code> prefix <code>hm3d/val/</code>, same as objectnav v1)</td></tr>
+</tbody>
+</table>
+
+<p>Two staging traps, both handled in the module: (a) <strong>split dir ≠ filename</strong> — <code>val_seen_synonyms/</code> contains <code>val_unseen_easy.json.gz</code> and <code>val_unseen/</code> contains <code>val_unseen_hard.json.gz</code>, so the usual <code>{split}/{split}.json.gz</code> template resolves to a missing file for two of three splits (explicit <code>_SPLIT_FILES</code> mapping); (b) the tarball ships 266 AppleDouble <code>._*</code> files that habitat reads as scenes and dies <code>BadGzipFile</code> — deleted at staging, and they come back on re-extract.</p>
+
+<p><strong>Vendored dataset class</strong>: habitat-lab 0.2.4 registers no OVON dataset, so upstream's <code>OVON-v1</code> class is vendored verbatim as <code>env_ovon/_ovon_dataset.py</code>. Deviation: upstream pins habitat-lab 0.2.3 + py3.7; we run 0.2.4 + py3.9 — all three splits load and step, but this is the first suspect if numbers ever disagree with the paper. <code>train</code> is deliberately not offered (its 145 scenes come from the unstaged HM3D train download).</p>
+
+<hr>
+
+<h2 id="3-verification"><span class="num">3.</span> Verification evidence</h2>
+
+<p>All rows 2026-07-21, bare python on <code>ac-objnav</code> (PR <a href="https://github.com/jianzhou0420/AgentCanvas/pull/55">#55</a>).</p>
+
+<table>
+<thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Manager surface</td><td>27 manager-level assertions</td><td>0 failures — gym-verb surface, RGB-D 480×640 + pose + intrinsics + gps/compass, pure-read invariants for observe/panorama, all 6 discrete actions, <code>step_pose</code> never dispatching STOP, both panorama modes, <code>set_episode_by_index</code></td></tr>
+<tr><td>Dataset shape</td><td>all three val splits via the vendored <code>OVON-v1</code></td><td>3,000 episodes each; 79 / 50 / 49 distinct goal categories — matches the paper's counts</td></tr>
+<tr><td>Scoring sanity</td><td>shortest-path oracle vs random, 12 <code>val_seen</code> eps, official 0.25 threshold</td><td>oracle <strong>SR 1.000 / SPL 0.980</strong>; random SR 0.000 — SPL ≈0.98 also confirms geodesic distance / path length / SPL denominator</td></tr>
+<tr><td>Registry discovery</td><td>backend <code>scan_all()</code></td><td>nodeset discovered — category env, <code>requires_server</code>, 7 tools</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2 id="4-gaps"><span class="num">4.</span> Not yet verified / open decisions</h2>
+
+<ul>
+<li><strong>No method yet.</strong> No graph drives this env, so no SR number from this stack is meaningful — the oracle/random rows above are environment self-checks.</li>
+<li><strong>Server-mode load, env-panel bridge, probe graph, Canvas Play, multi-worker</strong> — none run yet (manager-level verification only).</li>
+<li><strong>Embodiment alignment (open decision).</strong> The official benchmark agent is Stretch-like: RGB 360×640 portrait, hfov 42, camera 1.31 m, no stock depth in the published DAgRL weights' config (<code>OVONSim-v0</code>, goal via <code>clip_objectgoal_sensor</code>). env_ovon currently uses the ObjectNav paper-standard cylinder (640×480 RGB-D, hfov 79, camera 0.88 m) — so <strong>no published number is comparable</strong> until the env is re-pointed at the Stretch geometry (plus a py3.7 / habitat-0.2.3 build for the published weights). Depth itself is on-standard — modular zero-shot baselines (VLFM, DAgRL+OD) use it.</li>
+<li><strong>Oracle on the other two splits</strong> (<code>val_seen_synonyms</code> / <code>val_unseen</code>) and a metric-blind oracle re-run.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-canvas-nodes">1. Canvas nodes</a>
+      <a class="toc-h2" href="#2-data">2. Data staging</a>
+      <a class="toc-h2" href="#3-verification">3. Verification evidence</a>
+      <a class="toc-h2" href="#4-gaps">4. Not yet verified / open decisions</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
