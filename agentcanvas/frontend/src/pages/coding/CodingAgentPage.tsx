@@ -258,7 +258,18 @@ export default function CodingAgentPage() {
               ? st.started_episodes[st.started_episodes.length - 1]
               : null);
         }
-        if (run == null || ep == null) return;
+        if (run == null || ep == null) {
+          // no shown run (e.g. mid harness-switch, browseRun reset to null):
+          // clear the previous run's log instead of letting it linger
+          if (shownKeyRef.current !== null) {
+            shownKeyRef.current = null;
+            offsetRef.current = 0;
+            setLines([]);
+            setFrames([]);
+            setZoomFrame(null);
+          }
+          return;
+        }
 
         const shownKey = `${run}:${ep}`;
         if (shownKeyRef.current !== shownKey) {
