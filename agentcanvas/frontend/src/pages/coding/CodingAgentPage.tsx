@@ -155,8 +155,10 @@ export default function CodingAgentPage() {
   // control panel form (persisted: survive a refresh with the same inputs)
   const [episodes, setEpisodes] = usePersistentState("agentcanvas.coding.episodes", "0-9");
   const [split, setSplit] = usePersistentState("agentcanvas.coding.split", "rand100");
-  const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 80);
-  const [modelRaw, setModel] = usePersistentState("agentcanvas.coding.model", "");
+  // .v2 keys: defaults moved to the std-v2 board values (max_turns 200,
+  // model fable-5) — bumped so stale persisted values don't shadow them
+  const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns.v2", 200);
+  const [modelRaw, setModel] = usePersistentState("agentcanvas.coding.model.v2", "fable-5");
   const [conditionRaw, setCondition] = usePersistentState("agentcanvas.coding.condition", "bare");
   // "ui" was retired; a stale persisted value falls back to bare
   const condition = ["bare", "wp", "hybrid"].includes(conditionRaw) ? conditionRaw : "bare";
