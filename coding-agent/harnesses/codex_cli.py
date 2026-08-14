@@ -74,7 +74,8 @@ class CodexCliAdapter:
         )
         return [
             "codex", "exec", "--json", "--skip-git-repo-check",
-            "-c", f"model = {_toml_str(ctx.model)}",
+            # blank model = the CLI's own default; `-c model = ""` would 400
+            *(["-c", f"model = {_toml_str(ctx.model)}"] if ctx.model else []),
             "-c", f"model_reasoning_effort = {_toml_str(ctx.extra.get('effort', 'medium'))}",
             # Display-layer knob: surfaces reasoning summaries if any exist.
             "-c", 'model_reasoning_summary = "detailed"',
