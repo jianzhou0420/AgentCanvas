@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cells import CONDITIONS, CellSpec, _tier_extra
+from cells import CONDITIONS, MODEL_EXTRA, MODELS, CellSpec, _model_id, _tier_extra
 from driver import run_cell
 from harnesses import get_adapter
 
@@ -37,18 +37,21 @@ def main() -> None:
                         help="waypoint-predictor auto_host (wp / hybrid conditions)")
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--model", default=None,
-                        help="harness-facing model id; blank = the CLI's default model")
-    parser.add_argument("--condition", default="ui",
-                        choices=("ui",) + tuple(CONDITIONS),
-                        help='"ui" = the legacy full toolset; bare/wp/hybrid = the MIP paper conditions')
+                        help="board model key (resolved via cells.MODELS + MODEL_EXTRA) "
+                             "or a literal harness-facing model id; blank = the CLI's default")
+    parser.add_argument("--condition", default="bare", choices=tuple(CONDITIONS),
+                        help="the MIP paper conditions")
     parser.add_argument("--tier", default="default", choices=("default", "max"),
                         help="effort tier — expands to the per-(harness, model) knobs the std board uses")
     parser.add_argument("--set", dest="extra", action="append", default=[],
                         metavar="KEY=VAL", help="harness extra knob (overrides tier knobs)")
     args = parser.parse_args()
 
-    flags = CONDITIONS.get(args.condition, {"bare": False})
-    extra = _tier_extra(args.harness, args.model or "", args.tier)
+    flags = CONDITIONS[args.condition]
+    model_key = args.model or ""
+    model_id = _model_id(args.harness, model_key) if model_key in MODELS else model_key
+    extra = dict(MODEL_EXTRA.get(model_key, {}))
+    extra.update(_tier_extra(args.harness, model_key, args.tier))
     for pair in args.extra:
         key, sep, val = pair.partition("=")
         if not sep:
@@ -58,8 +61,8 @@ def main() -> None:
     spec = CellSpec(
         name=args.run_name,
         harness=args.harness,
-        model_key=args.model or "ui",
-        model_id=args.model or "",
+        model_key=model_key or "ui",
+        model_id=model_id,
         condition=args.condition,
         bare=flags.get("bare", False),
         wp=flags.get("wp", False),
