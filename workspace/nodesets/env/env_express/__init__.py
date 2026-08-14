@@ -110,6 +110,31 @@ _DEFAULTS = {
     "max_step_room_size_ratio": 3.0,
     "black_pixel_ratio": 0.5,
     "seed": 42,
+    # FBE baseline (fine_eqa.yaml) — TSDF planner geometry + warmup
+    "tsdf_grid_size": 0.1,
+    "init_clearance": 0.5,
+    "margin_w_ratio": 0.25,
+    "margin_h_ratio": 0.6,
+    "min_random_init_steps": 2,
+}
+
+# fine_eqa.yaml `planner:` block, passed verbatim to TSDFPlanner.find_next_pose
+_PLANNER_CFG = {
+    "dist_T": 10,
+    "unexplored_T": 0.2,
+    "unoccupied_T": 2.0,
+    "val_T": 0.5,
+    "val_dir_T": 0.5,
+    "max_val_check_frontier": 3,
+    "smooth_sigma": 5,
+    "eps": 1,
+    "min_dist_from_cur": 0.5,
+    "max_dist_from_cur": 3,
+    "frontier_spacing": 1.5,
+    "frontier_min_neighbors": 3,
+    "frontier_max_neighbors": 4,
+    "max_unexplored_check_frontier": 3,
+    "max_unoccupied_check_frontier": 1,
 }
 
 _SPLITS = ["val", "train", "all"]
@@ -471,8 +496,23 @@ class ExpressEnvManager:
             self._angle = 0.0
             self._step_index = 0
             self._path_len = 0.0
+            self._fbe_planner = None  # rebuilt lazily per episode (FBE baseline)
 
-            self._set_agent_pose_unlocked(init_pts, self._angle)
+            # Initial pose uses the record's start_rotation verbatim
+            # (main.py:77+111: rotation = np.quaternion(*start_rotation)),
+            # while the planner angle starts at 0 (init_angle = 0).
+            init_rot = rec.get("start_rotation")
+            if init_rot is not None and len(init_rot) == 4:
+                import quaternion  # lazy
+
+                agent_state = habitat_sim.AgentState()
+                agent_state.position = init_pts
+                agent_state.rotation = np.quaternion(
+                    init_rot[0], init_rot[1], init_rot[2], init_rot[3]
+                )
+                self._agent.set_state(agent_state)
+            else:
+                self._set_agent_pose_unlocked(init_pts, self._angle)
 
             log.info(
                 "EXPRESS: episode %d (id=%s) scene=%s scene_size=%.1f num_step=%d",
@@ -607,6 +647,85 @@ class ExpressEnvManager:
             return {
                 "position_normal": [float(pts_normal[0]), float(pts_normal[1])],
                 "angle": float(rng.uniform(0.0, 2.0 * np.pi)),
+            }
+
+    def sample_frontier(self) -> dict[str, Any]:
+        """Frontier-exploration action: TSDF-fuse the current depth frame,
+        then pick the next frontier pose (paper FBE baseline).
+
+        Mirrors main.py's pure-FBE path (``regs_list == []`` → ``state True``):
+        ``TSDFPlanner.integrate`` on the current RGB-D frame (skipped for
+        black frames, main.py:189-199), then ``find_next_pose`` with the
+        fine_eqa.yaml planner block. Returns the free-pose dict
+        ``step_freepose`` consumes; falls back to the RE random hop if the
+        planner raises.
+        """
+        with self._lock:
+            if self._simulator is None:
+                return {"error": "no active simulator — call set_episode_by_index first"}
+
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            from ._tsdf import TSDFPlanner
+
+            obs = self._current_obs_unlocked()
+            planner = self._fbe_planner
+            if planner is None:
+                np.random.seed(int(self._config["seed"]))  # find_next_pose uses np.random
+                planner = TSDFPlanner(
+                    vol_bnds=self._ep_tsdf_bnds,
+                    voxel_size=self._config["tsdf_grid_size"],
+                    regs=[],
+                    max_exp=3,
+                    floor_height_offset=0,
+                    pts_init=_pos_habitat_to_normal(np.asarray(self._pts, dtype=np.float64)),
+                    init_clearance=self._config["init_clearance"] * 2,
+                )
+                self._fbe_planner = planner
+
+            h = int(self._config["img_height"])
+            w = int(self._config["img_width"])
+            if not obs["is_black"]:
+                planner.integrate(
+                    color_im=obs["rgb"],
+                    depth_im=obs["depth"],
+                    cam_intr=self.get_cam_intrinsics(),
+                    cam_pose=obs["cam_pose_matrix"],
+                    obs_weight=1.0,
+                    margin_h=int(self._config["margin_h_ratio"] * h),
+                    margin_w=int(self._config["margin_w_ratio"] * w),
+                )
+
+            try:
+                pts_normal, next_angle, _pts_pix, fig = planner.find_next_pose(
+                    pts=obs["pose_normal"],
+                    angle=float(self._angle),
+                    flag_no_val_weight=self._step_index
+                    < int(self._config["min_random_init_steps"]),
+                    **_PLANNER_CFG,
+                )
+                plt.close(fig)
+            except Exception as exc:  # planner failure → RE hop, keep the run alive
+                log.warning("EXPRESS FBE: find_next_pose failed (%s) — random fallback", exc)
+                last_pts = np.asarray(self._pts, dtype=np.float64)
+                pts = np.asarray(
+                    self._pathfinder.get_random_navigable_point_near(last_pts, 3.0),
+                    dtype=np.float64,
+                )
+                if np.isnan(pts).any():
+                    pts = last_pts
+                pn = _pos_habitat_to_normal(pts)
+                return {
+                    "position_normal": [float(pn[0]), float(pn[1])],
+                    "angle": float(np.random.uniform(0.0, 2.0 * np.pi)),
+                }
+
+            return {
+                "position_normal": [float(pts_normal[0]), float(pts_normal[1])],
+                "angle": float(next_angle),
             }
 
     def current_obs(self) -> dict[str, Any]:
@@ -872,6 +991,103 @@ class SampleWaypointExpressTool(BaseCanvasNode):
             return {"action": ""}
         self._self_log("waypoint", result)
         return {"action": json.dumps(result)}
+
+
+class SampleFrontierExpressTool(BaseCanvasNode):
+    node_type = "env_express__sample_frontier"
+    display_name = "EXPRESS: Sample Frontier (FBE)"
+    description = (
+        "Frontier-exploration action source (paper FBE baseline): TSDF-fuses "
+        "the current depth frame and picks the next frontier pose, as "
+        "step_pose's free-pose JSON"
+    )
+    category = "environment"
+    icon = "Compass"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("trigger", "ANY", "Fires a frontier pick when data arrives"),
+    ]
+    output_ports = [
+        PortDef("action", "TEXT", 'Free-pose JSON: {"position_normal": [x, y], "angle": float}'),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        result = await _run_sync(_get_mgr().sample_frontier)
+        if "error" in result:
+            self._self_log("error", result["error"])
+            return {"action": ""}
+        self._self_log("frontier", result)
+        return {"action": json.dumps(result)}
+
+
+class StopGateExpressTool(BaseCanvasNode):
+    node_type = "env_express__stop_gate"
+    display_name = "EXPRESS: Stop Gate"
+    description = (
+        "Routes the per-step stop decision (upstream main.py:200-210): if the "
+        "stop-LLM said yes on a non-black frame, emit stop + the decision frame "
+        "to iterOut; otherwise emit continue to trigger the next hop. Black "
+        "frames never stop (upstream skips the check entirely on black frames)."
+    )
+    category = "environment"
+    icon = "OctagonPause"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("rgb", "IMAGE", "Frame the stop decision was made on"),
+        PortDef("stop_text", "TEXT", "Stop-LLM response (yes/no)"),
+    ]
+    output_ports = [
+        PortDef("continue", "ANY", "Emitted only when exploring continues (next-hop trigger)"),
+        PortDef("stop", "TEXT", "Emitted only on early stop (wire to iterOut stop)"),
+        PortDef("rgb_final", "IMAGE", "Decision frame, emitted only on early stop"),
+        PortDef("stopped_early", "TEXT", '"yes" on early stop, "" otherwise (every fire)'),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        rgb = inputs.get("rgb")
+        stop_text = str(inputs.get("stop_text", "") or "")
+        is_black = False
+        arr = np.asarray(rgb) if rgb is not None else None
+        if arr is not None and arr.ndim == 3:
+            h, w = arr.shape[:2]
+            num_black = int(np.sum(np.sum(arr[..., :3], axis=-1) == 0))
+            is_black = num_black > _DEFAULTS["black_pixel_ratio"] * h * w
+        stop_yes = (not is_black) and ("yes" in stop_text.lower())
+        self._self_log("stop_decision", {"stop": stop_yes, "is_black": is_black})
+        if stop_yes:
+            return {"stop": "stop", "rgb_final": rgb, "stopped_early": "yes"}
+        return {"continue": rgb, "stopped_early": ""}
+
+
+class AnswerRouterExpressTool(BaseCanvasNode):
+    node_type = "env_express__answer_router"
+    display_name = "EXPRESS: Answer Router"
+    description = (
+        "Post-loop branch (upstream main.py:204-210 vs 419-422): early stop -> "
+        "answer.txt prompt WITH the decision frame; budget truncation -> "
+        "random_answer.txt prompt WITHOUT any image. Emits exactly one branch."
+    )
+    category = "environment"
+    icon = "Split"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("question", "TEXT", "Episode question"),
+        PortDef("stopped_early", "TEXT", 'Stop gate flag ("yes" or "")'),
+        PortDef("rgb", "IMAGE", "Final frame (used only on the stop branch)"),
+    ]
+    output_ports = [
+        PortDef("question_stop", "TEXT", "Question, emitted only when stopped early"),
+        PortDef("rgb_stop", "IMAGE", "Decision frame, emitted only when stopped early"),
+        PortDef("question_trunc", "TEXT", "Question, emitted only on budget truncation"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        question = str(inputs.get("question", "") or "")
+        stopped = str(inputs.get("stopped_early", "") or "").strip().lower() == "yes"
+        self._self_log("branch", "stop" if stopped else "trunc")
+        if stopped:
+            return {"question_stop": question, "rgb_stop": inputs.get("rgb")}
+        return {"question_trunc": question}
 
 
 class ObserveEgocentricExpressTool(BaseCanvasNode):
@@ -1226,6 +1442,9 @@ class EnvExpressNodeSet(BaseNodeSet):
             ResetExpressTool(),  # env_express__reset (metadata only)
             StepPoseExpressTool(),  # env_express__step_pose
             SampleWaypointExpressTool(),  # env_express__sample_waypoint (RE baseline)
+            SampleFrontierExpressTool(),  # env_express__sample_frontier (FBE baseline)
+            StopGateExpressTool(),  # env_express__stop_gate (per-step early-stop routing)
+            AnswerRouterExpressTool(),  # env_express__answer_router (stop/trunc answer branch)
             ObserveEgocentricExpressTool(),  # env_express__observe_egocentric
             JudgePromptExpressTool(),  # env_express__judge_prompt
             EvaluateExpressTool(),  # env_express__evaluate

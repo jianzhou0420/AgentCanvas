@@ -1,6 +1,6 @@
 {
-  "name": "EXPRESS-Bench RE baseline (random exploration)",
-  "description": "Paper's Random Exploration baseline on env_express, faithful to upstream main.py: each step first runs the gpt-4o-mini stop check (explore.txt) on the current frame (skipped-on-black via env_express__stop_gate); on yes it answers WITH the decision frame (answer.txt) and exits; otherwise env_express__sample_waypoint teleports to a random navigable point within 3 m with uniform yaw. On budget truncation the answer uses random_answer.txt WITHOUT any image (main.py:421). Judge llmCall (gpt-4o-mini profile) returns delta/sigma; env_express__evaluate computes C / C* / E_path / d_T. Paper reference: RE C 36.95 / C* 62.75 / E_path 12.06.",
+  "name": "express_fbe",
+  "description": "Paper's Frontier-Based Exploration baseline on env_express, faithful to upstream main.py: each step first runs the gpt-4o-mini stop check (explore.txt) on the current frame (skipped-on-black via env_express__stop_gate); on yes it answers WITH the decision frame (answer.txt) and exits; otherwise env_express__sample_frontier TSDF-fuses the frame and teleports to the planner-picked frontier pose (TSDFPlanner.integrate + find_next_pose, fine_eqa.yaml planner block; regs_list=[] so the GOE branch never fires). On budget truncation the answer uses random_answer.txt WITHOUT any image (main.py:421). Judge llmCall (gpt-4o-mini profile) returns delta/sigma; env_express__evaluate computes C / C* / E_path / d_T. Paper reference: FBE C 38.60 / C* 63.03 / E_path 12.20.",
   "step_budget": 50,
   "nodes": [
     {
@@ -198,9 +198,9 @@
       }
     },
     {
-      "id": "sample_waypoint",
-      "type": "env_express__sample_waypoint",
-      "label": "EXPRESS: Sample Waypoint",
+      "id": "sample_frontier",
+      "type": "env_express__sample_frontier",
+      "label": "EXPRESS: Sample Frontier",
       "position": {
         "x": 840,
         "y": 200
@@ -318,7 +318,7 @@
         "y": -340
       },
       "config": {
-        "markdown": "**Random Exploration (paper baseline, faithful loop)**\n\nPer step (upstream main.py order): stop check FIRST on the current frame (`stop_llm` = explore.txt verbatim, gpt-4o-mini) -> `stop_gate` (black frames never stop) -> on continue, `sample_waypoint` random hop within 3 m + uniform yaw -> `step_pose` teleports, accumulating geodesic path length.\n\n**Verdict band**: `answer_router` branches on how the loop ended - early stop -> answer.txt WITH the decision frame; budget truncation -> random_answer.txt WITHOUT image (main.py:421). Judge = evaluation.txt + final frame -> delta, sigma -> C / C* / E_path / d_T.\n\n**All prompts verbatim from upstream prompt/*.txt.** Judge + stop + answer model: gpt-4o-mini (benchmark-native); select via active profile.\n\n**Known deviation**: on truncation the judge image is one frame later than upstream's (frame after the final hop vs frame at the final check).\n\n**Paper reference**: RE C 36.95 / C* 62.75 / E_path 12.06 (Table 2)."
+        "markdown": "**Frontier-Based Exploration (paper baseline, faithful loop)**\n\nPer step (upstream main.py order): stop check FIRST on the current frame (`stop_llm` = explore.txt verbatim, gpt-4o-mini) -> `stop_gate` (black frames never stop) -> on continue, `sample_frontier` TSDF-fuses the frame and picks the next frontier pose (upstream `find_next_pose`, fine_eqa.yaml params) -> `step_pose` teleports, accumulating geodesic path length.\n\n**Verdict band**: `answer_router` branches on how the loop ended - early stop -> answer.txt WITH the decision frame; budget truncation -> random_answer.txt WITHOUT image (main.py:421). Judge = evaluation.txt + final frame -> delta, sigma -> C / C* / E_path / d_T.\n\n**All prompts verbatim from upstream prompt/*.txt.** Judge + stop + answer model: gpt-4o-mini (benchmark-native); select via active profile.\n\n**Known deviation**: on truncation the judge image is one frame later than upstream's (frame after the final hop vs frame at the final check).\n\n**Paper reference**: FBE C 38.60 / C* 63.03 / E_path 12.20 (Table 2)."
       }
     }
   ],
@@ -373,9 +373,9 @@
       "targetHandle": "stop_text"
     },
     {
-      "id": "e_stop_gate_continue__sample_waypoint_trigger",
+      "id": "e_stop_gate_continue__sample_frontier_trigger",
       "source": "stop_gate",
-      "target": "sample_waypoint",
+      "target": "sample_frontier",
       "sourceHandle": "continue",
       "targetHandle": "trigger"
     },
@@ -401,8 +401,8 @@
       "targetHandle": "stopped_early"
     },
     {
-      "id": "e_sample_waypoint_action__env_step_action",
-      "source": "sample_waypoint",
+      "id": "e_sample_frontier_action__env_step_action",
+      "source": "sample_frontier",
       "target": "env_step",
       "sourceHandle": "action",
       "targetHandle": "action"
