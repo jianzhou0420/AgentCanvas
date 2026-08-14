@@ -110,6 +110,21 @@
 <td>Author-verified 2026-06-01 — runs end-to-end on a real HM-EQA episode (HM3D meshes installed, <code>install_ac_hmeqa.sh</code> done). Closes the E6 "validate end-to-end on a real episode" remaining item.</td>
 </tr>
 <tr>
+<td><code>explore_eqa_hmeqa.json</code> + <code>dataset=mt_hm3d</code></td>
+<td><strong>🚧 smoked 2026-08-13</strong></td>
+<td>Same verified graph on the <a href="https://arxiv.org/abs/2505.13948">MT-HM3D</a> corpus (MemoryEQA, 1,587 multi-choice questions) via the env panel's dataset spec — first graph run <code>20260813_155648</code>: 47 steps to budget, <code>success</code>/<code>norm_step</code> machinery verified. Single episode only — no comparable SR yet (paper: ExploreEQA/Prismatic 30.22%). Beware 67.4%-"A" answer skew; report per-category.</td>
+</tr>
+<tr>
+<td><code>express_probe.json</code></td>
+<td><strong>🚧 smoked 2026-08-13</strong></td>
+<td><a href="https://arxiv.org/abs/2503.11117">EXPRESS-Bench</a> wiring probe (built-ins-only loop + benchmark-native gpt-4o-mini judge band) — run <code>20260813_151848</code>: full 40-step budget, judge parsed, C*=40 / d_T 7.01 m on one val episode. Score not meaningful by design.</td>
+</tr>
+<tr>
+<td><code>express_re.json</code></td>
+<td><strong>🚧 smoked 2026-08-13</strong></td>
+<td>Paper's Random Exploration baseline (LLM-free loop via <code>env_express__sample_waypoint</code>) — run <code>20260813_155735</code>: C*=60 / d_T 4.10 m on one val episode. Paper full-set reference: RE C 36.95 / C* 62.75 / E_path 12.06. Comparison runs pending.</td>
+</tr>
+<tr>
 <td><code>tooleqa_hmeqa.json</code></td>
 <td><strong>🔁 redone 2026-06-08 (monolith) — runs e2e, SR tuning</strong></td>
 <td>Rebuilt <strong>monolith-first</strong>: backend ReAct reasoner (<code>tooleqa__step</code>) + fused <code>tooleqa_explore__go_next</code> (full Explore-EQA TSDF frontier step + teleport — the first port's bug was treating <code>go_next</code> as discrete dead-reckoning). Qwen2.5-VL-3B serves the LLM/VQA; DetAny3D serves 2D/3D detect; all over server-mode HTTP. End-to-end smoke works (first correct answer: ep0 → 'B' == GT). SR aggregate + 3B convergence still being tuned — see roadmap #63. Scope still HM-EQA only; reuses the <code>explore_eqa_hmeqa.json</code> TSDF substrate.</td>
@@ -120,9 +135,9 @@
 <p>We outperform paper baselines because the reasoner + judge are <code>gpt-4o</code> (2025); the paper used <code>gpt-4</code> / <code>gpt-4-vision-preview</code> (2024). The +24 pp gap on multi-frame is dominated by the model upgrade.</p>
 <p>VLN graphs are out of scope (see <a href="vln-support-status.html">VLN Support Status</a>); VLA graphs are out of scope (see <a href="vla-support-status.html">VLA Support Status</a>).</p>
 <div class="callout note">
-  <strong>Graph folder layout (2026-06-01).</strong> <code>workspace/graphs/</code> is organised by domain × verification status. The EQA verified set is <code>eqa/verified/{openeqa_em_multiframe, openeqa_em_single_frame, openeqa_em_blind_llm, explore_eqa_hmeqa}.json</code>; <code>eqa/unverified/</code> is currently empty — its prior occupant <code>tooleqa_hmeqa</code> was removed 2026-06-08 pending a monolith-first redo (A-EQA graphs are also not yet shipped — data-blocked, see §2.3). Graphs stay addressable by bare name — the execution resolver and architect overlay fall back to a recursive <code>graphs/**/{name}.json</code> search.</div>
+  <strong>Graph folder layout (2026-06-01).</strong> <code>workspace/graphs/</code> is organised by domain × verification status. The EQA verified set is <code>eqa/verified/{openeqa_em_multiframe, openeqa_em_single_frame, openeqa_em_blind_llm, explore_eqa_hmeqa}.json</code>; <code>eqa/unverified/</code> currently holds the EXPRESS-Bench pair <code>{express_probe, express_re}.json</code> (smoked single-episode 2026-08-13, pending comparison runs); A-EQA graphs are still not shipped — data-blocked, see §2.3. Graphs stay addressable by bare name — the execution resolver and architect overlay fall back to a recursive <code>graphs/**/{name}.json</code> search.</div>
 <h2 id="2-environment-nodesets"><span class="num">2.</span> Environment Nodesets</h2>
-<p>EQA environments wrapped as <code>BaseNodeSet</code>s under server mode. Both share the <strong><code>ac-hmeqa</code> conda env</strong> in server mode (<code>parallelism="replicated"</code>).</p>
+<p>EQA environments wrapped as <code>BaseNodeSet</code>s under server mode. The HM3D-based ones (HM-EQA, EXPRESS-Bench) share the <strong><code>ac-hmeqa</code> conda env</strong> in server mode (<code>parallelism="replicated"</code>).</p>
 <h3 id="21-hm-eqa-e6-in-progress"><span class="num">2.1</span> HM-EQA (E6, in progress)</h3>
 <ul>
 <li><strong>Files</strong>: <code>workspace/nodesets/env/env_hmeqa/__init__.py</code> + <code>hmeqa_renderer.py</code> + <code>hmeqa_replay.py</code></li>
@@ -148,6 +163,15 @@
 <li>The HuggingFace mirror <code>Embodied1/open-eqa</code> is enough for EM-EQA (32 frames per episode, parquet) but does <strong>not</strong> carry the scene meshes / state artefacts an active explorer needs.</li>
 <li>Method-side dependencies (answer-emit verb on a unified action contract — TODO #46) are real but secondary; even if those landed today, A-EQA would still be blocked until we either (a) re-render via Habitat from a fresh path-fix patch + recovered <code>states</code>, or (b) find a community mirror of the original tarballs.</li>
 </ul>
+<h3 id="24-express-bench"><span class="num">2.4</span> EXPRESS-Bench (shipped 2026-08-13)</h3>
+<ul>
+<li><strong>Files</strong>: <code>workspace/nodesets/env/env_express/__init__.py</code> + vendored <code>prompts/evaluation.txt</code></li>
+<li><strong>Source</strong>: <a href="https://arxiv.org/abs/2503.11117">EXPRESS-Bench</a> (25.03, ICCV 2025) — exploration-aware open-vocab EQA, 2,044 question–trajectory pairs / 174 HM3D scenes</li>
+<li><strong>6 verbs</strong>: <code>reset</code> / <code>step_pose</code> (free-pose teleport, geodesic <code>path_len</code>) / <code>sample_waypoint</code> (paper RE action source) / <code>observe_egocentric</code> / <code>judge_prompt</code> / <code>evaluate</code> (δ,σ → C / C* / E_path / d_T)</li>
+<li><strong>Judge</strong>: benchmark-native gpt-4o-mini via built-in <code>llmCall</code> (profile resolved at run time)</li>
+<li><strong>Doc</strong>: <a href="../../nodesets/env/express.html">EXPRESS-Bench nodeset</a></li>
+</ul>
+<p>Note on §2.1: <code>env_hmeqa</code> also serves the <a href="https://arxiv.org/abs/2505.13948">MT-HM3D</a> corpus (MemoryEQA, 1,587 questions / 828 scenes) via its <code>_DATASET_SPECS</code> extension — dataset → split → episode_index panel cascade, <code>steps_taken</code> + <code>norm_step</code> metrics.</p>
 <h2 id="3-reasoner-method-nodesets"><span class="num">3.</span> Reasoner / Method Nodesets</h2>
 <p>EQA-shaped graphs are <strong>reasoner fragments</strong>, not full agents — pure <code>(frames, question) → (answer, score)</code> functions. They wrap as composite graph_nodes; default to no iter_in / iter_out (per project memory <code>eqa_reasoner_shape</code>).</p>
 <h3 id="31-explore-eqa-paper-port"><span class="num">3.1</span> Explore-EQA (paper port)</h3>
@@ -605,6 +629,7 @@ Two tracks: <strong>Method</strong> (agent / reasoning approaches we'd port as g
       <a class="toc-h3" href="#21-hm-eqa-e6-in-progress">2.1 HM-EQA (E6, in progress)</a>
       <a class="toc-h3" href="#22-openeqa-e9-shipped-2026-05-04">2.2 OpenEQA (E9, shipped 2026-05-04)</a>
       <a class="toc-h3" href="#23-openeqa-a-eqa-e10-deferred-blocked-on-data">2.3 OpenEQA A-EQA (E10, deferred — blocked on data)</a>
+      <a class="toc-h3" href="#24-express-bench">2.4 EXPRESS-Bench (shipped 2026-08-13)</a>
       <a class="toc-h2" href="#3-reasoner-method-nodesets">3. Reasoner / Method Nodesets</a>
       <a class="toc-h3" href="#31-explore-eqa-paper-port">3.1 Explore-EQA (paper port)</a>
       <a class="toc-h3" href="#32-explore-eqa-tsdf-utilities">3.2 Explore-EQA TSDF utilities</a>
