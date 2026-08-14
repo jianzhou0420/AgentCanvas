@@ -330,7 +330,16 @@ export default function CodingAgentPage() {
 
   // per-run episode outcomes for the browse selector badges
   useEffect(() => {
-    if (mode !== "browse" || !browseRun) return;
+    if (mode !== "browse" || !browseRun) {
+      // no browsed run (mid harness-switch / back to live): drop the previous
+      // run's episode badges instead of letting them linger
+      setBrowseEpisodes([]);
+      setBrowseStarted([]);
+      return;
+    }
+    // switching runs: blank the badges until the new run's summary arrives
+    setBrowseEpisodes([]);
+    setBrowseStarted([]);
     let cancelled = false;
     (async () => {
       try {
