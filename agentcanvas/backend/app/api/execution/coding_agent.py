@@ -35,7 +35,7 @@ SOURCE_ROOTS = {
 class StartRequest(BaseModel):
     episodes: str = "0-9"
     split: str = "rand100"
-    max_turns: int = 80
+    max_turns: int = 200  # std-v2 frozen cap (cells.STD_FROZEN)
     model: str | None = None
     harness: str = "claude-sdk"   # claude-sdk | mini-swe | codex (SOURCE_ROOTS keys)
     condition: str = "bare"       # bare | wp | hybrid (MIP paper grid)

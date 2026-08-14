@@ -31,7 +31,7 @@ def main() -> None:
     parser.add_argument("--harness", default="sdk", choices=("sdk", "mini", "codex"))
     parser.add_argument("--episodes", required=True, help='e.g. "0", "0-9", "0,3,7"')
     parser.add_argument("--split", default="rand100")
-    parser.add_argument("--max-turns", type=int, default=80)
+    parser.add_argument("--max-turns", type=int, default=200)  # std-v2 frozen cap
     parser.add_argument("--server-url", default="http://127.0.0.1:9200")
     parser.add_argument("--wp-server", default=None,
                         help="waypoint-predictor auto_host (wp / hybrid conditions)")
