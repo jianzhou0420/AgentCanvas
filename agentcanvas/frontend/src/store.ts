@@ -47,6 +47,9 @@ function isAppMode(v: string | null): v is AppMode {
 
 function loadAppMode(): AppMode {
   try {
+    // ?page=<mode> deep-links a tab (shareable / screenshotable URLs)
+    const q = new URLSearchParams(window.location.search).get("page");
+    if (isAppMode(q)) return q;
     const v = localStorage.getItem(APP_MODE_KEY);
     return isAppMode(v) ? v : "nav";
   } catch {
