@@ -21,10 +21,10 @@ from ...state import get_services
 
 router = APIRouter()
 
-# Log sources the read endpoints can browse. Both drivers write the same
+# Log sources the read endpoints can browse. All drivers write the same
 # artifact layout (episode_{i}.jsonl + live_{i}/ + summary.json), so the same
-# monitor surface serves both; only the root differs. The control endpoints
-# (start/stop/status) stay claude-sdk-only — mini runs are CLI-launched.
+# monitor surface serves all three; only the root differs. The control
+# endpoints (start/stop/status) launch any of the three via the shared driver.
 SOURCE_ROOTS = {
     "claude-sdk": OUTPUT_ROOT,                                # Agent SDK runs
     "mini-swe": OUTPUT_ROOT.parent / "beta-react-harness",    # mini-swe-agent harness
@@ -37,6 +37,10 @@ class StartRequest(BaseModel):
     split: str = "rand100"
     max_turns: int = 80
     model: str | None = None
+    harness: str = "claude-sdk"   # claude-sdk | mini-swe | codex (SOURCE_ROOTS keys)
+    condition: str = "ui"         # ui (full toolset) | bare | wp | hybrid (MIP paper grid)
+    tier: str = "default"         # effort tier: default | max
+    extra: dict[str, str] = {}    # harness extra knobs (--set KEY=VAL), override tier's
 
 
 def _runner():
@@ -80,7 +84,13 @@ async def start(req: StartRequest) -> dict:
             split=req.split,
             max_turns=req.max_turns,
             model=req.model,
+            harness=req.harness,
+            condition=req.condition,
+            tier=req.tier,
+            extra=req.extra,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"run_name": run_name}

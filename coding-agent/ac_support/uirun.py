@@ -1,10 +1,11 @@
-"""uirun — the Coding-Agent Monitor's driver entry (UI runs, claude-sdk only).
+"""uirun — the Coding-Agent Monitor's driver entry (UI runs, all harnesses).
 
-The Run button's free knobs (episodes / split / max turns / model) make every
-UI run off-board by construction; run names are ui_* so they can never be
-mistaken for std cells. Everything else — episode loop, EventSink vocabulary,
-artifact layout, evaluation — is the shared core (driver.py) with the
-claude_sdk adapter, so UI runs and std cells stay one implementation.
+The Run button's free knobs (harness / episodes / split / max turns / model /
+condition / tier / extra) make every UI run off-board by construction; run
+names are ui_* so they can never be mistaken for std cells. Everything else —
+episode loop, EventSink vocabulary, artifact layout, evaluation — is the
+shared core (driver.py) with the selected harness adapter, so UI runs and std
+cells stay one implementation.
 
 Spawned by app/services/coding_agent_runner.py; flags mirror the legacy
 beta-coding-agent driver's so the runner surface stays small.
@@ -19,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cells import CellSpec
+from cells import CONDITIONS, CellSpec, _tier_extra
 from driver import run_cell
 from harnesses import get_adapter
 
@@ -27,28 +28,51 @@ from harnesses import get_adapter
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--harness", default="sdk", choices=("sdk", "mini", "codex"))
     parser.add_argument("--episodes", required=True, help='e.g. "0", "0-9", "0,3,7"')
     parser.add_argument("--split", default="rand100")
     parser.add_argument("--max-turns", type=int, default=80)
     parser.add_argument("--server-url", default="http://127.0.0.1:9200")
+    parser.add_argument("--wp-server", default=None,
+                        help="waypoint-predictor auto_host (wp / hybrid conditions)")
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--model", default=None,
-                        help="SDK model id; blank = the CLI's default model")
+                        help="harness-facing model id; blank = the CLI's default model")
+    parser.add_argument("--condition", default="ui",
+                        choices=("ui",) + tuple(CONDITIONS),
+                        help='"ui" = the legacy full toolset; bare/wp/hybrid = the MIP paper conditions')
+    parser.add_argument("--tier", default="default", choices=("default", "max"),
+                        help="effort tier — expands to the per-(harness, model) knobs the std board uses")
+    parser.add_argument("--set", dest="extra", action="append", default=[],
+                        metavar="KEY=VAL", help="harness extra knob (overrides tier knobs)")
     args = parser.parse_args()
+
+    flags = CONDITIONS.get(args.condition, {"bare": False})
+    extra = _tier_extra(args.harness, args.model or "", args.tier)
+    for pair in args.extra:
+        key, sep, val = pair.partition("=")
+        if not sep:
+            parser.error(f"--set expects KEY=VAL, got {pair!r}")
+        extra[key] = val
 
     spec = CellSpec(
         name=args.run_name,
-        harness="sdk",
-        model_key="ui",
+        harness=args.harness,
+        model_key=args.model or "ui",
         model_id=args.model or "",
-        condition="ui",  # full toolset — the legacy UI condition
-        bare=False,
+        condition=args.condition,
+        bare=flags.get("bare", False),
+        wp=flags.get("wp", False),
+        hybrid=flags.get("hybrid", False),
+        effort_tier=args.tier,
+        extra=tuple(sorted(extra.items())),
         max_turns=args.max_turns,
     )
     asyncio.run(run_cell(
-        get_adapter("sdk"), spec, [args.server_url],
+        get_adapter(args.harness), spec, [args.server_url],
         episodes_spec=args.episodes, run_name=args.run_name,
         extra={"split": args.split},
+        wp_server=args.wp_server,
     ))
 
 
