@@ -27,7 +27,16 @@ interface RunStatus {
   state: string;
   run_name: string | null;
   error: string | null;
-  config: { episodes?: string; split?: string; max_turns?: number; model?: string | null };
+  config: {
+    episodes?: string;
+    split?: string;
+    max_turns?: number;
+    model?: string | null;
+    harness?: string;
+    condition?: string;
+    tier?: string;
+    extra?: Record<string, string>;
+  };
   active_episode: number | null;
   started_episodes: number[];
   aggregate: Record<string, number> | null;
@@ -115,6 +124,10 @@ export default function CodingAgentPage() {
   const [split, setSplit] = usePersistentState("agentcanvas.coding.split", "rand100");
   const [maxTurns, setMaxTurns] = usePersistentState("agentcanvas.coding.maxTurns", 80);
   const [model, setModel] = usePersistentState("agentcanvas.coding.model", "");
+  const [condition, setCondition] = usePersistentState("agentcanvas.coding.condition", "ui");
+  const [tier, setTier] = usePersistentState("agentcanvas.coding.tier", "default");
+  // free-form harness knobs, "k=v k=v" (forwarded as --set pairs, override tier's)
+  const [extraText, setExtraText] = usePersistentState("agentcanvas.coding.extra", "");
   const [startError, setStartError] = useState<string | null>(null);
 
   // live state
@@ -135,9 +148,9 @@ export default function CodingAgentPage() {
     "agentcanvas.coding.mode",
     "live",
   );
-  // which harness's runs to browse: Agent SDK vs mini-swe-agent vs OpenAI
-  // Codex CLI (runs live under outputs/beta-coding-agent / beta-react-harness /
-  // beta-codex-agent respectively). Live mode is SDK-runner-only.
+  // which harness to launch with (control panel) and whose runs to browse:
+  // Agent SDK vs mini-swe-agent vs OpenAI Codex CLI (runs live under
+  // outputs/beta-coding-agent / beta-react-harness / beta-codex-agent).
   const [harness, setHarness] = usePersistentState<"claude-sdk" | "mini-swe" | "codex">(
     "agentcanvas.coding.harness",
     "claude-sdk",
@@ -212,7 +225,7 @@ export default function CodingAgentPage() {
           setZoomFrame(null);
         }
 
-        const src = mode === "browse" ? harness : "claude-sdk";
+        const src = mode === "browse" ? harness : (st.config?.harness ?? "claude-sdk");
         const [logRes, framesRes] = await Promise.all([
           fetch(
             `/api/coding-agent/runs/${run}/episode/${ep}/textlog?offset=${offsetRef.current}&source=${src}`,
@@ -291,6 +304,16 @@ export default function CodingAgentPage() {
 
   const start = async () => {
     setStartError(null);
+    // parse "k=v k=v" (whitespace-separated) into the extra knob dict
+    const extra: Record<string, string> = {};
+    for (const pair of extraText.trim().split(/\s+/).filter(Boolean)) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0) {
+        setStartError(`bad extra knob ${JSON.stringify(pair)} — expected k=v`);
+        return;
+      }
+      extra[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
     const res = await fetch("/api/coding-agent/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -299,6 +322,10 @@ export default function CodingAgentPage() {
         split,
         max_turns: maxTurns,
         model: model.trim() || null,
+        harness,
+        condition,
+        tier,
+        extra,
       }),
     });
     if (!res.ok) {
@@ -315,10 +342,12 @@ export default function CodingAgentPage() {
   };
 
   const run = mode === "browse" ? browseRun : status?.run_name;
+  // the shown run's log source: browse follows the selector; live follows the
+  // harness the RUNNING run was launched with (not the selector, which the
+  // user may have flipped since pressing Run)
+  const shownSrc = mode === "browse" ? harness : (status?.config?.harness ?? "claude-sdk");
   const frameUrl = (name: string) =>
-    `/api/coding-agent/runs/${run}/episode/${shownEpisode}/frame/${name}?source=${
-      mode === "browse" ? harness : "claude-sdk"
-    }`;
+    `/api/coding-agent/runs/${run}/episode/${shownEpisode}/frame/${name}?source=${shownSrc}`;
   const epList = mode === "browse" ? browseEpisodes : (status?.episodes ?? []);
   const epSummary = (i: number) => epList.find((e) => e.index === i);
   const selEpisodes = mode === "browse" ? browseStarted : (status?.started_episodes ?? []);
@@ -400,6 +429,47 @@ export default function CodingAgentPage() {
           Coding-Agent Monitor
         </div>
         <label className="flex items-center gap-1 text-xs text-gray-400">
+          harness
+          <select
+            value={harness}
+            onChange={(e) => setHarness(e.target.value as typeof harness)}
+            disabled={running}
+            className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
+          >
+            <option value="claude-sdk">Claude SDK</option>
+            <option value="mini-swe">mini-swe-agent</option>
+            <option value="codex">Codex CLI</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-xs text-gray-400">
+          condition
+          <select
+            value={condition}
+            onChange={(e) => setCondition(e.target.value)}
+            disabled={running}
+            title="ui = legacy full toolset · bare / wp / hybrid = the MIP paper conditions"
+            className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
+          >
+            <option value="ui">ui (full)</option>
+            <option value="bare">bare</option>
+            <option value="wp">wp</option>
+            <option value="hybrid">hybrid</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-xs text-gray-400">
+          tier
+          <select
+            value={tier}
+            onChange={(e) => setTier(e.target.value)}
+            disabled={running}
+            title="effort tier — expands to the per-(harness, model) knobs the std board uses"
+            className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
+          >
+            <option value="default">default</option>
+            <option value="max">max</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-xs text-gray-400">
           split
           <select
             value={split}
@@ -436,8 +506,25 @@ export default function CodingAgentPage() {
             value={model}
             onChange={(e) => setModel(e.target.value)}
             disabled={running}
-            placeholder="(account default)"
+            placeholder={
+              harness === "mini-swe"
+                ? "litellm id (required)"
+                : harness === "codex"
+                  ? "(CLI default)"
+                  : "(account default)"
+            }
             className="w-36 rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
+          />
+        </label>
+        <label className="flex items-center gap-1 text-xs text-gray-400">
+          extra
+          <input
+            value={extraText}
+            onChange={(e) => setExtraText(e.target.value)}
+            disabled={running}
+            placeholder="k=v k=v"
+            title="harness extra knobs, e.g. effort=xhigh thinking=adaptive api_base=…"
+            className="w-32 rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-xs text-gray-200"
           />
         </label>
         {running ? (
@@ -659,7 +746,7 @@ export default function CodingAgentPage() {
           <div className="flex items-center justify-between border-b border-gray-800 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-400">
             <span>Stats — {run}</span>
             <a
-              href={`/api/coding-agent/runs/${run}/stats?source=${mode === "browse" ? harness : "claude-sdk"}`}
+              href={`/api/coding-agent/runs/${run}/stats?source=${shownSrc}`}
               target="_blank"
               rel="noreferrer"
               className="font-normal text-blue-400 hover:text-blue-300"
@@ -668,7 +755,7 @@ export default function CodingAgentPage() {
             </a>
           </div>
           <iframe
-            src={`/api/coding-agent/runs/${run}/stats?source=${mode === "browse" ? harness : "claude-sdk"}`}
+            src={`/api/coding-agent/runs/${run}/stats?source=${shownSrc}`}
             title={`stats — ${run}`}
             className="min-h-0 flex-1 bg-white"
           />
