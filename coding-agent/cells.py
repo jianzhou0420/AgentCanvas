@@ -268,6 +268,13 @@ MODELS = {
 # reaches gpt-5.6 only as the ChatGPT-account variant "gpt-5.6-sol".
 MODEL_ID_OVERRIDE: dict[tuple[str, str], str] = {
     ("codex", "gpt-5.6"): "gpt-5.6-sol",
+    # OpenAI now rejects function tools + reasoning_effort on gpt-5.6 in
+    # /v1/chat/completions (probed 2026-08-14: "use /v1/responses or set
+    # reasoning_effort to 'none'"). litellm's responses bridge keeps tools AND
+    # reasoning, so mini reaches gpt-5.6 through it; gpt-5.5 chat stays fine.
+    # NB the "openai/" prefix also flips mini's _is_local_model() heuristics
+    # (no OPENAI_API_KEY assert, cost tracking relaxed) — acceptable.
+    ("mini", "gpt-5.6"): "openai/responses/gpt-5.6",
 }
 
 
