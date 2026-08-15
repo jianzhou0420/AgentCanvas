@@ -29,7 +29,10 @@ from driver import EpisodeContext, EventSink, SessionOutcome, json_safe
 
 
 def _toml_str(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    # TOML basic strings cannot carry raw newlines/tabs — escape them or a
+    # crafted value splits the -c override into a second TOML statement
+    return ('"' + value.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\t", "\\t") + '"')
 
 
 def _tool_result_texts(result: Any) -> list[str]:
@@ -61,6 +64,12 @@ class CodexCliAdapter:
             # retention policy is not audited here. See docs developer-guide/
             # coding-agent/harness-notes.
             "vision_context": "codex-managed (unaudited)",
+            # §14.2: codex owns its own history — retention count, role
+            # structure and map residency are unproven in this repo, so runs
+            # carry the unaudited label rather than claiming the 12-cycle
+            # contract.
+            "context_control": False,
+            "context_label": "codex-managed-unaudited",
         }
 
     def prepare(self, spec) -> None:  # noqa: ARG002 — no per-cell setup needed
@@ -69,8 +78,11 @@ class CodexCliAdapter:
         ).stdout.strip()
 
     def _argv(self, ctx: EpisodeContext) -> list[str]:
+        # §16.6: the bridge's snapshot identity must say WHO is driving —
+        # same pattern as claude_sdk._options ({**bridge_env, EH_EXECUTOR}).
+        bridge_env = {**ctx.bridge_env(), "EH_EXECUTOR": "codex"}
         env_table = ", ".join(
-            f"{k} = {_toml_str(v)}" for k, v in ctx.bridge_env().items()
+            f"{k} = {_toml_str(v)}" for k, v in bridge_env.items()
         )
         return [
             "codex", "exec", "--json", "--skip-git-repo-check",
@@ -91,24 +103,79 @@ class CodexCliAdapter:
         return {"options": {"argv": self._argv(ctx), "sandbox": "read-only",
                             "system_prompt_note": "<codex builtin>"}}
 
+    @staticmethod
+    def _is_dwp_eh(ctx: EpisodeContext) -> bool:
+        return (bool(ctx.extra.get("eh_bridge"))
+                and str(ctx.extra.get("dwp", "0")).lower() in ("1", "true", "yes"))
+
+    def _bootstrap_images(self, ctx: EpisodeContext) -> list[str]:
+        """§16.8: defensive read of the resident bootstrap artifact. codex
+        exec supports `-i/--image` (verified, codex-cli 0.147.0), so when
+        the artifact ALREADY exists at launch its PNGs ride the first
+        prompt. Caveat on the record: the bridge that writes the artifact
+        is codex's own MCP child, spawned AFTER the prompt is fixed — so
+        without a driver-side pre-bootstrap the file cannot exist yet and
+        this honestly returns []. The hook is in place for when it does."""
+        try:
+            art = json.loads((ctx.live_dir / "bootstrap.json").read_text())
+        except Exception:  # noqa: BLE001 — no artifact, no images
+            return []
+        images = art.get("images") or {}
+        out: list[str] = []
+        for key in ("current", "map"):
+            name = images.get(key)
+            if isinstance(name, str):
+                p = ctx.live_dir / name
+                if p.exists():
+                    out.append(str(p))
+        return out
+
     async def run(self, ctx: EpisodeContext, sink: EventSink) -> SessionOutcome:
-        prompt = ctx.briefing + "\n\n" + ctx.first_prompt
-        argv = self._argv(ctx) + [prompt]
+        first_prompt = ctx.first_prompt
+        image_args: list[str] = []
+        bootstrap_label = "n/a"
+        if self._is_dwp_eh(ctx):
+            boot = self._bootstrap_images(ctx)
+            if boot:
+                image_args = [arg for p in boot for arg in ("-i", p)]
+                bootstrap_label = f"images:{len(boot)}"
+                sink.emit("bootstrap", {"images": len(boot), "files": boot})
+            else:
+                # §16.2: never SAY there are pictures when there are none —
+                # the imageless first prompt is its own honest text
+                from eharness.capabilities import DWP_FIRST_PROMPT_NOIMG
+                first_prompt = DWP_FIRST_PROMPT_NOIMG
+                bootstrap_label = "text-only"
+                sink.emit("bootstrap", {"images": 0, "fallback": "text-only",
+                                        "first_prompt": first_prompt})
+        # per-episode label rides the sink event + context manifest only —
+        # writing it into self.inherent made the RUN-level record whatever
+        # the LAST episode happened to be (review P2, last-writer-wins)
+        prompt = ctx.briefing + "\n\n" + first_prompt
+        # `--` ends option parsing: `-i <FILE>...` is a greedy multi-value
+        # flag, and without the separator the positional PROMPT is eaten as
+        # another image path the moment image_args is non-empty
+        argv = self._argv(ctx) + image_args + ["--", prompt]
 
         raw_path = ctx.raw_dir / f"episode_{ctx.index}.jsonl"
         stderr_path = ctx.raw_dir / f"episode_{ctx.index}.stderr.log"
         usage_totals: dict[str, int] = {}
         thread_id: str | None = None
         exit_code: int | None = None
+        n_turns = 0
+        n_tool_results = 0
+        n_images = 0
+        n_state_blocks = 0
 
         def handle_event(event: dict[str, Any]) -> None:
-            nonlocal thread_id
+            nonlocal thread_id, n_turns, n_tool_results, n_images, n_state_blocks
             kind = event.get("type")
             if kind == "thread.started":
                 thread_id = event.get("thread_id")
                 sink.emit("system_init", {"thread_id": thread_id, "model": ctx.model})
                 return
             if kind == "turn.completed":
+                n_turns += 1
                 for key, value in (event.get("usage") or {}).items():
                     if isinstance(value, (int, float)):
                         usage_totals[key] = usage_totals.get(key, 0) + int(value)
@@ -128,6 +195,9 @@ class CodexCliAdapter:
                     texts = _tool_result_texts(item.get("result"))
                     if item.get("error"):
                         texts.append(json.dumps({"error": json_safe(item["error"])}))
+                    n_tool_results += 1
+                    n_images += sum(1 for t in texts if t == "<image elided>")
+                    n_state_blocks += sum(1 for t in texts if "[STATE" in t)
                     sink.emit("tool_result", {"tool_use_id": item.get("id"), "texts": texts})
                 elif item_type == "agent_message":
                     sink.emit("assistant_text", {"text": item.get("text", "")})
@@ -182,6 +252,30 @@ class CodexCliAdapter:
                         os.killpg(proc.pid, signal.SIGKILL)
                     await proc.wait()
 
+        # §16.6: the honest provider-payload manifest for a closed executor —
+        # mirrors claude_sdk's, with the extra honesty codex demands: every
+        # count comes from the EVENT STREAM, not the provider payload, and
+        # codex "turns" are its own units, not LLM calls. Telemetry only: a
+        # write failure must never touch the SessionOutcome.
+        try:
+            manifest = {
+                "label": "codex-managed-unaudited",
+                "context_control": False,
+                "episode": ctx.index,
+                "num_turns": n_turns,          # codex turn.completed events
+                "usage": usage_totals or None,  # summed client-side; unaudited
+                "tool_results": n_tool_results,
+                "images": n_images,
+                "state_blocks": n_state_blocks,
+                "bootstrap": bootstrap_label,
+                "note": ("counts from the codex event stream, not the "
+                         "resident provider payload — codex owns its own "
+                         "transcript and no per-request audit exists here"),
+            }
+            (ctx.raw_dir / f"context_manifest_{ctx.index}.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=1))
+        except Exception:  # noqa: BLE001 — manifest is telemetry, not outcome
+            pass
         return SessionOutcome(
             usage=usage_totals,
             cost_usd=None,  # subscription auth — no per-token billing
@@ -189,3 +283,51 @@ class CodexCliAdapter:
             error=(f"codex exited {exit_code}" if exit_code else None),
             extra={"thread_id": thread_id, "exit_code": exit_code},
         )
+
+    def refine_instruction(self, *, model: str, system: str, user: str,
+                           extra: dict | None = None) -> str | None:
+        """§17: one short text-only codex exec call with the run's own nav
+        model — no MCP servers, no tools, read-only sandbox. Returns the
+        agent's final message text, or None on ANY failure (= the caller's
+        refinement_failed fallback to the original instruction).
+
+        Signature matches the driver's refine protocol (keyword-only
+        model/system/user/extra — EpisodeContext does not exist yet at the
+        refine anchor)."""
+        del extra  # codex needs no extra knobs for a one-shot text call
+        argv = [
+            "codex", "exec", "--json", "--skip-git-repo-check",
+            "-c", f"model = {_toml_str(model)}",
+            "-c", 'model_reasoning_effort = "low"',
+            "-c", "project_doc_max_bytes = 0",
+            # a text-cleaning call must not inherit the operator's personal
+            # MCP servers (~/.codex/config.toml defined codegraph — every
+            # refine spun it up; review P2). The empty inline table replaces
+            # the whole user mcp_servers table. codex's builtin shell tool
+            # cannot be unmounted — the prompt asks for text only.
+            "-c", "mcp_servers = {}",
+            system + "\n\n" + user,
+        ]
+        try:
+            # §20.1: 45 s fail-fast, aligned with the other two adapters
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=45)
+            if proc.returncode != 0:
+                return None
+            texts: list[str] = []
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                item = event.get("item") or {}
+                if (event.get("type") == "item.completed"
+                        and item.get("type") == "agent_message"):
+                    texts.append(str(item.get("text", "")))
+            out = "\n".join(t for t in texts if t).strip()
+            return out or None
+        except Exception:  # noqa: BLE001 — refinement must never kill a run
+            return None

@@ -28,12 +28,29 @@ def elide_blobs(obj: Any) -> Any:
 
 class NavAgent(DefaultAgent):
     def __init__(
-        self, *args: Any, event_hook: Callable[[str, dict], None] | None = None, **kwargs: Any
+        self, *args: Any, event_hook: Callable[[str, dict], None] | None = None,
+        opening_parts: list | None = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
         self._event_hook = event_hook
+        # Content to graft onto the agent's FIRST user message. run() clears
+        # self.messages and rebuilds system+instance, so this is the only place
+        # a first look can be handed over — and without one the opening move is
+        # taken blind (EP0 turned 45° into a wall before it had ever seen the
+        # room, because `observe` is not on the model's menu any more).
+        self._opening_parts = list(opening_parts or [])
 
     def add_messages(self, *messages: dict) -> list[dict]:
+        if self._opening_parts:
+            for msg in messages:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str):
+                    content = [{"type": "text", "text": content}]
+                msg["content"] = list(content) + self._opening_parts
+                self._opening_parts = []
+                break
         if self._event_hook is not None:
             for msg in messages:
                 try:

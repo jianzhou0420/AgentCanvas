@@ -359,6 +359,17 @@ class HabitatToolSet(NodesetToolSet):
         self._live_log({"actions": actions, **result})
         return result
 
+    def read_clearance(self) -> dict[str, float] | None:
+        """Depth-derived left/center/right clearance in meters — a pure read
+        for HARNESS reflexes (预先避障). The model's bare 口径 is untouched:
+        depth never reaches its context; only the organ reads it, the way a
+        robot's bumper serves its reflex arc and not its planner."""
+        try:
+            outputs = self._call("env_habitat__observe_egocentric", {})
+            return self._clearance_m(outputs.get("depth"))
+        except Exception:  # noqa: BLE001 — a reflex must never kill a move
+            return None
+
     def _budget_fields(self) -> dict[str, Any]:
         """Turn-budget broadcast — one tool call ≈ one harness turn (bridge parity:
         the binding limit is the agent's step_limit, reported here as env state)."""

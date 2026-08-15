@@ -146,6 +146,27 @@ _FORWARD_STEP_M = 0.25
 _TURN_ANGLE_RAD = float(np.radians(15.0))
 
 
+def _env_max_steps() -> int:
+    """Episode step budget when the caller passes none.
+
+    ``$VLNVERSE_MAX_STEPS`` wins; else the 20 macro-action default. The env
+    var is the ONLY lever a server-mode run has: ``AutoServerApp`` calls
+    ``initialize()`` with no kwargs, so an auto-hosted nodeset can never be
+    handed ``max_steps``. A discrete bare/full run (0=STOP · 1=FWD 0.25 m ·
+    2/3=turn 15°) needs the habitat-style 500 MICRO-step budget — at 20 it
+    truncates after ~5 m of travel, long before the agent can act on the
+    instruction.
+    """
+    raw = os.environ.get("VLNVERSE_MAX_STEPS")
+    if not raw:
+        return _DEFAULT_MAX_STEPS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        log.warning("Ignoring non-integer VLNVERSE_MAX_STEPS=%r", raw)
+        return _DEFAULT_MAX_STEPS
+
+
 def _data_root() -> str:
     """Resolve the VLNVerse data root.
 
@@ -1763,7 +1784,7 @@ class EnvVLNVerseNodeSet(BaseNodeSet):
         dataset = kwargs.get("dataset", "fine")
         split = kwargs.get("split", "val_unseen")
         gpu_id = kwargs.get("gpu_id", 0)
-        max_steps = kwargs.get("max_steps", _DEFAULT_MAX_STEPS)
+        max_steps = kwargs.get("max_steps", _env_max_steps())
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._mgr.executor,

@@ -18,4 +18,7 @@ def get_adapter(harness: str):
     if harness == "codex":
         from harnesses.codex_cli import CodexCliAdapter
         return CodexCliAdapter()
+    if harness == "eharness":
+        from harnesses.eharness_agent import EharnessAdapter
+        return EharnessAdapter()
     raise KeyError(f"unknown harness {harness!r}")

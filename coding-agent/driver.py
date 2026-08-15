@@ -33,8 +33,9 @@ import requests
 
 from cells import (BENCHMARK_FROZEN, STD_FROZEN,
                    WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec)
-from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT, HYBRID_FIRST_PROMPT,
-                     LIBERO_FIRST_PROMPT, LIBERO_TOOLBOX_FIRST_PROMPT,
+from prompts import (DWP_FIRST_PROMPT, FIRST_PROMPT, HMEQA_FIRST_PROMPT,
+                     HYBRID_FIRST_PROMPT, LIBERO_FIRST_PROMPT,
+                     LIBERO_TOOLBOX_FIRST_PROMPT,
                      LIBERO_TOOLBOX_VISION_FIRST_PROMPT, build_briefing)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,8 @@ HYBRID_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "hybrid_bridge.py"
 # there is no terminal action — LIBERO detects success from scene state, so
 # the episode ends on task success or budget exhaustion (libero_bridge.py).
 LIBERO_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "libero_bridge.py"
+# eharness organs inside the bridge process (S4: any executor, same organs)
+EHARNESS_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "eharness_bridge.py"
 
 
 def env_verb_prefix(benchmark: str) -> str:
@@ -156,7 +159,18 @@ def is_rate_limited(text: str) -> bool:
     return any(m in low for m in RATE_LIMIT_MARKERS)
 
 
-_TOOL_SCHEMAS_CACHE: dict[tuple[bool, ...], Any] = {}
+def flag_on(v: Any) -> bool:
+    """Canonical truthiness for extra-channel flags (dwp, judge_think…).
+
+    `--set dwp=false` reaches here as Python False, and str(False)='False'
+    passed the old case-sensitive ('', '0', 'false') tuple as ON — briefing
+    and allowlist went dwp while bridge_env's plain truthiness left EH_DWP
+    unset and the server registered the bare surface (review P2). One
+    parser, used by every reader, ends that split."""
+    return str(v).lower() in ("1", "true", "yes")
+
+
+_TOOL_SCHEMAS_CACHE: dict[tuple, Any] = {}
 
 
 async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
@@ -166,7 +180,9 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                               hybrid: bool = False,
                               libero: bool = False,
                               toolbox: bool = False,
-                              toolbox_gt: bool = True) -> Any:
+                              toolbox_gt: bool = True,
+                              eh_bridge: bool = False,
+                              dwp: bool = False) -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
     wp_bridge.py for the wp condition, hybrid_bridge.py for the hybrid
@@ -179,13 +195,17 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
     ``auto_observe`` mirrors the session's HABITAT_AUTO_OBSERVE so the recorded
     step()/goto() descriptions match."""
     key = (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid, libero,
-           toolbox, toolbox_gt)
+           toolbox, toolbox_gt, eh_bridge, dwp)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
+    # mirror EpisodeContext.bridge_path exactly — recording mcp_bridge's
+    # surface for an eh_bridge cell falsified the one audit artifact
+    # (session_inputs.tool_schemas) that §14.9 leans on (review P1)
     bridge_path = (GO2_BRIDGE_PATH if go2
                    else HMEQA_BRIDGE_PATH if hmeqa
                    else LIBERO_BRIDGE_PATH if libero
                    else HYBRID_BRIDGE_PATH if hybrid
+                   else EHARNESS_BRIDGE_PATH if eh_bridge
                    else WP_BRIDGE_PATH if wp else BRIDGE_PATH)
     # Each bridge reads its own prefix; introspecting go2 with HABITAT_BARE set
     # would silently return the non-bare toolset. (hybrid is a habitat bridge,
@@ -199,6 +219,7 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
     saved_lao = os.environ.get("LIBERO_AUTO_OBSERVE")
     saved_ltb = os.environ.get("LIBERO_TOOLBOX")
     saved_ltg = os.environ.get("LIBERO_TOOLBOX_GT")
+    saved_dwp = os.environ.get("EH_DWP")
     try:
         os.environ[bare_var] = "1" if bare else "0"
         os.environ["HABITAT_AUTO_OBSERVE"] = "1" if auto_observe else "0"
@@ -206,6 +227,8 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
             os.environ["LIBERO_AUTO_OBSERVE"] = "1" if auto_observe else "0"
             os.environ["LIBERO_TOOLBOX"] = "1" if toolbox else "0"
             os.environ["LIBERO_TOOLBOX_GT"] = "1" if toolbox_gt else "0"
+        if eh_bridge:
+            os.environ["EH_DWP"] = "1" if dwp else "0"
         if hmeqa:
             os.environ["HMEQA_TILT"] = "1" if hmeqa_tilt else "0"
         spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
@@ -225,7 +248,8 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                               ("HABITAT_AUTO_OBSERVE", saved_ao),
                               ("LIBERO_AUTO_OBSERVE", saved_lao),
                               ("LIBERO_TOOLBOX", saved_ltb),
-                              ("LIBERO_TOOLBOX_GT", saved_ltg)):
+                              ("LIBERO_TOOLBOX_GT", saved_ltg),
+                              ("EH_DWP", saved_dwp)):
             if _saved is None:
                 os.environ.pop(_name, None)
             else:
@@ -308,6 +332,8 @@ class EpisodeContext:
     raw_dir: Path
     wp: bool = False       # waypoint action space (wp_bridge.py)
     hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
+    imagine: bool = False           # ImagineVLN wp+rollouts surface
+    imagine_rollouts: bool = True
     wp_server_url: str = ""  # waypoint-predictor auto_host (wp / hybrid cells)
     wp_max_moves: int = 30   # decision-step cap enforced by wp_bridge (wp only)
     go2: bool = False      # real Unitree Go2 (go2_bridge.py); server_url points
@@ -319,6 +345,8 @@ class EpisodeContext:
     max_budget_usd: float | None = None  # per-episode USD fuse (sdk harness only;
                                          # CLI --max-budget-usd, hmeqa frozen $18)
     hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
+    imagine: bool = False           # ImagineVLN wp+rollouts surface
+    imagine_rollouts: bool = True
     # auto-observe: step()/goto() carry the resulting view (observe() first-look
     # only). RxR default (its long instructions double the turn count under the
     # classic alternation); off for R2R-CE so its frozen baselines still hold.
@@ -347,6 +375,8 @@ class EpisodeContext:
             return LIBERO_BRIDGE_PATH
         if self.hybrid:
             return HYBRID_BRIDGE_PATH
+        if self.extra.get("eh_bridge"):
+            return EHARNESS_BRIDGE_PATH
         return WP_BRIDGE_PATH if self.wp else BRIDGE_PATH
 
     def bridge_env(self) -> dict[str, str]:
@@ -405,6 +435,33 @@ class EpisodeContext:
             env["HABITAT_WP_MAX_MOVES"] = str(self.wp_max_moves)
             if self.extra.get("wp_predict_fn"):
                 env["HABITAT_WP_PREDICT_FN"] = str(self.extra["wp_predict_fn"])
+        if self.extra.get("eh_bridge"):
+            env["EH_INSTRUCTION"] = self.instruction
+            env["EH_JUDGE_MODEL"] = str(self.extra.get(
+                "eh_judge_model", "ollama_chat/qwen3.5:9b-bf16-std"))
+            env["EH_JUDGE_THINK"] = (
+                "1" if flag_on(self.extra.get("judge_think", "1")) else "0")
+            # the blocking self-assessment organ rides the SAME knob as the
+            # mini path (eharness_agent default 0; std dwp cells set 6) — it
+            # was silently dropped here, so the sdk arm lost the reflect
+            # gate while claiming organ parity (review P2)
+            env["EH_REFLECT_EVERY"] = str(self.extra.get("reflect_every", 0))
+            # the geometry line, if this cell asks for it — same knobs and the
+            # same defaults as the mini path, so an sdk arm and a mini arm on
+            # the same cell name differ only in the executor
+            if flag_on(self.extra.get("dwp", "")):
+                env["EH_DWP"] = "1"
+                env["EH_PLACES"] = str(self.extra.get("places", 0))
+                env["EH_SAM_URL"] = str(self.extra.get("sam_url", ""))
+                # default 3, matching eharness_agent.py's mini default — the
+                # old 1 here made the sdk arm run SAM 3× as often (review P2)
+                env["EH_LANDMARK_EVERY"] = str(self.extra.get("landmark_every", 3))
+                # default 0 = mini's event-driven cadence; without this the
+                # bridge toolset fell to its ctor default 1 and the SDK arm
+                # ran SAM on EVERY 0.25 m primitive (review P2 — cross-arm
+                # perception-cadence divergence in the A/B)
+                env["EH_SAM_INTERMEDIATE_EVERY"] = str(
+                    self.extra.get("sam_intermediate_every", 0))
         return env
 
 
@@ -552,9 +609,80 @@ async def run_episode(
         )
         instruction = ep["instruction"]
 
+    # §17: instruction refinement — the run's OWN nav model reads the raw
+    # text exactly once, before anything else does; the refined text
+    # replaces `instruction` for the entire episode (briefing, EH_INSTRUCTION,
+    # resolver, judges — everything downstream reads the refined form).
+    # Failure of any kind falls back to the original, recorded, never fatal.
+    if adapter.name == "eharness" or flag_on(cfg["extra"].get("eh_bridge")):
+        # A RE-RUN is a fresh attempt (review P1 ×3): re-using the dead
+        # attempt's live_{i} resurrected its state.json (route/dead-ends/
+        # milestones flooding the new [STATE]), pinned a record for a
+        # DIFFERENT refined text (re-refine is nondeterministic → three-way
+        # instruction fork), and served codex a stale bootstrap artifact.
+        # Rotate it aside — auditable, never mixed into the new attempt.
+        _live = run_dir / f"live_{index}"
+        if _live.exists():
+            _live.rename(run_dir / f"live_{index}.prev-{int(time.time())}")
+        from eharness import refiner as _refiner
+        _call = (
+            (lambda s, u: adapter.refine_instruction(
+                model=spec.model_id, system=s, user=u, extra=cfg["extra"]))
+            if hasattr(adapter, "refine_instruction") else None)
+        _ref = await asyncio.to_thread(
+            _refiner.refine_episode, instruction,
+            live_dir=run_dir / f"live_{index}", call=_call,
+            model=spec.model_id)
+        instruction = _ref.instruction
+
+    # §16.5: ONE instruction record per episode, resolved before any
+    # CodingHarness starts and written into the episode live dir — the mini
+    # agent AND the SDK/Codex bridge read this same file, so route segments,
+    # termination semantics and SAM landmark queries stop diverging per
+    # executor. Only the eharness lines consume it; everything else skips.
+    if adapter.name == "eharness" or flag_on(cfg["extra"].get("eh_bridge")):
+        from eharness.resolver import resolve_or_load
+        # User ruling 2026-08-14: ONE model per run. The split call rides
+        # the SAME channel as the nav model — the adapters' refine
+        # transport (SDK = subscription one-shot, mini = the run's own
+        # ollama nav model) — never a separate local side-model. A None
+        # from the transport parses to nothing and takes the conservative
+        # fallback, same as any transport error.
+        if hasattr(adapter, "refine_instruction"):
+            _split_call = (lambda s, u: adapter.refine_instruction(
+                model=spec.model_id, system=s, user=u,
+                extra=cfg["extra"]) or "")
+            await asyncio.to_thread(
+                resolve_or_load, run_dir / f"live_{index}", instruction,
+                transport=_split_call)
+        else:
+            _split_model = (str(cfg["extra"].get("split_model", ""))
+                            or "ollama_chat/"
+                            + os.environ.get("EH_SPLIT_MODEL",
+                                             "qwen3.5:9b-bf16-std"))
+            if "/" not in _split_model:
+                # bare ollama tag from --set split_model=… — same shape rule
+                # as the bridge's f"ollama_chat/{SPLIT_MODEL}"
+                _split_model = "ollama_chat/" + _split_model
+            await asyncio.to_thread(
+                resolve_or_load, run_dir / f"live_{index}", instruction,
+                model_name=_split_model,
+                # honour a non-default ollama endpoint the same way the
+                # bridge and mini transports do (review P2: ignoring
+                # OLLAMA_URL pinned a fallback record run-wide)
+                model_kwargs={"api_base": str(cfg["extra"].get("api_base", ""))
+                              or os.environ.get("OLLAMA_URL",
+                                                "http://127.0.0.1:11434")})
+
     auto_observe = bool(cfg.get("auto_observe", False))
     toolbox = bool(cfg.get("toolbox", False))
     toolbox_gt = bool(cfg.get("toolbox_gt", True))
+    # The dwp flag lives in extra (cells put it there; bridge_env reads it
+    # there). Reading cfg top-level here silently briefed every SDK dwp cell
+    # with the BARE prompt + "Call observe() first" while its toolset had no
+    # observe — verified against std_sdkeh_opus-5_dwp's recorded
+    # session_inputs (§14.9/§14.3).
+    dwp = flag_on(cfg["extra"].get("dwp", cfg.get("dwp", "")))
     briefing = build_briefing(
         instruction, cfg["step_budget"], bare=spec.bare,
         wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
@@ -562,6 +690,8 @@ async def run_episode(
         hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
         auto_observe=auto_observe, hybrid=spec.hybrid, toolbox=toolbox,
         toolbox_gt=toolbox_gt,
+        dwp=dwp,
+        imagine=spec.imagine, imagine_rollouts=spec.imagine_rollouts,
     )
 
     workdir = run_dir / f"workdir_{index}"
@@ -579,6 +709,7 @@ async def run_episode(
                             else LIBERO_TOOLBOX_VISION_FIRST_PROMPT)
                       if spec.benchmark == "libero" and toolbox
                       else LIBERO_FIRST_PROMPT if spec.benchmark == "libero"
+                      else DWP_FIRST_PROMPT if dwp
                       else FIRST_PROMPT),
         server_url=url,
         bare=spec.bare,
@@ -593,6 +724,8 @@ async def run_episode(
         hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
         max_budget_usd=cfg.get("max_budget_usd"),
         wp=spec.wp,
+        imagine=spec.imagine,
+        imagine_rollouts=spec.imagine_rollouts,
         go2=spec.go2,
         hybrid=spec.hybrid,
         auto_observe=auto_observe,
@@ -614,14 +747,16 @@ async def run_episode(
             "harness": adapter.name,
             "model": spec.model_id,
             "system_prompt": briefing,
-            "first_prompt": FIRST_PROMPT,
+            "first_prompt": ctx.first_prompt,
             "tool_schemas": await bridge_tool_schemas(
                 spec.bare, spec.wp, spec.go2,
                 spec.benchmark == "hmeqa",
                 bool(cfg.get("tilt_actions", True)),
                 auto_observe, spec.hybrid,
                 libero=spec.benchmark == "libero",
-                toolbox=toolbox, toolbox_gt=toolbox_gt),
+                toolbox=toolbox, toolbox_gt=toolbox_gt,
+                eh_bridge=bool(cfg["extra"].get("eh_bridge")),
+                dwp=dwp),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -819,6 +954,21 @@ async def run_cell(
     # (condition libero_toolbox_vision)
     cfg["toolbox_gt"] = str(
         cfg["extra"].pop("toolbox_gt", 1)).lower() not in ("0", "false", "no")
+    # dwp / judge_think reach here as bools (--set json), ints (cells) or
+    # strings; normalize ONCE to canonical "1"/"0" so the briefing branch,
+    # the SDK allowlist (_is_dwp), bridge registration (EH_DWP) and the mini
+    # toolset build all read the same truth (review P2 — str(False)='False'
+    # passed the old case-sensitive falsy tuple as ON).
+    for _flag in ("dwp", "judge_think"):
+        if _flag in cfg["extra"]:
+            cfg["extra"][_flag] = "1" if flag_on(cfg["extra"][_flag]) else "0"
+    # eh_bridge normalizes to a REAL BOOL, not "1"/"0": its readers split
+    # between flag_on (refine/resolve gates) and plain truthiness
+    # (bridge_path/bridge_env/adapters), and bool satisfies both — whereas
+    # the string "0" is truthy and would permanently arm the bridge for a
+    # disabled flag (review P2: `--set eh_bridge=off` left it fully armed).
+    if "eh_bridge" in cfg["extra"]:
+        cfg["extra"]["eh_bridge"] = flag_on(cfg["extra"]["eh_bridge"])
     _ao = cfg["extra"].pop("auto_observe", None)
     if spec.hybrid:
         # hybrid is ALWAYS separate (non-auto-observe): the model must choose
@@ -831,8 +981,8 @@ async def run_cell(
             str(_ao).lower() in ("1", "true", "yes") if _ao is not None
             else cfg.get("dataset") == "RxR-CE"
         )
-    cfg["wp_server"] = wp_server if (spec.wp or spec.hybrid) else None
-    if spec.wp or spec.hybrid:
+    cfg["wp_server"] = wp_server if (spec.wp or spec.hybrid or spec.imagine) else None
+    if spec.wp or spec.hybrid or spec.imagine:
         # decision-step budget (wp_bridge-enforced; hybrid ignores it and lets
         # the 500-step budget bind, but the value is still recorded). Overridable
         # via --set wp_max_moves=N (popped so it doesn't reach the model).
@@ -871,7 +1021,7 @@ async def run_cell(
                     f"({spec.benchmark}) needs {want!r}"
                 )
 
-    if spec.wp or spec.hybrid:
+    if spec.wp or spec.hybrid or spec.imagine:
         # vlnverse rides the primitive surface only, because the wp surface is
         # wired to SmartWay and VLNVerse HAS ITS OWN waypoint predictor. Both
         # mismatches below would degrade SILENTLY rather than fail:
@@ -1021,9 +1171,16 @@ async def run_cell(
             episodes[index] = episode
             await flush_summary()
             m = episode.get("metrics") or {}
+            # steps/stop come from the ENV's own metrics — the agent-side
+            # counters were never filled on the sdk/eharness paths and the
+            # line printed a misleading "steps=0 stop=False" under a clean
+            # SPL 1.0 (display only; the jsonl was always right)
+            _dtg = m.get("distance_to_goal")
+            _steps = m.get("steps_taken") or episode["agent"].get("env_steps")
             print(f"[std] episode {index} done: success={m.get('success')} "
-                  f"spl={m.get('spl')} steps={episode['agent'].get('env_steps')} "
-                  f"stop={episode['agent'].get('called_stop')}")
+                  f"spl={m.get('spl')} "
+                  f"dtg={round(_dtg, 2) if isinstance(_dtg, (int, float)) else None} "
+                  f"steps={_steps}")
 
     vram = VramSampler()
     vram.start()
