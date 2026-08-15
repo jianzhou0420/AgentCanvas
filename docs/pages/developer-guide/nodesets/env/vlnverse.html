@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLNVerse NodeSet — AgentCanvas</title>
+<meta name="description" content="The VLNVerse NodeSet ( EnvVLNVerseNodeSet ) exposes the VLNVerse Vision-and-Language Navigation environment — 262 kujiale (interior-design) USD scenes rendered by Isaac Sim 5.1 , with fine / coarse…">
+<meta property="og:title" content="VLNVerse NodeSet — AgentCanvas">
+<meta property="og:description" content="The VLNVerse NodeSet ( EnvVLNVerseNodeSet ) exposes the VLNVerse Vision-and-Language Navigation environment — 262 kujiale (interior-design) USD scenes rendered by Isaac Sim 5.1 , with fine / coarse…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/vlnverse.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="VLNVerse">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/vlnverse.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">VLNVerse</span>
+  </div>
+  <div class="last-updated">2026-08-15</div>
+</div>
+  <header class="page-header guide">
+  <h1>VLNVerse NodeSet</h1>
+</header>
+
+<p>The <strong>VLNVerse NodeSet</strong> (<code>EnvVLNVerseNodeSet</code>) exposes the <strong>VLNVerse</strong> Vision-and-Language Navigation environment — 262 kujiale (interior-design) USD scenes rendered by <strong>Isaac Sim 5.1</strong>, with <code>fine</code>/<code>coarse</code> instruction splits — as a standard AgentCanvas MDP env nodeset. It follows the env template's four-verb contract and mirrors the <code>env_habitat</code> three-layer shape (singleton manager + thin tool nodes + env panel), so agent graphs written for Habitat retarget to VLNVerse by swapping the <code>node_type</code> prefix.</p>
+<p class="note">Ported from the NavHarness VLNVerse stack (<code>feat/env-vlnverse</code>, merged into <code>dev/coding-agent</code>). <strong>Zero framework diff</strong> — nothing under <code>agentcanvas/backend/app/**</code> changed; the nodeset rides existing mechanisms (registry package discovery, auto_host, env panel, eval v2). <strong>AgentCanvas-native</strong> — no runtime dependency on a NavHarness/VLNVerse checkout: the Isaac seam is vendored, and both episode and scene data come from public Hugging Face repos.</p>
+<hr>
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+<h3 id="purpose">Purpose</h3>
+<p>The VLNVerse NodeSet wraps the <strong>Isaac Sim 5.1</strong> renderer over kujiale indoor scenes. It enables graphs to:
+- Step through navigation episodes with 1024² RGB + metric depth
+- Query agent position and orientation (egocentric proprioception only — no global pose leaks into the harness)
+- Control episode lifecycle (switch episodes, change dataset/split) from the Evaluate page's env panel
+- Render multi-view aligned RGB-D panoramas for waypoint-predictor / scene understanding</p>
+<h3 id="architecture">Architecture</h3>
+<p>The nodeset is a <strong>two-process</strong> design across an msgpack RPC seam — the reason it can auto-host in the repo's lightest conda env:</p>
+<div class="highlight"><pre><span></span><code>backend ── auto_host (ac-vlnverse conda env — lightest in the repo, no torch)
+             VLNVerseEnvManager  (pure python: episodes / kinematics /
+             occupancy collision / metrics — HabitatEnvManager name parity)
+              └─ msgpack RPC over stdio ─▶ ~/isaacsim5.1/python.sh _isaac_worker.py
+                                           (the ONLY file importing isaacsim/omni)
+</code></pre></div>
+<p>The manager layer imports only numpy / msgpack / PIL, so the registry can scan the module and auto-host it in <code>ac-vlnverse</code> without ever importing Isaac. Isaac Sim 5.1 stays behind the vendored standalone worker (<code>_isaac_worker.py</code>), launched by its own bundled python (<code>~/isaacsim5.1/python.sh</code>) — Isaac's python is <strong>never</strong> the <code>server_python</code>. This is the NavHarness SimBackend seam, vendored into the package.</p>
+<h3 id="architecture-singleton">VLNVerseEnvManager Singleton</h3>
+<p>The nodeset is organized around a <strong>singleton <code>VLNVerseEnvManager</code></strong> that:
+- Maintains the single VLNVerse runtime + the Isaac worker subprocess
+- Enforces thread safety via a lock
+- Uses a dedicated single-threaded executor to serialize env state + worker RPC
+- Caches the rendered frame per pose (invalidated on every move / episode seat)</p>
+<div class="highlight"><pre><span></span><code><span class="n">mgr</span> <span class="o">=</span> <span class="n">VLNVerseEnvManager</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>  <span class="c1"># Always returns the same instance</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">mgr</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">action</span><span class="p">)</span>  <span class="c1"># reward / terminated / truncated / info</span>
+</code></pre></div>
+<p>Method names deliberately mirror <code>HabitatEnvManager</code> — the auto_host <code>POST /call/{fn}</code> surface calls managers by method name, so keeping the names identical lets the coding-agent bridges / Human tab retarget from habitat to vlnverse (the driver's <code>env_verb_prefix</code> map supplies the <code>env_vlnverse__</code> node namespace). All public methods are <strong>blocking and thread-safe</strong>; async code calls them via:
+<div class="highlight"><pre><span></span><code><span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">run_in_executor</span><span class="p">(</span><span class="n">mgr</span><span class="o">.</span><span class="n">executor</span><span class="p">,</span> <span class="n">mgr</span><span class="o">.</span><span class="n">step</span><span class="p">,</span> <span class="n">action</span><span class="p">)</span>
+</code></pre></div></p>
+<h3 id="local-vs-server-mode">Local vs Server Mode</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Execution</th>
+<th>Deployment</th>
+<th>When to use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Server</strong></td>
+<td>Separate process</td>
+<td><code>ac-vlnverse</code> env (Python 3.11)</td>
+<td>Default — the manager auto-hosts here; Isaac runs one hop further out</td>
+</tr>
+<tr>
+<td><strong>Auto-hosted</strong></td>
+<td>Separate process</td>
+<td>Auto-detected via <code>server_python</code></td>
+<td>Auto-routing; no manual <code>?mode=server</code></td>
+</tr>
+</tbody>
+</table>
+<p>Because <code>server_python</code> resolves to the <code>ac-vlnverse</code> conda env (≠ the backend's interpreter), loading <code>env_vlnverse</code> auto-routes to server mode: the framework spins up an auto_host subprocess, which in turn spawns the Isaac 5.1 worker. Proxy nodes preserve the original <code>node_type</code> IDs (e.g. <code>env_vlnverse__step_discrete</code>), so graphs work identically regardless of routing. <code>parallelism="replicated"</code> — the env is stateful (per-worker scene + agent pose), so each worker owns an isolated Isaac instance.</p>
+<hr>
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas Nodes</h2>
+<p>The nodeset ships <strong>six</strong> user-facing tools reusing the env-template suffixes. Unlike <code>env_habitat</code>, there are <strong>no separate internal <code>ep_*</code> episode-control nodes</strong> — the env panel drives episode lifecycle by calling manager methods (<code>get_episodes_list</code>, <code>set_episode_by_index</code>, <code>switch_split</code>) directly.</p>
+<table>
+<thead>
+<tr>
+<th>Node Type</th>
+<th>Display Name</th>
+<th>Category</th>
+<th>Input Ports</th>
+<th>Output Ports</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_vlnverse__reset</code></td>
+<td>VLNVerse: Reset</td>
+<td>environment</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>instruction</code> (TEXT), <code>episode_id</code> (TEXT), <code>scene_id</code> (TEXT, kujiale scan)</td>
+<td>Ensure a live episode — emit metadata only, <strong>no observation</strong>. Episode placement is env panel-owned (<code>set_episode</code>); a done episode (canvas re-run) is re-armed in place, a live one (batch eval) read without disturbance. Rollover lives here, never in <code>observe_*</code>.</td>
+</tr>
+<tr>
+<td><code>env_vlnverse__step_discrete</code></td>
+<td>VLNVerse: Step (discrete)</td>
+<td>environment</td>
+<td><code>action</code> (ACTION, 0-3)</td>
+<td><code>reward</code> (ANY), <code>terminated</code> (BOOL), <code>truncated</code> (BOOL), <code>info</code> (ANY)</td>
+<td>Advance one micro-tick: <code>0</code>=STOP, <code>1</code>=FORWARD 0.25 m, <code>2</code>=LEFT +15°, <code>3</code>=RIGHT −15°. Returns control signals only (pull perception from <code>observe_egocentric</code>).</td>
+</tr>
+<tr>
+<td><code>env_vlnverse__step_hightolow</code></td>
+<td>VLNVerse: Step (HIGHTOLOW)</td>
+<td>environment</td>
+<td><code>angle</code> (TEXT, rad), <code>distance</code> (TEXT, m), <code>elevation</code> (TEXT, DEGREES, optional)</td>
+<td><code>reward</code> (ANY), <code>terminated</code> (BOOL), <code>truncated</code> (BOOL), <code>info</code> (ANY)</td>
+<td>Native VLNVerse MOVE macro — rotate by <code>angle</code> (radians, +CCW) then advance <code>distance</code> (m). STOP = <code>angle=0, distance=0</code>. Upstream unit quirk (test-pinned): <code>elevation</code> is DEGREES; defaults to 0 since all shipped episodes are single-floor.</td>
+</tr>
+<tr>
+<td><code>env_vlnverse__observe_egocentric</code></td>
+<td>VLNVerse: Observe (egocentric)</td>
+<td>environment</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>rgb</code> (IMAGE, 1024² 90° FOV), <code>depth</code> (DEPTH, metres float32), <code>pose</code> (POSE), <code>intrinsics</code> (ANY), <code>raw_obs</code> (ANY), <code>instruction_text</code> (TEXT)</td>
+<td>Pull the current first-person observation. <strong>Pure read</strong> — no lifecycle action; a finished episode observed again returns the terminal frame (re-arming is <code>reset</code>'s job). Frame is cached per pose, so it renders at most once per move.</td>
+</tr>
+<tr>
+<td><code>env_vlnverse__observe_panorama</code></td>
+<td>VLNVerse: Observe (panorama)</td>
+<td>environment</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>views</code> (ANY), <code>directions</code> (TEXT), <code>n_views</code> (ANY), <code>composite</code> (IMAGE)</td>
+<td>Multi-view aligned RGB-D panorama. Config <code>representation</code>: <code>views_rgbd</code> (aligned RGB-D views, default — feeds the waypoint predictor) or <code>composite</code> (stitched grid image). <code>dir_id 0</code> = current heading, increasing <strong>CCW</strong> (NavHarness strip convention). Expensive — one Isaac render + warmup per view; pull on demand.</td>
+</tr>
+<tr>
+<td><code>env_vlnverse__evaluate</code></td>
+<td>VLNVerse: Evaluate</td>
+<td>evaluation</td>
+<td><code>trigger</code> (TEXT, optional)</td>
+<td><code>metrics</code> (METRICS), <code>success</code> (TEXT), <code>spl</code> (TEXT)</td>
+<td>Thin metric sink over the env's terminal state — pull SR/SPL/OS/nDTW/colrate without stepping. Read-only; works whether the episode ended by STOP (terminated) or step-budget truncation. Wire <code>trigger</code> from the loop's <code>final_stop</code> so it fires once.</td>
+</tr>
+</tbody>
+</table>
+<p class="note">This nodeset implements the <a href="template.html">gym-like env interface</a> (4 verbs + pull perception). <code>step_*</code> nodes return no observation — perception is pulled via the <code>observe_*</code> family.</p>
+<h4 id="notable-output-ports">Notable Output Ports</h4>
+<ul>
+<li><strong><code>pose</code></strong> (POSE): <code>{"position": [x, y, z], "orientation": [qx, qy, qz, qw]}</code> — emitted by <code>observe_egocentric</code>. Egocentric proprioception only.</li>
+<li><strong><code>intrinsics</code></strong> (ANY): <code>{fx, fy, cx, cy, width, height}</code>. <code>fx = width/2 = 512</code> is correct — the worker sets the aperture to 2× focal (20 mm) → 90° horizontal FOV.</li>
+<li><strong><code>depth</code></strong> (DEPTH): metric depth in metres (float32). Isaac's <code>+inf</code> no-hit rays are clamped to a 20 m far-clip at the capture boundary, so no <code>inf</code> reaches the port.</li>
+<li><strong><code>terminated</code> / <code>truncated</code></strong> (BOOL): gym-style split — STOP/goal vs step-budget cutoff.</li>
+<li><strong><code>views</code></strong> (ANY) / <strong><code>composite</code></strong> (IMAGE): the two panorama representations. Each view carries <code>{dir_id, heading_deg, rgb_base64, depth_base64, depth_raw_base64}</code>.</li>
+</ul>
+<hr>
+<h2 id="3-configuration"><span class="num">3.</span> Configuration</h2>
+<h3 id="initialization-parameters">Initialization Parameters</h3>
+<p>When loading the nodeset via <code>POST /api/components/nodesets/env_vlnverse/load</code>, pass these kwargs in the request body:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;dataset&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fine&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;split&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;val_unseen&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;gpu_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;max_steps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span>
+<span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataset</code></td>
+<td>str</td>
+<td><code>fine</code></td>
+<td><code>fine</code> (string instructions) or <code>coarse</code> (dict, <code>formal</code> field). Selects the <code>final_splits/{dataset}_{split}</code> episode file.</td>
+</tr>
+<tr>
+<td><code>split</code></td>
+<td>str</td>
+<td><code>val_unseen</code></td>
+<td>Split suffix (see §4). A split switch swaps the episode list only — no Isaac reboot.</td>
+</tr>
+<tr>
+<td><code>gpu_id</code></td>
+<td>int</td>
+<td>0</td>
+<td>CUDA device index for the Isaac worker.</td>
+</tr>
+<tr>
+<td><code>max_steps</code></td>
+<td>int</td>
+<td>20</td>
+<td>Episode step budget. <strong>20 = macro actions</strong> (HIGHTOLOW MLLM eval, NavHarness default). A discrete micro-step run (0.25 m / 15°) needs the habitat-style <strong>500</strong>-step budget — override via <code>$VLNVERSE_MAX_STEPS</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Success radius is <strong>per-episode</strong> (<code>goals.radius</code>, canonicalized at load); the module fallback when an episode carries no goal is <strong>3.0 m</strong>.</p>
+<h3 id="environment-variables">Environment Variables</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># ac-vlnverse conda python (auto-resolved; override if the env is elsewhere)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_PYTHON</span><span class="o">=</span><span class="s2">&quot;python&quot;</span>
+
+<span class="c1"># Isaac Sim 5.1 launcher (the worker&#39;s bundled python)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_ISAAC_PYTHON</span><span class="o">=</span><span class="s2">&quot;~/isaacsim5.1/python.sh&quot;</span>
+
+<span class="c1"># Data root holding raw_data/ + scene/ (default: repo data/vlnverse)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_DATA_ROOT</span><span class="o">=</span><span class="s2">&quot;/path/to/vlnverse/data&quot;</span>
+
+<span class="c1"># Optional</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_MAX_STEPS</span><span class="o">=</span><span class="mi">500</span><span class="w">        </span><span class="c1"># override step budget (500 for discrete micro-steps)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_HEADLESS</span><span class="o">=</span><span class="mi">1</span><span class="w">          </span><span class="c1"># 0 = show the Isaac viewport</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_RENDERER</span><span class="o">=</span><span class="s2">&quot;RaytracedLighting&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">VLNVERSE_SIM_SOCKET</span><span class="o">=</span><span class="s2">&quot;/path/to.sock&quot;</span><span class="w"> </span><span class="c1"># attach to a pre-started worker (socket backend)</span>
+</code></pre></div>
+<p>Episode files are resolved from <code>$VLNVERSE_DATA_ROOT/raw_data/final_splits/</code> (else the repo default <code>data/vlnverse/raw_data</code>); scenes from <code>data/vlnverse/scene</code>. On a dev machine <code>install_ac_vlnverse.sh</code> lays these down as symlinks to a NavHarness checkout for convenience — but a fresh machine populates them from Hugging Face (§4.1), so no checkout is required.</p>
+<h3 id="node-level-config-panorama">Node-Level Config: Panorama</h3>
+<p>The <strong>Panorama tool</strong> exposes two UI config fields:</p>
+<div class="highlight"><pre><span></span><code><span class="n">ConfigField</span><span class="p">(</span><span class="s2">&quot;representation&quot;</span><span class="p">,</span> <span class="s2">&quot;select&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;views_rgbd&quot;</span><span class="p">,</span>
+            <span class="n">options</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;views_rgbd&quot;</span><span class="p">,</span> <span class="s2">&quot;composite&quot;</span><span class="p">])</span>
+<span class="n">ConfigField</span><span class="p">(</span><span class="s2">&quot;n_views&quot;</span><span class="p">,</span> <span class="s2">&quot;slider&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="nb">max</span><span class="o">=</span><span class="mi">24</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+</code></pre></div>
+<p><code>views_rgbd</code> returns per-direction aligned RGB-D (for the waypoint predictor); <code>composite</code> stitches a single grid image. <code>n_views=12</code> → 30° steps.</p>
+<hr>
+<h2 id="4-datasets-fine-and-coarse"><span class="num">4.</span> Datasets: fine and coarse</h2>
+<p>The VLNVerse episode store is <code>data/vlnverse/raw_data/final_splits/{dataset}_{split}.json[.gz]</code>. There is no per-split YAML (unlike VLN-CE) — the sim config is identical across splits and only the episode list changes, so a split switch never reboots Isaac.</p>
+<table>
+<thead>
+<tr>
+<th>Dataset</th>
+<th>Instruction shape</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>fine</strong></td>
+<td><code>str</code></td>
+<td>Fine-grained step-by-step instruction (default).</td>
+</tr>
+<tr>
+<td><strong>coarse</strong></td>
+<td><code>dict</code> — <code>formal</code> field</td>
+<td>Coarse goal-level instruction.</td>
+</tr>
+</tbody>
+</table>
+<p>Splits exposed in the panel/eval (display order, eval-relevant first): <code>val_unseen</code>, <code>val</code>, <code>subset</code>, <code>subset_mini</code>, <code>mini</code>, <code>human</code>, <code>challenge</code>, <code>test</code>, <code>train</code>. The <code>final_splits/</code> dir also holds <code>dialogue_subset</code> / <code>goalnav_subset</code> / <code>long_horizon*</code> / <code>interactive_subset</code> families (different task semantics) and <code>*.withheld</code> challenge twins (<code>goals=None</code>, unscorable) — everything not in the list above is out of contract and fenced off.</p>
+<blockquote>
+<p><strong>Episode geometry:</strong> all 16,867 shipped episodes are single-floor (z ≡ 0 verified), which is why <code>step_hightolow.elevation</code> defaults to 0 and floor changes never arise. Scenes are 262 kujiale interior-design USDs.</p>
+</blockquote>
+<h3 id="41-data-download"><span class="num">4.1</span> Data Download</h3>
+<p>Two Hugging Face fetchers populate <code>data/vlnverse/</code> — episodes and scenes live in <strong>separate</strong> repos and share the <code>$VLNVERSE_DATA_ROOT</code> contract:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Episodes — 8 small .json.gz splits (~a few MB), HF Eyz/VLNVerse_data</span>
+python3<span class="w"> </span>scripts/data/fetch_episodes_vlnverse.py<span class="w"> </span>            <span class="c1"># all splits</span>
+python3<span class="w"> </span>scripts/data/fetch_episodes_vlnverse.py<span class="w"> </span>--list
+
+<span class="c1"># Scenes — 262 kujiale USDs (~80 GB), HF Eyz/VLNVerse_scene (rate-limit backoff)</span>
+python3<span class="w"> </span>scripts/data/fetch_scenes_vlnverse.py
+bash<span class="w"> </span>scripts/data/fetch_scenes_vlnverse_loop.sh<span class="w">      </span><span class="c1"># resume loop for the 80 GB pull</span>
+</code></pre></div>
+<blockquote>
+<p><strong>Split coverage caveat:</strong> the HF episode repo ships only the four canonical splits per dataset (<code>train</code> / <code>val</code> / <code>val_unseen</code> / <code>test</code>). Extra splits the panel can enumerate (<code>challenge</code> / <code>human</code> / <code>subset</code> / <code>mini</code> …) exist only in a NavHarness checkout, not on HF — they are not needed for standard eval. The episode fetcher also deliberately excludes the upstream <code>traj_data/</code> tree (~47k per-episode recordings) the nodeset does not use.</p>
+</blockquote>
+<hr>
+<h2 id="5-env-panel-integration"><span class="num">5.</span> Env Panel Integration</h2>
+<p>The VLNVerse NodeSet declares a <strong><code>VLNVerseEnvPanel</code></strong> (a <code>BaseEnvPanel</code> subclass) as a class-level attribute (<code>env_panel = VLNVerseEnvPanel</code>). This lets the canvas <strong>Evaluate</strong> page manage episodes uniformly across all environments.</p>
+<h3 id="three-field-cascade">Three-Field Cascade (Dataset → Split → Episode)</h3>
+<p>The panel exposes a three-field cascade mirroring <code>HabitatEnvPanel</code>:</p>
+<ul>
+<li><strong><code>dataset</code></strong> — <code>fine</code> or <code>coarse</code>. Changing resets <code>split</code> and <code>episode_index</code> and re-routes the episode file.</li>
+<li><strong><code>split</code></strong> — dataset-conditional list via <code>_dataset_splits(dataset)</code> (discovered from the on-disk <code>final_splits/</code> files). Changing triggers <code>_switch_split</code>, which swaps the episode list — <strong>cheap: no Isaac reboot</strong>, the scene switches lazily on episode seating.</li>
+<li><strong><code>episode_index</code></strong> — index into the currently loaded dataset/split; the label shows <code>{index}: {scene_id}</code>.</li>
+</ul>
+<p>Each field change emits a <code>signal</code> side-effect with <code>signal_name="episode_reset"</code>, so any <code>lifetime="episode"</code> state container clears downstream. This matches the Habitat/MP3D panel contract, so agent graphs bind state lifetimes without knowing which simulator is active.</p>
+<h3 id="how-it-works">How It Works</h3>
+<ol>
+<li>Evaluate page calls <code>on_load()</code> → datasets + splits + current state (or an <em>“environment not initialized / server mode”</em> message when the manager singleton is empty)</li>
+<li>User selects an episode → <code>on_field_change("episode_index", …)</code> arms the index and emits <code>episode_reset</code></li>
+<li><code>on_action("play")</code> calls <code>mgr.set_episode_by_index(…)</code> and starts the run</li>
+<li>Graph continues; agent navigates in the new episode</li>
+</ol>
+<p class="note"><strong>Server-mode limitation:</strong> when the env runs in a spawned subprocess, the local manager singleton is empty by design (no control-plane bridge yet), so the panel reports episode control as unavailable and shows a message. Batch eval seats episodes through the driver, not this panel.</p>
+<hr>
+<h2 id="6-installation-and-usage"><span class="num">6.</span> Installation &amp; Usage</h2>
+<h3 id="from-zero">From Zero (fresh machine)</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># 1. Isaac Sim 5.1 — MANUAL prerequisite (tens of GB), e.g. under ~/isaacsim5.1</span>
+<span class="c1">#    https://docs.isaacsim.omniverse.nvidia.com/ (workstation install)</span>
+
+<span class="c1"># 2. Create the ac-vlnverse conda env (lightest in the repo — no torch) + verify Isaac</span>
+bash<span class="w"> </span>scripts/install/install_ac_vlnverse.sh
+
+<span class="c1"># 3. Fetch data from Hugging Face (no NavHarness checkout needed)</span>
+python3<span class="w"> </span>scripts/data/fetch_episodes_vlnverse.py<span class="w">    </span><span class="c1"># episodes (~few MB)</span>
+python3<span class="w"> </span>scripts/data/fetch_scenes_vlnverse.py<span class="w">      </span><span class="c1"># scenes (~80 GB)</span>
+</code></pre></div>
+<p>The install script only <em>verifies</em> Isaac Sim (it is a manual prereq) and, if <code>$VLNVERSE_DATA_ROOT</code> points at an existing store, symlinks it instead of downloading.</p>
+<h3 id="loading-the-nodeset">Loading the NodeSet</h3>
+<div class="highlight"><pre><span></span><code>POST<span class="w"> </span>/api/components/nodesets/env_vlnverse/load
+</code></pre></div>
+<p><code>server_python</code> resolves to <code>ac-vlnverse</code>, so this auto-routes to server mode; the Isaac worker boots on first episode seat.</p>
+<h3 id="typical-graph-workflow">Typical Graph Workflow</h3>
+<div class="highlight"><pre><span></span><code>1. Load VLNVerse nodeset  (env panel: pick dataset / split / episode)
+   ↓
+2. VLNVerse: Reset → instruction + episode_id + scene_id
+   ↓
+3. Loop:
+   - VLNVerse: Observe (egocentric) → RGB + depth + pose + instruction_text
+   - [Policy / reasoning node] → decide action
+   - VLNVerse: Step (hightolow)  angle,distance   (or Step discrete 0-3)
+   - [Iterate; break on terminated/truncated]
+   ↓
+4. VLNVerse: Evaluate → SR / SPL / nDTW / colrate
+</code></pre></div>
+<h3 id="error-handling">Error Handling</h3>
+<ul>
+<li><strong>“Environment not initialized”</strong>: load <code>env_vlnverse</code> from the NodeSet Manager first.</li>
+<li><strong>Panel shows “server mode — episode control not supported”</strong>: expected; the env is in a subprocess. Use batch eval (driver seats episodes) or run the panel against a local manager.</li>
+<li><strong>Worker boot hangs</strong>: the Isaac launcher prints a conda warning to stdout that a naive parent misreads as a giant frame length — the seam guards against it with a <code>STDIO_MAGIC</code> preamble + <code>dup2</code> fd1 redirect + <code>CONDA_*</code> scrub. If it still hangs, run the worker's <code>--check</code> self-test.</li>
+<li><strong>Missing scenes/episodes</strong>: run the two fetchers, or point <code>$VLNVERSE_DATA_ROOT</code> at an existing store.</li>
+</ul>
+<h3 id="performance-considerations">Performance Considerations</h3>
+<ul>
+<li><strong>Scene switch</strong>: ~20–30 s cold (USD load + stabilize) / ~1.2 s warm (omniverse cache). <code>default_per_step_budget_sec=60</code> leaves headroom for cross-scene episode switches during batch eval.</li>
+<li><strong>Panorama</strong>: <code>n_views=12</code> is 12 Isaac renders with warmup — expensive; use fewer views for quick iteration.</li>
+<li><strong>Frame caching</strong>: the manager caches the rendered frame per pose, so repeated <code>observe_egocentric</code> calls between moves are free.</li>
+<li><strong>VRAM</strong>: RTX RaytracedLighting steady state ≈ 6 GB per worker (author preset).</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#purpose">Purpose</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h3" href="#architecture-singleton">VLNVerseEnvManager Singleton</a>
+      <a class="toc-h3" href="#local-vs-server-mode">Local vs Server Mode</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas Nodes</a>
+      <a class="toc-h2" href="#3-configuration">3. Configuration</a>
+      <a class="toc-h3" href="#initialization-parameters">Initialization Parameters</a>
+      <a class="toc-h3" href="#environment-variables">Environment Variables</a>
+      <a class="toc-h3" href="#node-level-config-panorama">Node-Level Config: Panorama</a>
+      <a class="toc-h2" href="#4-datasets-fine-and-coarse">4. Datasets: fine and coarse</a>
+      <a class="toc-h3" href="#41-data-download">4.1 Data Download</a>
+      <a class="toc-h2" href="#5-env-panel-integration">5. Env Panel Integration</a>
+      <a class="toc-h3" href="#three-field-cascade">Three-Field Cascade (Dataset → Split → Episode)</a>
+      <a class="toc-h3" href="#how-it-works">How It Works</a>
+      <a class="toc-h2" href="#6-installation-and-usage">6. Installation &amp; Usage</a>
+      <a class="toc-h3" href="#from-zero">From Zero (fresh machine)</a>
+      <a class="toc-h3" href="#loading-the-nodeset">Loading the NodeSet</a>
+      <a class="toc-h3" href="#typical-graph-workflow">Typical Graph Workflow</a>
+      <a class="toc-h3" href="#error-handling">Error Handling</a>
+      <a class="toc-h3" href="#performance-considerations">Performance Considerations</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>
