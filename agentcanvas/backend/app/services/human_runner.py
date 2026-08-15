@@ -34,9 +34,10 @@ import shutil
 import socket
 import sys
 import threading
+import math
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -57,6 +58,23 @@ N_EPISODES = 100
 ACTION_NAMES = {0: "STOP", 1: "FORWARD", 2: "TURN_LEFT", 3: "TURN_RIGHT"}
 # Human runs render at the experiment resolution by default (512 px RGB).
 DEFAULT_RGB_RESOLUTION = 512
+# depth matches the camera: the YAML default is 256, half the RGB grid
+DEFAULT_DEPTH_RESOLUTION = 512
+# Camera mast, RGB and DEPTH together. habitat's default is 1.25 m, which is
+# where R2R-CE runs (VLN-CE's vlnce_task.yaml overrides resolution and HFOV but
+# never POSITION); RxR's yaml drops it to 0.88. 1.5 m is standing eye height for
+# a person, and it is also AGENT_0.HEIGHT — the body habitat already navmeshes
+# with — so the camera now sits at the top of the agent rather than 25 cm down
+# its chest. A higher camera sees over the near edge of tables and beds, which
+# is most of what makes a 90° frontal wedge read as a wall.
+DEFAULT_CAM_HEIGHT_M = 1.5
+# No 10 m ceiling. habitat clips depth to MAX_DEPTH and then normalises to
+# [0,1]; the default 10 m turned every long sightline into a flat saturated
+# slab, so a 14 m corridor and a wall at 10 m were the same picture. 100 m is
+# past the diagonal of any Matterport scene, so nothing in these houses is
+# clipped at all, and NORMALIZE off puts true metres on the wire.
+DEFAULT_DEPTH_MAX_M = 100.0
+DEFAULT_DEPTH_NORMALIZE = False
 # Metrics surfaced to the UI aggregate, in display order.
 AGG_METRIC_KEYS = ("success", "oracle_success", "distance_to_goal", "ndtw", "spl")
 
@@ -249,6 +267,28 @@ class HumanRunner:
             body["config"] = config
         return self._req("POST", f"{url}/call/{fn}", json=body).json()["outputs"]
 
+    def depth_units(self, url: str) -> dict[str, Any]:
+        """What a depth frame from this env means — asked of the env, not
+        assumed. ``scale_m`` is metres per raw unit; feed it to
+        ``depthmap.to_metres`` and the 10×-guess path is never taken."""
+        try:
+            outputs = self._call(url, "env_habitat__observe_egocentric", {})
+        except Exception:  # noqa: BLE001 — a rig read must not fail a load
+            return {"known": False}
+        units = outputs.get("depth_units")
+        return units if isinstance(units, dict) else {"known": False}
+
+    @staticmethod
+    def scale_of(units: Any) -> float | None:
+        """metres-per-unit out of a depth_units dict, or None → let the organ
+        self-detect (an older env with no such port)."""
+        if isinstance(units, dict) and units.get("known"):
+            try:
+                return float(units["scale_m"])
+            except (KeyError, TypeError, ValueError):
+                return None
+        return None
+
     def _observe(self, url: str) -> tuple[str | None, list | None]:
         """Pull the current egocentric RGB (base64 PNG) + agent position."""
         outputs = self._call(url, "env_habitat__observe_egocentric", {})
@@ -261,8 +301,12 @@ class HumanRunner:
 
     # ── episode session ───────────────────────────────────────────────
 
-    def load_episode(
-        self, index: int, rgb_resolution: int = DEFAULT_RGB_RESOLUTION
+    def load_episode(  # noqa: PLR0913
+        self, index: int, rgb_resolution: int = DEFAULT_RGB_RESOLUTION,
+        depth_resolution: int = DEFAULT_DEPTH_RESOLUTION,
+        cam_height_m: float = DEFAULT_CAM_HEIGHT_M,
+        depth_max_m: float = DEFAULT_DEPTH_MAX_M,
+        depth_normalize: bool = DEFAULT_DEPTH_NORMALIZE,
     ) -> dict[str, Any]:
         """Place + arm episode ``index`` and return instruction + first frame.
 
@@ -277,10 +321,33 @@ class HumanRunner:
             # episode. reset carries the RGB-resolution override in its config.
             self._panel_field(url, "episode_index", index)
             self._panel_action(url, "play")
-            reset_config = {"rgb_resolution": str(rgb_resolution)} if rgb_resolution else None
+            # The depth sensor defaults to 256² in the VLN-CE YAML while RGB is
+            # overridden per run, so the two grids disagree by 2× and every
+            # depth-derived geometry has to rescale. Pushing depth to match the
+            # camera removes that mismatch and doubles the angular resolution
+            # the free-space map is built from.
+            reset_config: dict[str, str] = {}
+            if rgb_resolution:
+                reset_config["rgb_resolution"] = str(rgb_resolution)
+            if depth_resolution:
+                reset_config["depth_resolution"] = str(depth_resolution)
+            # The camera rig. Any change here tears the env down and rebuilds it
+            # (the sensor spec is baked at construction), then re-seats this same
+            # episode — one ~30 s cost the first time a fresh server is asked for
+            # a rig it is not already running, free on every load after.
+            if cam_height_m:
+                reset_config["cam_height_m"] = str(cam_height_m)
+            if depth_max_m:
+                reset_config["depth_max_m"] = str(depth_max_m)
+            reset_config["depth_normalize"] = "1" if depth_normalize else "0"
             ep = self._call(url, "env_habitat__reset", {"trigger": "human"}, reset_config)
             instruction = ep.get("instruction", "")
             rgb, pose = self._observe(url)
+            # Read the rig back rather than trusting what was asked for: the
+            # rebuild can decline (unknown initialize args) and return an error
+            # instead of applying, and a wrong depth scale is a silent 10×
+            # everywhere downstream, not a visible failure.
+            units = self.depth_units(url)
 
             session = {
                 "index": index,
@@ -288,6 +355,8 @@ class HumanRunner:
                 "scene_id": ep.get("scene_id"),
                 "instruction": instruction,
                 "rgb_resolution": rgb_resolution,
+                "depth_resolution": depth_resolution,
+                "depth_units": units,
                 "step_count": 0,
                 "actions": [],       # ordered action ints
                 "trajectory": [],    # per-step {action, action_name, position, orientation}
@@ -320,6 +389,7 @@ class HumanRunner:
                 "position": pose.get("position") if pose else None,
                 "step_count": 0,
                 "done": False,
+                "depth_units": units,
             }
 
     def step(self, action: int) -> dict[str, Any]:
@@ -365,6 +435,111 @@ class HumanRunner:
                 "step_count": session["step_count"],
                 "done": session["done"],
                 "end_reason": session["end_reason"],
+            }
+
+    def goto(self, place: int, range_cap_m: float | None = None,
+             offer: Callable[[Any, Any], list] | None = None) -> dict[str, Any]:
+        """Take the n-th place the depth organ is offering, right now.
+
+        The candidates are RECOMPUTED from the current frame rather than read
+        from whatever the inspector last displayed: moving invalidates them, and
+        acting on a stale number is exactly the failure the agent-side toolset
+        guards against by clearing its list after every move.
+
+        ``offer`` lets the caller apply whatever it puts in front of the driver
+        on top of the raw proposal — specifically the held commitment, which is
+        candidate 1 on the panel and would otherwise not be candidate 1 here.
+        Recomputing is right; recomputing a DIFFERENT list than the one whose
+        circles were clicked is not, and that is the bug this closes: place 1 on
+        screen and place 1 in this method have to be the same place.
+
+        Bookkeeping matches ``step``: step_hightolow rotates by a quaternion
+        write (no turn primitives) and then walks forward, so every env step it
+        consumed was a MOVE_FORWARD — that is what goes into the action list, so
+        the accumulated map replays the same motion the body made."""
+        with self._lock:
+            url = self._require_ready()
+            session = self._require_session()
+            if session["done"]:
+                raise RuntimeError("episode already over — call stop to evaluate")
+
+            import sys
+            from pathlib import Path as _P
+            root = _P(__file__).resolve().parents[4] / "coding-agent"
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from eharness import depthmap as dm
+
+            outputs = self._call(url, "env_habitat__observe_egocentric", {})
+            # The cap MUST match the one the inspector drew the numbered circles
+            # with, or "go to place 1" walks somewhere other than the circle the
+            # driver clicked: candidates are recomputed here, and a different
+            # grid extent changes which openings exist and where their centres
+            # land. Both sides default to the organ's own constant so they
+            # cannot drift apart — this one was pinned at 6 m while the grid
+            # moved to 12.
+            waypoints, _td = dm.propose_from_depth(
+                outputs.get("depth"),
+                range_cap_m=float(range_cap_m or dm.RANGE_CAP_M),
+                scale_m=self.scale_of(outputs.get("depth_units")))
+            if offer is not None and _td is not None:
+                waypoints = offer(_td, waypoints)
+            if not waypoints:
+                raise ValueError("the depth organ is offering nothing from here "
+                                 "— turn and look again")
+            if not 1 <= place <= len(waypoints):
+                raise ValueError(f"place {place} not on offer; there "
+                                 f"{'is' if len(waypoints) == 1 else 'are'} "
+                                 f"{len(waypoints)}")
+            w = waypoints[place - 1]
+
+            # §10.2 on the human tab too: execute the SAFE STRIDE, not the
+            # aim — the panel's own caption promises "walk about X m of the
+            # way, then look again", and the agent path already honours it.
+            exec_m = float(min(w.distance, w.stride_m or w.distance))
+            before = int(session["step_count"])
+            out = self._call(url, "env_habitat__step_hightolow",
+                             {"angle": w.angle, "distance": exec_m})
+            info = out.get("info") or {}
+            used = (int(info["step_count"]) - before
+                    if isinstance(info.get("step_count"), (int, float))
+                    else max(1, int(exec_m / 0.25)))
+            terminated = bool(out.get("terminated"))
+            truncated = bool(out.get("truncated"))
+            rgb, pose = self._observe(url)
+
+            session["step_count"] += used
+            # step_hightolow ROTATES first (a quaternion write that consumes
+            # no env step) then walks. Recording only the forwards lost the
+            # turn, so the accumulated-map replay drew every post-goto wall
+            # rotated by the missing angle. The turn rides as its own record.
+            if abs(float(w.angle)) > 1e-9:
+                session["actions"].append({"turn": float(w.angle)})
+            session["actions"].extend([1] * used)
+            entry = {"step": session["step_count"], "action": 1,
+                     "action_name": f"goto#{place}",
+                     "goto_place": place,
+                     "goto_angle_deg": round(math.degrees(w.angle), 1),
+                     "goto_distance_m": round(w.distance, 2),
+                     "goto_stride_m": round(exec_m, 2),
+                     "env_steps_used": used,
+                     "position": pose.get("position") if pose else None,
+                     "orientation": pose.get("orientation") if pose else None,
+                     "terminated": terminated, "truncated": truncated}
+            session["trajectory"].append(entry)
+            self._append_traj({"t": round(time.time() - session["t0"], 2),
+                               "kind": "goto", **entry})
+            if terminated or truncated:
+                session["done"] = True
+                session["end_reason"] = "budget" if truncated else "terminated"
+            return {
+                "frame": rgb,
+                "position": pose.get("position") if pose else None,
+                "step_count": session["step_count"],
+                "done": session["done"],
+                "end_reason": session["end_reason"],
+                "went_to": w.describe(),
+                "env_steps_used": used,
             }
 
     def stop(self) -> dict[str, Any]:
