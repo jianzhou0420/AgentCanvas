@@ -122,7 +122,7 @@ _DATASETS: list[str] = ["fine", "coarse"]
 # first). The final_splits dir also holds dialogue_subset / goalnav_subset /
 # long_horizon* / interactive_subset families (different task semantics) and
 # ``*.withheld`` challenge twins (goals=None, unscorable) — everything not in
-# this list is out of contract (data audit 2026-07-20).
+# this list is out of contract (verified by data audit).
 _SPLIT_ORDER: list[str] = [
     "val_unseen",
     "val",
@@ -907,7 +907,7 @@ class VLNVerseEnvManager:
             return None
         h, w = (int(v) for v in cfg.get("camera_resolution", (1024, 1024)))
         focal = float(cfg.get("focal_length", 10.0))
-        # fx = w/2 is verified correct (code-review 2026-07-20): the worker
+        # fx = w/2 is verified correct: the worker
         # explicitly calls set_horizontal/vertical_aperture(cfg["aperture"]
         # or 2*focal = 20 mm) — Isaac's 20.955 mm default never applies —
         # giving FOV = 2·atan(ap/(2f)) = 90° and f_px = (W/2)/tan(45°) = W/2,

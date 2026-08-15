@@ -138,9 +138,8 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
     return str(obj)
 
 
-# Restored 2026-08-01 after the two-machine merge dropped it (claude_sdk.py
-# still calls is_rate_limited at episode finalization — every claude-sdk
-# episode NameError'd at the result step without this). Source: 6d0bf63
+# claude_sdk.py calls is_rate_limited at episode finalization — every
+# claude-sdk episode NameError's at the result step without this. Source: 6d0bf63
 # (std-v2 rate-limit resilience). NOTE: that commit's worker-level
 # retry/backoff loop did NOT survive the merge and still needs a re-merge.
 # "session limit"/"usage limit" = the 5h subscription window (resets on a clock,
@@ -541,7 +540,7 @@ async def run_episode(
     # Blocking HTTP rides to_thread so parallel workers never stall the loop
     # (first play on a cold server can hold a scene load for ~30s).
     if spec.go2:
-        # Real robot, minimal episode loop (user decision 2026-07-20): no dataset
+        # Real robot, minimal episode loop: no dataset
         # to place into and no env-panel on the host — the instruction is
         # operator-supplied and reset just stands the dog up and zeroes counters.
         instruction = str(cfg["extra"].get("instruction") or "")
@@ -924,8 +923,8 @@ async def run_cell(
     # (RxR's long instructions need >100 — episode turn-exhausts otherwise).
     # Popped out of `extra` so they don't leak into the harness/model config;
     # absent → the frozen defaults for this benchmark line.
-    # (Merged 2026-08-01: this loop is the superset of the separate max_turns /
-    # split pops that used to sit here — one place, not three.)
+    # (One loop supersedes the separate max_turns / split pops that used to
+    # sit here — one place, not three.)
     for _k in ("dataset", "split", "max_turns", "max_budget_usd",
                "episode_timeout"):
         if _k in cfg["extra"]:
@@ -1065,8 +1064,7 @@ async def run_cell(
     run_dir.mkdir(parents=True, exist_ok=True)
     summary_path = run_dir / "summary.json"
 
-    # Graceful drain (restored 2026-08-03 from 6d0bf63 — the two-machine merge
-    # dropped it while stdrun.py kept advertising the `drain` command):
+    # Graceful drain:
     # `touch <run_dir>/DRAIN` (or `stdrun.py drain <cell>`, or SIGUSR1) asks
     # every worker to finish its current episode, flush, and exit WITHOUT
     # pulling a new one — in-flight work is never cut, un-pulled indices stay
@@ -1138,10 +1136,9 @@ async def run_cell(
             except asyncio.QueueEmpty:
                 return
             print(f"[std] episode {index} starting on {url}")
-            # Rate-limit retry (restored 2026-08-03 from 6d0bf63 — the merge
-            # dropped it, so a throttled episode landed as a contaminated
-            # partial record instead of re-running; the libero full ep0-9 run
-            # was the casualty that surfaced it): back off OUTSIDE the timed
+            # Rate-limit retry (without it a throttled episode lands as a
+            # contaminated partial record instead of re-running): back off
+            # OUTSIDE the timed
             # scope and re-run the episode fresh, so the wait never eats the
             # episode's wall-clock budget.
             episode: dict[str, Any] = {}
@@ -1212,7 +1209,7 @@ async def run_cell(
         print(f"[std] run stats: {json.dumps(run_stats)}")
     print(json.dumps(final, indent=2))
     # Full statistics report (charts + tables, after the metric block) for
-    # every run — user decision 2026-07-23. Best-effort: a failed report
+    # every run. Best-effort: a failed report
     # must never lose a completed run.
     try:
         from ac_support.run_stats import generate as _generate_stats

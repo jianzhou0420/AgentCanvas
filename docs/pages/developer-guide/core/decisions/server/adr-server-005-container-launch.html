@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-server-005 — AgentCanvas</title>
+<meta name="description" content="Container Launch — docker run as server mode&#x27;s second launch vehicle; server_image declaration; framework-owned container lifecycle">
+<meta property="og:title" content="ADR-server-005 — AgentCanvas">
+<meta property="og:description" content="Container Launch — docker run as server mode&#x27;s second launch vehicle; server_image declaration; framework-owned container lifecycle">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/core/decisions/server/adr-server-005-container-launch.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/core/decisions/server/adr-server-005-container-launch.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout no-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body decisions">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../../index.html">Core</a>
+    <span class="sep">/</span>
+    <a href="../index.html">Decisions</a>
+    <span class="sep">/</span>
+    <a href="index.html">Server</a>
+    <span class="sep">/</span>
+    <span class="here">ADR-server-005</span>
+  </div>
+  <div class="last-updated">2026-08-13</div>
+</div>
+  <header class="page-header decisions">
+  <h1 style="color:var(--field-server);">ADR-server-005</h1>
+  <p class="tagline">Container Launch — docker run as server mode's second launch vehicle; server_image declaration; framework-owned container lifecycle</p>
+</header>
+
+<dl class="adr-meta">
+  <dt>Date</dt><dd>2026-08-13</dd>
+  <dt>Status</dt><dd><span class="adr-status status-accepted">accepted</span></dd>
+  <dt>Field</dt><dd><a href="index.html"><code>server</code></a></dd>
+</dl>
+
+<h2 id='context'>Context</h2>
+<p>Server mode (<a href="adr-server-001-auto-server-app.html">ADR-server-001</a>) launches a nodeset's auto_host subprocess on a host interpreter (<code>server_python</code>, usually a conda env). Some systems cannot be a conda env at all: a compiled C++ SLAM stack (ORB-SLAM3) whose build products don't pip-install, or a GPL codebase (pySLAM) that must stay out of the framework's process and env. The one pre-existing containerized nodeset, <code>model_pyslam</code>, proved containers work but at the wrong layer: it registered as a <em>local-mode</em> nodeset and ran a private bridge — a hand-written <code>_client.py</code> (docker run, port pick, health wait, GPU fallback) plus an in-container FastAPI shim — invisible to the registry, the scheduler, GPU admission, multi-worker fan-out, and the <code>/mcp</code> projection. Every future containerized system would have re-written that ~800-line bridge.</p>
+
+<h2 id='decision'>Decision</h2>
+<p>Make the container a <strong>launch vehicle of server mode</strong>, not a nodeset's private mechanism. Server mode now has two launch vehicles: <strong>Native Launch</strong> (host subprocess on <code>server_python</code> — the default) and <strong>Container Launch</strong> (<code>docker run &lt;server_image&gt;</code>). Both run the same stock <code>auto_host</code> and serve the same manifest protocol, so everything downstream of <code>BaseServer</code> — proxy-node generation, env-panel bridge, worker fan-out, admission bookkeeping, <code>/mcp</code> — is shared and unchanged.</p>
+<ul>
+<li><strong>Declaration:</strong> four <code>BaseNodeSet</code> ClassVars — <code>server_image</code> (the trigger; wins over <code>server_python</code>), <code>server_image_gpu</code> (CDI device flag, one CPU-degrade retry), <code>server_mounts</code> (extra binds; missing host paths skip, not fail), <code>server_container_python</code>.</li>
+<li><strong>No framework code in images:</strong> the repo root is bind-mounted read-only at a fixed mount point; the registry rewrites command-line paths, <code>PYTHONPATH</code>, and loopback executor URLs (→ <code>host.docker.internal</code>) under it (<code>registry.py · _build_container_server</code>). Images carry only the model's deps plus <code>requirements-serve.txt</code>.</li>
+<li><strong>Lifecycle is framework-owned:</strong> <code>ContainerServer(BaseServer)</code> (<code>container_server.py</code>) runs a foreground <code>docker run --rm --init</code> as a direct child (BaseServer health/timeout/pdeathsig apply to the client, which proxies SIGTERM), names containers deterministically and reaps a stale namesake before start (the client-SIGKILL orphan case), stops via <code>docker stop</code> first, and always targets the rootless daemon explicitly.</li>
+</ul>
+<p>Consequences: a containerized nodeset is one ClassVar plus a Dockerfile — first user <code>model_orbslam3</code> (see the <a href="../../../nodesets/model/model-orbslam3.html">nodeset page</a>); <code>model_pyslam</code>'s private bridge is now legacy, migration pending. Full mechanism: <a href="../../../design-docs/operations/container-launch.html">Container Launch design doc</a>.</p>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+
+
+</div>
+
+<script src="../../../../../assets/nav.js"></script>
+
+</body>
+</html>

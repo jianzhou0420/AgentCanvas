@@ -207,10 +207,8 @@ class ClaudeSdkAdapter:
             # and injects the repo CLAUDE.md into every session.
             setting_sources=[],
             thinking=self._thinking_config(ctx),
-            # Restored 2026-08-03: the two-machine merge dropped this line
-            # (present at 6d0bf63) — without it every sdk *_max cell silently
-            # ran at default effort. Same casualty family as is_rate_limited
-            # (see driver.py) and the SessionOutcome error whitelist.
+            # Without this line every sdk *_max cell silently runs at
+            # default effort (source: 6d0bf63).
             effort=ctx.extra.get("effort"),
             betas=ctx.extra.get("betas", []),
             # ONLY our bridge — never the user's global MCP config.

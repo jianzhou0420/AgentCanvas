@@ -16,11 +16,11 @@ import type {
 } from "./types";
 
 // Top-level navigation: two categories — workflow-centric (graph editing,
-// eval, inspection) and model-centric (agent-loop pages). The header shows
+// eval, inspection) and agentic (agent-loop pages). The header shows
 // the two categories plus the active category's pages. Persisted to
 // localStorage so a page refresh keeps you on the current page instead of
 // snapping back to the canvas ("nav").
-export type AppCategory = "workflow" | "model";
+export type AppCategory = "workflow" | "agentic";
 
 export const PAGES = [
   { mode: "nav", label: "Canvas", category: "workflow" },
@@ -29,8 +29,8 @@ export const PAGES = [
   { mode: "logs", label: "Logs", category: "workflow" },
   { mode: "replay", label: "Replay", category: "workflow" },
   { mode: "monitor", label: "Monitor", category: "workflow" },
-  { mode: "coding", label: "Coding Agent", category: "model" },
-  { mode: "human", label: "Human", category: "model" },
+  { mode: "coding", label: "Coding Agent", category: "agentic" },
+  { mode: "human", label: "Human", category: "agentic" },
 ] as const;
 
 export type AppMode = (typeof PAGES)[number]["mode"];

@@ -410,10 +410,15 @@ class WorkspaceComponentRegistry:
         ):
             await self.unload_nodeset(name)
 
-        # Auto-route to server mode if nodeset needs a different Python (ADR-020).
+        # Auto-route to server mode if nodeset needs a different Python (ADR-020)
+        # or a container image (Container Launch — image wins over python).
         # Note: server-mode proxy nodes get srv_ prefix (TODO #33 to unify).
         sp = getattr(type(ns), "server_python", None)
-        if mode == "local" and sp and sp != sys.executable:
+        image = getattr(type(ns), "server_image", None)
+        if mode == "local" and image:
+            log.info("Auto-routing %s to server mode (server_image=%s)", name, image)
+            mode = "server"
+        elif mode == "local" and sp and sp != sys.executable:
             log.info("Auto-routing %s to server mode (server_python=%s)", name, sp)
             mode = "server"
         if worker_count > 1 and mode != "server":
@@ -509,6 +514,7 @@ class WorkspaceComponentRegistry:
             source_file = getattr(mod, "__file__", None) or inspect.getfile(nodeset_cls)
         class_name = nodeset_cls.__name__
         python = getattr(nodeset_cls, "server_python", None) or sys.executable
+        server_image = getattr(nodeset_cls, "server_image", None)
 
         # Build PYTHONPATH: backend dir + workspace root
         workspace_root = str(self._scan_dir.parent.resolve())
@@ -562,20 +568,6 @@ class WorkspaceComponentRegistry:
             for k in range(worker_count):
                 tag = k if worker_count > 1 else None
                 port = ports[k]
-                # argv list (no shell): keeps auto_host a DIRECT child of
-                # this process, so its PR_SET_PDEATHSIG watches us one-hop.
-                # A /bin/sh wrapper here would break that chain — see
-                # BaseServer.start().
-                command = [
-                    python,
-                    "-m",
-                    "app.server.auto_host",
-                    *source_arg,
-                    "--class",
-                    class_name,
-                    "--port",
-                    str(port),
-                ]
                 server_label = f"auto_{name}#{k}" if tag is not None else f"auto_{name}"
                 # Pull optional server-side env vars from the nodeset class
                 # (e.g. LD_PRELOAD for the hmeqa NVIDIA-driver-570 shim).
@@ -590,18 +582,46 @@ class WorkspaceComponentRegistry:
                 from ..config import resolve_executor_url
 
                 executor_url = os.environ.get("AGENTCANVAS_EXECUTOR_URL") or resolve_executor_url()
-                server = BaseServer(
-                    name=server_label,
-                    command=command,
-                    port=port,
-                    startup_timeout=getattr(nodeset_cls, "startup_timeout", 1800),
-                    working_dir=backend_dir,
-                    env={
-                        "PYTHONPATH": pythonpath,
-                        "AGENTCANVAS_EXECUTOR_URL": executor_url,
-                        **ns_server_env,
-                    },
-                )
+                if server_image is not None:
+                    server = self._build_container_server(
+                        nodeset_cls=nodeset_cls,
+                        server_label=server_label,
+                        image=server_image,
+                        port=port,
+                        source_arg=source_arg,
+                        class_name=class_name,
+                        pythonpath=pythonpath,
+                        workspace_root=workspace_root,
+                        executor_url=executor_url,
+                        ns_server_env=ns_server_env,
+                    )
+                else:
+                    # argv list (no shell): keeps auto_host a DIRECT child of
+                    # this process, so its PR_SET_PDEATHSIG watches us
+                    # one-hop. A /bin/sh wrapper here would break that chain
+                    # — see BaseServer.start().
+                    command = [
+                        python,
+                        "-m",
+                        "app.server.auto_host",
+                        *source_arg,
+                        "--class",
+                        class_name,
+                        "--port",
+                        str(port),
+                    ]
+                    server = BaseServer(
+                        name=server_label,
+                        command=command,
+                        port=port,
+                        startup_timeout=getattr(nodeset_cls, "startup_timeout", 1800),
+                        working_dir=backend_dir,
+                        env={
+                            "PYTHONPATH": pythonpath,
+                            "AGENTCANVAS_EXECUTOR_URL": executor_url,
+                            **ns_server_env,
+                        },
+                    )
                 server.start()
 
                 manifest = server.fetch_manifest()
@@ -693,6 +713,95 @@ class WorkspaceComponentRegistry:
             "worker_count": worker_count,
             "ports": ports,
         }
+
+    def _build_container_server(
+        self,
+        *,
+        nodeset_cls: type,
+        server_label: str,
+        image: str,
+        port: int,
+        source_arg: list[str],
+        class_name: str,
+        pythonpath: str,
+        workspace_root: str,
+        executor_url: str,
+        ns_server_env: dict[str, str],
+    ):
+        """Assemble a ContainerServer for a ``server_image`` nodeset.
+
+        The container runs the stock auto_host from the read-only repo mount,
+        so every host path riding the command line or PYTHONPATH is rewritten
+        under WORKSPACE_MOUNT. Sources outside the repo root can't be
+        translated — that's a hard error, not a silent wrong path.
+        """
+        from ..server.container_server import WORKSPACE_MOUNT, ContainerServer
+
+        root = str(Path(workspace_root).resolve())
+
+        def _translate(path: str) -> str:
+            resolved = str(Path(path).resolve()) if path.startswith("/") else path
+            if resolved.startswith(root):
+                return WORKSPACE_MOUNT + resolved[len(root) :]
+            raise RuntimeError(
+                f"Container-mode nodeset {server_label}: source path {path} "
+                f"is outside the repo root {root} and cannot be mounted."
+            )
+
+        inner_source_arg = [
+            _translate(a) if a.startswith("/") else a for a in source_arg
+        ]
+        inner_pythonpath = ":".join(
+            _translate(p) if p.startswith("/") else p for p in pythonpath.split(":")
+        )
+        inner_command = [
+            getattr(nodeset_cls, "server_container_python", "python3"),
+            "-m",
+            "app.server.auto_host",
+            *inner_source_arg,
+            "--class",
+            class_name,
+            "--port",
+            str(port),
+        ]
+
+        mounts = [f"{root}:{WORKSPACE_MOUNT}:ro"]
+        for host_path, container_spec in (
+            getattr(nodeset_cls, "server_mounts", None) or {}
+        ).items():
+            hp = Path(os.path.expandvars(os.path.expanduser(host_path)))
+            if not hp.is_absolute():
+                hp = Path(root) / hp
+            if hp.exists():
+                mounts.append(f"{hp.resolve()}:{container_spec}")
+            else:
+                log.warning(
+                    "%s: server_mounts host path %s missing — skipped (the "
+                    "capability needing it will error at call time)",
+                    server_label,
+                    hp,
+                )
+
+        # Loopback executor URLs are unreachable from inside the container;
+        # host.docker.internal is mapped via --add-host=host-gateway.
+        container_executor_url = executor_url.replace(
+            "127.0.0.1", "host.docker.internal"
+        ).replace("localhost", "host.docker.internal")
+
+        return ContainerServer(
+            name=server_label,
+            image=image,
+            inner_command=inner_command,
+            gpu=getattr(nodeset_cls, "server_image_gpu", False),
+            mounts=mounts,
+            container_env={
+                "PYTHONPATH": inner_pythonpath,
+                "AGENTCANVAS_EXECUTOR_URL": container_executor_url,
+                **ns_server_env,
+            },
+            port=port,
+            startup_timeout=getattr(nodeset_cls, "startup_timeout", 1800),
+        )
 
     def _unload_auto_server_nodeset(self, name: str) -> dict:
         """Stop all auto-hosted subprocesses for a nodeset (single-instance

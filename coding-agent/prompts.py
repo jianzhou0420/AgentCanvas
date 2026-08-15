@@ -202,7 +202,7 @@ instruction's endpoint. It is permanent, and ending without it scores zero.
 - Work autonomously until you stop; nobody can answer questions.
 """
 
-# go2 surface (2026-07-20, NOT part of the std freeze): same shape as the
+# go2 surface (NOT part of the std freeze): same shape as the
 # habitat prompts but literally faithful to the real robot — 0.25 m / 15 deg
 # (habitat parity, calibrated under the StaticWalk gait — see go2_host.py),
 # no clearance readout (RGB-only camera), look_around costs 24 turn steps.
@@ -279,10 +279,10 @@ short deliberate batches over long speculative ones.
 """
 
 # The ObjectNav-family surface (OBJNAV_*_SYSTEM_PROMPT) was removed
-# 2026-08-03 with the objnav line — never entered the MIP paper; last present
+# with the objnav line — never entered the MIP paper; last present
 # at a942483 (bridges/splits at cecd19c).
 
-# HM-EQA surface (2026-07-29, NOT part of the std freeze): embodied question
+# HM-EQA surface (NOT part of the std freeze): embodied question
 # answering on HM3D (explore-eqa, Ren et al. 2024). Same bare toolface shape
 # as the nav lines, with the one benchmark-shaped difference that the episode
 # ends by ANSWERING a multiple-choice question (answer("A".."D")) instead of
@@ -291,9 +291,8 @@ short deliberate batches over long speculative ones.
 # benchmark's own (STARTS tilted 30° down — explore-eqa cfg/vlm_exp.yaml),
 # stated so the model can account for the floor-heavy framing.
 #
-# Camera-tilt slots (user decision 2026-07-29, option B, after the ep4 smoke
-# analysis showed the fixed −30° pitch makes near-overhead ceiling fixtures
-# structurally unobservable): {camera_sentence} / {tilt_actions} / {tilt_rule}
+# Camera-tilt slots (the fixed −30° pitch makes near-overhead ceiling
+# fixtures structurally unobservable): {camera_sentence} / {tilt_actions} / {tilt_rule}
 # render the 4/5 tilt actions in or out, keyed off the SAME flag the bridge's
 # HMEQA_TILT masking uses (cells tilt_actions, maskable via
 # `--nonstd --set tilt_actions=0`) — the prompt and the toolface never
@@ -380,7 +379,7 @@ HMEQA_TILT_RULE = (
 )
 
 
-# LIBERO full surface (2026-08-03): the SENSOR rung of the interface ladder,
+# LIBERO full surface: the SENSOR rung of the interface ladder,
 # designed after the fable ep0 anatomy showed the bare wall is the
 # depth/height DoF. Same two tools; observe adds the wrist view + proprio,
 # step reports measured EE movement, and auto-observe (nav-line precedent)
@@ -442,8 +441,8 @@ grasping, verify the object moves with the arm before transporting it.
 - Work autonomously until the task is complete; nobody can answer questions.
 """
 
-# LIBERO toolbox surface (2026-08-04, user direction: max out the tool
-# surface first — "先跑通" — and attribute downward later): atomic per-view /
+# LIBERO toolbox surface (max out the tool surface first, attribute
+# downward later): atomic per-view /
 # per-sensor reads, the simulator's ground-truth scene readout, and servo
 # macros over the env's frozen VoxPoser-era nodes. Every tool is independent
 # (one tool, one job) so later ablation can pull them out one at a time.
@@ -502,7 +501,7 @@ many remain. If it runs out the episode ends as a failure.
 - Work autonomously until the task is complete; nobody can answer questions.
 """
 
-# LIBERO toolbox-vision surface (2026-08-04, user: 不用 ground truth 的版本):
+# LIBERO toolbox-vision surface (the no-ground-truth variant):
 # the toolbox with its one privileged tool swapped out — get_objects (sim GT)
 # replaced by pixel_to_3d (depth backprojection: camera geometry + depth
 # buffer only). Everything else identical, so the _tb vs _tbv delta prices
@@ -572,12 +571,12 @@ many remain. If it runs out the episode ends as a failure.
 - Work autonomously until the task is complete; nobody can answer questions.
 """
 
-# LIBERO manipulation surface (2026-08-03, NOT part of the std freeze): the
+# LIBERO manipulation surface (NOT part of the std freeze): the
 # minimal two-tool interface re-embodied on a Franka Panda arm. step() takes
 # the env's NATIVE action space — 7-D continuous OSC control ticks — so unlike
 # the nav lines there is no bridge-side discretization; the stated magnitudes
 # (~1 cm / ~5 deg per full-scale tick, ~12-tick gripper actuation) and frame
-# directions were CALIBRATED empirically 2026-08-03 on libero_object task 0
+# directions were CALIBRATED empirically on libero_object task 0
 # (see libero_bridge.py docstring). No terminal action: LIBERO detects task
 # success from scene state, so the episode ends on success or budget
 # exhaustion — the agent's only "stop" is ending its session.
@@ -778,7 +777,7 @@ def build_briefing(
     ``auto_observe`` MUST match the bridge's HABITAT_AUTO_OBSERVE: when True the
     prompt tells the model step()/goto() return the resulting view (observe()
     is first-look only); when False it prescribes the classic alternation."""
-    # Branch order (merged 2026-08-01): hybrid -> benchmark -> wp -> bare/std.
+    # Branch order: hybrid -> benchmark -> wp -> bare/std.
     # hybrid first because it owns the entire surface (own toolface, own first
     # prompt); the benchmark lines next because they replace the task framing
     # outright; wp and bare/std share the R2R framing and differ only in action

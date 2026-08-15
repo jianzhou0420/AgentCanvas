@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EXPRESS-Bench NodeSet — AgentCanvas</title>
+<meta name="description" content="The EXPRESS-Bench NodeSet ( EnvExpressNodeSet , workspace/nodesets/env/env_express/ ) wraps habitat-sim 0.3.x for exploration-aware open-vocabulary EQA on HM3D, implementing EXPRESS-Bench (25.03,…">
+<meta property="og:title" content="EXPRESS-Bench NodeSet — AgentCanvas">
+<meta property="og:description" content="The EXPRESS-Bench NodeSet ( EnvExpressNodeSet , workspace/nodesets/env/env_express/ ) wraps habitat-sim 0.3.x for exploration-aware open-vocabulary EQA on HM3D, implementing EXPRESS-Bench (25.03,…">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/express.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="EXPRESS-Bench">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/nodesets/env/express.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Nodesets</a>
+    <span class="sep">/</span>
+    <a href="index.html">Env</a>
+    <span class="sep">/</span>
+    <span class="here">EXPRESS-Bench</span>
+  </div>
+  <div class="last-updated">2026-08-13 16:30</div>
+</div>
+  <header class="page-header guide">
+  <h1>EXPRESS-Bench NodeSet</h1>
+</header>
+
+<p class="lede">The <strong>EXPRESS-Bench NodeSet</strong> (<code>EnvExpressNodeSet</code>, <code>workspace/nodesets/env/env_express/</code>) wraps <strong>habitat-sim 0.3.x</strong> for exploration-aware open-vocabulary EQA on HM3D, implementing <a href="https://arxiv.org/abs/2503.11117">EXPRESS-Bench</a> (25.03, ICCV 2025): 2,044 question–trajectory pairs over 777 GT exploration trajectories in 174 scenes. The agent explores by free-pose teleport hops (navmesh-snapped, geodesic path length accumulated), answers the question, and is scored by the benchmark's own <strong>gpt-4o-mini judge</strong> into the C / C* / E_path / d_T metric suite — grounding and correctness judged jointly, path efficiency and goal distance folded in on the env side.</p>
+
+<p>Code descendant of <a href="hmeqa.html">HM-EQA</a>'s explore-eqa lineage — same simulator generation, same camera conventions (512×512 RGB-D, HFOV 90°, tilt 0), and the same <code>ac-hmeqa</code> conda env (<code>$EXPRESS_PYTHON</code> overrides). It is a separate nodeset rather than a dataset spec inside <code>env_hmeqa</code> because the task shape differs: open-vocab answers with an LLM judge band instead of multiple-choice letter match, and per-episode step budgets that scale with scene size.</p>
+
+<hr>
+
+<h2 id="1-overview"><span class="num">1.</span> Overview</h2>
+
+<h3 id="benchmark-identity">Benchmark identity</h3>
+
+<table>
+<thead><tr><th>Fact</th><th>Value</th></tr></thead>
+<tbody>
+<tr><td>Paper</td><td><a href="https://arxiv.org/abs/2503.11117">Beyond the Destination (EXPRESS-Bench)</a> (25.03), Jiang et al., ICCV 2025, SYSU HCP</td></tr>
+<tr><td>Questions</td><td>2,044 open-vocab QA / 777 trajectories / 174 scenes (140 train + 34 val; both splits are eval-only for zero-shot methods — "train" is the HM3D scene split, not training data)</td></tr>
+<tr><td>Judge</td><td>gpt-4o-mini with the benchmark's <code>evaluation.txt</code> prompt; returns "δ, σ" — <strong>grounding σ first</strong>, correctness δ second</td></tr>
+<tr><td>Metrics</td><td>C (answer correctness × grounding), C* (grounding-only ceiling), E_path (path-efficiency-weighted C), d_T (final distance to GT goal; inf episodes skipped upstream — mirrored as <code>d_t=-1</code> + <code>d_t_valid=0</code>)</td></tr>
+<tr><td>Paper reference rows</td><td>Fine-EQA C 40.55 / C* 63.95 / E_path 16.22 / d_T 6.43 · RE (random) C 36.95 / C* 62.75 / E_path 12.06 · FBE C 38.60 · human C* 83.99</td></tr>
+</tbody>
+</table>
+
+<h3 id="architecture">Architecture</h3>
+
+<p>The three-layer shape shared by every env nodeset:</p>
+
+<ol>
+<li><strong><code>ExpressEnvManager</code></strong> (singleton) — owns one habitat-sim simulator, a lock, and a single-thread executor pinning simulator work to one OS thread. Scenes load as bare <code>.basis.glb</code> (upstream's <code>semantic_sensor</code> flag is dead code — its <code>make_simple_cfg</code> builds color+depth only; mirrored deliberately).</li>
+<li><strong>Canvas nodes</strong> — nine: six gym verbs plus the FBE frontier sampler and the two baseline-loop routing nodes, all thin adapters over the manager (§2).</li>
+<li><strong><code>EnvExpressNodeSet</code></strong> — <code>server_python = conda_env_python("ac-hmeqa", "EXPRESS_PYTHON")</code>, auto-hosted server-mode with the same NVIDIA driver-570 EGL <code>LD_PRELOAD</code> shim as <a href="hmeqa.html">HM-EQA</a>. <code>default_per_step_budget_sec = 30.0</code> (LLM-in-the-loop sizing, same rationale as ObjectNav's).</li>
+</ol>
+
+<hr>
+
+<h2 id="2-canvas-nodes"><span class="num">2.</span> Canvas nodes</h2>
+
+<table>
+<thead>
+<tr><th>Node type</th><th>Display name</th><th>Input ports</th><th>Output ports</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env_express__reset</code></td>
+<td>EXPRESS: Reset</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>question</code>, <code>answer</code>, <code>scene</code>, <code>episode_id</code>, <code>trajectory_id</code>, <code>question_type</code>, <code>num_step</code>, <code>floor_height</code>, <code>tsdf_bnds</code>, <code>geodesic_distance</code></td>
+<td>Begin episode — metadata only, no observation. <code>answer</code> is the GT free-form answer (judge input; never show the agent). <code>num_step</code> is the per-episode, scene-size-dependent budget. <code>tsdf_bnds</code> hands TSDF-frame volume bounds to mapping methods.</td>
+</tr>
+<tr>
+<td><code>env_express__step_pose</code></td>
+<td>EXPRESS: Step (pose teleport)</td>
+<td><code>action</code> (TEXT, free-pose JSON)</td>
+<td><code>reward</code>, <code>terminated</code>, <code>truncated</code>, <code>info</code>, <code>step_index</code>, <code>episode_id</code></td>
+<td>Teleport to a waypoint: navmesh <code>snap_point</code> with NaN → <code>get_random_navigable_point_near(last, 3)</code> fallback, geodesic hop distance accumulated into <code>path_len</code> (drives E_path) — mirrors upstream <code>main.py:407-415</code>. Unparseable action JSON or manager error sets <code>terminated=truncated=True</code> (designed loop-stop). <code>truncated=True</code> also once <code>step_index</code> reaches <code>num_step</code>.</td>
+</tr>
+<tr>
+<td><code>env_express__sample_waypoint</code></td>
+<td>EXPRESS: Sample Waypoint (random)</td>
+<td><code>trigger</code> (ANY)</td>
+<td><code>action</code> (TEXT)</td>
+<td>Random-exploration action source (the paper's RE baseline hop): navigable point within 3 m of the agent — the same <code>get_random_navigable_point_near</code> call as upstream — plus a uniform random yaw from a seed-derived RNG, emitted as <code>step_pose</code>'s free-pose JSON.</td>
+</tr>
+<tr>
+<td><code>env_express__sample_frontier</code></td>
+<td>EXPRESS: Sample Frontier (FBE)</td>
+<td><code>trigger</code> (ANY)</td>
+<td><code>action</code> (TEXT)</td>
+<td>Frontier-exploration action source (the paper's FBE baseline): TSDF-fuses the current depth frame (<code>TSDFPlanner.integrate</code>, skipped on black frames) then picks the next frontier pose (<code>find_next_pose</code> with the <code>fine_eqa.yaml</code> planner block), emitted as <code>step_pose</code>'s free-pose JSON. Planner state is vendored verbatim (<code>_tsdf.py</code> / <code>_geom.py</code> from upstream <code>src/</code>) and rebuilt per episode; <code>regs_list=[]</code> keeps the GOE branch permanently off. Planner failure falls back to the RE random hop.</td>
+</tr>
+<tr>
+<td><code>env_express__stop_gate</code></td>
+<td>EXPRESS: Stop Gate</td>
+<td><code>rgb</code>, <code>stop_text</code></td>
+<td><code>continue</code>, <code>stop</code>, <code>rgb_final</code>, <code>stopped_early</code></td>
+<td>Routes the per-step early-stop decision (upstream <code>main.py:200-210</code>): "yes" from the stop LLM on a non-black frame emits <code>stop</code> + the decision frame to <code>iterOut</code>; otherwise <code>continue</code> triggers the next hop. Black frames never stop — upstream skips the check entirely on black frames.</td>
+</tr>
+<tr>
+<td><code>env_express__answer_router</code></td>
+<td>EXPRESS: Answer Router</td>
+<td><code>question</code>, <code>stopped_early</code>, <code>rgb</code></td>
+<td><code>question_stop</code>, <code>rgb_stop</code>, <code>question_trunc</code></td>
+<td>Post-loop branch (upstream <code>main.py:204-210</code> vs <code>419-422</code>): early stop → <code>answer.txt</code> prompt WITH the decision frame; budget truncation → <code>random_answer.txt</code> prompt WITHOUT any image. Emits exactly one branch, so exactly one of the two answer <code>llmCall</code>s fires.</td>
+</tr>
+<tr>
+<td><code>env_express__observe_egocentric</code></td>
+<td>EXPRESS: Observe (egocentric)</td>
+<td><code>trigger</code> (ANY, optional)</td>
+<td><code>rgb</code>, <code>depth</code>, <code>pose_normal</code>, <code>angle</code>, <code>intrinsics</code>, <code>cam_pose_tsdf</code>, …</td>
+<td>Idempotent pull of the current first-person frame: 512×512 RGB-D, normal-frame position + yaw, camera intrinsics, and the TSDF-frame extrinsic that upstream's mapping stack consumes.</td>
+</tr>
+<tr>
+<td><code>env_express__judge_prompt</code></td>
+<td>EXPRESS: Judge prompt</td>
+<td><code>pred_answer</code> (TEXT)</td>
+<td><code>user</code>, <code>system</code></td>
+<td>Assemble the benchmark's <code>evaluation.txt</code> judge prompt (question + GT answer + model response) exactly like upstream <code>gpt.py:prompt_make</code>. Wire <code>user</code> plus the final frame into a gpt-4o-mini <code>llmCall</code>.</td>
+</tr>
+<tr>
+<td><code>env_express__evaluate</code></td>
+<td>EXPRESS: Evaluate</td>
+<td><code>pred_answer</code>, <code>judge_text</code></td>
+<td><code>metrics</code></td>
+<td>Parse "δ, σ" (grounding first) mirroring upstream <code>evaluation.py</code> and fold path efficiency + goal distance into <code>c</code>, <code>c_star</code>, <code>e_path</code>, <code>d_t</code> (+<code>d_t_valid</code>, <code>delta</code>, <code>sigma</code>, <code>judge_ok</code>, <code>path_len</code>, <code>gt_geodesic</code>, <code>steps_taken</code>, <code>num_steps</code>). Filter aggregate d_T on <code>d_t_valid</code>.</td>
+</tr>
+</tbody>
+</table>
+
+<h3 id="action-contract">Action contract</h3>
+
+<p><code>step_pose</code> consumes free-pose JSON — the last line of a planner LLM's reply, or <code>sample_waypoint</code>'s output, verbatim:</p>
+
+<pre><code>{"position_normal": [x, y], "angle": yaw_radians}</code></pre>
+
+<p>Positions are normal-frame 2D (floor height appended env-side); the waypoint is navmesh-snapped, so methods may propose freely. Hops are conventionally capped at 3 m by prompt, mirroring upstream's planner limit — the env does not enforce it.</p>
+
+<hr>
+
+<h2 id="3-env-panel"><span class="num">3.</span> Env panel</h2>
+
+<p><code>ExpressEnvPanel</code> owns episode placement: <strong>split</strong> (<code>val</code> / <code>train</code> / <code>all</code>) → <strong>episode_index</strong>. Episode ids count from array order — val episodes sit at ids 1635+, so a "val episode 0" sanity check must select by index within the split, not by id.</p>
+
+<hr>
+
+<h2 id="4-data"><span class="num">4.</span> Data staging</h2>
+
+<table>
+<thead><tr><th>Path</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>data/hm3d/express_bench/express-bench.json</code></td><td>The 2,044-question release</td></tr>
+<tr><td><code>data/hm3d/hm3dsem/</code></td><td>Flat HM3D basis-scene pool — all 174 EXPRESS scenes (and all 828 MT-HM3D scenes) audited present with non-empty glb + navmesh; val scenes symlinked from <code>scene_datasets/hm3d/val</code>, train scenes fetched from the bingCS/hm3d HF mirror with official-tar backfill</td></tr>
+<tr><td><code>workspace/nodesets/env/env_express/prompts/evaluation.txt</code></td><td>Vendored judge prompt (benchmark-native)</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2 id="5-graphs"><span class="num">5.</span> Graphs: <code>express_probe</code>, <code>express_re</code>, <code>express_fbe</code></h2>
+
+<p>All in <code>workspace/graphs/eqa/unverified/</code>. The two baseline graphs are <strong>step-for-step faithful to upstream <code>main.py</code></strong> (2026-08-14 rework): each iteration first runs the gpt-4o-mini <strong>stop check</strong> (<code>explore.txt</code> verbatim) on the current frame — starting with the seed frame, matching upstream's <code>cnt_step=0</code> — then <code>stop_gate</code> either exits the loop or triggers the exploration hop. The verdict band branches on how the loop ended: early stop → <code>answer.txt</code> WITH the decision frame; budget truncation → <code>random_answer.txt</code> WITHOUT any image (<code>main.py:421</code>). Judge = <code>evaluation.txt</code> + final frame → δ, σ → C / C* / E_path / d_T. All prompts are verbatim from upstream <code>prompt/*.txt</code>, assembled the way <code>gpt.py:prompt_make</code> does.</p>
+
+<ul>
+<li><strong><code>express_probe</code></strong> — built-ins-only wiring probe: observe → <code>basic_agent__image_analyze</code> caption → <code>llmCall</code> proposes a waypoint JSON → <code>textParse</code> → <code>step_pose</code>. Exists to exercise the env end to end; its score is not meaningful. (Keeps the old always-truncate verdict band — it is not a paper baseline.)</li>
+<li><strong><code>express_re</code></strong> — the paper's <strong>Random Exploration baseline</strong>: stop check → <code>sample_waypoint</code> random hop within 3 m + uniform yaw → <code>step_pose</code>. Paper reference: RE C 36.95 / C* 62.75 / E_path 12.06 over the full 2,044 set.</li>
+<li><strong><code>express_fbe</code></strong> — the paper's <strong>Frontier-Based Exploration baseline</strong>: stop check → <code>sample_frontier</code> (TSDF fusion + frontier pick) → <code>step_pose</code>. Paper reference: FBE C 38.60 / C* 63.03 / E_path 12.20.</li>
+</ul>
+
+<p><strong>Known deviation</strong> (both baselines): on budget truncation the judge image is one frame later than upstream's — the frame after the final hop rather than the frame at the final stop check. Fidelity to the initial view is exact the other way: <code>reset</code> now poses the agent with the record's <code>start_rotation</code> verbatim (upstream <code>main.py:77+111</code>), not an identity yaw.</p>
+
+<div class="callout"><strong>Judge model is a run-time choice.</strong> The benchmark judges with gpt-4o-mini; select a gpt-4o-mini profile on the judge node (profiles are user-level and never baked into graph JSON). And beware the active-profile trap in §6.</div>
+
+<hr>
+
+<h2 id="6-verification"><span class="num">6.</span> Verification evidence</h2>
+
+<p>All rows on slot-b (<code>/experiment:run</code>, RTX 3090, <code>ac-hmeqa</code> env). The 30-episode rows are the first 30 <code>val_unseen</code> episodes — a small, easy-skewed subset, not comparable to the paper's 2,044-question rows.</p>
+
+<table>
+<thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Wire validation</td><td><code>POST /api/graphs/validate</code> on <code>express_probe</code></td><td>33/33 edges wire-type clean; <code>ensure_nodesets_for_graph</code> auto-hosted the server-mode nodeset</td></tr>
+<tr><td>First end-to-end run</td><td>run <code>20260729_130050</code> — probe, 1 val episode</td><td>completed: 4 teleport steps, 5th planner output unparseable → designed bad-action truncate → full verdict band (judge "δ, σ" parsed, <code>judge_ok=1</code>) → C/C*/E_path/d_T harvested</td></tr>
+<tr><td>Full-budget probe run</td><td>run <code>20260813_151848</code> — probe, 1 val episode, gpt-4o-mini active profile</td><td>completed: all 40 budget steps (clean budget truncation), <code>judge_ok=1</code>, σ=2 → C*=40, δ=0 → C=0, d_T 7.01 m valid, path_len 262 m</td></tr>
+<tr><td><strong>RE baseline run</strong></td><td>run <code>20260813_155735</code> — <code>express_re</code>, 1 val episode</td><td>completed: 40 random hops, no LLM in loop, verdict band OK — σ=3 → C*=60, δ=0 → C=0, d_T 4.10 m valid, path_len 121.5 m. Same episode, random beat the probe's LLM waypoints on final distance — consistent with the paper's high RE floor</td></tr>
+<tr><td><strong>Faithful-loop smokes</strong></td><td>runs <code>20260814_214556</code> / <code>20260814_214557</code> — reworked <code>express_re</code> / <code>express_fbe</code>, 1 val episode each</td><td>both completed with the stop module live: RE stopped early at step 6 (E_path 38.1), FBE at step 18 (E_path 21.4); <code>stop_llm</code>/<code>stop_gate</code> fired every step incl. the seed frame; <code>answer_stop_llm</code> (with-image branch) fired</td></tr>
+<tr><td><strong>RE 30-episode run</strong></td><td>run <code>20260814_220732</code> — <code>express_re</code>, 30 val episodes, 6 workers</td><td>C 42.3 / C* 63.3 / E_path 25.5 / d_T 3.20 m; 13 early-stop vs 17 truncated episodes (both answer branches exercised). Paper full-set: C 36.95 / C* 62.75 / E_path 12.06</td></tr>
+<tr><td><strong>FBE 30-episode run</strong></td><td>run <code>20260814_220734</code> — <code>express_fbe</code>, 30 val episodes, 6 workers</td><td>C 47.7 / C* 67.3 / E_path 24.6 / d_T 6.60 m; 12 early-stop vs 18 truncated. Paper full-set: C 38.60 / C* 63.03 / E_path 12.20. C* tracks the paper closely on both baselines; C and E_path run high on this easy-skewed head subset</td></tr>
+</tbody>
+</table>
+
+<h3 id="empty-response-trap">The gpt-5-nano empty-response trap</h3>
+
+<p>A probe run under the shipped default <code>active: gpt-5-nano</code> profile (run <code>20260813_150526</code>) died on step 1 looking like an env bug: caption, planner and judge all returned empty strings (reasoning tokens consumed the whole completion budget — the API succeeds with empty content), the parse produced an empty action, and <code>step_pose</code> took its designed bad-action stop. Diagnosis came from the per-episode <code>log.jsonl</code>: <code>inner_log</code> showed <code>model: gpt-5-nano</code> with 768 completion tokens and no text. With reasoning-family profiles either raise <code>max_tokens</code> well past 2000 or — simpler — run this benchmark under gpt-4o-mini, which is also its native judge.</p>
+
+<h3 id="run-pool-split">Slot-pool artefact split (framework hole, observed here)</h3>
+
+<p>When a slot backend runs with <code>AGENTCANVAS_EVAL_RUNS_DIR</code> pointing at its own pool (<code>outputs/eval_runs_b</code>), the run-level artefacts (<code>summary.json</code>, <code>spec.json</code>, logs) land in the slot pool but the per-episode dirs (<code>episodes/ep0000/log.jsonl</code> + assets) land in the <em>default</em> <code>outputs/eval_runs/</code> — the override doesn't reach the episode writer. Until fixed, look for episode logs under the default pool when debugging slot runs.</p>
+
+<hr>
+
+<h2 id="7-gaps"><span class="num">7.</span> Not yet verified</h2>
+
+<ul>
+<li><strong>Full-set numbers.</strong> The largest run is 30 episodes (first-30 head of val_unseen); nothing is yet comparable to the paper's 2,044-question rows.</li>
+<li><strong>Fine-EQA.</strong> The paper's own method (region-guided GOE + semantic value weighting, Prismatic VLM) is not ported; both detector-free baselines (RE, FBE) are. Upstream reference clone: <code>tmp/thirdparty/EXPRESS-Bench</code>.</li>
+<li><strong>d_T on inf-geodesic episodes.</strong> The <code>d_t_valid=0</code> path is implemented as an upstream mirror but no smoke episode has exercised it.</li>
+<li><strong>Canvas Play.</strong> Verified through the eval-batch path only; viewer nodes executed but never watched in the GUI.</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-overview">1. Overview</a>
+      <a class="toc-h3" href="#benchmark-identity">Benchmark identity</a>
+      <a class="toc-h3" href="#architecture">Architecture</a>
+      <a class="toc-h2" href="#2-canvas-nodes">2. Canvas nodes</a>
+      <a class="toc-h3" href="#action-contract">Action contract</a>
+      <a class="toc-h2" href="#3-env-panel">3. Env panel</a>
+      <a class="toc-h2" href="#4-data">4. Data staging</a>
+      <a class="toc-h2" href="#5-graphs">5. Graphs: probe, RE, FBE</a>
+      <a class="toc-h2" href="#6-verification">6. Verification evidence</a>
+      <a class="toc-h3" href="#empty-response-trap">The gpt-5-nano empty-response trap</a>
+      <a class="toc-h3" href="#run-pool-split">Slot-pool artefact split (framework hole, observed here)</a>
+      <a class="toc-h2" href="#7-gaps">7. Not yet verified</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

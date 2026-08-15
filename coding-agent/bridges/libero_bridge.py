@@ -133,14 +133,14 @@ BARE = os.environ.get("LIBERO_BARE") == "1"
 # views, observe() is a first-look only. The briefing and this flag are
 # driven off the same cells knob so they can never disagree.
 AUTO_OBSERVE = os.environ.get("LIBERO_AUTO_OBSERVE") == "1"
-# Loaded-toolbox surface (2026-08-04): atomic per-view/per-sensor reads +
+# Loaded-toolbox surface: atomic per-view/per-sensor reads +
 # GT scene readout + servo macros, replacing observe(). Cells drive it via
 # the toolbox knob (condition libero_toolbox); implies non-bare, and the
 # step() result stays JSON-only (no auto-observe image attach).
 TOOLBOX = os.environ.get("LIBERO_TOOLBOX") == "1"
 if TOOLBOX:
     AUTO_OBSERVE = False
-# GT switch within the toolbox (2026-08-04, user: 不用 ground truth 的版本):
+# GT switch within the toolbox:
 # "1" (default) = the privileged get_objects scene readout; "0" = the
 # non-privileged locator instead — pixel_to_3d depth backprojection
 # (camera geometry + depth buffer only, never sim object state).
@@ -468,7 +468,7 @@ def _with_feedback(result: dict[str, Any], pre_proprio: dict[str, Any] | None) -
     return content
 
 
-# ── toolbox surface (2026-08-04) ──────────────────────────────────────
+# ── toolbox surface ──────────────────────────────────────
 # Atomic tools over the env's frozen VoxPoser-era nodes. Registered only
 # under LIBERO_TOOLBOX=1; step() above is shared by all surfaces. Every
 # mover returns JSON carrying steps_taken_total so the driver's EventSink
@@ -653,7 +653,7 @@ if TOOLBOX:
                 for p, r in zip(points, results)
             ]}
 
-    # Two-phase servo (tuned on the 2026-08-04 oracle smoke): the env's
+    # Two-phase servo (tuned on an oracle smoke run): the env's
     # step_ee_pose alone advances its bounded OSC goal only 5 mm/substep and
     # the arm tracks ~1.2 mm/tick, so a single 100-substep call covers barely
     # 12 cm. The COARSE phase instead drives full-scale native ticks straight

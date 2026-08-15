@@ -93,7 +93,7 @@ log = logging.getLogger("agentcanvas.env_objnav")
 # dataset file so each is selectable like any split. N ranges over _MIP_N
 # (MIP-100 = full board, MIP-60 = V1.0 long-horizon indicator). Generator
 # (coding-agent/sample_episodes.py --materialize) + the objnav audit manifests
-# were trimmed with the coding-agent objnav line 2026-08-03 — both live in git
+# were trimmed with the coding-agent objnav line — both live in git
 # history at cecd19c and regenerate the dataset files byte-identically.
 _MIP_N: tuple[int, ...] = (100, 60)
 _MIP_SPLITS: list[str] = [f"mip{n}" for n in _MIP_N]
@@ -121,7 +121,7 @@ _DATASET_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Pre-MP3D selection values ("v1"/"v2", slot-b's verified 2026-07-20 runs)
+# Pre-MP3D selection values ("v1"/"v2", used by earlier verified runs)
 # stay accepted everywhere a dataset name enters.
 _DATASET_ALIASES: dict[str, str] = {"v1": "hm3d_v1", "v2": "hm3d_v2"}
 

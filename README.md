@@ -41,6 +41,11 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 ## What's NEW!
 
+- [2026/08] 🔥 **Two new EQA benchmarks** — [EXPRESS-Bench](https://arxiv.org/abs/2503.11117) (ICCV 2025, exploration-aware open-vocab EQA) lands as the `env_express` nodeset with the benchmark's native judge and metrics; [MT-HM3D](https://arxiv.org/abs/2505.13948) plugs into the existing HM-EQA env as a dataset spec. Docs: [EXPRESS-Bench](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/express.html) · [HM-EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html).
+- [2026/08] 🎥 **[ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3)** — the classic feature-based visual-SLAM baseline (GPL-3.0; Campos et al., Univ. Zaragoza), wrapped as the first **Container-Launch** nodeset: `server_image = "agentcanvas/orbslam3"` is the entire deployment declaration — the framework runs the stock nodeset inside `docker run`, no conda env, no bridge code. The clip shows the live in-canvas run on TUM RGB-D: the replay env streams frames into the containerized SLAM session while the trajectory viewer grows the estimated camera path per step. Full walkthrough on the [ORB-SLAM3 nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-orbslam3.html).
+
+  [![ORB-SLAM3 on TUM RGB-D through the containerized nodeset — RGB input on the left, the live top-down camera trajectory with tracking state and feature counts on the right](docs/assets/videos/orbslam3-tum-slam-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-orbslam3.html)
+- [2026/07] 🔥 **ObjectNav + open-vocabulary OVON** — object-goal navigation lands as the `env_objnav` nodeset (HM3D + MP3D corpora, paper-standard agent), with [HM3D-OVON](https://arxiv.org/abs/2409.14296) following as the port-compatible `env_ovon` nodeset. Docs: [ObjectNav](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/objnav.html) · [HM3D-OVON](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/ovon.html).
 - [2026/07] 🎥 **[VGGT-SLAM 2](https://github.com/MIT-SPARK/VGGT-SLAM)** ([RSS 2026](https://arxiv.org/abs/2601.19887)) — dense feed-forward RGB SLAM by Dominic Maggio & Luca Carlone (MIT-SPARK, BSD-2-Clause), ported to AgentCanvas as a nodeset. On TUM RGB-D, RGB-only — no depth, no intrinsics: keyframes batch into submaps, one VGGT feed-forward pass reconstructs each, and a GTSAM SL(4) projective pose-graph fuses them. The clip orbits the finished ~9.3M-point dense map, then shows the live in-canvas build — the camera trajectory arriving in submap bursts and the dense map growing chunk-by-chunk. Full walkthrough on the [VGGT-SLAM 2 nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt-slam2.html).
 
   [![VGGT-SLAM 2 dense feed-forward SLAM on TUM RGB-D — a full-resolution orbit of the finished dense point-cloud map, then the live in-canvas build with the camera trajectory in submap bursts and the map growing chunk-by-chunk](docs/assets/videos/vggt-slam2-tum-demo.gif)](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-vggt-slam2.html)
@@ -232,7 +237,7 @@ AgentCanvas is designed for portability: a single agent graph can execute agains
 
 ### Today: Simulator Nodesets
 
-The shipped environments — Habitat (VLN-CE), MatterSim / MP3D, HM3D ObjectNav, HM-EQA, OpenEQA, SIMPLER (real-to-sim VLA), and LIBERO (manipulation) — are each implemented as a `BaseNodeSet` that exposes observation and action ports. The agent graph connects to these ports and never imports the simulator directly, which keeps the graph independent of any specific environment implementation.
+The shipped environments — Habitat (VLN-CE), MatterSim / MP3D, ObjectNav (HM3D / MP3D) with its open-vocabulary OVON variant, HM-EQA / MT-HM3D, EXPRESS-Bench, OpenEQA, SIMPLER (real-to-sim VLA), and LIBERO (manipulation) — are each implemented as a `BaseNodeSet` that exposes observation and action ports. The agent graph connects to these ports and never imports the simulator directly, which keeps the graph independent of any specific environment implementation.
 
 ### Tomorrow: A ROS Nodeset with the Same Interface
 
@@ -395,7 +400,10 @@ Every nodeset and graph is credited to its author/maintainer on the board below 
         <ul>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/habitat.html">Habitat (VLN-CE)</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/matterport3d.html">MatterSim / MP3D</a> ✅</li>
-          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">HM-EQA</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/objnav.html">ObjectNav (HM3D / MP3D)</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/ovon.html">HM3D-OVON (open-vocab)</a> 🚧</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html">HM-EQA / MT-HM3D</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/express.html">EXPRESS-Bench</a> 🚧</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/openeqa.html">OpenEQA (EM-EQA)</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/simpler.html">SIMPLER</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/libero.html">LIBERO</a> ✅</li>

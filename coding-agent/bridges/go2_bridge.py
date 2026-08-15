@@ -40,7 +40,7 @@ WHAT DIFFERS FROM THE HABITAT BRIDGE, and why — the honest list:
   minutes.
 
 Env vars:
-    GO2_SERVER_URL    go2_host base URL (default http://10.12.76.41:9300)
+    GO2_SERVER_URL    go2_host base URL, e.g. http://<robot-host>:9300 (required)
     GO2_STEP_BUDGET   advisory step budget echoed to the agent (host truncates
                       authoritatively regardless)
     GO2_TURN_BUDGET   the driver's max_turns; when set (>0), every step() result
@@ -64,7 +64,12 @@ from typing import Any
 import requests
 from mcp.server.fastmcp import FastMCP, Image
 
-SERVER_URL = os.environ.get("GO2_SERVER_URL", "http://10.12.76.41:9300")
+SERVER_URL = os.environ.get("GO2_SERVER_URL", "")
+if not SERVER_URL:
+    raise SystemExit(
+        "GO2_SERVER_URL is not set. Point it at the go2_host running on the "
+        "robot's host machine, e.g.: export GO2_SERVER_URL=http://<robot-host>:9300"
+    )
 STEP_BUDGET = int(os.environ.get("GO2_STEP_BUDGET", "500"))
 TURN_BUDGET = int(os.environ.get("GO2_TURN_BUDGET", "0"))
 LIVE_DIR = Path(os.environ["GO2_LIVE_DIR"]) if os.environ.get("GO2_LIVE_DIR") else None

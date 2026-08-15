@@ -606,7 +606,7 @@ export default function CodingAgentPage() {
   const selEpisodes = mode === "browse" ? browseStarted : (status?.started_episodes ?? []);
   const browseInfo = runsList.find((r) => r.name === browseRun);
 
-  // Export the currently shown episode's log as ONE tall PDF page (长图):
+  // Export the currently shown episode's log as ONE tall PDF page:
   // rasterize the full log content (logContentRef has natural height, so we
   // capture everything — not just the scroll-clipped viewport) to a canvas,
   // then wrap it in a single A4-width jsPDF page (height scales with content).
@@ -652,7 +652,7 @@ export default function CodingAgentPage() {
       });
       const imgData = canvas.toDataURL("image/jpeg", 0.92);
       // One long page at A4 width (210 mm); height scales with the content so
-      // it stays a single 长图 strip rather than a fixed A4 sheet.
+      // it stays a single long strip rather than a fixed A4 sheet.
       const A4_W_MM = 210;
       const pageH = (A4_W_MM * canvas.height) / canvas.width;
       const pdf = new jsPDF({
@@ -930,7 +930,7 @@ export default function CodingAgentPage() {
           <span className="mr-1 text-gray-500">episode:</span>
           {selEpisodes.map((i) => {
             const s = epSummary(i);
-            // Two independent questions, answered in order (merged 2026-08-01):
+            // Two independent questions, answered in order:
             //  1. Does this episode count at all? A rate-limit / "limit
             //     exceeded" casualty errored WITHOUT taking a single navigation
             //     step (error + env_steps 0), so it never attempted the task —

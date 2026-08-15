@@ -1,0 +1,312 @@
+{
+  "name": "ORB-SLAM3 on TUM RGB-D (Container Launch)",
+  "description": "ORB-SLAM3 as the protagonist on a classic RGB-D benchmark: env_tum streams a TUM sequence frame-by-frame (no simulator, no policy, no GPU) into a live ORB-SLAM3 session running in a docker container via Container Launch (server_image \u2014 the nodeset declares an image instead of a conda env; the framework does the rest). tum_reset arms the sequence and emits intrinsics -> orbslam3_reset builds the session (depth_scale 1.0, metric TUM depth); each step feeds RGB-D + timestamp to orbslam3_track; trajectoryViewer grows the estimated path (blue) against ground truth (grey). After the loop, get_trajectory surfaces the full corrected path and save_trajectory writes a TUM-format file into the writable mount.",
+  "presetId": "orbslam3_tum_slam",
+  "step_budget": 5000,
+  "nodes": [
+    {
+      "id": "tum_reset",
+      "type": "env_tum__reset",
+      "label": "TUM: Reset (arm sequence)",
+      "position": {
+        "x": 0,
+        "y": 200
+      },
+      "config": {
+        "max_frames": "400"
+      }
+    },
+    {
+      "id": "orbslam3_reset",
+      "type": "model_orbslam3__reset",
+      "label": "ORB-SLAM3: Reset (episode start)",
+      "position": {
+        "x": 340,
+        "y": 340
+      },
+      "config": {
+        "depth_scale": "1.0"
+      }
+    },
+    {
+      "id": "iterIn_tum",
+      "type": "iterIn",
+      "label": "Iter In",
+      "position": {
+        "x": 340,
+        "y": 60
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iterOut_tum",
+        "initPorts": [
+          {
+            "name": "slam_ready",
+            "wire_type": "ANY",
+            "persist": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "tum_step",
+      "type": "env_tum__step_replay",
+      "label": "TUM: Step (advance frame)",
+      "position": {
+        "x": 680,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "tum_observe_loop",
+      "type": "env_tum__observe_egocentric",
+      "label": "TUM: Observe (egocentric)",
+      "position": {
+        "x": 1020,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "orbslam3_track",
+      "type": "model_orbslam3__track",
+      "label": "ORB-SLAM3: Track (per frame)",
+      "position": {
+        "x": 1360,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "iterOut_tum",
+      "type": "iterOut",
+      "label": "Iter Out",
+      "position": {
+        "x": 1700,
+        "y": 200
+      },
+      "config": {
+        "pairedWith": "iterIn_tum",
+        "ports": [
+          {
+            "name": "slam_ready",
+            "wire_type": "BOOL",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "observationViewer",
+      "type": "imageViewer",
+      "label": "Observation (RGB + Depth)",
+      "position": {
+        "x": 620,
+        "y": 700
+      },
+      "config": {
+        "rows": 1,
+        "cols": 2,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          },
+          {
+            "name": "depth",
+            "wire_type": "DEPTH"
+          }
+        ]
+      }
+    },
+    {
+      "id": "trajectoryViewer_slam",
+      "type": "trajectoryViewer",
+      "label": "SLAM Trajectory (live)",
+      "position": {
+        "x": 1200,
+        "y": 700
+      },
+      "config": {
+        "axes": "auto",
+        "align": "on",
+        "max_points": "5000"
+      }
+    },
+    {
+      "id": "orbslam3_get_traj",
+      "type": "model_orbslam3__get_trajectory",
+      "label": "ORB-SLAM3: Get Trajectory",
+      "position": {
+        "x": 2040,
+        "y": 100
+      },
+      "config": {}
+    },
+    {
+      "id": "orbslam3_save_traj",
+      "type": "model_orbslam3__save_trajectory",
+      "label": "ORB-SLAM3: Save Trajectory",
+      "position": {
+        "x": 2040,
+        "y": 250
+      }
+    },
+    {
+      "id": "output_port__slam_traj_handle",
+      "type": "graphOut",
+      "label": "slam_traj_handle",
+      "position": {
+        "x": 2700,
+        "y": 340
+      },
+      "config": {
+        "portName": "slam_traj_handle",
+        "wireType": "TEXT"
+      }
+    },
+    {
+      "id": "output_port__slam_trajectory",
+      "type": "graphOut",
+      "label": "slam_trajectory",
+      "position": {
+        "x": 2700,
+        "y": 210
+      },
+      "config": {
+        "portName": "slam_trajectory",
+        "wireType": "ANY"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_reset_intr_to_pyslam",
+      "source": "tum_reset",
+      "sourceHandle": "intrinsics",
+      "target": "orbslam3_reset",
+      "targetHandle": "intrinsics"
+    },
+    {
+      "id": "e_pyslam_reset_ready_to_iterin",
+      "source": "orbslam3_reset",
+      "sourceHandle": "ready",
+      "target": "iterIn_tum",
+      "targetHandle": "init_slam_ready"
+    },
+    {
+      "id": "e_iterin_init_ready_to_step",
+      "source": "iterIn_tum",
+      "sourceHandle": "init_slam_ready",
+      "target": "tum_step",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iterin_iterout_ready_to_step",
+      "source": "iterIn_tum",
+      "sourceHandle": "iterout_slam_ready",
+      "target": "tum_step",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_info_to_observe",
+      "source": "tum_step",
+      "sourceHandle": "info",
+      "target": "tum_observe_loop",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_step_terminated_to_stop",
+      "source": "tum_step",
+      "sourceHandle": "terminated",
+      "target": "iterOut_tum",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_observe_rgb_to_track",
+      "source": "tum_observe_loop",
+      "sourceHandle": "rgb",
+      "target": "orbslam3_track",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_observe_depth_to_track",
+      "source": "tum_observe_loop",
+      "sourceHandle": "depth",
+      "target": "orbslam3_track",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_observe_ts_to_track",
+      "source": "tum_observe_loop",
+      "sourceHandle": "timestamp",
+      "target": "orbslam3_track",
+      "targetHandle": "timestamp"
+    },
+    {
+      "id": "e_observe_rgb_to_view",
+      "source": "tum_observe_loop",
+      "sourceHandle": "rgb",
+      "target": "observationViewer",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_observe_depth_to_view",
+      "source": "tum_observe_loop",
+      "sourceHandle": "depth",
+      "target": "observationViewer",
+      "targetHandle": "depth"
+    },
+    {
+      "id": "e_track_pts_to_iterout",
+      "source": "orbslam3_track",
+      "sourceHandle": "tracking_ok",
+      "target": "iterOut_tum",
+      "targetHandle": "slam_ready"
+    },
+    {
+      "id": "e_track_pose_to_trajviewer",
+      "source": "orbslam3_track",
+      "sourceHandle": "pose",
+      "target": "trajectoryViewer_slam",
+      "targetHandle": "pose"
+    },
+    {
+      "id": "e_observe_pose_to_trajviewer_gt",
+      "source": "tum_observe_loop",
+      "sourceHandle": "pose",
+      "target": "trajectoryViewer_slam",
+      "targetHandle": "gt_pose"
+    },
+    {
+      "id": "e_finalstop_to_gettraj",
+      "source": "iterOut_tum",
+      "sourceHandle": "final_stop",
+      "target": "orbslam3_get_traj",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_iterOut_tum_final_stop_orbslam3_save_traj_trigger",
+      "source": "iterOut_tum",
+      "sourceHandle": "final_stop",
+      "target": "orbslam3_save_traj",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_orbslam3_save_traj_handle_output_port__slam_traj_handle_value",
+      "source": "orbslam3_save_traj",
+      "sourceHandle": "handle",
+      "target": "output_port__slam_traj_handle",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_orbslam3_get_traj_trajectory_output_port__slam_trajectory_value",
+      "source": "orbslam3_get_traj",
+      "sourceHandle": "trajectory",
+      "target": "output_port__slam_trajectory",
+      "targetHandle": "value"
+    }
+  ]
+}
