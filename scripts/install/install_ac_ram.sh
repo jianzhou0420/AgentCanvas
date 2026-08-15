@@ -95,6 +95,9 @@ echo "=== Step 6: Installing server-mode harness ==="
 $RAM_PIP install \
     "msgpack" "fastapi[standard]" "uvicorn" "httpx" \
     "pydantic>=2.10" "pydantic-settings" "python-dotenv" "requests"
+# MCP projection (/mcp on auto_host): mcp 1.x only — 2.0 removed the lowlevel
+# Server API the projection is written against (app/server/mcp_projection.py).
+$RAM_PIP install "mcp==1.27.0"
 
 # ── Step 7: Verify ──
 echo ""

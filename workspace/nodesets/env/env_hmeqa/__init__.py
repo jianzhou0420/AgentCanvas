@@ -17,11 +17,13 @@ Architecture — mirrors the three-layer pattern from ``habitat.py``:
      pinned ThreadPoolExecutor for GL/physics thread affinity.
 
 2. Canvas tool nodes (``BaseCanvasNode`` adapters)
-     env_hmeqa__reset           — start an episode; emits first obs + Q
-     env_hmeqa__step            — free-pose teleport; emits new obs
-     env_hmeqa__episode_info    — Q, choices, GT answer, scene info
-     env_hmeqa__cam_intrinsics  — 3×3 camera matrix (episode-constant)
-     env_hmeqa__evaluate        — post-hoc success check (GT comparison)
+     env_hmeqa__reset               — start an episode; emits question metadata
+     env_hmeqa__step_pose           — free-pose teleport (explore-eqa native)
+     env_hmeqa__step_discrete       — 0.25 m / 30° discrete nav (coding-agent
+                                      EQA line 2026-07-29; NOT explore-eqa
+                                      protocol — see the tool docstring)
+     env_hmeqa__observe_egocentric  — RGB / depth / pose / intrinsics
+     env_hmeqa__evaluate            — post-hoc success check (GT comparison)
 
 3. ``EnvHMEQANodeSet`` (collection + lifecycle)
      ``get_tools()`` + ``initialize()`` + ``shutdown()`` +
@@ -129,6 +131,45 @@ _SCENE_ROOT = os.environ.get(
     "HMEQA_SCENE_ROOT", os.path.join(_REPO_ROOT, "data", "hm3d", "hm3dsem")
 )
 
+# Dataset-layer splits (aligned with env_objnav's MIP
+# registration): "val" = the released 500-question CSV; "mip{n}" = the
+# derived scene-stratified subsample written by
+# coding-agent/sample_episodes.py --materialize (row k of the derived CSV =
+# the k-th sampled original row, ascending original index). Selected via the
+# env panel split field, episodes indexed 0..N-1, exactly like the objnav
+# mip splits. _MIP_N mirrors the sampler — keep the two in sync.
+_MIP_N = (100,)
+_SPLIT_FILES = {
+    "val": "questions.csv",
+    **{f"mip{n}": f"questions_mip{n}.csv" for n in _MIP_N},
+}
+
+
+def _split_csv_path(dataset: str, split: str) -> str:
+    """Question CSV for a dataset-layer split. "val" is the dataset spec's
+    own questions_csv; mip{n} files sit next to it in the same corpus dir."""
+    spec = _DATASET_SPECS[dataset]
+    if split == "val":
+        return str(spec["questions_csv"])
+    return os.path.join(
+        os.path.dirname(str(spec["questions_csv"])), _SPLIT_FILES[split]
+    )
+
+
+def _available_splits(dataset: str) -> list[str]:
+    """Registered splits whose CSV exists on disk for a dataset ("val" first)."""
+    return [s for s in _SPLIT_FILES if os.path.isfile(_split_csv_path(dataset, s))]
+
+
+def _split_question_count(dataset: str, split: str) -> int:
+    """Row count of a split's CSV (0 if absent). Cheap line count — the
+    question CSVs carry no embedded newlines (one physical line per row)."""
+    path = _split_csv_path(dataset, split)
+    if not os.path.isfile(path):
+        return 0
+    with open(path) as f:
+        return max(0, sum(1 for _ in f) - 1)
+
 # Camera + agent defaults (mirror explore-eqa cfg/vlm_exp.yaml)
 _DEFAULTS = {
     "img_height": 480,
@@ -142,6 +183,14 @@ _DEFAULTS = {
     "black_pixel_ratio": 0.5,  # paper cfg/vlm_exp.yaml line 30 — obs skipped if #black pixels exceeds this
     "seed": 42,
 }
+
+# Discrete-action magnitudes (env_hmeqa__step_discrete, coding-agent EQA
+# line). NOT part of the explore-eqa protocol — magnitudes mirror the
+# ObjectNav line so the std board's bare toolface carries over unchanged.
+_FORWARD_M = 0.25
+_TURN_DEG = 30.0
+_TILT_DEG = 30.0        # per tilt action (4=up / 5=down)
+_TILT_LIMIT_DEG = 60.0  # runtime pitch clamp; native start is −30
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -353,8 +402,10 @@ class HMEQAEnvManager:
             thread_name_prefix="hmeqa",
         )
 
-        # Static data (loaded once on initialize / switch_dataset)
+        # Static data (loaded on initialize / switch_dataset; questions
+        # reload on set_split)
         self._dataset: str = _DEFAULT_DATASET
+        self._split: str = "val"
         self._questions: list[dict[str, Any]] = []
         self._init_poses: dict[str, dict[str, Any]] = {}
         self._config: dict[str, Any] = dict(_DEFAULTS)
@@ -378,6 +429,11 @@ class HMEQAEnvManager:
         # Runtime pose (mutates per step)
         self._pts: np.ndarray = np.zeros(3)
         self._angle: float = 0.0
+        # Runtime camera pitch (deg). Starts at the config camera_tilt_deg
+        # (explore-eqa native −30) every episode; only step_discrete's tilt
+        # actions (4/5) move it — the step_pose/teleport path never touches
+        # it, so canvas graphs keep the fixed native tilt.
+        self._tilt_deg: float = 0.0
         self._step_index: int = 0
 
     # ── Singleton + lifecycle ──
@@ -408,12 +464,16 @@ class HMEQAEnvManager:
         if spec is None:
             log.error("unknown dataset %r — keeping %r", dataset, self._dataset)
             return
+        if dataset != self._dataset:
+            # splits are per-corpus files — a dataset swap lands back on "val"
+            self._split = "val"
         self._dataset = dataset
-        self._questions = _load_questions(spec["questions_csv"])
+        self._questions = _load_questions(_split_csv_path(dataset, self._split))
         self._init_poses = _load_init_poses(spec["init_poses_csv"])
         log.info(
-            "HMEQAEnvManager: dataset=%s — loaded %d questions, %d init poses",
+            "HMEQAEnvManager: dataset=%s split=%s — loaded %d questions, %d init poses",
             dataset,
+            self._split,
             len(self._questions),
             len(self._init_poses),
         )
@@ -437,6 +497,38 @@ class HMEQAEnvManager:
 
     def _parse_choices_unlocked(self, raw: str) -> list[str]:
         return _DATASET_SPECS[self._dataset]["parse_choices"](raw)
+
+    def set_split(self, split: str) -> dict[str, Any]:
+        """Switch the active dataset-layer split (val / mip100 / ...).
+
+        Reloads the question list and invalidates the loaded episode; the
+        init-pose table is keyed by scene_floor and shared across splits.
+        Errors (unknown split, missing/empty file) are returned, not
+        swallowed — the env panel raises on them so a caller that pushed an
+        unsupported split fails loudly instead of silently running "val".
+        """
+        with self._lock:
+            if split not in _SPLIT_FILES:
+                return {"error": f"unknown split {split!r} "
+                                 f"(expected one of {sorted(_SPLIT_FILES)})"}
+            if split == self._split and self._questions:
+                return {"ok": True, "split": split,
+                        "episodes": len(self._questions)}
+            path = _split_csv_path(self._dataset, split)
+            if not os.path.isfile(path):
+                return {"error": f"split file missing: {path} — run "
+                                 "coding-agent/sample_episodes.py "
+                                 "--benchmark hmeqa --materialize"}
+            questions = _load_questions(path)
+            if not questions:
+                return {"error": f"split file empty/unreadable: {path}"}
+            self._split = split
+            self._questions = questions
+            self._close_simulator_unlocked()
+            self._current_episode_idx = -1
+            log.info("HMEQAEnvManager: split -> %s (%d questions)",
+                     split, len(questions))
+            return {"ok": True, "split": split, "episodes": len(questions)}
 
     def shutdown(self) -> None:
         with self._lock:
@@ -507,6 +599,21 @@ class HMEQAEnvManager:
             if init is None:
                 return {"error": f"init pose missing for {scene_floor}"}
 
+            # Same episode re-selected with a live simulator: restart the
+            # episode (init pose, zeroed counters) WITHOUT the expensive
+            # simulator rebuild. Behavior-equivalent to a full reload — the
+            # scene mesh is the same file — but the coding-agent driver's
+            # panel-field → play → reset flow re-selects the same index three
+            # times per episode, and a rebuild here would triple scene-load
+            # time.
+            if index == self._current_episode_idx and self._simulator is not None:
+                self._pts = np.array(self._ep_init_pts, dtype=np.float64)
+                self._angle = self._ep_init_angle
+                self._tilt_deg = float(self._config["camera_tilt_deg"])
+                self._step_index = 0
+                self._set_agent_pose_unlocked(self._pts, self._angle)
+                return self._current_obs_unlocked()
+
             # Close previous sim, open new one
             self._close_simulator_unlocked()
 
@@ -574,6 +681,7 @@ class HMEQAEnvManager:
 
             self._pts = init_pts
             self._angle = init_angle
+            self._tilt_deg = float(self._config["camera_tilt_deg"])
             self._step_index = 0
 
             # Apply initial pose
@@ -594,7 +702,7 @@ class HMEQAEnvManager:
         import habitat_sim
         from habitat_sim.utils.common import quat_from_angle_axis, quat_to_coeffs
 
-        camera_tilt = self._config["camera_tilt_deg"] * np.pi / 180
+        camera_tilt = self._tilt_deg * np.pi / 180
         rotation = quat_to_coeffs(
             quat_from_angle_axis(angle, np.array([0, 1, 0]))
             * quat_from_angle_axis(camera_tilt, np.array([1, 0, 0]))
@@ -669,6 +777,72 @@ class HMEQAEnvManager:
             self._set_agent_pose_unlocked(pts_habitat, self._angle)
             self._step_index += 1
             return self._current_obs_unlocked()
+
+    def step_discrete(self, action: int) -> dict[str, Any]:
+        """One discrete nav action: 1 = forward 0.25 m (navmesh-constrained
+        via ``pathfinder.try_step`` — slides along walls like habitat's stock
+        MOVE_FORWARD), 2 = turn left 30°, 3 = turn right 30°, 4 = tilt the
+        camera up 30°, 5 = tilt down 30° (pitch clamped to ±60°; a clamped
+        tilt is a no-op that still counts a step, like habitat's LOOK_UP).
+
+        Added 2026-07-29 for the coding-agent EQA line (tilt actions same
+        day — user decision B: the native −30° pitch makes near-overhead
+        ceiling fixtures structurally unobservable, see the ep4 smoke
+        analysis). NOT part of the explore-eqa protocol (whose native action
+        is the free-pose teleport, ``step_freepose``): a discrete surface so
+        the std board's bare toolface (observe/step) carries over unchanged.
+        Magnitudes mirror the ObjectNav line (0.25 m / 30°). No STOP action
+        — an EQA episode ends by answering, which is bridge/method-side, not
+        an env action. The toolface switch that masks 4/5 lives in
+        hmeqa_bridge.py (HMEQA_TILT), not here — the env always accepts them.
+        """
+        with self._lock:
+            if self._simulator is None:
+                return {"error": "no active simulator — call set_episode_by_index first"}
+            if action not in (1, 2, 3, 4, 5):
+                return {"error": f"invalid discrete action {action} "
+                                 "(1=FORWARD 2=LEFT 3=RIGHT 4=TILT_UP 5=TILT_DOWN)"}
+            collided = False
+            tilt_clamped = False
+            if action in (4, 5):
+                want = self._tilt_deg + (_TILT_DEG if action == 4 else -_TILT_DEG)
+                clamped = max(-_TILT_LIMIT_DEG, min(_TILT_LIMIT_DEG, want))
+                tilt_clamped = clamped != want
+                self._tilt_deg = clamped
+            elif action == 1:
+                # yaw θ around +y applied to habitat's -z forward:
+                # forward = (-sin θ, 0, -cos θ)
+                fwd = np.array(
+                    [-math.sin(self._angle), 0.0, -math.cos(self._angle)],
+                    dtype=np.float64,
+                )
+                start = np.asarray(self._pts, dtype=np.float32)
+                target = (np.asarray(self._pts, dtype=np.float64) + _FORWARD_M * fwd)
+                new_pts = np.asarray(
+                    self._pathfinder.try_step(start, target.astype(np.float32)),
+                    dtype=np.float64,
+                )
+                moved = float(np.linalg.norm(new_pts - np.asarray(self._pts, dtype=np.float64)))
+                collided = moved < _FORWARD_M * 0.9
+                self._pts = new_pts
+            elif action == 2:
+                self._angle = float(self._angle) + math.radians(_TURN_DEG)
+            else:
+                self._angle = float(self._angle) - math.radians(_TURN_DEG)
+            self._set_agent_pose_unlocked(np.asarray(self._pts, dtype=np.float64), self._angle)
+            self._step_index += 1
+            result = {
+                "step_index": int(self._step_index),
+                "collided": collided,
+                "pose_normal": _pos_habitat_to_normal(
+                    np.asarray(self._pts, dtype=np.float64)
+                ).tolist(),
+                "angle": float(self._angle),
+                "tilt_deg": float(self._tilt_deg),
+            }
+            if tilt_clamped:
+                result["tilt_clamped"] = True
+            return result
 
     def current_obs(self) -> dict[str, Any]:
         with self._lock:
@@ -758,7 +932,9 @@ class ResetHMEQATool(BaseCanvasNode):
         ),
     ]
     output_ports = [
-        PortDef("question", "TEXT", "Question text as the VLM sees it (with A/B/C/D tail)"),
+        PortDef("question", "TEXT",
+                "Question text (RAW — no A/B/C/D tail; same as raw_question. "
+                "Build the formatted variant from `choices`)"),
         PortDef("raw_question", "TEXT", "Bare question text (no A/B/C/D tail)"),
         PortDef("choices", "ANY", "List of 4 choice strings"),
         PortDef("answer", "TEXT", "Ground-truth letter (A/B/C/D)"),
@@ -793,8 +969,16 @@ class ResetHMEQATool(BaseCanvasNode):
                 "floor_height": 0.0,
                 "tsdf_bnds": None,
             }
-        vlm_q = info.get("question", "")
-        raw = vlm_q.split("\nA.")[0] if "\nA." in vlm_q else vlm_q
+        # current_episode() carries the RAW question text, so `question` and
+        # `raw_question` are the same on this path. NOTE: the
+        # port description used to promise the A/B/C/D tail, but the tail
+        # was never emitted here — and the verified explore_eqa_hmeqa graph
+        # depends on the raw behavior (its build_question node appends the
+        # tail itself from the `choices` port). Behavior is kept; the port
+        # docs are fixed instead. Callers that need the formatted variant
+        # must build it from `choices` (the coding-agent driver does).
+        raw = info.get("question", "")
+        vlm_q = raw
         self._self_log("episode_id", info.get("episode_id"))
         self._self_log("scene", info.get("scene"))
         self._self_log("question", vlm_q[:200])
@@ -898,6 +1082,71 @@ class StepPoseHMEQATool(BaseCanvasNode):
         }
 
 
+class StepDiscreteHMEQATool(BaseCanvasNode):
+    node_type = "env_hmeqa__step_discrete"
+    display_name = "HM-EQA: Step (discrete)"
+    description = (
+        "One discrete nav action: 1=forward 0.25 m (navmesh-constrained), "
+        "2=turn left 30°, 3=turn right 30°, 4=tilt up 30°, 5=tilt down 30° "
+        "(pitch clamped ±60°; pull obs via observe_egocentric)"
+    )
+    category = "environment"
+    icon = "Navigation"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("action", "ACTION",
+                "Discrete action (1=FORWARD 2=LEFT 3=RIGHT 4=TILT_UP 5=TILT_DOWN)"),
+    ]
+    output_ports = [
+        # gym-like contract, mirrors step_pose. HM-EQA has no env-side
+        # terminal (answering is method-side) and no env-side step cap for
+        # the discrete surface (the caller enforces its own budget), so
+        # terminated/truncated only flag env errors.
+        PortDef("reward", "ANY", "Per-step reward (scalar; 0)"),
+        PortDef("terminated", "BOOL", "MDP terminal: env-side error / bad action"),
+        PortDef("truncated", "BOOL", "Env-side error (mirrors terminated; no env step cap)"),
+        PortDef("info", "ANY", "Diagnostics: {step_index, collided, pose_normal, angle}"),
+        PortDef("step_index", "ANY", "Step counter (1-based after first step)"),
+        PortDef("episode_id", "TEXT", "Episode id"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        raw = inputs.get("action", "")
+        try:
+            action = int(raw)
+        except (TypeError, ValueError) as e:
+            self._self_log("error", f"bad action: {e!r} raw={raw!r}")
+            return {
+                "reward": 0.0,
+                "terminated": True,
+                "truncated": True,
+                "info": {"error": str(e)},
+                "step_index": 0,
+                "episode_id": "",
+            }
+        mgr = _get_mgr()
+        result = await _run_sync(mgr.step_discrete, action)
+        if "error" in result:
+            self._self_log("error", result["error"])
+            return {
+                "reward": 0.0,
+                "terminated": True,
+                "truncated": True,
+                "info": {"error": result["error"]},
+                "step_index": 0,
+                "episode_id": "",
+            }
+        self._self_log("step_index", result.get("step_index"))
+        return {
+            "reward": 0.0,
+            "terminated": False,
+            "truncated": False,
+            "info": result,
+            "step_index": result.get("step_index", 0),
+            "episode_id": str(mgr._current_episode_idx),
+        }
+
+
 class ObserveEgocentricHMEQATool(BaseCanvasNode):
     node_type = "env_hmeqa__observe_egocentric"
     display_name = "HM-EQA: Observe (egocentric)"
@@ -965,7 +1214,7 @@ class EvaluateHMEQATool(BaseCanvasNode):
     # GraphExecutor._post_loop_pass then fires the whole chain once,
     # in dependency order, so `pred_letter` resolves correctly. (The old
     # final_fire ClassVar re-fired a node in isolation and could not do
-    # this — retired 2026-05-21.)
+    # this — retired.)
     input_ports = [
         PortDef("pred_letter", "TEXT", "Agent's predicted letter (A/B/C/D)"),
     ]
@@ -1072,7 +1321,7 @@ class HMEQAEnvPanel(BaseEnvPanel):
                 "episode_index": 0,
                 "episode_count": 0,
                 "datasets": list(_DATASET_SPECS),
-                "splits": ["val"],
+                "splits": _available_splits(self._state.get("dataset", _DEFAULT_DATASET)),
                 "message": (
                     "HM-EQA not initialized. Load env_hmeqa from the "
                     "NodeSet Manager to enable episode control."
@@ -1082,6 +1331,7 @@ class HMEQAEnvPanel(BaseEnvPanel):
         current_idx = mgr._current_episode_idx if mgr._current_episode_idx >= 0 else 0
         self._state["dataset"] = mgr._dataset
         self._state["episode_index"] = current_idx
+        self._state["split"] = mgr._split  # manager holds the truth
         ep_info = mgr.get_episode_info(current_idx)
         # ``num_step`` is computed from ``scene_size``, which requires the
         # scene to be loaded; it is set by ``set_episode_by_index`` (the
@@ -1100,7 +1350,7 @@ class HMEQAEnvPanel(BaseEnvPanel):
             "episode_index": current_idx,
             "episode_count": total,
             "datasets": list(_DATASET_SPECS),
-            "splits": ["val"],
+            "splits": _available_splits(mgr._dataset),
             # Per-episode dynamic budget — int(sqrt(scene_size) * 3) per
             # Ren et al. 2024 §VI. Read by the framework's eval-batch
             # resolver chain (eval_batch.py:_run_one_episode) after each
@@ -1122,7 +1372,16 @@ class HMEQAEnvPanel(BaseEnvPanel):
                     state = await self.on_load()
                     state["error"] = res["error"]
                     return state
+            # the manager lands a dataset swap back on "val" — mirror it
+            self._state["split"] = "val"
         elif name == "split":
+            if mgr.initialized:
+                res = await self._run(mgr.set_split, str(value))
+                if isinstance(res, dict) and "error" in res:
+                    # fail LOUDLY (HTTP 500 at the panel endpoint): a caller
+                    # that pushed an unsupported split must not silently run
+                    # on the previously loaded one.
+                    raise RuntimeError(res["error"])
             self._state["split"] = str(value)
             self._state["episode_index"] = 0
         elif name == "episode_index":
@@ -1171,9 +1430,14 @@ class HMEQAEnvPanel(BaseEnvPanel):
                 {"value": key, "label": spec["label"]} for key, spec in _DATASET_SPECS.items()
             ]
         if field == "split":
-            mgr = self._mgr()
-            count = mgr.get_total_episodes() if mgr.initialized else 0
-            return [{"value": "val", "label": f"val ({count} questions)"}]
+            dataset = self._state.get("dataset", _DEFAULT_DATASET)
+            return [
+                {
+                    "value": s,
+                    "label": f"{s} ({_split_question_count(dataset, s)} questions)",
+                }
+                for s in _available_splits(dataset)
+            ]
         if field == "episode_index":
             mgr = self._mgr()
             if not mgr.initialized:
@@ -1254,6 +1518,7 @@ class EnvHMEQANodeSet(BaseNodeSet):
             # gym-like env interface (see docs: nodesets/env/template.html)
             ResetHMEQATool(),  # env_hmeqa__reset (metadata only)
             StepPoseHMEQATool(),  # env_hmeqa__step_pose
+            StepDiscreteHMEQATool(),  # env_hmeqa__step_discrete (coding-agent line)
             ObserveEgocentricHMEQATool(),  # env_hmeqa__observe_egocentric
             EvaluateHMEQATool(),  # env_hmeqa__evaluate
         ]
@@ -1276,13 +1541,14 @@ class EnvHMEQANodeSet(BaseNodeSet):
         log.info("EnvHMEQANodeSet initialized")
 
     async def get_eval_metadata(self) -> dict:
-        count = self._mgr.get_total_episodes() if self._mgr.initialized else 0
+        dataset = self._mgr._dataset
+        splits = _available_splits(dataset)
         return {
             "env_name": "hmeqa",
             "datasets": list(_DATASET_SPECS),
-            "dataset": self._mgr._dataset,
-            "splits": ["val"],
-            "episode_counts": {"val": count},
+            "dataset": dataset,
+            "splits": splits,
+            "episode_counts": {s: _split_question_count(dataset, s) for s in splits},
             "metrics": ["success", "num_steps", "steps_taken", "norm_step"],
             "supports_set_episode": self._mgr.initialized,
             # HM-EQA episode length is scene-size-dependent — this is an

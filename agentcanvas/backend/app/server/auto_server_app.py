@@ -208,6 +208,15 @@ class AutoServerApp(ServerApp):
         self._env_panel: Any | None = None
         self.name = nodeset_cls.name
         self.description = getattr(nodeset_cls, "description", "")
+        # MCP session policy: explicit ``mcp_exclusive`` declaration wins;
+        # None derives from the parallelism contract — "replicated" marks the
+        # nodeset stateful (env scene state, simulator handles), which is
+        # exactly what makes interleaved MCP clients unsafe.
+        declared = getattr(nodeset_cls, "mcp_exclusive", None)
+        if declared is None:
+            self.mcp_exclusive = getattr(nodeset_cls, "parallelism", "shared") == "replicated"
+        else:
+            self.mcp_exclusive = bool(declared)
         # ADR-028 PC-2.5: shared rendezvous tier for batched nodes hosted in
         # this subprocess. Lazily registered handlers (one per batched node
         # type) inside ``_make_handler``; queues materialise on first call.

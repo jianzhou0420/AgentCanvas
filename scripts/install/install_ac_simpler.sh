@@ -134,6 +134,9 @@ echo "=== Step 3: Installing SIMPLER + runtime deps ==="
     'pydantic' \
     'websockets' \
     'msgpack'
+# MCP projection (/mcp on auto_host): mcp 1.x only — 2.0 removed the lowlevel
+# Server API the projection is written against (app/server/mcp_projection.py).
+"$SIMPLER_PYTHON" -m pip install 'mcp==1.27.0'
 
 # AgentCanvas backend has no setup.py — registry.py injects PYTHONPATH at
 # server-mode spawn (see install_ac_libero.sh:124-127 for the same pattern).

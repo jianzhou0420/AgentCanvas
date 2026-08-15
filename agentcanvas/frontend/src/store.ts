@@ -15,12 +15,54 @@ import type {
   NavLLMStepData,
 } from "./types";
 
+// Top-level navigation: two categories — workflow-centric (graph editing,
+// eval, inspection) and agentic (agent-loop pages). The header shows
+// the two categories plus the active category's pages. Persisted to
+// localStorage so a page refresh keeps you on the current page instead of
+// snapping back to the canvas ("nav").
+export type AppCategory = "workflow" | "agentic";
+
+export const PAGES = [
+  { mode: "nav", label: "Canvas", category: "workflow" },
+  { mode: "manager", label: "Manager", category: "workflow" },
+  { mode: "eval", label: "Evaluate", category: "workflow" },
+  { mode: "logs", label: "Logs", category: "workflow" },
+  { mode: "replay", label: "Replay", category: "workflow" },
+  { mode: "monitor", label: "Monitor", category: "workflow" },
+  { mode: "coding", label: "Coding Agent", category: "agentic" },
+  { mode: "human", label: "Human", category: "agentic" },
+] as const;
+
+export type AppMode = (typeof PAGES)[number]["mode"];
+const APP_MODE_KEY = "agentcanvas.appMode";
+const lastPageKey = (cat: AppCategory) => `agentcanvas.lastPage.${cat}`;
+
+export function categoryOf(mode: AppMode): AppCategory {
+  return PAGES.find((p) => p.mode === mode)!.category;
+}
+
+function isAppMode(v: string | null): v is AppMode {
+  return PAGES.some((p) => p.mode === v);
+}
+
+function loadAppMode(): AppMode {
+  try {
+    // ?page=<mode> deep-links a tab (shareable / screenshotable URLs)
+    const q = new URLSearchParams(window.location.search).get("page");
+    if (isAppMode(q)) return q;
+    const v = localStorage.getItem(APP_MODE_KEY);
+    return isAppMode(v) ? v : "nav";
+  } catch {
+    return "nav";
+  }
+}
+
 interface AppStore {
   // Connection
   connected: boolean;
 
   // Eval
-  appMode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor";
+  appMode: AppMode;
   evalRun: EvalRunSummary | null;
   evalEpisodes: EvalEpisodeResult[];
 
@@ -38,9 +80,8 @@ interface AppStore {
   setConnected: (v: boolean) => void;
 
   // Eval actions
-  setAppMode: (
-    mode: "nav" | "manager" | "eval" | "logs" | "replay" | "monitor",
-  ) => void;
+  setAppMode: (mode: AppMode) => void;
+  setCategory: (cat: AppCategory) => void;
   setEvalRun: (run: EvalRunSummary | null) => void;
   addOrUpdateEvalEpisode: (ep: EvalEpisodeResult) => void;
   loadEvalStatus: () => Promise<void>;
@@ -55,7 +96,7 @@ export const useStore = create<AppStore>((set, get) => ({
   connected: false,
 
   // Eval
-  appMode: "nav",
+  appMode: loadAppMode(),
   evalRun: null,
   evalEpisodes: [],
 
@@ -72,7 +113,32 @@ export const useStore = create<AppStore>((set, get) => ({
   setConnected: (v) => set({ connected: v }),
 
   // Eval actions
-  setAppMode: (mode) => set({ appMode: mode }),
+  setAppMode: (mode) => {
+    try {
+      localStorage.setItem(APP_MODE_KEY, mode);
+      localStorage.setItem(lastPageKey(categoryOf(mode)), mode);
+    } catch {
+      /* storage disabled — persistence is best-effort */
+    }
+    set({ appMode: mode });
+  },
+
+  // Switching category lands on that category's last-visited page,
+  // falling back to its first page.
+  setCategory: (cat) => {
+    if (categoryOf(get().appMode) === cat) return;
+    let last: string | null = null;
+    try {
+      last = localStorage.getItem(lastPageKey(cat));
+    } catch {
+      /* storage disabled — persistence is best-effort */
+    }
+    const target =
+      isAppMode(last) && categoryOf(last) === cat
+        ? last
+        : PAGES.find((p) => p.category === cat)!.mode;
+    get().setAppMode(target);
+  },
 
   setEvalRun: (run) => set({ evalRun: run }),
 

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Define a Node — AgentCanvas</title>
+<meta name="description" content="BaseCanvasNode — identity, typed ports, config fields, forward()">
+<meta property="og:title" content="Define a Node — AgentCanvas">
+<meta property="og:description" content="BaseCanvasNode — identity, typed ports, config fields, forward()">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/tutorial/define-a-node.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/tutorial/define-a-node.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Tutorial</a>
+    <span class="sep">/</span>
+    <span class="here">Define a Node</span>
+  </div>
+  <div class="last-updated">2026-08-13</div>
+</div>
+  <header class="page-header guide">
+  <h1>Define a Node</h1>
+  <p class="tagline">BaseCanvasNode — identity, typed ports, config fields, forward()</p>
+</header>
+
+<p class="lede">A <strong>node</strong> is one atomic function on the canvas: it takes typed inputs, does work, returns typed outputs. Everything on the canvas — tools, transformers, data sources, sinks — is a <code>BaseCanvasNode</code> subclass, and the class-level declarations you write here are the single source of truth for three surfaces at once: the canvas UI, the server-mode manifest, and the <a href="../design-docs/operations/mcp-projection.html">MCP projection</a>. Write the declarations honestly and all three come for free. A node must belong to a NodeSet to be discoverable — that's the <a href="define-a-nodeset.html">next tutorial</a>.</p>
+
+<h2 id="1-smallest-node"><span class="num">1.</span> The smallest useful node</h2>
+<p>File location: nodes live in their nodeset's module under <code>workspace/nodesets/{role}/</code>. This one node demonstrates every core concept — identity, a required and an optional port, a config field, and a <code>forward()</code>:</p>
+<pre class="hl">
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">ClassVar</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseCanvasNode</span><span class="p">,</span> <span class="n">NodeUIConfig</span><span class="p">,</span> <span class="n">PortDef</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">app</span><span class="nn">.</span><span class="nn">components</span><span class="nn">.</span><span class="nn">bases</span><span class="w"> </span><span class="kn">import</span> <span class="n">ConfigField</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">GreetNode</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Greet a name — the smallest useful node.&quot;&quot;&quot;</span>
+
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">my_tools__greet</span><span class="s2">&quot;</span>      <span class="c1"># {nodeset}__{node}, unique site-wide</span>
+    <span class="n">display_name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Greet</span><span class="s2">&quot;</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Prepend a greeting to the input name.</span><span class="s2">&quot;</span>
+    <span class="n">category</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">tool</span><span class="s2">&quot;</span>                  <span class="c1"># sidebar group</span>
+    <span class="n">icon</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">Sparkles</span><span class="s2">&quot;</span>                  <span class="c1"># Lucide icon name</span>
+
+    <span class="n">input_ports</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">name</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Who to greet</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">trigger</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">BOOL</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">Fire signal</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">optional</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="p">,</span>
+    <span class="p">]</span>
+    <span class="n">output_ports</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">PortDef</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">message</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">TEXT</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">The greeting</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">,</span>
+    <span class="p">]</span>
+
+    <span class="n">ui_config</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="n">NodeUIConfig</span><span class="p">]</span> <span class="o">=</span> <span class="n">NodeUIConfig</span><span class="p">(</span>
+        <span class="n">color</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">sky</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="n">config_fields</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">ConfigField</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">style</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">select</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">Style</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">plain</span><span class="s2">&quot;</span><span class="p">,</span>
+                        <span class="n">options</span><span class="o">=</span><span class="p">[</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">plain</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">label</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">Plain</span><span class="s2">&quot;</span><span class="p">}</span><span class="p">,</span>
+                                 <span class="p">{</span><span class="s2">&quot;</span><span class="s2">value</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">loud</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">label</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">Loud</span><span class="s2">&quot;</span><span class="p">}</span><span class="p">]</span><span class="p">)</span><span class="p">,</span>
+        <span class="p">]</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="n">name</span> <span class="o">=</span> <span class="n">inputs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">name</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Hello, </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">style</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">plain</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">loud</span><span class="s2">&quot;</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">upper</span><span class="p">(</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="s2">!</span><span class="s2">&quot;</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">message</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">msg</span><span class="p">}</span>        <span class="c1"># keys match output_ports exactly</span>
+</pre>
+
+<h2 id="2-identity"><span class="num">2.</span> Identity fields</h2>
+<table>
+<thead><tr><th>Field</th><th>Required</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>node_type</code></td><td>yes</td><td>Unique across all nodes; format <code>{nodeset}__{node}</code> (double underscore). Becomes the graph-JSON type key, the manifest function name, and the MCP tool name.</td></tr>
+<tr><td><code>display_name</code></td><td>yes</td><td>Human label for sidebar and canvas.</td></tr>
+<tr><td><code>description</code></td><td>yes</td><td>Tooltip on canvas — and the full tool description an MCP client's model sees. Write operational semantics (coordinate frames, units, what a label value means), not just a slogan.</td></tr>
+<tr><td><code>category</code></td><td>yes</td><td>Sidebar group: <code>"tool"</code>, <code>"environment"</code>, <code>"llm"</code>, <code>"policy"</code>, …</td></tr>
+<tr><td><code>icon</code></td><td>recommended</td><td>A <a href="https://lucide.dev/icons">Lucide</a> icon name.</td></tr>
+<tr><td><code>kind</code></td><td>default <code>"block"</code></td><td>Leave alone unless writing structural nodes (<code>"composite"</code> / <code>"control"</code>).</td></tr>
+</tbody>
+</table>
+
+<h2 id="3-ports"><span class="num">3.</span> Ports and wire types</h2>
+<p>Each <code>PortDef(name, wire_type, description, optional=False)</code> becomes an input/output handle on the canvas, a typed field in the server manifest, and a property in the MCP <code>inputSchema</code>. Ten inner wire types: <code>IMAGE</code>, <code>DEPTH</code>, <code>ACTION</code>, <code>POSE</code>, <code>TEXT</code>, <code>BOOL</code>, <code>METRICS</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>, <code>ANY</code>. Consumer ports may wrap any type as <code>LIST[T]</code> for fan-in / multi-value (producers stay scalar; the executor wraps and concatenates in edge order).</p>
+<ul>
+<li><strong><code>optional</code> is load-bearing.</strong> <code>optional=False</code> (the default) means the node won't fire until that port has data — and over MCP it lands in the schema's <code>required</code> list. Trigger-style inputs must be <code>optional=True</code>, or an MCP client's model is forced to invent a value for them.</li>
+<li><strong>Entry nodes</strong>: <code>input_ports = []</code> — fires immediately when execution starts. <strong>Sink nodes</strong>: <code>output_ports = []</code>.</li>
+<li><strong>TEXT ports carrying structured content</strong> (JSON lists, base64) must state the exact format in the port description — the type system can only say <code>string</code>.</li>
+</ul>
+
+<h2 id="4-config"><span class="num">4.</span> Config fields</h2>
+<p>Declare inline UI controls in <code>NodeUIConfig(config_fields=[...])</code>; read them in <code>forward()</code> via <code>self.config.get("name", default)</code>. Over MCP they become optional tool arguments.</p>
+<table>
+<thead><tr><th><code>field_type</code></th><th>Widget</th><th>Key params / notes</th></tr></thead>
+<tbody>
+<tr><td><code>"select"</code></td><td>Dropdown</td><td><code>options=[{"value","label"}]</code>, <code>default</code> — projects as a typo-proof <code>enum</code></td></tr>
+<tr><td><code>"slider"</code></td><td>Range slider</td><td><code>min</code>, <code>max</code>, <code>step</code>, <code>default</code> — projects as a bounded <code>number</code></td></tr>
+<tr><td><code>"toggle"</code></td><td>Checkbox</td><td><code>default</code> (bool)</td></tr>
+<tr><td><code>"text"</code> / <code>"textarea"</code></td><td>Text input</td><td><code>placeholder</code>, <code>default</code>. The MCP type is inferred from the default — a numeric knob declared as text <strong>must carry a typed default</strong> (e.g. <code>default=3</code>, not <code>None</code>)</td></tr>
+<tr><td><code>"label"</code></td><td>Read-only text</td><td>Display only; skipped by the MCP projection</td></tr>
+<tr><td><code>"port_list"</code></td><td>Dynamic port editor</td><td>Advanced — the <code>_resolve_ports()</code> pattern</td></tr>
+</tbody>
+</table>
+<p>Don't give a config field the same name as an input port — on the MCP surface the port wins and shadows the field.</p>
+
+<h2 id="5-forward"><span class="num">5.</span> forward() rules</h2>
+<ul>
+<li>Return a dict whose keys <strong>exactly</strong> match <code>output_ports</code> names; read inputs by port name.</li>
+<li>No blocking I/O — <code>await</code> async clients (e.g. <code>httpx.AsyncClient</code>) or push heavy work through <code>run_in_executor()</code>.</li>
+<li><code>self._self_log("key", value)</code> records voluntary interior logs (prompts, token counts) into the execution log.</li>
+<li><code>ctx</code> is a per-node state proxy for cross-fire state (loaded checkpoints, RNN hidden); module-level dicts work for state shared between nodes of one nodeset.</li>
+<li>Batched inference (shared GPU forward across K workers) is opt-in via <code>batched = True</code> + <code>batch_dim</code> — see the <a href="../capabilities/isolated-runtime-environments.html">server-mode capability page</a> §7.</li>
+</ul>
+
+<h2 id="6-mcp-quality"><span class="num">6.</span> Being a good MCP tool</h2>
+<p>Any valid node projects to <code>/mcp</code> unchanged — but four declaration habits decide whether the projected tool is <em>usable</em> by a model (full mechanics: <a href="../design-docs/operations/mcp-projection.html">MCP Projection</a>):</p>
+<ol>
+<li><strong>Descriptions are the model's only manual</strong> — node <code>description</code> + port descriptions become the tool spec. Write them for a model operator.</li>
+<li><strong>Required means required</strong> — audit every <code>optional=False</code>; the model must be able to supply all of them.</li>
+<li><strong>Type your text-config defaults</strong> — the projection infers JSON types from them.</li>
+<li><strong>Design outputs for context</strong> — IMAGE ports become native image blocks and ndarrays are stubbed to shape/dtype, but base64 bulk inside TEXT ports flows verbatim into the model's context. Keep TEXT outputs KB-scale, or accept the tool is graph-only and leave it off the <code>--mcp-tools</code> allowlist.</li>
+</ol>
+
+<h2 id="7-checklist"><span class="num">7.</span> Checklist</h2>
+<ul class="checklist">
+<li><code>node_type</code> follows <code>{nodeset}__{node}</code>; <code>display_name</code> / <code>description</code> / <code>category</code> set</li>
+<li><code>forward()</code> returns keys matching <code>output_ports</code>; input names match <code>input_ports</code></li>
+<li>Wire types valid; trigger inputs <code>optional=True</code>; structured TEXT ports document their format</li>
+<li>Config fields use select/slider/toggle where possible; text knobs carry typed defaults</li>
+<li><code>from __future__ import annotations</code> at file top; no blocking I/O in <code>forward()</code></li>
+<li>Outputs are context-sized (or the tool is consciously graph-only)</li>
+<li>The node is returned from a <code>BaseNodeSet.get_tools()</code> — <a href="define-a-nodeset.html">Define a NodeSet</a></li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-smallest-node">1. The smallest useful node</a>
+      <a class="toc-h2" href="#2-identity">2. Identity fields</a>
+      <a class="toc-h2" href="#3-ports">3. Ports and wire types</a>
+      <a class="toc-h2" href="#4-config">4. Config fields</a>
+      <a class="toc-h2" href="#5-forward">5. forward() rules</a>
+      <a class="toc-h2" href="#6-mcp-quality">6. Being a good MCP tool</a>
+      <a class="toc-h2" href="#7-checklist">7. Checklist</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

@@ -109,11 +109,19 @@ _RXR_LANG_MAP: dict[str, str] = {
 _R2R_BASE_SPLITS: list[str] = ["val_unseen", "val_seen", "train", "rand100"]
 _RXR_BASE_SPLITS: list[str] = ["val_unseen", "val_seen", "train", "test_challenge"]
 
+# English-only RxR splits — appended verbatim (NOT crossed with the language
+# table). ``rand100_en`` is the RxR-CE analogue of R2R-CE's ``rand100``: a
+# uniform-random 100-episode sample of ``val_unseen``'s English subset, built
+# by scripts/data/make_rxr_rand100.py into RxR_VLNCE_v0/rand100/. Only the
+# English subset was materialized, so hi/te forms are deliberately absent.
+_RXR_EN_ONLY_SPLITS: list[str] = ["rand100_en"]
+
 
 def _dataset_splits(dataset: str) -> list[str]:
     """Return the display split list for a given dataset selection."""
     if dataset == "RxR-CE":
-        return [f"{base}_{lang}" for base in _RXR_BASE_SPLITS for lang in _RXR_LANG_MAP]
+        crossed = [f"{base}_{lang}" for base in _RXR_BASE_SPLITS for lang in _RXR_LANG_MAP]
+        return crossed + _RXR_EN_ONLY_SPLITS
     return list(_R2R_BASE_SPLITS)
 
 
@@ -287,6 +295,22 @@ class HabitatEnvManager:
                 config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.HEIGHT = int(h)
                 config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH = int(w)
                 log.info("DEPTH sensor override: %dx%d", h, w)
+            elif int(config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH) != 256:
+                # The only depth consumer in this project is the SmartWay
+                # waypoint predictor, whose DDPPO depth encoder is trained at
+                # 256×256 (visual_fc_depth expects a 2048-d flatten). R2R's base
+                # yaml already ships 256; RxR's ships 640×480, which makes the
+                # encoder matmul fail (10240 vs 2048) → 500 on every predict, so
+                # a wp run on RxR can never take a step. No consumer here needs
+                # RxR's 640 depth (the neural CMA policy isn't run — cf. the
+                # RXR_INSTRUCTION_SENSOR drop; the bare agent uses RGB only), so
+                # clamp to 256 for parity with R2R. Harmless when depth unused.
+                config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.HEIGHT = 256
+                config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH = 256
+                log.info(
+                    "Clamped DEPTH sensor %d→256 (waypoint predictor needs 256)",
+                    640,
+                )
             if self._max_steps_override is not None:
                 max_steps = int(self._max_steps_override)
 
@@ -294,6 +318,23 @@ class HabitatEnvManager:
             config.TASK_CONFIG.DATASET.ROLES = ["guide"]
             config.TASK_CONFIG.DATASET.LANGUAGES = config.EVAL.LANGUAGES
             config.TASK_CONFIG.TASK.NDTW.SPLIT = split
+
+            # The agent consumes the instruction as TEXT (``get_instruction_text``
+            # → ``ep.instruction.instruction_text``), never as an observation
+            # tensor. RxR-CE's ``RXR_INSTRUCTION_SENSOR`` loads a pre-computed
+            # BERT feature .npz per instruction from disk (the 142GB rxr-bert
+            # download) — needed only by the neural CMA policy. Drop it so RxR
+            # runs on the episode json alone; R2R's ``INSTRUCTION_SENSOR`` reads
+            # tokens straight off the episode and is deliberately left in place.
+            _task_sensors = list(config.TASK_CONFIG.TASK.SENSORS)
+            if "RXR_INSTRUCTION_SENSOR" in _task_sensors:
+                config.TASK_CONFIG.TASK.SENSORS = [
+                    s for s in _task_sensors if s != "RXR_INSTRUCTION_SENSOR"
+                ]
+                log.info(
+                    "Dropped RXR_INSTRUCTION_SENSOR — BERT text features not "
+                    "needed for a text-instruction agent",
+                )
             config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.SHUFFLE = False
             config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = -1
             config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS = max_steps
@@ -2045,6 +2086,13 @@ class HabitatEnvPanel(BaseEnvPanel):
             "split": "val_unseen",
             "episode_index": 0,
         }
+        # Set when a dataset change has updated state but deferred the env
+        # re-init to the following split push (see on_field_change). Forces the
+        # split handler to switch even if the requested split equals the new
+        # dataset's default, and collapses a dataset+split retarget into ONE
+        # habitat-sim re-init instead of two (two-in-a-row loses the GL context
+        # → SIGABRT "no OpenGL context").
+        self._dataset_dirty: bool = False
 
     # ── Helpers ──
 
@@ -2158,19 +2206,24 @@ class HabitatEnvPanel(BaseEnvPanel):
             splits = _dataset_splits(new_dataset)
             self._state["split"] = splits[0] if splits else ""
             self._state["episode_index"] = 0
-            # If the dataset actually changed, the env (if any) is bound to
-            # the OLD YAML and must be re-initialized so subsequent split /
-            # episode pushes hit the right scene + sensor config. Without
-            # this, an immediately-following split push that happens to
-            # equal the new dataset's default split is short-circuited by
-            # the equality check below, leaving the env on the prior
-            # dataset (e.g. R2R obs shape persists during an RxR eval).
-            if prev_dataset and prev_dataset != new_dataset and self._state["split"]:
-                await self._switch_split(self._state["split"])
+            # If the dataset actually changed, the env (if any) is bound to the
+            # OLD YAML and must be re-initialized so subsequent split / episode
+            # pushes hit the right scene + sensor config. We DON'T re-init here
+            # on the throwaway default split, though: a dataset+split retarget
+            # (the batch-eval path) would then re-init habitat-sim twice in a
+            # row, and the second re-init loses the GL context on some drivers
+            # (SIGABRT "Simulator::gpuDevice: no OpenGL context"). Instead mark
+            # the dataset dirty so the following split push does the single real
+            # init — and still forces a switch even when the requested split
+            # equals the new dataset's default (the case this eager re-init
+            # used to guard).
+            if prev_dataset and prev_dataset != new_dataset:
+                self._dataset_dirty = True
         elif name == "split":
             new_split = str(value)
-            if new_split and new_split != self._state.get("split"):
+            if new_split and (new_split != self._state.get("split") or self._dataset_dirty):
                 await self._switch_split(new_split)
+                self._dataset_dirty = False
             self._state["episode_index"] = 0
         elif name == "episode_index":
             try:
