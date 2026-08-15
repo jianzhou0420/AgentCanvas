@@ -7,7 +7,7 @@ import SettingsModal from "./SettingsModal";
 
 const CATEGORIES: { id: AppCategory; label: string }[] = [
   { id: "workflow", label: "Workflow" },
-  { id: "model", label: "Model" },
+  { id: "agentic", label: "Agentic" },
 ];
 
 export default function Header() {
