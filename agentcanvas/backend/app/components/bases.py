@@ -456,6 +456,26 @@ class BaseNodeSet(ABC):
     server_python: ClassVar[str | None] = (
         None  # Python interpreter for server mode; None = sys.executable
     )
+    # Container Launch — server mode's second launch vehicle (the default,
+    # Native Launch, is a host subprocess on server_python).
+    # When set, the nodeset is auto-routed to server mode and its auto_host
+    # subprocess runs inside `docker run <server_image>` instead of a conda
+    # interpreter. Takes precedence over server_python. The repo root is
+    # bind-mounted read-only into the container, so the image carries only
+    # the model's deps + requirements-serve.txt — never framework code.
+    server_image: ClassVar[str | None] = None
+    # Request the GPU via CDI (`--device nvidia.com/gpu=all`). A failed GPU
+    # start degrades once to a CPU start of the same image.
+    server_image_gpu: ClassVar[bool] = False
+    # Extra bind mounts, {host_path: container_spec}. host_path may be
+    # absolute, ~-prefixed, or repo-root-relative (e.g. weights under
+    # "data/models/..."); container_spec is "container_path" or
+    # "container_path:ro". Host paths that don't exist are skipped so a
+    # missing optional weights dir degrades that capability, not the start.
+    server_mounts: ClassVar[dict[str, str]] = {}
+    # Interpreter path INSIDE the container (images with a baked venv need
+    # its exact python; plain images use the default).
+    server_container_python: ClassVar[str] = "python3"
     # Parallelism contract (ADR-server-003). At eval worker_count > 1:
     #   "shared"     → 1 instance, K callers may rendezvous through
     #                  BatchedInferenceServer (stateless tools).

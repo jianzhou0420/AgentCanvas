@@ -1,0 +1,565 @@
+{
+  "name": "EXPRESS-Bench RE baseline (random exploration)",
+  "description": "Paper's Random Exploration baseline on env_express, faithful to upstream main.py: each step first runs the gpt-4o-mini stop check (explore.txt) on the current frame (skipped-on-black via env_express__stop_gate); on yes it answers WITH the decision frame (answer.txt) and exits; otherwise env_express__sample_waypoint teleports to a random navigable point within 3 m with uniform yaw. On budget truncation the answer uses random_answer.txt WITHOUT any image (main.py:421). Judge llmCall (gpt-4o-mini profile) returns delta/sigma; env_express__evaluate computes C / C* / E_path / d_T. Paper reference: RE C 36.95 / C* 62.75 / E_path 12.06.",
+  "step_budget": 50,
+  "nodes": [
+    {
+      "id": "env_reset",
+      "type": "env_express__reset",
+      "label": "EXPRESS: Reset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "seed_obs",
+      "type": "env_express__observe_egocentric",
+      "label": "EXPRESS: Observe (seed)",
+      "position": {
+        "x": 0,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_in",
+      "type": "iterIn",
+      "label": "Iteration Gate",
+      "position": {
+        "x": 280,
+        "y": 200
+      },
+      "config": {
+        "version": 3,
+        "pairedWith": "iter_out",
+        "initPorts": [
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "env_step",
+      "type": "env_express__step_pose",
+      "label": "EXPRESS: Step",
+      "position": {
+        "x": 1120,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "loop_obs",
+      "type": "env_express__observe_egocentric",
+      "label": "EXPRESS: Observe (loop)",
+      "position": {
+        "x": 1400,
+        "y": 320
+      },
+      "config": {}
+    },
+    {
+      "id": "iter_out",
+      "type": "iterOut",
+      "label": "Iteration End",
+      "position": {
+        "x": 1680,
+        "y": 200
+      },
+      "config": {
+        "pairedWith": "iter_in",
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          },
+          {
+            "name": "stopped_early",
+            "wire_type": "TEXT",
+            "persist": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "judge_prompt",
+      "type": "env_express__judge_prompt",
+      "label": "EXPRESS: Judge prompt",
+      "position": {
+        "x": 2520,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "judge_llm",
+      "type": "llmCall",
+      "label": "LLM: Judge (use gpt-4o-mini profile)",
+      "position": {
+        "x": 2800,
+        "y": 220
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "user",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "required": true
+          }
+        ],
+        "template": "{user}",
+        "system_prompt": "You are an AI assistant who will help me to evaluate the response given the question, the correct answer and the scene observed by the robot.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "env_express__evaluate",
+      "label": "EXPRESS: Evaluate",
+      "position": {
+        "x": 3080,
+        "y": 220
+      },
+      "config": {}
+    },
+    {
+      "id": "obs_viewer",
+      "type": "imageViewer",
+      "label": "Observation",
+      "position": {
+        "x": 1400,
+        "y": 560
+      },
+      "config": {
+        "rows": 1,
+        "cols": 1,
+        "ports": [
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer_scroll",
+      "type": "textScroll",
+      "label": "Answer + Judge",
+      "position": {
+        "x": 2800,
+        "y": 460
+      },
+      "config": {}
+    },
+    {
+      "id": "metrics_viewer",
+      "type": "metrics",
+      "label": "Metrics",
+      "position": {
+        "x": 3080,
+        "y": 500
+      },
+      "config": {}
+    },
+    {
+      "id": "output_port__metrics",
+      "type": "graphOut",
+      "label": "metrics",
+      "position": {
+        "x": 3360,
+        "y": 260
+      },
+      "config": {
+        "portName": "metrics",
+        "wireType": "METRICS"
+      }
+    },
+    {
+      "id": "sample_waypoint",
+      "type": "env_express__sample_waypoint",
+      "label": "EXPRESS: Sample Waypoint",
+      "position": {
+        "x": 840,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "stop_llm",
+      "type": "llmCall",
+      "label": "LLM: Stop check (explore.txt)",
+      "position": {
+        "x": 400,
+        "y": 420
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "required": true
+          }
+        ],
+        "template": "The input consists of QUESTION and IMAGE. The QUESTION is what you need to evaluate, while the IMAGE represents the currently observed environment.\nRespond only with \u201cyes\u201d or \u201cno\u201d without attempting to answer the question itself.\nInput is given below, please output as required.\nInput: \nQUESTION: {question}",
+        "system_prompt": "You are an intelligent assistant tasked with determining whether the given image contains sufficient information to answer the provided question.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "stop_gate",
+      "type": "env_express__stop_gate",
+      "label": "EXPRESS: Stop Gate",
+      "position": {
+        "x": 620,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "answer_router",
+      "type": "env_express__answer_router",
+      "label": "EXPRESS: Answer Router",
+      "position": {
+        "x": 1960,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "answer_stop_llm",
+      "type": "llmCall",
+      "label": "LLM: Answer (stop, answer.txt)",
+      "position": {
+        "x": 2240,
+        "y": 120
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "required": true
+          },
+          {
+            "name": "rgb",
+            "wire_type": "IMAGE",
+            "required": true
+          }
+        ],
+        "template": "You will be shown a picture that have been collected. Given a user query, you must output `text` to answer to the question asked by the user. No explanatory text is required.\nIf the query and the image do not provide enough information to properly answer, provide an appropriate guess. Avoid stating uncertainty about answering a question. Below are several examples.\nQ: What machine is on top of the stove?\nA: The microwave.\nExplanation: Stoves are typically found in kitchens and near microwaves.\n\nQ: What piece of furniture is in the middle of the bedroom?\nA: It is a bed.\nExplanation: Bedrooms almost always contain a bed.\n\nQ: Is the door open or closed?\nA: The door is open.\nExplanation: The door can be in either state, so we just randomly pick one.\n\nQ: Where is the coffee table in the living room? \nA: It is in front of the sofa.\nExplanation: If a coffee table is in the living room, it is usually positioned in front of the sofa.\nQ: {question}\nA: ",
+        "system_prompt": "You are good at question answering. You will be asked questions about an indoor space and you must provide an answer.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "answer_trunc_llm",
+      "type": "llmCall",
+      "label": "LLM: Answer (truncated, random_answer.txt, no image)",
+      "position": {
+        "x": 2240,
+        "y": 320
+      },
+      "config": {
+        "ports": [
+          {
+            "name": "question",
+            "wire_type": "TEXT",
+            "required": true
+          }
+        ],
+        "template": "If the question does not provide enough information to properly answer, provide an appropriate guess. Avoid stating uncertainty about answering a question. No explanatory text is required.\n\nQ: What machine is on top of the stove?\nA: The microwave.\nExplanation: Stoves are typically found in kitchens and near microwaves.\n\nQ: What piece of furniture is in the middle of the bedroom?\nA: A bed.\nExplanation: Bedrooms almost always contain a bed.\n\nQ: Is the door open or closed?\nA: It is open.\nExplanation: The door can be in either state, so we just randomly pick one.\n{question}",
+        "system_prompt": "You are an intelligent question answering agent. I will ask you questions about an indoor space and you must provide an answer.",
+        "profile": "",
+        "temperature": 1.0,
+        "max_tokens": 2000,
+        "mode": "single_turn"
+      }
+    },
+    {
+      "id": "note",
+      "type": "note",
+      "label": "Baseline graph",
+      "position": {
+        "x": 560,
+        "y": -340
+      },
+      "config": {
+        "markdown": "**Random Exploration (paper baseline, faithful loop)**\n\nPer step (upstream main.py order): stop check FIRST on the current frame (`stop_llm` = explore.txt verbatim, gpt-4o-mini) -> `stop_gate` (black frames never stop) -> on continue, `sample_waypoint` random hop within 3 m + uniform yaw -> `step_pose` teleports, accumulating geodesic path length.\n\n**Verdict band**: `answer_router` branches on how the loop ended - early stop -> answer.txt WITH the decision frame; budget truncation -> random_answer.txt WITHOUT image (main.py:421). Judge = evaluation.txt + final frame -> delta, sigma -> C / C* / E_path / d_T.\n\n**All prompts verbatim from upstream prompt/*.txt.** Judge + stop + answer model: gpt-4o-mini (benchmark-native); select via active profile.\n\n**Known deviation**: on truncation the judge image is one frame later than upstream's (frame after the final hop vs frame at the final check).\n\n**Paper reference**: RE C 36.95 / C* 62.75 / E_path 12.06 (Table 2)."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_env_reset_question__iter_in_init_question",
+      "source": "env_reset",
+      "target": "iter_in",
+      "sourceHandle": "question",
+      "targetHandle": "init_question"
+    },
+    {
+      "id": "e_env_reset_episode_id__seed_obs_trigger",
+      "source": "env_reset",
+      "target": "seed_obs",
+      "sourceHandle": "episode_id",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_seed_obs_rgb__iter_in_iterout_rgb",
+      "source": "seed_obs",
+      "target": "iter_in",
+      "sourceHandle": "rgb",
+      "targetHandle": "iterout_rgb"
+    },
+    {
+      "id": "e_iter_in_init_question__stop_llm_question",
+      "source": "iter_in",
+      "target": "stop_llm",
+      "sourceHandle": "init_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_iter_in_iterout_rgb__stop_llm_rgb",
+      "source": "iter_in",
+      "target": "stop_llm",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iter_in_iterout_rgb__stop_gate_rgb",
+      "source": "iter_in",
+      "target": "stop_gate",
+      "sourceHandle": "iterout_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_stop_llm_response__stop_gate_stop_text",
+      "source": "stop_llm",
+      "target": "stop_gate",
+      "sourceHandle": "response",
+      "targetHandle": "stop_text"
+    },
+    {
+      "id": "e_stop_gate_continue__sample_waypoint_trigger",
+      "source": "stop_gate",
+      "target": "sample_waypoint",
+      "sourceHandle": "continue",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_stop_gate_stop__iter_out_stop",
+      "source": "stop_gate",
+      "target": "iter_out",
+      "sourceHandle": "stop",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_stop_gate_rgb_final__iter_out_rgb",
+      "source": "stop_gate",
+      "target": "iter_out",
+      "sourceHandle": "rgb_final",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_stop_gate_stopped_early__iter_out_stopped_early",
+      "source": "stop_gate",
+      "target": "iter_out",
+      "sourceHandle": "stopped_early",
+      "targetHandle": "stopped_early"
+    },
+    {
+      "id": "e_sample_waypoint_action__env_step_action",
+      "source": "sample_waypoint",
+      "target": "env_step",
+      "sourceHandle": "action",
+      "targetHandle": "action"
+    },
+    {
+      "id": "e_env_step_info__loop_obs_trigger",
+      "source": "env_step",
+      "target": "loop_obs",
+      "sourceHandle": "info",
+      "targetHandle": "trigger"
+    },
+    {
+      "id": "e_env_step_truncated__iter_out_stop",
+      "source": "env_step",
+      "target": "iter_out",
+      "sourceHandle": "truncated",
+      "targetHandle": "stop"
+    },
+    {
+      "id": "e_loop_obs_rgb__iter_out_rgb",
+      "source": "loop_obs",
+      "target": "iter_out",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_loop_obs_rgb__obs_viewer_rgb",
+      "source": "loop_obs",
+      "target": "obs_viewer",
+      "sourceHandle": "rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_iter_in_init_question__iter_out_question",
+      "source": "iter_in",
+      "target": "iter_out",
+      "sourceHandle": "init_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_iter_out_final_question__answer_router_question",
+      "source": "iter_out",
+      "target": "answer_router",
+      "sourceHandle": "final_question",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_iter_out_final_stopped_early__answer_router_stopped_early",
+      "source": "iter_out",
+      "target": "answer_router",
+      "sourceHandle": "final_stopped_early",
+      "targetHandle": "stopped_early"
+    },
+    {
+      "id": "e_iter_out_final_rgb__answer_router_rgb",
+      "source": "iter_out",
+      "target": "answer_router",
+      "sourceHandle": "final_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_answer_router_question_stop__answer_stop_llm_question",
+      "source": "answer_router",
+      "target": "answer_stop_llm",
+      "sourceHandle": "question_stop",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_answer_router_rgb_stop__answer_stop_llm_rgb",
+      "source": "answer_router",
+      "target": "answer_stop_llm",
+      "sourceHandle": "rgb_stop",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_answer_router_question_trunc__answer_trunc_llm_question",
+      "source": "answer_router",
+      "target": "answer_trunc_llm",
+      "sourceHandle": "question_trunc",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e_answer_stop_llm_response__judge_prompt_pred_answer",
+      "source": "answer_stop_llm",
+      "target": "judge_prompt",
+      "sourceHandle": "response",
+      "targetHandle": "pred_answer"
+    },
+    {
+      "id": "e_answer_stop_llm_response__evaluate_pred_answer",
+      "source": "answer_stop_llm",
+      "target": "evaluate",
+      "sourceHandle": "response",
+      "targetHandle": "pred_answer"
+    },
+    {
+      "id": "e_answer_stop_llm_response__answer_scroll_text",
+      "source": "answer_stop_llm",
+      "target": "answer_scroll",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_answer_trunc_llm_response__judge_prompt_pred_answer",
+      "source": "answer_trunc_llm",
+      "target": "judge_prompt",
+      "sourceHandle": "response",
+      "targetHandle": "pred_answer"
+    },
+    {
+      "id": "e_answer_trunc_llm_response__evaluate_pred_answer",
+      "source": "answer_trunc_llm",
+      "target": "evaluate",
+      "sourceHandle": "response",
+      "targetHandle": "pred_answer"
+    },
+    {
+      "id": "e_answer_trunc_llm_response__answer_scroll_text",
+      "source": "answer_trunc_llm",
+      "target": "answer_scroll",
+      "sourceHandle": "response",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e_judge_prompt_user__judge_llm_user",
+      "source": "judge_prompt",
+      "target": "judge_llm",
+      "sourceHandle": "user",
+      "targetHandle": "user"
+    },
+    {
+      "id": "e_iter_out_final_rgb__judge_llm_rgb",
+      "source": "iter_out",
+      "target": "judge_llm",
+      "sourceHandle": "final_rgb",
+      "targetHandle": "rgb"
+    },
+    {
+      "id": "e_judge_llm_response__evaluate_judge_text",
+      "source": "judge_llm",
+      "target": "evaluate",
+      "sourceHandle": "response",
+      "targetHandle": "judge_text"
+    },
+    {
+      "id": "e_evaluate_metrics__metrics_viewer_metrics",
+      "source": "evaluate",
+      "target": "metrics_viewer",
+      "sourceHandle": "metrics",
+      "targetHandle": "metrics"
+    },
+    {
+      "id": "e_evaluate_metrics__output_port__metrics_value",
+      "source": "evaluate",
+      "target": "output_port__metrics",
+      "sourceHandle": "metrics",
+      "targetHandle": "value"
+    }
+  ]
+}
