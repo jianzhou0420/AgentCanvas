@@ -30,8 +30,8 @@ from typing import Any, Protocol
 
 import requests
 
-from cells import (BENCHMARK_FROZEN, STD_FROZEN,
-                   WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec)
+from cells import (STD_FROZEN, WP_MAX_MOVES, WP_THINK_BUDGET,
+                   CellSpec, get_benchmark_frozen)
 from prompts import (FIRST_PROMPT, HMEQA_FIRST_PROMPT, HYBRID_FIRST_PROMPT,
                      build_briefing)
 
@@ -682,7 +682,7 @@ async def run_cell(
     summary are kept; requested indices are re-run and replace their records."""
     # Each benchmark line carries its own frozen config — hm3d / mp3d / ovon
     # are peers of the habitat-r2r std line, not variants of it.
-    cfg = dict(BENCHMARK_FROZEN.get(spec.benchmark, STD_FROZEN))
+    cfg = dict(get_benchmark_frozen(spec.benchmark))
     if spec.max_turns:  # local GPU gets the bigger cap; rented compute takes 100
         cfg["max_turns"] = spec.max_turns
     cfg["extra"] = dict(extra or {})
@@ -900,6 +900,10 @@ async def run_cell(
     # every run — user decision 2026-07-23. Best-effort: a failed report
     # must never lose a completed run.
     try:
+        import sys
+        _ac_support = str(Path(__file__).resolve().parent / "ac_support")
+        if _ac_support not in sys.path:  # uirun pre-seeds this; bare stdrun doesn't
+            sys.path.insert(0, _ac_support)
         from run_stats import generate as _generate_stats
         print(f"[std] stats report -> {_generate_stats(run_dir)}")
     except Exception as exc:  # noqa: BLE001

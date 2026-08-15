@@ -98,9 +98,6 @@ def _hmeqa_frozen() -> dict:
     }
 
 
-BENCHMARK_FROZEN: dict[str, dict] = {"hmeqa": _hmeqa_frozen()}
-
-
 # ── VLNVerse line (2026-08-02): instruction-following VLN in Isaac Sim 5.1 ──
 # Seventh benchmark line, but NOT an ObjectNav sibling: vlnverse is the same
 # task shape as habitat-r2r (a language instruction, STOP within 3 m of the
@@ -119,7 +116,7 @@ BENCHMARK_FROZEN: dict[str, dict] = {"hmeqa": _hmeqa_frozen()}
 # by scan, so eps 0-99 cover only a handful of the 262 scenes) and therefore
 # NOT comparable to the R2R std numbers. Use it for smoke + development;
 # freeze a mip100-style sample before it carries a paper claim.
-BENCHMARK_FROZEN["vlnverse"] = {
+_VLNVERSE_FROZEN: dict = {
     "benchmark": "vlnverse",
     "dataset": "fine",         # fine-grained instructions (the R2R analogue)
     "split": "val_unseen",     # 825 episodes
@@ -132,6 +129,21 @@ BENCHMARK_FROZEN["vlnverse"] = {
     "step_budget": 500,
     "episode_timeout": 2400,
 }
+
+
+def get_benchmark_frozen(benchmark: str | None) -> dict:
+    """Resolve the frozen config for a cell's benchmark line.
+
+    Benchmark data prerequisites (hmeqa's audit manifest + materialized
+    split) are validated HERE, at cell-resolve time — not at import — so a
+    main-board-only checkout imports cells.py and runs R2R cells without
+    the HM-EQA data tree present.
+    """
+    if benchmark == "hmeqa":
+        return _hmeqa_frozen()
+    if benchmark == "vlnverse":
+        return _VLNVERSE_FROZEN
+    return STD_FROZEN
 
 # Compute we own (local GPU, no API bill or rate limit) can take its own cap;
 # the knob is kept so the rented and owned columns can diverge.

@@ -35,8 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cells import (BATCHES, BENCHMARK_FROZEN, CELLS, EXPERIMENTS, STD_FROZEN,
-                   get_cell, resolve_cell)
+from cells import (BATCHES, CELLS, EXPERIMENTS, STD_FROZEN,
+                   get_benchmark_frozen, get_cell, resolve_cell)
 from driver import run_cell
 from harnesses import get_adapter
 
@@ -98,7 +98,7 @@ def _board(_args: argparse.Namespace) -> None:
     for name, spec in CELLS.items():
         # for an unrun cell show what it WILL run at, not the frozen default, or
         # the board lies about a protocol it has not executed yet
-        frozen = BENCHMARK_FROZEN.get(spec.benchmark, STD_FROZEN)
+        frozen = get_benchmark_frozen(spec.benchmark)
         planned_turns = spec.max_turns or frozen["max_turns"]
         # ObjectNav-family cells have no rgb knob — the benchmark sensor is a
         # fixed 640×480, so that is what the board shows
