@@ -1,102 +1,101 @@
 # Installation
 
+Everything the paper's main board needs: **two conda envs, the R2R-CE data, and one
+login per agent harness**. The sequence below was exercised end-to-end from scratch
+(envs deleted first) on a clean Ubuntu host with an RTX 3090 on 2026-08-15.
+
 ## Prerequisites
 
-- **conda** (Miniforge/Miniconda) — Python, Node, and PyTorch all come from the env files, so you don't install them separately.
-- **git**; plus an NVIDIA GPU + driver if you want to run neural policies.
+- **conda** (Miniforge/Miniconda) — Python, PyTorch, and Node all come from the env files.
+- **NVIDIA GPU + driver with EGL support** — habitat-sim renders headless through EGL.
+- **git**; disk budget ~35 GB: the two envs ≈ 15 GB, MP3D scenes ≈ 15 GB, episodes < 1 GB.
+- Network able to reach GitHub and Google Drive (episode data is fetched from the
+  official VLN-CE Drive links).
 
-## Quickstart — explore the UI
-
-The fastest look at AgentCanvas: install the core env and open the canvas. No simulator,
-data, or API key — you can browse the preset graphs, drag nodes, and inspect wiring. Running
-a method end-to-end is the next quickstart.
-
-```bash
-git clone https://github.com/jianzhou0420/AgentCanvas.git
-cd AgentCanvas
-bash scripts/install/install_core.sh     # core env + frontend, then serves backend :8000 + frontend :5173
-```
-
-First run takes ~10 min (conda resolves PyTorch/CUDA, npm pulls React deps). Then open
-**http://localhost:5173** and load a preset graph from the Explorer panel to poke around.
-
-## Quickstart — run MapGPT on R2R
-
-A complete minimal example: get one method running end-to-end. MapGPT is LLM-only
-navigation on the Matterport3D Simulator — no local model weights, just the simulator,
-the R2R data, and an API key.
+## 1. Environments
 
 ```bash
-# 1. Clone
-git clone https://github.com/jianzhou0420/AgentCanvas.git
-cd AgentCanvas
-
-# 2. MapGPT's simulator env — MatterSim (GPU/EGL build; add --osmesa for CPU-only)
-bash scripts/install/install_ac_mp3d.sh
-
-# 3. Data: MP3D skyboxes (~18 GB, Matterport ToU) + preprocess + R2R episodes (~6 MB)
-python3 scripts/data/fetch_scans_mp3d.py --accept-tos     # accepts the Matterport Terms of Use
-bash    scripts/data/gen_skybox_rgb_mp3d.sh               # merge/downsize the skyboxes MatterSim reads
-bash    scripts/data/fetch_episodes_vln.sh --r2r
-
-# 4. LLM key — MapGPT's llmCall uses the gpt-5-mini profile (OpenAI)
-export OPENAI_API_KEY=sk-...
-
-# 5. Core canvas env + launch — installs agentcanvas, then serves backend :8000 + frontend :5173 (foreground)
-bash scripts/install/install_core.sh
+bash scripts/install/install_agentcanvas.sh   # runner env `agentcanvas` (~10 min)
+bash scripts/install/install_ac_vlnce.sh      # simulator env `ac-vlnce` (~20 min)
 ```
 
-Env-creation order doesn't matter (each env is independent); only the launch in step 5 must come last, so the running canvas can drive the `ac-mp3d` env you built in step 2. Then open **http://localhost:5173**, load the **`mapgpt_mp3d`** graph from the Explorer panel, and hit **Play**.
+Both scripts are idempotent (re-running updates in place). `install_ac_vlnce.sh`
+auto-clones pinned copies of VLN-CE and habitat-lab into `third_party/` and ends
+with an import probe of the full server wire stack — if you see `[ok]`, the env works.
 
-## Doc-site (optional, no install)
+## 2. Data (R2R-CE)
 
 ```bash
-bash docs/run_dev.sh        # http://localhost:8092, live reload
+bash scripts/data/fetch_data_vlnce.sh --r2r    # episodes (250 MB, Google Drive)
+bash scripts/data/fetch_data_vlnce.sh --mp3d   # Matterport3D scenes (~15 GB, interactive ToU)
+bash scripts/data/materialize_r2r_rand100.sh   # the paper's evaluation split (versioned in-repo)
+ln -sfn ../habitat/scene_datasets/mp3d data/scene_datasets/mp3d 2>/dev/null \
+  || (mkdir -p data/scene_datasets && ln -s ../habitat/scene_datasets/mp3d data/scene_datasets/mp3d)
+bash scripts/data/fetch_data_vlnce.sh --status # verify
 ```
 
-Read `core/blueprint.html`, `core/glossary.html`, and `core/architecture.html` first.
+The resulting layout:
 
-## Install scripts
+```
+data/habitat/datasets/R2R_VLNCE_v1-3_preprocessed/rand100/   # the paper split
+data/habitat/scene_datasets/mp3d/<scan>/                     # MP3D scenes
+data/scene_datasets/mp3d -> ../habitat/scene_datasets/mp3d   # compatibility symlink
+```
 
-Every env has one idempotent script under `scripts/install/` — run each as `bash scripts/install/<script>`; re-running updates the env in place. The core env alone runs the canvas + pure-LLM graphs; **add a server-mode env only when you need it**. Once an `ac-*` env exists, the matching nodesets auto-route to server mode under the `agentcanvas` backend.
+`rand100` is the SmartWay/OpenNav evaluation protocol — a 100-episode val-unseen
+subset with real spawn headings and regenerated ground-truth paths. It cannot be
+derived from the official files by filtering, so the split ships whole with this
+repository (~710 KB); provenance in `coding-agent/bridges/splits/r2r_rand100/README.md`.
 
-**Core (canvas hub):**
+## 3. Harness auth
 
-| Script | Env | What it does |
+| Harness | Needs |
+|---|---|
+| `sdk` (Claude Code) | a Claude subscription login (`claude` once, interactively); the adapter strips a stray `ANTHROPIC_API_KEY` |
+| `codex` (Codex CLI) | a ChatGPT login (`codex login`) |
+| `mini` | `ANTHROPIC_API_KEY` / OpenAI key via litellm for API models; a local [ollama](https://ollama.com) for the qwen cells |
+
+## 4. Verify
+
+Start the simulator server, check its manifest, then run one real episode:
+
+```bash
+# terminal 1 — env server (ac-vlnce interpreter):
+cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
+  ~/miniforge3/envs/ac-vlnce/bin/python -m app.server.auto_host \
+  --file ../../workspace/nodesets/env/env_habitat.py \
+  --class EnvHabitatNodeSet --port 9200
+
+# terminal 2:
+curl -s http://127.0.0.1:9200/manifest | head -c 200   # server up (~10 s after start)
+
+# one real episode through the probe (agentcanvas env, needs harness auth):
+python coding-agent/stdrun.py run E3 --episodes 0
+```
+
+## Other experiment lines (optional, one env each)
+
+| Line | Install | Notes |
 |---|---|---|
-| `install_core.sh` | `agentcanvas` | Core env + frontend, then launches backend `:8000` + frontend `:5173` (foreground) |
-| `install_agentcanvas.sh` | `agentcanvas` | Same core env, install-only (no launch) — the building block `install_core.sh` calls |
-| `install_core_test.sh` | `agentcanvas-test` | Core install into an isolated test env (for vetting install-script changes) |
-
-**Server-mode (one isolated env each):**
-
-| Script | Env | For |
-|---|---|---|
-| `install_ac_vlnce.sh` | `ac-vlnce` | VLN-CE / Habitat-Sim 0.1.7 (CMA, NavGPT-CE) |
-| `install_ac_mp3d.sh` `[--osmesa]` | `ac-mp3d` | Matterport3D Simulator, built from source (R2R, RxR, REVERIE); `--osmesa` = CPU render |
-| `install_ac_smartway.sh` | `ac-smartway` | SmartWay nodeset on the Habitat base |
-| `install_ac_hmeqa.sh` | `ac-hmeqa` | HM-EQA evaluation (Habitat + HM-EQA scenes/questions) |
-| `install_ac_vla_policy.sh` | `ac-vla-policy` | VLA policy stack (lerobot + libero + openpi-client) |
-| `install_ac_libero.sh` | `ac-libero` | LIBERO manipulation suite |
-| `install_ac_simpler.sh` | `ac-simpler` | SIMPLER eval (SimplerEnv + ManiSkill2) |
-| `install_ac_octo.sh` | `ac-octo` | Octo JAX/Flax policy (fragile install; JAX is CPU-only here) |
-| `install_ac_detany3d.sh` | `ac-detany3d` | 3D-detection model server (CUDA 11.8) |
-| `install_ac_ram.sh` | `ac-ram` | RAM / RAM++ tagging + SpatialBot model server |
-
-> Simulator scenes/episodes/checkpoints live separately under `scripts/data/` (e.g. `fetch_data_vlnce.sh`, `fetch_scans_mp3d.py`, `fetch_episodes_vln.sh`).
+| Waypoint / Hybrid (`*_wp`, `*_hybrid`) | see `coding-agent/ac_wp_predictor_shim/README.md` | SmartWay predictor server; checkpoints via `scripts/data/fetch_ckpt_smartway.sh` |
+| HM-EQA (`hmeqa_*`) | `bash scripts/install/install_ac_hmeqa.sh` | HM3D scenes + questions; split manifest in `coding-agent/bridges/splits/` |
+| VLNVerse (`vlnverse_*`) | `bash scripts/install/install_ac_vlnverse.sh` | Isaac Sim 5.1 (own bundled python); data via `scripts/data/fetch_{episodes,scenes}_vlnverse.py` |
+| RxR-CE | `scripts/data/fetch_data_vlnce.sh --rxr` + `scripts/data/make_rxr_rand100.py` | builds the scene-matched RxR `rand100` |
+| Canvas UI (optional) | `bash scripts/install/install_core.sh` | the visual platform on `:8000`/`:5173` — not needed for the board |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `Conda env 'agentcanvas' not found` | Run `install_core.sh` first |
-| Frontend stuck on "Connecting…" | Backend isn't up on `:8000` — check the launcher terminal |
-| Port in use (`:8000`/`:5173`/`:8092`) | Stop the holder or change the port |
-| Server-mode eval returns 500 | The matching `ac-*` env isn't installed |
+| `conda not found` inside scripts | conda isn't on PATH in that shell — `source ~/miniforge3/etc/profile.d/conda.sh` or run from a login shell |
+| env server import errors | re-run `install_ac_vlnce.sh` (idempotent) and check its trailing wire-stack probe |
+| `reset` fails with a scene/dataset error | data layout incomplete — `bash scripts/data/fetch_data_vlnce.sh --status`, and check the `data/scene_datasets/mp3d` symlink |
+| Server-mode call returns 500 | the matching `ac-*` env isn't installed |
+| Port in use (`:9200`) | stop the holder or pass another `--port` |
 
 ## Uninstall
 
 ```bash
-conda env remove -n agentcanvas       # plus any ac-* envs you created
-rm -f agentcanvas/launch.sh
+conda env remove -n agentcanvas
+conda env remove -n ac-vlnce      # plus any other ac-* envs you created
 ```
