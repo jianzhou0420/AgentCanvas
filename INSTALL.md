@@ -70,7 +70,7 @@ cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
 curl -s http://127.0.0.1:9200/manifest | head -c 200   # server up (~10 s after start)
 
 # one real episode through the probe (agentcanvas env, needs harness auth):
-python coding-agent/stdrun.py run E3 --episodes 0
+python coding-agent/stdrun.py run std_sdk_fable-5_bare_default --episodes 0
 ```
 
 ## Other experiment lines (optional, one env each)
