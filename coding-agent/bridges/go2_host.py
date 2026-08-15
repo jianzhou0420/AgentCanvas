@@ -56,21 +56,21 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 # ── motion constants ──
-# Full habitat parity: 0.25 m / 15° (user decision 2026-07-20 night). The early
+# Full habitat parity: 0.25 m / 15°. The early
 # free-gait calibration condemned these (±42% scatter — one gait cycle was
 # longer than the step) and moved to 0.5/30; re-tested under the pinned
 # StaticWalk gait with coast compensation they hold to ±6% with <2% bias, so
 # parity with the simulator benchmarks wins back.
 STEP_M = float(os.environ.get("GO2_STEP_M", "0.25"))
 TURN_DEG = float(os.environ.get("GO2_TURN_DEG", "15"))
-# Set from the remote-controller baseline measured 2026-07-20, NOT from caution:
+# Set from the measured remote-controller baseline, NOT from caution:
 # 30 s of hand-driven operation peaked at 1.23 m/s and 2.38 rad/s. These sit at
 # roughly half that, which is well inside the gait's normal operating band.
 MAX_VX = float(os.environ.get("GO2_MAX_VX", "0.6"))      # m/s
-# 1.0, down from 1.5 (2026-07-20 night): the classic (常规) gait style the
-# operator chose has a speed envelope, and commands above it appear to make the
-# firmware auto-upgrade the style to 灵动 — the exact thing pinning is meant to
-# prevent. 1.0 rad/s is operator-verified to stay in the classic gait.
+# 1.0, down from 1.5: the classic gait style the operator chose has a speed
+# envelope, and commands above it appear to make the firmware auto-upgrade
+# the style to FreeWalk — the exact thing pinning is meant to prevent.
+# 1.0 rad/s is operator-verified to stay in the classic gait.
 MAX_VYAW = float(os.environ.get("GO2_MAX_VYAW", "1.0"))  # rad/s
 CMD_HZ = 50.0            # Move is a watchdog'd setpoint; re-issue at this rate
 SETTLE_S = 0.35          # let the gait actually stop before the next observe
@@ -95,7 +95,7 @@ DRY_RUN = os.environ.get("GO2_DRY_RUN") == "1"
 # to guarantee the gait actually engages.
 YAW_TOL = float(os.environ.get("GO2_YAW_TOL_DEG", "2.0")) * 3.141592653589793 / 180.0
 # Coast compensation: after StopMove the body keeps rotating a highly stable
-# ~+2.2 deg (StaticWalk gait, measured over 24+24 steps 2026-07-20 night), so
+# ~+2.2 deg (StaticWalk gait, measured over 24+24 steps), so
 # the controller aims short by this much and the coast carries it to target.
 YAW_COAST = float(os.environ.get("GO2_YAW_COAST_DEG", "2.2")) * 3.141592653589793 / 180.0
 # Same idea for forward: the body coasts a stable ~+2 cm past the break point
@@ -238,7 +238,7 @@ def _turn(delta_rad: float) -> dict:
     rotation. Reports the post-settle measurement, including coast-through after
     StopMove, so the caller never has to assume the command was obeyed.
     """
-    _rc("StaticWalk", _sport.StaticWalk())  # re-assert 常规 — StopMove drops it
+    _rc("StaticWalk", _sport.StaticWalk())  # re-assert the Regular style — StopMove drops it
     st = _await_state(STALE_WAIT_S)
     if st is None:
         _drive_open(0.0, math.copysign(MAX_VYAW, delta_rad), abs(delta_rad) / MAX_VYAW)
@@ -297,7 +297,7 @@ def _forward(dist_m: float) -> dict:
     perpendicular component comes back as ``lateral_m`` so a crabbing gait shows
     up in the data instead of masquerading as a distance shortfall.
     """
-    _rc("StaticWalk", _sport.StaticWalk())  # re-assert 常规 — StopMove drops it
+    _rc("StaticWalk", _sport.StaticWalk())  # re-assert the Regular style — StopMove drops it
     st = _await_state(STALE_WAIT_S)
     if st is None:
         _drive_open(MAX_VX, 0.0, dist_m / MAX_VX)
@@ -320,7 +320,7 @@ def _forward(dist_m: float) -> dict:
                 # Feedback burst-dropout mid-step. Not commanding IS stopping
                 # (Move is watchdog'd), so pause and wait for the feed instead
                 # of abandoning the step — the dropouts were the entire scatter
-                # in the 2026-07-20 calibration once the bias was fixed. The
+                # in calibration once the bias was fixed. The
                 # wait does not consume motion budget: the dog is stationary,
                 # so the deadline slides by however long the dropout lasted.
                 _rc("StopMove", _sport.StopMove())
@@ -373,14 +373,15 @@ def fn_reset(_inputs: dict) -> dict:
     _rc("BalanceStand", _sport.BalanceStand())
     time.sleep(0.5)
     # Pin the gait style so it is part of the episode's initial conditions.
-    # StaticWalk = the app's 常规 style (mapped empirically 2026-07-20 night by
-    # driving 90° under each style API while the operator read the app label;
-    # ClassicWalk is the app's 经典, FreeWalk its 灵动). The operator chose 常规
-    # for its statically-stable three-feet-down gait. Without pinning, the
+    # StaticWalk = the app's "Regular" style (mapped empirically by driving
+    # 90° under each style API while the operator read the app label;
+    # ClassicWalk is the app's "Classic", FreeWalk its "Free"). The operator
+    # chose Regular for its statically-stable three-feet-down gait. Without
+    # pinning, the
     # style silently carries over from whatever ran last.
     _rc("StaticWalk", _sport.StaticWalk())
     time.sleep(0.3)
-    # Wait for a genuinely fresh frame before returning. Measured 2026-07-20: the
+    # Wait for a genuinely fresh frame before returning. Empirically, the
     # first step after reset silently fell back to open-loop because the cached
     # state was still older than the staleness window at that moment.
     for _ in range(50):

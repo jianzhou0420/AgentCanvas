@@ -469,7 +469,7 @@ def main() -> int:
 
     # Default: stdio frames, parent is whoever launched us via subprocess.Popen.
     #
-    # fd1 hygiene (deviation from upstream — observed 2026-07-20): the frame
+    # fd1 hygiene (deviation from upstream): the frame
     # channel shares fd1 with everything else in this process, and two writers
     # poison it in practice: (a) Isaac's python.sh prints a "running in conda
     # env" warning to stdout BEFORE python even starts, and (b) omni/kit logs

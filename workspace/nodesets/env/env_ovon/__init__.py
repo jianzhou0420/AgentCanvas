@@ -116,7 +116,7 @@ log = logging.getLogger("agentcanvas.env_ovon")
 # as dataset files. N ranges over _MIP_N (MIP-100 = full board, MIP-60 =
 # V1.0 long-horizon indicator). Generator (coding-agent/sample_episodes.py
 # --materialize) + the ovon audit manifests were trimmed with the coding-agent
-# objnav line 2026-08-03 — both live in git history at cecd19c.
+# objnav line — both live in git history at cecd19c.
 _MIP_N: tuple[int, ...] = (100, 60)
 
 # The three OVON val splits, each contributing a suffix to the mip{N}_* names.
@@ -160,7 +160,7 @@ _DATA_ROOT = "data/datasets/ovon/hm3d"
 # value (0.1 in objectnav_hm3d.yaml) — that is the standard, and the standard
 # is what this nodeset exists to run.
 #
-# History, so nobody re-"fixes" this: on 2026-07-21 it was briefly pinned to
+# History, so nobody re-"fixes" this: it was briefly pinned to
 # 0.25 (upstream OVON's override) after an oracle scored only SR 0.50 at 0.1.
 # That was a bad inference — the oracle used at the time chased ONE hand-picked
 # viewpoint and used a follower radius below the step size, so it was the test

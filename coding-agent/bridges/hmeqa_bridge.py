@@ -80,8 +80,8 @@ from PIL import Image as PILImage
 SERVER_URL = os.environ.get("HMEQA_SERVER_URL", "http://127.0.0.1:9240")
 STEP_BUDGET = int(os.environ.get("HMEQA_STEP_BUDGET", "500"))
 TURN_BUDGET = int(os.environ.get("HMEQA_TURN_BUDGET", "0"))
-# Camera-tilt actions 4/5 (user decision 2026-07-29 after the ep4 smoke
-# analysis: the native −30° pitch makes near-overhead ceiling fixtures
+# Camera-tilt actions 4/5 (the native −30° pitch makes near-overhead
+# ceiling fixtures
 # structurally unobservable, so the discrete surface gets LOOK_UP/LOOK_DOWN
 # like the ObjectNav line). HMEQA_TILT=0 masks them — action validation,
 # tool description, and the driver-side briefing all key off the same flag,

@@ -62,7 +62,7 @@ VERB_PREFIX = os.environ.get("HABITAT_VERB_PREFIX", "env_habitat")
 STEP_BUDGET = int(os.environ.get("HABITAT_STEP_BUDGET", "500"))
 TURN_BUDGET = int(os.environ.get("HABITAT_TURN_BUDGET", "0"))
 # 0 = no downscale: pano views ride at the native render resolution, same
-# as observe() (std-v2 decision 2026-07-15; was 384)
+# as observe() (std-v2; std-v1 used 384)
 PANO_VIEW_PX = int(os.environ.get("HABITAT_PANO_VIEW_PX", "0"))
 LIVE_DIR = Path(os.environ["HABITAT_LIVE_DIR"]) if os.environ.get("HABITAT_LIVE_DIR") else None
 MAX_ACTIONS_PER_CALL = 50
