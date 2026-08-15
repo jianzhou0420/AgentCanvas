@@ -123,7 +123,7 @@ def _input_port_property(port: dict) -> dict:
 
 def build_input_schema(fn: dict) -> dict:
     """A manifest function dict → its MCP ``inputSchema`` (a JSON Schema
-    object). Properties = input ports ∪ config fields; required = ports with
+    object). Properties = the union of input ports and config fields; required = ports with
     ``optional=False``. Input ports win a name collision with a config field
     (ports are the required data path)."""
     properties: dict = {}

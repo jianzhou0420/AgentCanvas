@@ -19,6 +19,7 @@ workspace or habitat code (framework import boundary).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -282,10 +283,8 @@ class CodingAgentRunner:
         run_dir = self.run_dir()
         summary: dict[str, Any] = {}
         if run_dir is not None and (run_dir / "summary.json").exists():
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 summary = json.loads((run_dir / "summary.json").read_text())
-            except (OSError, ValueError):
-                pass
         done = {e.get("index") for e in summary.get("episodes", [])}
         started = (
             sorted(

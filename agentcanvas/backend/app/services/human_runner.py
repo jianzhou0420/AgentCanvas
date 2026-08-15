@@ -125,7 +125,7 @@ class HumanRunner:
             with self._lock:
                 self._server_state = "ready"
             log.info("human env_habitat ready at %s (split=%s)", self._url, self._split)
-        except Exception as exc:  # noqa: BLE001 — surface to the UI, never crash lifespan
+        except Exception as exc:  # surface to the UI, never crash lifespan
             log.exception("human env_habitat start failed")
             with self._lock:
                 self._server_error = str(exc)
