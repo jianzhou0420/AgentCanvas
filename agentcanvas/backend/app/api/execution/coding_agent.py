@@ -29,6 +29,12 @@ SOURCE_ROOTS = {
     "claude-sdk": OUTPUT_ROOT,                                # Agent SDK runs
     "mini-swe": OUTPUT_ROOT.parent / "beta-react-harness",    # mini-swe-agent harness
     "codex": OUTPUT_ROOT.parent / "beta-codex-agent",         # OpenAI Codex CLI harness
+    "eharness": OUTPUT_ROOT.parent / "beta-eharness",         # embodied-harness shell
+    "vla": OUTPUT_ROOT.parent / "beta-vla-harness",           # outer model driving the 2B VLA
+    # ImagineVLN: single-turn MapGPT +/- world-model rollouts. Not a coding
+    # harness -- it only borrows this artifact contract, so the monitor works
+    # unchanged (see ImagineVLN/agent/run_mapgpt.py).
+    "imagine": OUTPUT_ROOT.parent / "beta-imaginevln",
 }
 
 
@@ -236,6 +242,63 @@ async def frames(run_name: str, index: int, source: str = "claude-sdk") -> dict:
     return {"frames": names}
 
 
+@router.get("/runs/{run_name}/episode/{index}/harness")
+async def harness_state(run_name: str, index: int, source: str = "claude-sdk") -> dict:
+    """eharness organ readout for one episode: the live state block, the
+    harness-written heartbeat, the keyframe index, and receipts (two-tier
+    runs). All files live under live_{i}/ and are written incrementally by
+    the shell — reads are defensive because a poll can race a write."""
+    import json as _json
+    _, live_dir = _episode_paths(run_name, index, source)
+    out: dict = {"state": None, "heartbeat": None, "depth": None,
+                 "keyframes": [], "receipts": []}
+    if not live_dir.exists():
+        return out
+    # `depth` is the geometry organ's readout (depth-waypoint runs): the
+    # top-down map it built this look, the candidates it derived and the
+    # landmark ledger. Written for humans watching the monitor — the model
+    # never receives any of it.
+    for key, fname in (("state", "state.json"), ("heartbeat", "heartbeat.json"),
+                       ("depth", "depth.json")):
+        p = live_dir / fname
+        if p.exists():
+            try:
+                out[key] = _json.loads(p.read_text())
+            except (ValueError, OSError):
+                pass  # mid-write — next poll gets it
+    kf_path = live_dir / "keyframes.jsonl"
+    if kf_path.exists():
+        latest: dict[int, dict] = {}   # append-log: last record per idx wins
+        try:
+            for line in kf_path.read_text().splitlines():
+                try:
+                    rec = _json.loads(line)
+                    latest[rec["idx"]] = rec
+                except (ValueError, KeyError):
+                    continue
+        except OSError:
+            pass
+        out["keyframes"] = [r for _, r in sorted(latest.items())
+                            if r.get("keyframe")]
+    seg_path = live_dir / "segments.jsonl"
+    if seg_path.exists():
+        try:
+            out["segments"] = [_json.loads(line) for line
+                               in seg_path.read_text().splitlines() if line.strip()]
+        except (ValueError, OSError):
+            out["segments"] = []
+    else:
+        out["segments"] = []
+    rc_path = live_dir / "receipts.jsonl"
+    if rc_path.exists():
+        try:
+            out["receipts"] = [_json.loads(line) for line
+                               in rc_path.read_text().splitlines() if line.strip()]
+        except (ValueError, OSError):
+            pass
+    return out
+
+
 @router.get("/runs/{run_name}/episode/{index}/frame/{name}")
 async def frame(run_name: str, index: int, name: str, source: str = "claude-sdk"):
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -246,3 +309,27 @@ async def frame(run_name: str, index: int, name: str, source: str = "claude-sdk"
     if not path.exists():
         raise HTTPException(404, "frame not found")
     return FileResponse(path, media_type="image/png" if ext == "png" else "image/jpeg")
+
+
+@router.get("/runs/{run_name}/episode/{index}/snapshot")
+async def snapshot(run_name: str, index: int, source: str = "claude-sdk"):
+    """The atomic live snapshot (§6 of the multiturn revision): one manifest
+    naming the exact versioned files of ONE observation. The monitor reads
+    this first and then fetches precisely these files — never a mix of
+    latest.png generations. `consistent` is the backend's own check that
+    every referenced file exists."""
+    _, live_dir = _episode_paths(run_name, index, source)
+    path = live_dir / "live_snapshot.json"
+    if not path.exists():
+        raise HTTPException(404, "no snapshot yet")
+    try:
+        snap = json.loads(path.read_text())
+    except (ValueError, OSError) as e:
+        raise HTTPException(503, f"snapshot unreadable: {e}")
+    missing = [k for k in ("rgb_file", "topdown_file", "accumulated_map_file",
+                           "model_map_file", "depth_json_file")
+               if snap.get(k) and not (live_dir / snap[k]).exists()]
+    snap["consistent"] = not missing
+    if missing:
+        snap["missing"] = missing
+    return snap

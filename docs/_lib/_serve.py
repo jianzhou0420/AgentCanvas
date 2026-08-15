@@ -98,23 +98,80 @@ def snapshot(root: Path) -> tuple:
     return tuple(sig)
 
 
+# ---------- 自适应轮询参数 ----------
+# watcher 每一轮都要 stat 整棵目录树，所以固定间隔意味着「没人编辑、甚至没人开着
+# 页面」时也在满速空转（1315 个文件 + 0.5 秒 = 每秒 2630 次 stat，全年无休）。
+# 下面两档让间隔跟着实际情况走；它们只会让轮询变慢，永远不会超过 --interval 的速度。
+_IDLE_NO_CLIENT = 30.0  # 没有浏览器连着 SSE 时的间隔
+_QUIET_BACKOFF = (      # (安静了多少秒, 该用多大间隔)，从最久的开始匹配
+    (300.0, 15.0),
+    (60.0, 5.0),
+    (10.0, 3.0),
+)
+
+
 class Watcher(threading.Thread):
-    def __init__(self, root: Path, interval: float, on_change, *, label: str = "watch"):
+    def __init__(
+        self,
+        root: Path,
+        interval: float,
+        on_change,
+        *,
+        label: str = "watch",
+        client_count=None,
+    ):
         super().__init__(daemon=True)
         self.root = root
         self.interval = interval
         self.on_change = on_change
         self.label = label
+        # 返回当前 live-reload 订阅者数的可调用对象；None = 退化成固定间隔轮询。
+        self.client_count = client_count
         self.last = snapshot(root)
         self._running = True
+        self._last_change = time.monotonic()
+
+    def _next_delay(self) -> float:
+        """下一轮该等多久。
+
+        `--interval` 是**最快**档，这里只会返回等于或大于它的值 —— 正在编辑时
+        的手感跟以前完全一样，省下来的都是空转的部分。
+        """
+        # 一个浏览器都没连着：就算扫出变化也没有人可以通知，纯浪费。
+        if self.client_count is not None and self.client_count() == 0:
+            return max(self.interval, _IDLE_NO_CLIENT)
+        # 有人看着：按「上次改动到现在多久」逐级退避，一有改动立刻回到最快档。
+        quiet = time.monotonic() - self._last_change
+        for after, delay in _QUIET_BACKOFF:
+            if quiet >= after:
+                return max(self.interval, delay)
+        return self.interval
+
+    def _sleep(self, total: float) -> None:
+        """分片睡，中途有浏览器连上来就提前醒。
+
+        否则空闲时新开的页面最坏要等满一个 _IDLE_NO_CLIENT 周期才看到第一次刷新。
+        每秒查一次列表长度，相对于 stat 上千个文件可以忽略不计。
+        """
+        if self.client_count is None or total <= 1.0:
+            time.sleep(total)
+            return
+        had_clients = self.client_count() > 0
+        slept = 0.0
+        while slept < total and self._running:
+            time.sleep(min(1.0, total - slept))
+            slept += 1.0
+            if not had_clients and self.client_count() > 0:
+                return
 
     def run(self):
         while self._running:
-            time.sleep(self.interval)
+            self._sleep(self._next_delay())
             snap = snapshot(self.root)
             if snap != self.last:
                 changed = self._diff(self.last, snap)
                 self.last = snap
+                self._last_change = time.monotonic()
                 self.on_change(changed)
 
     def _diff(self, old: tuple, new: tuple) -> list[str]:
@@ -137,6 +194,12 @@ class Watcher(threading.Thread):
 
 _subscribers = []
 _subscribers_lock = threading.Lock()
+
+
+def subscriber_count() -> int:
+    """当前有几个浏览器连着 live-reload。0 = 这一轮扫描没有任何意义。"""
+    with _subscribers_lock:
+        return len(_subscribers)
 
 
 def broadcast_reload(changed_paths: list[str]) -> None:
@@ -298,7 +361,9 @@ def main():
             html_watcher.last = snapshot(V2_DIR)
         broadcast_reload(changed)
 
-    html_watcher = Watcher(V2_DIR, args.interval, on_change, label="html")
+    html_watcher = Watcher(
+        V2_DIR, args.interval, on_change, label="html", client_count=subscriber_count
+    )
 
     # Bind + serve FIRST so the port is reachable instantly. The initial chrome
     # bake can take a few seconds on a large site (Python 3.8, hundreds of pages

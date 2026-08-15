@@ -216,6 +216,38 @@ class HabitatEnvManager:
         # via the reset node's depth_resolution knob.
         self._rgb_hw: tuple[int, int] | None = None
         self._depth_hw: tuple[int, int] | None = None
+        # RGB sensor intrinsics/extrinsics overrides — None keeps the YAML
+        # default (HFOV 90, POSITION [0, 1.25, 0]). Needed by current-N-view
+        # policies whose training rig differs from VLN-CE's: the JanusVLN
+        # Qwen3-VL-Omega VLA renders 720x640 @ HFOV 110 from a 0.5 m mast (a
+        # quadruped-height camera), and feeding it VLN-CE's 90/1.25 rig is a
+        # silent distribution shift. Per-graph, so the existing board keeps the
+        # YAML defaults untouched.
+        self._rgb_hfov: float | None = None
+        self._rgb_height_m: float | None = None
+        # Camera MAST height — moves the RGB and DEPTH sensors TOGETHER, which
+        # is the difference that matters against `_rgb_height_m` above (RGB
+        # only, so a policy can be fed its training rig without disturbing the
+        # depth consumers). Anything that draws depth-derived geometry onto the
+        # RGB frame — the waypoint circles the human tab and the DWP harness
+        # both show — is only correct while the two sensors sit at the same
+        # height; raise one alone and every marker lands off the floor by the
+        # difference. None keeps the YAML/habitat default, 1.25 m.
+        self._cam_height_m: float | None = None
+        # Depth RANGE. habitat-lab's defaults are MAX_DEPTH 10.0 with
+        # NORMALIZE_DEPTH True (config/default.py:239-241), applied as a clip
+        # then a rescale in HabitatSimDepthSensor.get_observation — so the
+        # 10 m ceiling is a CONFIG choice, not a limit of the renderer, and a
+        # corridor 14 m long comes back as a flat wall of 1.0 at ten metres.
+        # Raising MAX_DEPTH alone is not enough: with NORMALIZE_DEPTH on, the
+        # frame is still [0,1] and every consumer has to be told the new
+        # divisor. Turning normalisation OFF puts true metres on the wire.
+        #
+        # OPT-IN, and it must stay opt-in: the SmartWay waypoint predictor's
+        # DDPPO depth encoder was trained on normalised [0,1] depth, so
+        # flipping this globally would feed it metres and quietly wreck it.
+        self._depth_max_m: float | None = None
+        self._depth_normalize: bool | None = None
         # MAX_EPISODE_STEPS override — None keeps initialize()'s max_steps
         # (500). AO-Planner's release task yaml runs 5000.
         self._max_steps_override: int | None = None
@@ -287,7 +319,40 @@ class HabitatEnvManager:
                 # sensor raise (224 → 1024); depth stays at the YAML value.
                 config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.HEIGHT = int(h)
                 config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.WIDTH = int(w)
-                log.info("RGB sensor override: %dx%d", h, w)
+                log.info("RGB sensor override: %dx%d (WxH)", w, h)
+            if self._rgb_hfov is not None:
+                config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.HFOV = int(round(self._rgb_hfov))
+                log.info("RGB sensor HFOV override: %s", self._rgb_hfov)
+            # Mast first, per-sensor override second — so a graph that asks for
+            # both gets "put the rig at H, but render RGB from H_rgb", and one
+            # that asks only for rgb_height_m behaves exactly as it did before
+            # the mast knob existed.
+            if self._cam_height_m is not None:
+                for name in ("RGB_SENSOR", "DEPTH_SENSOR"):
+                    sensor = getattr(config.TASK_CONFIG.SIMULATOR, name)
+                    pos = list(sensor.POSITION)
+                    pos[1] = float(self._cam_height_m)
+                    sensor.POSITION = pos
+                log.info("camera mast height override: %.3f m (RGB + DEPTH)",
+                         self._cam_height_m)
+            if self._rgb_height_m is not None:
+                # POSITION is the sensor offset from the agent origin, [x, y, z]
+                # with y = height. Only y moves: a lateral offset would break
+                # the "rotate the agent == rotate the sensor" equivalence that
+                # render_panorama_rgbd relies on to synthesize side views.
+                pos = list(config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.POSITION)
+                pos[1] = float(self._rgb_height_m)
+                config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.POSITION = pos
+                log.info("RGB sensor height override: %.3f m", self._rgb_height_m)
+            if self._depth_max_m is not None:
+                config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH = float(
+                    self._depth_max_m)
+                log.info("DEPTH MAX_DEPTH override: %.1f m", self._depth_max_m)
+            if self._depth_normalize is not None:
+                config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH = bool(
+                    self._depth_normalize)
+                log.info("DEPTH NORMALIZE_DEPTH override: %s",
+                         self._depth_normalize)
             if self._depth_hw is not None:
                 h, w = self._depth_hw
                 # AO-Planner's LLM_base_task.yaml renders DEPTH at 512 to match
@@ -379,6 +444,99 @@ class HabitatEnvManager:
         except Exception:
             return None
 
+    def current_rgb_hw(self) -> tuple[int, int] | None:
+        """Live (height, width) of the RGB sensor — the non-square-aware read."""
+        if self._config is None:
+            return None
+        try:
+            sensor = self._config.TASK_CONFIG.SIMULATOR.RGB_SENSOR
+            return (int(sensor.HEIGHT), int(sensor.WIDTH))
+        except Exception:
+            return None
+
+    def current_rgb_hfov(self) -> float | None:
+        if self._config is None:
+            return None
+        try:
+            return float(self._config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.HFOV)
+        except Exception:
+            return None
+
+    def current_rgb_height_m(self) -> float | None:
+        if self._config is None:
+            return None
+        try:
+            return float(self._config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.POSITION[1])
+        except Exception:
+            return None
+
+    def current_depth_height_m(self) -> float | None:
+        """Live height of the DEPTH sensor — the one the geometry is built on."""
+        if self._config is None:
+            return None
+        try:
+            return float(self._config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.POSITION[1])
+        except Exception:
+            return None
+
+    def current_depth_max_m(self) -> float | None:
+        if self._config is None:
+            return None
+        try:
+            return float(self._config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH)
+        except Exception:
+            return None
+
+    def current_depth_normalize(self) -> bool | None:
+        if self._config is None:
+            return None
+        try:
+            return bool(
+                self._config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH)
+        except Exception:
+            return None
+
+    def depth_units(self) -> dict:
+        """What a depth frame from this env MEANS, so consumers stop guessing.
+
+        ``scale_m`` is metres per raw unit — feed it straight to
+        ``eharness.depthmap.to_metres``. The self-detecting fallback there reads
+        "max ≤ 1" as normalised, which is a coin flip the moment a frame is all
+        close-range, and this is how a caller avoids the flip entirely."""
+        max_m = self.current_depth_max_m()
+        norm = self.current_depth_normalize()
+        if max_m is None or norm is None:
+            return {"known": False}
+        try:
+            min_m = float(self._config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH)
+        except Exception:  # a config without MIN_DEPTH must not kill observe
+            min_m = 0.0
+        return {"known": True, "max_depth_m": max_m, "min_depth_m": min_m,
+                "normalized": norm, "scale_m": max_m if norm else 1.0,
+                "camera_height_m": self.current_depth_height_m()}
+
+    @staticmethod
+    def parse_rgb_size(value: Any) -> tuple[int, int] | None:
+        """Parse an rgb_resolution knob into (height, width).
+
+        ``"512"`` / ``512`` → square (the historical meaning, unchanged).
+        ``"720x640"`` → WIDTH x HEIGHT, the ordinary way to write a resolution,
+        stored as (h, w) to match ``_rgb_hw``. Returns None for blank input.
+        """
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if "x" in text:
+            w_str, _, h_str = text.partition("x")
+            w, h = int(w_str), int(h_str)
+        else:
+            w = h = int(text)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"invalid rgb resolution {value!r}")
+        return (h, w)
+
     def current_depth_resolution(self) -> int | None:
         if self._config is None:
             return None
@@ -393,23 +551,34 @@ class HabitatEnvManager:
 
     def ensure_env_overrides(
         self,
-        rgb: int | None = None,
+        rgb: Any = None,
         depth: int | None = None,
         max_episode_steps: int | None = None,
+        rgb_hfov: float | None = None,
+        rgb_height_m: float | None = None,
+        cam_height_m: float | None = None,
+        depth_max_m: float | None = None,
+        depth_normalize: bool | None = None,
     ) -> dict:
-        """Apply per-graph env overrides (RGB/DEPTH render size, step cap).
+        """Apply per-graph env overrides (RGB/DEPTH sensor rig, step cap).
 
         Not yet initialized → record as pending overrides for initialize().
         Initialized with a mismatch → tear the env down and rebuild with the
         remembered initialize() args, then re-place the SAME episode
         (set_episode_by_index) so panel-owned placement survives the rebuild.
         One-time cost per worker (~scene reload); no-op when everything matches.
+
+        Every knob is opt-in: passing None leaves the YAML default alone, so a
+        graph that says nothing gets exactly the behaviour it got before these
+        knobs existed. ``rgb`` accepts ``512`` (square, historical) or
+        ``"720x640"`` (WxH).
         """
-        if rgb is not None:
-            rgb = int(rgb)
-            if rgb <= 0:
-                return {"error": f"invalid rgb resolution {rgb}"}
-            self._rgb_hw = (rgb, rgb)
+        try:
+            rgb_hw = self.parse_rgb_size(rgb)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        if rgb_hw is not None:
+            self._rgb_hw = rgb_hw
         if depth is not None:
             depth = int(depth)
             if depth <= 0:
@@ -420,14 +589,72 @@ class HabitatEnvManager:
             if max_episode_steps <= 0:
                 return {"error": f"invalid max_episode_steps {max_episode_steps}"}
             self._max_steps_override = max_episode_steps
-        wanted = {"rgb": rgb, "depth": depth, "max_episode_steps": max_episode_steps}
+        if rgb_hfov is not None:
+            rgb_hfov = float(rgb_hfov)
+            if not 0 < rgb_hfov < 180:
+                return {"error": f"invalid rgb_hfov {rgb_hfov}"}
+            self._rgb_hfov = rgb_hfov
+        if rgb_height_m is not None:
+            rgb_height_m = float(rgb_height_m)
+            if not 0 <= rgb_height_m <= 5:
+                return {"error": f"invalid rgb_height_m {rgb_height_m}"}
+            self._rgb_height_m = rgb_height_m
+        if cam_height_m is not None:
+            cam_height_m = float(cam_height_m)
+            if not 0 <= cam_height_m <= 5:
+                return {"error": f"invalid cam_height_m {cam_height_m}"}
+            self._cam_height_m = cam_height_m
+        if depth_max_m is not None:
+            depth_max_m = float(depth_max_m)
+            if depth_max_m <= 0:
+                return {"error": f"invalid depth_max_m {depth_max_m}"}
+            self._depth_max_m = depth_max_m
+        if depth_normalize is not None:
+            depth_normalize = bool(depth_normalize)
+            self._depth_normalize = depth_normalize
+        wanted = {
+            "rgb": None if rgb_hw is None else f"{rgb_hw[1]}x{rgb_hw[0]}",
+            "depth": depth,
+            "max_episode_steps": max_episode_steps,
+            "rgb_hfov": rgb_hfov,
+            "rgb_height_m": rgb_height_m,
+            "cam_height_m": cam_height_m,
+            "depth_max_m": depth_max_m,
+            "depth_normalize": depth_normalize,
+        }
         if self._env is None:
             log.info("ensure_env_overrides(%s): pending until initialize()", wanted)
             return {"status": "pending", **wanted}
+        cur_hfov = self.current_rgb_hfov()
+        cur_height = self.current_rgb_height_m()
+        cur_depth_h = self.current_depth_height_m()
+
+        def _off(cur: float | None, want: float) -> bool:
+            return cur is None or abs(cur - want) > 1e-6
+
         mismatch = (
-            (rgb is not None and self.current_rgb_resolution() != rgb)
+            (rgb_hw is not None and self.current_rgb_hw() != rgb_hw)
             or (depth is not None and self.current_depth_resolution() != depth)
             or (max_episode_steps is not None and self.max_steps != max_episode_steps)
+            or (rgb_hfov is not None and (cur_hfov is None or abs(cur_hfov - rgb_hfov) > 1e-6))
+            or (
+                rgb_height_m is not None
+                and (cur_height is None or abs(cur_height - rgb_height_m) > 1e-6)
+            )
+            # The mast is judged on the DEPTH sensor, because that is the one
+            # only this knob ever moves; RGB is checked too, but only when no
+            # per-sensor override is deliberately holding it somewhere else.
+            or (
+                cam_height_m is not None
+                and (_off(cur_depth_h, cam_height_m)
+                     or (rgb_height_m is None and self._rgb_height_m is None
+                         and _off(cur_height, cam_height_m)))
+            )
+            or (depth_max_m is not None and _off(self.current_depth_max_m(), depth_max_m))
+            or (
+                depth_normalize is not None
+                and self.current_depth_normalize() is not depth_normalize
+            )
         )
         if not mismatch:
             return {"status": "ok", **wanted}
@@ -525,7 +752,14 @@ class HabitatEnvManager:
             if self._episode_done:
                 return {"error": "Episode already done", "done": True}
 
+            # The motion contract, per PRIMITIVE (§4.1 of the revision plan):
+            # a mapper fed "one MOVE_FORWARD = 0.25 m" is fed a lie whenever
+            # physics ate part of the step. Measure the actual translation
+            # magnitude and the collision flag — egocentric SCALARS only.
+            sim = self._env._env.sim
+            _p0 = np.asarray(sim.get_agent_state().position, dtype=np.float64)
             obs, reward, done, info = self._env.step(action)
+            _p1 = np.asarray(sim.get_agent_state().position, dtype=np.float64)
             self._current_obs = obs
             self._episode_done = done
             self._step_count += 1
@@ -538,6 +772,10 @@ class HabitatEnvManager:
                 "step_count": self._step_count,
                 "action": action,
                 "reward": float(reward),
+                "actual_translation_m": round(float(np.linalg.norm((_p1 - _p0)[[0, 2]])), 3),
+                # read immediately after the step — the flag reflects only
+                # the LAST physics step
+                "collided": bool(getattr(sim, "previous_step_collided", False)),
             }
             terminated, truncated = self._split_done(done)
             result["terminated"] = terminated
@@ -601,17 +839,52 @@ class HabitatEnvManager:
             sim.set_agent_state(pos, new_rot)
 
             forward_step = 0.25
-            ksteps = max(1, int(float(distance) // forward_step))
+            # int(distance // 0.25), NOT max(1, …): a rotate-only request
+            # (distance < one primitive) must walk ZERO forwards. The old
+            # floor forced every yaw-only call to also blind-walk 0.25 m —
+            # and the unified primitive executor (§4) rotates first, walks
+            # under its own per-primitive observation afterwards.
+            ksteps = int(float(distance) // forward_step)
             forward_action = 1  # MOVE_FORWARD
 
             obs = self._current_obs
             done = False
             info: dict = {}
+            # The motion contract (§3 P0): a mapper fed "ksteps × 0.25 m" is
+            # fed a lie whenever a wall ate part of the walk — the error is
+            # one-sided and never averages out. Measure what the body actually
+            # did, per primitive, the same way step_path's tryout block
+            # already does. Only egocentric SCALARS leave this function: a
+            # translation magnitude and collision counts, never a pose.
+            moved_m = 0.0
+            collision_count = 0
+            last_collided = False
+            last_delta = 0.0
+            if ksteps == 0:
+                # rotate-only: no env.step will refresh the cached obs, and a
+                # later observe would return the PRE-rotation frame. Re-render
+                # at the new heading the same way set_episode_by_index does.
+                try:
+                    sim_obs = sim.get_sensor_observations()
+                    self._current_obs = sim.sensor_suite.get_observations(sim_obs)
+                except Exception:
+                    log.exception("post-rotation sensor refresh failed; "
+                                  "cached obs remains pre-rotation")
+                obs = self._current_obs
             for _ in range(ksteps):
                 if self._episode_done:
                     break
+                _p0 = np.asarray(sim.get_agent_state().position, dtype=np.float64)
                 obs, _reward, done, info = self._env.step(forward_action)
                 self._step_count += 1
+                _p1 = np.asarray(sim.get_agent_state().position, dtype=np.float64)
+                last_delta = float(np.linalg.norm((_p1 - _p0)[[0, 2]]))
+                moved_m += last_delta
+                # read immediately after the step — the flag reflects only the
+                # LAST physics step, and the teleport rotation never sets it
+                last_collided = bool(getattr(sim, "previous_step_collided", False))
+                if last_collided:
+                    collision_count += 1
                 try:
                     _rec_ep = str(self._env._env.current_episode.episode_id)
                 except Exception:
@@ -631,6 +904,14 @@ class HabitatEnvManager:
                 "angle": float(angle),
                 "distance": float(distance),
                 "ksteps": ksteps,
+                # commanded primitive budget, as distinct from the raw request:
+                # 0.9 m floor-divides to 3 primitives = 0.75 m commanded
+                "requested_distance_m": round(ksteps * forward_step, 3),
+                "actual_translation_m": round(moved_m, 3),
+                "collision_count": collision_count,
+                # ended pressed against something: the final primitive collided
+                # and barely moved (sliding may still move a colliding step)
+                "stopped_at_collision": bool(last_collided and last_delta < 0.05),
             }
             terminated, truncated = self._split_done(self._episode_done)
             result["terminated"] = terminated
@@ -1110,7 +1391,26 @@ class HabitatEnvManager:
             except Exception:
                 pass
             sim.set_agent_state(start_pos, start_rot)
-            self._current_obs = sim.get_sensor_observations()
+            # THROUGH THE SENSOR SUITE, not raw off the renderer. This line used
+            # to be a bare `sim.get_sensor_observations()`, which is habitat-SIM
+            # output: it skips HabitatSimDepthSensor.get_observation entirely, so
+            # the depth frame arrived un-clipped, un-normalised metres while
+            # every other path in this file (env.reset / env.step) went through
+            # the wrapper and arrived as [0,1] over MIN..MAX_DEPTH. The first
+            # frame of an episode was therefore in DIFFERENT UNITS from the
+            # second — measured on R2R ep 7 at the default rig: step 0 max
+            # 15.78 (raw metres, past the 10 m clip), step 1 max 1.0 → 10.0 m.
+            # That is the "units are not stable, self-detect" note in
+            # eharness/depthmap.py: not two env builds disagreeing, one env
+            # disagreeing with itself between frame 0 and frame 1. The suite
+            # also drops RGB's alpha channel, which raw output keeps — so frame
+            # 0 was RGBA and every later frame RGB.
+            sim_obs = sim.get_sensor_observations()
+            try:
+                self._current_obs = sim.sensor_suite.get_observations(sim_obs)
+            except Exception:  # noqa: BLE001 — never fail a placement over this
+                log.exception("sensor suite passthrough failed; using raw sim obs")
+                self._current_obs = sim_obs
             self._episode_done = False
             self._step_count = 0
 
@@ -1393,6 +1693,11 @@ def _habitat_step_info(result: dict) -> dict:
         info["metrics"] = result["metrics"]
     if "ksteps" in result:
         info["ksteps"] = result["ksteps"]
+    # per-primitive motion contract (egocentric scalars; §4.1)
+    if "actual_translation_m" in result:
+        info["actual_translation_m"] = result["actual_translation_m"]
+    if "collided" in result:
+        info["collided"] = result["collided"]
     return info
 
 
@@ -1405,7 +1710,7 @@ class ResetHabitatTool(BaseCanvasNode):
             ConfigField(
                 "rgb_resolution",
                 "text",
-                label="RGB resolution (px, blank = YAML default)",
+                label="RGB resolution — 512 (square) or 720x640 (WxH); blank = YAML default",
                 default="",
             ),
             ConfigField(
@@ -1418,6 +1723,39 @@ class ResetHabitatTool(BaseCanvasNode):
                 "max_episode_steps",
                 "text",
                 label="MAX_EPISODE_STEPS (blank = 500)",
+                default="",
+            ),
+            ConfigField(
+                "rgb_hfov",
+                "text",
+                label="RGB HFOV in degrees (blank = YAML default 90)",
+                default="",
+            ),
+            ConfigField(
+                "rgb_height_m",
+                "text",
+                label="RGB camera height in m (blank = YAML default 1.25)",
+                default="",
+            ),
+            ConfigField(
+                "cam_height_m",
+                "text",
+                label="Camera mast height in m — moves RGB AND DEPTH together "
+                      "(blank = habitat default 1.25)",
+                default="",
+            ),
+            ConfigField(
+                "depth_max_m",
+                "text",
+                label="DEPTH MAX_DEPTH in m (blank = habitat default 10)",
+                default="",
+            ),
+            ConfigField(
+                "depth_normalize",
+                "text",
+                label="DEPTH NORMALIZE_DEPTH — 0 gives raw metres, 1 gives "
+                      "[0,1] (blank = habitat default 1). The waypoint "
+                      "predictor needs 1.",
                 default="",
             ),
         ],
@@ -1458,21 +1796,59 @@ class ResetHabitatTool(BaseCanvasNode):
             except ValueError:
                 return None
 
-        want_rgb = _int_cfg("rgb_resolution")
+        def _float_cfg(key: str) -> float | None:
+            raw = str(cfg.get(key, "") or "").strip()
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        # rgb_resolution is no longer int-only ("720x640" is legal), so it is
+        # carried as the raw string and parsed by the manager.
+        want_rgb_raw = str(cfg.get("rgb_resolution", "") or "").strip() or None
+        try:
+            want_rgb_hw = mgr.parse_rgb_size(want_rgb_raw)
+        except ValueError:
+            self._self_log("error", f"invalid rgb_resolution {want_rgb_raw!r}")
+            want_rgb_raw, want_rgb_hw = None, None
+        def _bool_cfg(key: str) -> bool | None:
+            raw = str(cfg.get(key, "") or "").strip().lower()
+            if not raw:
+                return None
+            return raw in ("1", "true", "yes", "on")
+
         want_depth = _int_cfg("depth_resolution")
         want_max = _int_cfg("max_episode_steps")
-        if want_rgb is not None or want_depth is not None or want_max is not None:
-            mismatch = (
-                not mgr.initialized
-                or (want_rgb is not None and mgr.current_rgb_resolution() != want_rgb)
-                or (want_depth is not None and mgr.current_depth_resolution() != want_depth)
-                or (want_max is not None and mgr.max_steps != want_max)
+        want_hfov = _float_cfg("rgb_hfov")
+        want_height = _float_cfg("rgb_height_m")
+        want_mast = _float_cfg("cam_height_m")
+        want_depth_max = _float_cfg("depth_max_m")
+        want_depth_norm = _bool_cfg("depth_normalize")
+        # The "does this differ from what is running?" test lives in the manager
+        # ONLY. It used to be duplicated here as a gate, and a duplicated
+        # predicate is a knob you can add to one copy and forget in the other —
+        # the graph would then set a field that silently never rebuilt the env.
+        # ensure_env_overrides is a no-op returning {"status": "ok"} when
+        # everything already matches, so calling it unconditionally is free.
+        if any(
+            v is not None
+            for v in (want_rgb_hw, want_depth, want_max, want_hfov, want_height,
+                      want_mast, want_depth_max, want_depth_norm)
+        ):
+            result = await _run_sync(
+                mgr.ensure_env_overrides,
+                want_rgb_raw,
+                want_depth,
+                want_max,
+                want_hfov,
+                want_height,
+                want_mast,
+                want_depth_max,
+                want_depth_norm,
             )
-            if mismatch:
-                result = await _run_sync(
-                    mgr.ensure_env_overrides, want_rgb, want_depth, want_max
-                )
-                self._self_log("env_overrides", result)
+            self._self_log("env_overrides", result)
         if mgr._episode_done:
             await _run_sync(mgr.reset_episode)
         info = await _run_sync(mgr.get_episode_info)
@@ -1659,6 +2035,17 @@ class StepHighToLowHabitatTool(BaseCanvasNode):
         PortDef("terminated", "BOOL", "MDP terminal: STOP called / goal reached"),
         PortDef("truncated", "BOOL", "Step-budget cutoff"),
         PortDef("info", "ANY", "Diagnostics + terminal metrics (incl. ksteps)"),
+        # The motion contract: egocentric SCALARS only — magnitudes and
+        # counts, never a pose. This is what lets a mapper stop believing
+        # "ksteps × 0.25 m" when a wall ate part of the walk.
+        PortDef("requested_distance_m", "ANY",
+                "Commanded primitive budget in metres (ksteps × 0.25)"),
+        PortDef("actual_translation_m", "ANY",
+                "Metres the body actually moved, measured per primitive"),
+        PortDef("collision_count", "ANY",
+                "Primitives whose physics step collided (may still slide)"),
+        PortDef("stopped_at_collision", "BOOL",
+                "The walk ended pressed against something"),
     ]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
@@ -1671,15 +2058,23 @@ class StepHighToLowHabitatTool(BaseCanvasNode):
         self._self_log("angle_rad", angle)
         self._self_log("distance_m", distance)
         self._self_log("ksteps", result.get("ksteps"))
+        self._self_log("moved_m", result.get("actual_translation_m"))
+        self._self_log("collisions", result.get("collision_count"))
         self._self_log("terminated", terminated)
         self._self_log("truncated", truncated)
         if (terminated or truncated) and result.get("metrics"):
             self._self_log("metrics", result["metrics"])
+        # Safe defaults: the STOP no-op (angle==0, distance==0) routes through
+        # step(0), whose result has none of the motion-contract keys.
         return {
             "reward": result.get("reward", 0.0),
             "terminated": terminated,
             "truncated": truncated,
             "info": info,
+            "requested_distance_m": float(result.get("requested_distance_m", 0.0)),
+            "actual_translation_m": float(result.get("actual_translation_m", 0.0)),
+            "collision_count": int(result.get("collision_count", 0)),
+            "stopped_at_collision": bool(result.get("stopped_at_collision", False)),
         }
 
 
@@ -1762,6 +2157,14 @@ class ObserveEgocentricHabitatTool(BaseCanvasNode):
         PortDef("depth", "DEPTH", "Current depth map"),
         PortDef("pose", "POSE", "Agent position + orientation"),
         PortDef("intrinsics", "ANY", "Camera intrinsics {fx,fy,cx,cy,width,height} or None"),
+        # The units ride WITH the frame on purpose. A consumer that has to ask a
+        # second endpoint what the numbers mean can be told something that was
+        # true a rebuild ago, and the depth organ's fallback for "nobody said"
+        # is a guess that reads any all-close-range frame as normalised — a
+        # silent 10×. Same observation, same answer.
+        PortDef("depth_units", "ANY",
+                "What the depth array means: {scale_m, max_depth_m, min_depth_m, "
+                "normalized, camera_height_m}. Multiply by scale_m for metres."),
         PortDef("raw_obs", "ANY", "Raw Habitat observation dict (for policy nodes)"),
         PortDef(
             "instruction_text",
@@ -1800,6 +2203,7 @@ class ObserveEgocentricHabitatTool(BaseCanvasNode):
             "depth": depth,
             "pose": pose,
             "intrinsics": intrinsics,
+            "depth_units": mgr.depth_units(),
             "raw_obs": raw,
             "instruction_text": instruction_text,
         }

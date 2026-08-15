@@ -327,8 +327,15 @@ class MiniSweAdapter:
             wp_max_moves=ctx.wp_max_moves,
             wp_predict_fn=ctx.extra.get("wp_predict_fn", "smartway_waypoint__predict"),
             hybrid=ctx.hybrid,
+            imagine=ctx.imagine,
+            imagine_rollouts=ctx.imagine_rollouts,
         )
-        model = NavToolsModel(
+        model_cls = NavToolsModel
+        if ctx.imagine:
+            # keeps image_window=0 for panoramas, prunes stale rollout sheets
+            from imagine_model import ImagineNavToolsModel
+            model_cls = ImagineNavToolsModel
+        model = model_cls(
             model_name=ctx.model,
             tools=env.toolset.tool_schemas(),
             image_window=knobs["image_window"],
@@ -336,6 +343,19 @@ class MiniSweAdapter:
             model_kwargs=knobs["model_kwargs"],
             cost_tracking=knobs["cost_tracking"],
         )
+        # The monitor draws images from `frames` on the tool_result event. mini's
+        # NavAgent._emit does not set it (the sdk path had no need), so the
+        # toolset's record of what it just wrote is grafted on here — otherwise
+        # the monitor's fallback keeps one image per obs_NNNN_ group and the
+        # panorama plus every rollout but the last one disappear.
+        sink_emit = sink.emit
+        if ctx.imagine:
+            def sink_emit(kind: str, payload: dict, _e=sink.emit, _ts=env.toolset):
+                if kind == "tool_result" and getattr(_ts, "last_frames", None):
+                    payload = {**payload, "frames": list(_ts.last_frames)}
+                    _ts.last_frames = []
+                return _e(kind, payload)
+
         agent = NavAgent(
             model,
             env,
@@ -345,7 +365,7 @@ class MiniSweAdapter:
             cost_limit=knobs["cost_limit"],
             wall_time_limit_seconds=ctx.episode_timeout,
             output_path=ctx.raw_dir / f"episode_{ctx.index}.traj.json",
-            event_hook=sink.emit,
+            event_hook=sink_emit,
         )
 
         error: str | None = None

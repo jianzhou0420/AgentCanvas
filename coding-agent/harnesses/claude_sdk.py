@@ -21,10 +21,49 @@ import contextlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-from driver import EpisodeContext, EventSink, SessionOutcome, is_rate_limited, json_safe
+from driver import (EpisodeContext, EventSink, SessionOutcome, flag_on,
+                    is_rate_limited, json_safe)
+from eharness.capabilities import sdk_allowed_tools
+
+
+def _is_dwp(ctx: EpisodeContext) -> bool:
+    # same parser as driver's briefing branch and bridge_env — a private
+    # falsy tuple here let `--set dwp=false` split allowlist from server
+    return flag_on(ctx.extra.get("dwp", "0"))
+
+
+def classify_outcome(result_msg: Any) -> str | None:
+    """Map an SDK ResultMessage to the driver's error contract.
+
+    The Agent SDK sets is_error=True even on a clean subtype="success"
+    result — the flag tracks the session, not the navigation outcome, so
+    an episode that called stop and reached the goal still comes back
+    is_error=True (observed: fable ep40). is_error alone therefore
+    over-flags. Score by the ENV terminal instead: "success" (normal
+    return, whatever the nav result), "error_max_turns" (clean
+    truncation, like mini's step_limit), and "error_max_budget_usd"
+    (USD fuse tripped — same clean-truncation semantics) are scored
+    outcomes — only a genuine execution error (error_during_execution,
+    or a missing subtype) is a broken session that propagates as error.
+    Keeping the fuse subtype OUT of this whitelist would make the driver
+    retry the most expensive episodes — the opposite of a budget cap.
+    """
+    subtype = getattr(result_msg, "subtype", None)
+    result_text = str(getattr(result_msg, "result", "") or "")
+    if is_rate_limited(result_text):
+        # subscription throttle returns subtype="success" is_error=True with a
+        # "temporarily limiting requests" result — tag retryable so the driver
+        # backs off and re-runs it, never scoring it as a navigation failure.
+        return "rate_limited"
+    if (getattr(result_msg, "is_error", False)
+            and subtype not in ("error_max_turns", "error_max_budget_usd",
+                                "success")):
+        return f"sdk result {subtype or 'is_error'}"
+    return None
 
 
 def _tool_result_texts(block: Any) -> list[str]:
@@ -60,6 +99,12 @@ class ClaudeSdkAdapter:
             # accumulated frames until a compaction resets it — NOT a recent
             # window. See docs coding-agent/harness-notes + tmp/cc-internals.
             "vision_context": "full history re-sent each turn; compaction backstop ~167k tok (no per-turn eviction)",
+            # §14.2: the SDK cannot edit its resident transcript, so the
+            # 12-cycle context contract does NOT apply here — this is a
+            # DIFFERENT experimental condition and must be labelled as such,
+            # never passed off as the mini/solo cycle compiler.
+            "context_control": False,
+            "context_label": "full-history",
         }
 
     def prepare(self, spec) -> None:  # noqa: ARG002 — no per-cell setup needed
@@ -79,6 +124,42 @@ class ClaudeSdkAdapter:
             self.inherent["sdk_version"] = getattr(claude_agent_sdk, "__version__", "?")
         except Exception:  # noqa: BLE001
             pass
+
+    def refine_instruction(self, *, model: str, system: str, user: str,
+                           extra: dict | None = None) -> str | None:  # noqa: ARG002
+        """§17: one short tool-less SDK query (subscription auth, max_turns=1,
+        no MCP, no settings) with the run's own nav model. Returns the raw
+        assistant text; None on any failure — the caller falls back to the
+        original instruction whole."""
+        import asyncio as _aio
+
+        async def _one() -> str:
+            from claude_agent_sdk import (
+                AssistantMessage,
+                ClaudeAgentOptions,
+                ClaudeSDKClient,
+                TextBlock,
+            )
+            opts = ClaudeAgentOptions(
+                system_prompt=system, tools=[], setting_sources=[],
+                max_turns=1, model=model or None,
+                permission_mode="bypassPermissions")
+            texts: list[str] = []
+            async with ClaudeSDKClient(options=opts) as client:
+                await client.query(user)
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        for b in message.content:
+                            if isinstance(b, TextBlock):
+                                texts.append(b.text)
+            return "\n".join(texts)
+
+        try:
+            # §20.1: 45 s fail-fast, same cap as the other two refine
+            # transports — a wedged CLI costs one fallback, never minutes
+            return _aio.run(_aio.wait_for(_one(), timeout=45))
+        except Exception:  # noqa: BLE001 — a preprocessor never costs a run
+            return None
 
     # Thinking config is model-family-specific. Claude 4.6+/5 models take
     # `adaptive`; pre-4.6 (haiku-4.5) need explicit `enabled` + budget_tokens
@@ -100,6 +181,15 @@ class ClaudeSdkAdapter:
     def _options(self, ctx: EpisodeContext) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
+        # user ruling 2026-08-14: ONE model per run — the in-episode judge
+        # rides the nav model's own subscription channel, never a local
+        # side-model (--set judge_model=… still overrides for ablation).
+        _bridge_env = {**ctx.bridge_env(), "EH_EXECUTOR": "claude-sdk"}
+        _judge_model = (str(ctx.extra.get("judge_model", ""))
+                        or (ctx.model or ""))
+        if _judge_model:
+            _bridge_env["EH_JUDGE_MODEL"] = _judge_model
+
         return ClaudeAgentOptions(
             system_prompt=ctx.briefing,
             mcp_servers={
@@ -107,7 +197,9 @@ class ClaudeSdkAdapter:
                     "type": "stdio",
                     "command": sys.executable,
                     "args": [str(ctx.bridge_path)],
-                    "env": ctx.bridge_env(),
+                    # EH_EXECUTOR: snapshot identity (§14.14) — the bridge's
+                    # toolset stamps who is driving into live_snapshot.json
+                    "env": _bridge_env,
                 }
             },
             tools=[],  # no built-in tools: vanilla ReAct over the env only
@@ -124,10 +216,16 @@ class ClaudeSdkAdapter:
             # ONLY our bridge — never the user's global MCP config.
             strict_mcp_config=True,
             allowed_tools=(
+                # eharness bridge: the organ-wrapped surface (S4 executor
+                # port). The list is DERIVED from the CapabilityManifest
+                # (§14.9) — the same registry the bridge registers from, so
+                # adapter filter and server surface cannot disagree.
+                sdk_allowed_tools("dwp" if _is_dwp(ctx) else "bare")
+                if ctx.extra.get("eh_bridge")
                 # libero toolbox: atomic reads + scene locator + servo macros
                 # (libero_bridge.py TOOLBOX surface); the locator is
                 # get_objects (GT) or pixel_to_3d (vision) per toolbox_gt
-                ["mcp__env__observe_third_person", "mcp__env__observe_wrist",
+                else ["mcp__env__observe_third_person", "mcp__env__observe_wrist",
                  "mcp__env__get_state",
                  ("mcp__env__get_objects" if ctx.toolbox_gt
                   else "mcp__env__pixel_to_3d"),
@@ -177,6 +275,14 @@ class ClaudeSdkAdapter:
 
         raw_path = ctx.raw_dir / f"episode_{ctx.index}.jsonl"
         result_msg: Any = None
+        # §14.2 payload accounting — what the model ACTUALLY accumulated this
+        # session, counted from the same stream record_raw sees. With
+        # context_control=False the transcript only ever grows, so these are
+        # totals, not a window.
+        n_tool_results = 0
+        n_images = 0
+        n_state_blocks = 0
+        init_tools: Any = None
 
         with raw_path.open("w") as raw:
 
@@ -190,7 +296,16 @@ class ClaudeSdkAdapter:
                 # The CLI starts reasoning before MCP servers finish connecting;
                 # gate the prompt on the bridge reporting 'connected'.
                 bridge_status: str | None = None
-                for _ in range(60):
+                # the eharness bridge BOOTSTRAPS before it serves (frame-0
+                # sense + candidates + artifact), so "connected" doubles as
+                # the bootstrap barrier — give it real headroom on that
+                # line (cold env first-render alone can eat the old 30 s)
+                _deadline = float(ctx.extra.get(
+                    "bridge_connect_timeout_s",
+                    120 if ctx.extra.get("eh_bridge") and _is_dwp(ctx)
+                    else 30))
+                _t0 = time.monotonic()
+                while True:
                     status = await client.get_mcp_status()
                     entries = status.get("mcpServers", []) if isinstance(status, dict) else []
                     bridge_status = next(
@@ -198,14 +313,65 @@ class ClaudeSdkAdapter:
                     )
                     if bridge_status == "connected" or bridge_status in (
                         "failed", "needs-auth", "disabled",
-                    ):
+                    ) or time.monotonic() - _t0 > _deadline:
                         break
                     await asyncio.sleep(0.5)
                 sink.emit("bridge_status", {"status": bridge_status})
                 if bridge_status != "connected":
                     raise RuntimeError(f"env bridge not connected: {bridge_status}")
 
-                await client.query(ctx.first_prompt)
+                # §16.2 bootstrap: the first message carries the RESIDENT
+                # toolset's own opening artifact. The bridge bootstraps the
+                # very instance the model will drive BEFORE it starts
+                # serving (connected ⇒ artifact written), and this adapter
+                # only ENCODES live_dir/bootstrap.json — it never re-derives
+                # candidates in its own process, so the numbers in the first
+                # image are numbers goto() accepts. The SDK accepts raw
+                # user-message dicts via streaming input; content blocks
+                # (incl. base64 images) pass through the CLI verbatim.
+                opening = None
+                if ctx.extra.get("eh_bridge") and _is_dwp(ctx):
+                    try:
+                        from eharness.bootstrap import load_bootstrap_artifact
+                        opening = await asyncio.to_thread(
+                            load_bootstrap_artifact, ctx.live_dir)
+                    except Exception as exc:  # noqa: BLE001 — degrade, never die
+                        sink.emit("bootstrap", {"error": repr(exc)})
+                if opening and opening[1]:
+                    import base64 as _b64
+                    text, pngs = opening
+                    blocks: list[dict[str, Any]] = [
+                        {"type": "text", "text": ctx.first_prompt + "\n\n" + text}]
+                    blocks += [{"type": "image",
+                                "source": {"type": "base64",
+                                           "media_type": "image/png",
+                                           "data": _b64.b64encode(p).decode()}}
+                               for p in pngs]
+
+                    async def _first_msg():
+                        yield {"type": "user",
+                               "message": {"role": "user", "content": blocks},
+                               "parent_tool_use_id": None}
+
+                    await client.query(_first_msg())
+                    sink.emit("bootstrap", {"images": len(pngs),
+                                            "text_chars": len(text)})
+                else:
+                    if ctx.extra.get("eh_bridge") and _is_dwp(ctx):
+                        # the image-carrying first prompt would be a lie here
+                        from eharness.capabilities import DWP_FIRST_PROMPT_NOIMG
+                        # session_inputs recorded ctx.first_prompt BEFORE this
+                        # degrade — carry the actually-sent text so the episode
+                        # record can be reconstructed truthfully (review P2)
+                        sink.emit("bootstrap", {
+                            "images": 0, "fallback": "text-only",
+                            "first_prompt": DWP_FIRST_PROMPT_NOIMG,
+                            "reason": ("bootstrap artifact has no images"
+                                       if opening is not None
+                                       else "no bootstrap artifact in live dir")})
+                        await client.query(DWP_FIRST_PROMPT_NOIMG)
+                    else:
+                        await client.query(ctx.first_prompt)
                 async for message in client.receive_response():
                     record_raw(message)
                     if isinstance(message, AssistantMessage):
@@ -223,41 +389,46 @@ class ClaudeSdkAdapter:
                         blocks = content if isinstance(content, list) else []
                         for block in blocks:
                             if isinstance(block, ToolResultBlock):
+                                texts = _tool_result_texts(block)
+                                n_tool_results += 1
+                                n_images += sum(1 for t in texts
+                                                if t == "<image elided>")
+                                n_state_blocks += sum(1 for t in texts
+                                                      if "[STATE" in t)
                                 sink.emit("tool_result", {
                                     "tool_use_id": block.tool_use_id,
-                                    "texts": _tool_result_texts(block)})
+                                    "texts": texts})
                     elif isinstance(message, SystemMessage):
                         if getattr(message, "subtype", None) == "init":
                             data = getattr(message, "data", {}) or {}
+                            init_tools = data.get("tools")
                             sink.emit("system_init", {"model": data.get("model"),
                                                       "tools": data.get("tools")})
                     elif isinstance(message, ResultMessage):
                         result_msg = message
 
-        # The Agent SDK sets is_error=True even on a clean subtype="success"
-        # result — the flag tracks the session, not the navigation outcome, so
-        # an episode that called stop and reached the goal still comes back
-        # is_error=True (observed: fable ep40). is_error alone therefore
-        # over-flags. Score by the ENV terminal instead: "success" (normal
-        # return, whatever the nav result), "error_max_turns" (clean
-        # truncation, like mini's step_limit), and "error_max_budget_usd"
-        # (USD fuse tripped — same clean-truncation semantics) are scored
-        # outcomes — only a genuine execution error (error_during_execution,
-        # or a missing subtype) is a broken session that propagates as error.
-        # Keeping the fuse subtype OUT of this whitelist would make the driver
-        # retry the most expensive episodes — the opposite of a budget cap.
-        subtype = getattr(result_msg, "subtype", None)
-        result_text = str(getattr(result_msg, "result", "") or "")
-        error = None
-        if is_rate_limited(result_text):
-            # subscription throttle returns subtype="success" is_error=True with a
-            # "temporarily limiting requests" result — tag retryable so the driver
-            # backs off and re-runs it, never scoring it as a navigation failure.
-            error = "rate_limited"
-        elif (getattr(result_msg, "is_error", False)
-                and subtype not in ("error_max_turns", "error_max_budget_usd",
-                                    "success")):
-            error = f"sdk result {subtype or 'is_error'}"
+        error = classify_outcome(result_msg)
+        # §14.2: the honest provider-payload manifest for a closed executor —
+        # roles/images/STATE copies the session accumulated, the tool list the
+        # model was actually shown, and the label that says this run is
+        # full-history, NOT the 12-cycle contract. Telemetry only: a write
+        # failure must never touch the SessionOutcome.
+        try:
+            manifest = {
+                "label": "full-history",
+                "context_control": False,
+                "episode": ctx.index,
+                "num_turns": getattr(result_msg, "num_turns", None),
+                "usage": json_safe(getattr(result_msg, "usage", None)),
+                "tool_results": n_tool_results,
+                "images": n_images,
+                "state_blocks": n_state_blocks,
+                "system_init_tools": init_tools,
+            }
+            (ctx.raw_dir / f"context_manifest_{ctx.index}.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=1))
+        except Exception:  # noqa: BLE001 — manifest is telemetry, not outcome
+            pass
         return SessionOutcome(
             usage=json_safe(getattr(result_msg, "usage", None)),
             cost_usd=getattr(result_msg, "total_cost_usd", None),

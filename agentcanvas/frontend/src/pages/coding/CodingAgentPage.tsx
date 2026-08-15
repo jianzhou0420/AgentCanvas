@@ -112,7 +112,11 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
       return { icon: "💬", text: String(line.text ?? ""), dim: false };
     case "tool_use": {
       const name = String(line.name ?? "").split("__").pop();
-      return { icon: "🔧", text: `${name} ${JSON.stringify(line.input)}`, dim: false };
+      return {
+        icon: line.tier === "planner" ? "🧭" : "🔧",
+        text: `${name} ${JSON.stringify(line.input)}`,
+        dim: false,
+      };
     }
     case "tool_result": {
       const texts = (line.texts as string[] | undefined) ?? [];
@@ -146,9 +150,111 @@ function lineText(line: LogLine): { icon: string; text: string; dim: boolean } {
         dim: false,
       };
     }
+    // ── eharness organ events (state_write / guard / verdict / compact /
+    //    receipt / recall) — the loop's narrative, one readable line each ──
+    case "state_write": {
+      const u = (line.update ?? {}) as Record<string, unknown>;
+      // Defensive: a driver that writes this as a string must not blank the
+      // whole page on .join().
+      const acc = Array.isArray(line.accepted) ? (line.accepted as string[]) : [];
+      const bits = [
+        u.advance_subgoal ? "advance✓" : null,
+        u.landmark ? `landmark:'${String(u.landmark)}'` : null,
+        u.dead_end ? `dead-end:'${String(u.dead_end)}'` : null,
+        u.progress_note ? `note:'${String(u.progress_note).slice(0, 70)}'` : null,
+      ].filter(Boolean);
+      return {
+        icon: "📝",
+        text: `state · ${bits.join(" · ") || JSON.stringify(u)}` +
+              (acc.length ? ` → ${acc.join("; ")}` : ""),
+        dim: false,
+      };
+    }
+    case "guard":
+      return {
+        icon: "🛑",
+        text: `guard${line.escalate ? " · ESCALATE" : ""} · ${String(line.notice ?? "").slice(0, 220)}`,
+        dim: false,
+      };
+    case "verdict": {
+      const v = line.supported === true ? "PASS"
+        : line.supported === false ? "VETO" : "no-verdict";
+      return {
+        icon: "⚖",
+        text: `verdict[${String(line.gate ?? "?")}] ${v}` +
+              (line.claim ? ` · '${String(line.claim).slice(0, 80)}'` : "") +
+              ` · ${String(line.reason ?? "").slice(0, 160)}`,
+        dim: false,
+      };
+    }
+    case "compact":
+      return {
+        icon: "🗜",
+        text: `compact · ~${line.est_tokens} tok → dropped ${line.dropped_msgs} msgs · re-attached ${line.reattached} keyframes`,
+        dim: false,
+      };
+    case "receipt":
+      return {
+        icon: "📦",
+        text: `receipt · ${String(line.claim ?? "?")} · '${String(line.subgoal ?? "").slice(0, 90)}' · ` +
+              `steps ${line.steps_used} · ${String(line.end_reason ?? "")}` +
+              (line.not_done ? ` · not done: ${String(line.not_done).slice(0, 90)}` : ""),
+        dim: false,
+      };
+    case "recall":
+      return { icon: "🖼", text: `recall '${String(line.query ?? "")}' → ${line.hits} hit(s)`, dim: true };
+    case "crisis":
+      return {
+        icon: "🧩",
+        text: `crisis resolved · frames ${line.start}→${line.end} collapsed · ${String(line.lesson ?? "").slice(0, 160)}`,
+        dim: false,
+      };
     default:
       return { icon: "·", text: JSON.stringify(line), dim: true };
   }
+}
+
+// eharness organ readout (state.json + heartbeat.json + keyframes + receipts)
+interface HarnessData {
+  state: {
+    sub_instructions?: string[];
+    cursor?: number;
+    current_place?: string;
+    landmarks?: Record<string, unknown>;
+    negative_facts?: { fact: string; verified?: boolean }[];
+    checkpoint?: string;
+    delegation?: { subgoal: string; budget: number; used: number } | null;
+    last_action?: string;
+    expectation?: string;
+    _rendered?: string;
+  } | null;
+  heartbeat: {
+    status?: string; subgoal?: string; steps_used?: number;
+    steps_budget?: number; tool_calls?: number; guard_trips?: number;
+    last_note?: string;
+  } | null;
+  // depth-waypoint runs: what the geometry organ measured and believed. The
+  // model never sees this — it is here so a human can watch the map the
+  // harness is navigating by.
+  depth: {
+    obs?: number; steps_taken?: number; gotos?: number; depth_units?: string;
+    floor_below_camera_m?: number; range_cap_m?: number; cell_m?: number;
+    ahead_m?: number; widest_bearing_deg?: number; widest_m?: number;
+    free_pct?: number; occupied_pct?: number; unknown_pct?: number;
+    detector?: string;
+    candidates?: {
+      n: number; kind: string; angle_deg: number; distance_m: number;
+      clearance_m: number; squeeze_m?: number; env_steps: number; where: string;
+    }[];
+    landmarks?: { phrase: string; bearing_deg: number; distance_m: number; score: number }[];
+    landmark_ledger?: Record<string, string>;
+  } | null;
+  keyframes: { idx: number; step: number; events: string[]; png: string }[];
+  segments: { seg: number; label: string; route: string; motion: string; png: string }[];
+  receipts: {
+    subgoal: string; claim: string; verdict?: string;
+    steps_used?: number; not_done?: string;
+  }[];
 }
 
 export default function CodingAgentPage() {
@@ -179,6 +285,30 @@ export default function CodingAgentPage() {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [frames, setFrames] = useState<string[]>([]);
   const [zoomFrame, setZoomFrame] = useState<string | null>(null); // lightbox overlay
+  const [harnessData, setHarnessData] = useState<HarnessData | null>(null);
+  // the top-down map is only written by depth-waypoint runs; one 404 retires
+  // the panel for this episode rather than flashing a broken image forever
+  const [topdownDead, setTopdownDead] = useState(false);
+  const [amapDead, setAmapDead] = useState(false);
+  const [snap, setSnap] = useState<{
+    obs_id: number; env_step: number; map_version: number;
+    rgb_file: string; topdown_file: string; accumulated_map_file: string;
+    model_map_file: string; consistent: boolean;
+    // §14.14 snapshot identity — absent on runs recorded before the field
+    // existed, so every reader must tolerate undefined
+    identity?: {
+      run_id?: string; episode?: string; executor?: string;
+      action_id?: string; sensor_frame?: number;
+    } | null;
+    missing?: string[];
+  } | null>(null);
+  const [shownRunEp, setShownRunEp] = useState("");
+  // organ panel is tall — collapsible, and its body scrolls internally so the
+  // log below always keeps its space
+  const [showHarness, setShowHarness] = usePersistentState(
+    "agentcanvas.coding.showHarness",
+    true,
+  );
 
   // log browser (any run under outputs/beta-coding-agent/, CLI-launched included)
   const [mode, setMode] = usePersistentState<"live" | "browse">(
@@ -186,16 +316,16 @@ export default function CodingAgentPage() {
     "live",
   );
   // which harness to launch with (control panel) and whose runs to browse:
-  // Agent SDK vs mini-swe-agent vs OpenAI Codex CLI (runs live under
-  // outputs/beta-coding-agent / beta-react-harness / beta-codex-agent).
-  const [harness, setHarness] = usePersistentState<"claude-sdk" | "mini-swe" | "codex">(
-    "agentcanvas.coding.harness",
-    "claude-sdk",
-  );
+  // Agent SDK / mini-swe / Codex, plus the eharness / vla / imagine lines
+  // (runs live under outputs/beta-coding-agent / beta-react-harness /
+  // beta-codex-agent). Live mode is SDK-runner-only.
+  const [harness, setHarness] = usePersistentState<
+    "claude-sdk" | "mini-swe" | "codex" | "eharness" | "vla" | "imagine"
+  >("agentcanvas.coding.harness", "claude-sdk");
   // launch model, constrained to the selected harness's board options; a
-  // persisted value from another harness (or the retired free-text era)
+  // persisted value from another harness (or a harness without a board list)
   // falls back to the harness's first option
-  const modelOpts = MODEL_OPTIONS[harness];
+  const modelOpts = MODEL_OPTIONS[harness] ?? MODEL_OPTIONS["claude-sdk"];
   const model = modelOpts.some((o) => o.value === modelRaw)
     ? modelRaw
     : modelOpts[0].value;
@@ -278,9 +408,18 @@ export default function CodingAgentPage() {
           setLines([]);
           setFrames([]);
           setZoomFrame(null);
+          setHarnessData(null);
+          setSnap(null);          // never show the previous selection's images
+          setTopdownDead(false);
+          setAmapDead(false);
         }
 
         const src = mode === "browse" ? harness : (st.config?.harness ?? "claude-sdk");
+        // §14.14 late-response guard: a slow tick's fetches may land AFTER the
+        // selection moved on (a live-mode run change does not recreate this
+        // effect, so `cancelled` alone cannot catch it). Every setState below
+        // re-checks that the selection this tick fetched for is still shown.
+        const stale = () => cancelled || shownKeyRef.current !== shownKey;
         const [logRes, framesRes] = await Promise.all([
           fetch(
             `/api/coding-agent/runs/${run}/episode/${ep}/textlog?offset=${offsetRef.current}&source=${src}`,
@@ -289,13 +428,38 @@ export default function CodingAgentPage() {
         ]);
         const logData = await logRes.json();
         const framesData = await framesRes.json();
-        if (cancelled) return;
+        if (stale()) return;
 
         if (logData.lines.length > 0) {
           offsetRef.current = logData.next_offset;
           setLines((prev) => [...prev, ...logData.lines]);
         }
         setFrames(framesData.frames);
+
+        // eharness organ readout rides the same 1 Hz tick (browse-only source)
+        if (src === "eharness") {
+          const hd = await (
+            await fetch(
+              `/api/coding-agent/runs/${run}/episode/${ep}/harness?source=${src}`,
+            )
+          ).json();
+          if (!stale()) setHarnessData(hd);
+          // §6: read the ATOMIC snapshot first, then fetch exactly the files
+          // it names — never a mix of independently-updating latest files
+          try {
+            const sn = await fetch(
+              `/api/coding-agent/runs/${run}/episode/${ep}/snapshot?source=${src}`,
+            );
+            const snData = sn.ok ? await sn.json() : null;
+            // an inconsistent snapshot (mid-write, files missing) must not
+            // replace the last good one — fetching its missing files would
+            // 404 and retire the map panels; keep showing the previous
+            // consistent set until the writer catches up
+            if (!stale() && snData?.consistent !== false) setSnap(snData);
+          } catch {
+            if (!stale()) setSnap(null);
+          }
+        }
       } catch {
         /* backend unreachable — keep polling */
       }
@@ -309,7 +473,7 @@ export default function CodingAgentPage() {
     };
   }, [viewEpisode, mode, browseRun, browseStarted, harness]);
 
-  const loadRuns = async (source?: "claude-sdk" | "mini-swe" | "codex") => {
+  const loadRuns = async (source?: "claude-sdk" | "mini-swe" | "codex" | "eharness" | "vla" | "imagine") => {
     try {
       const src = source ?? harness;
       const data = await (await fetch(`/api/coding-agent/runs?source=${src}`)).json();
@@ -412,6 +576,31 @@ export default function CodingAgentPage() {
   const shownSrc = mode === "browse" ? harness : (status?.config?.harness ?? "claude-sdk");
   const frameUrl = (name: string) =>
     `/api/coding-agent/runs/${run}/episode/${shownEpisode}/frame/${name}?source=${shownSrc}`;
+  // cache-buster ticks with the run's own progress so the map refreshes as the
+  // organ redraws it; falls back through whichever counter this backend serves
+  // §6: with a snapshot the images are the VERSIONED files it names (cache
+  // key = obs/map version); the latest.png fallbacks only serve runs from
+  // before the atomic-snapshot change.
+  const snapKey = snap ? `${snap.obs_id}.${snap.map_version}` : null;
+  const topdownUrl = snap
+    ? `${frameUrl(snap.topdown_file)}&v=${snapKey}`
+    : `${frameUrl("topdown_latest.png")}&t=` +
+      `${harnessData?.depth?.obs ?? harnessData?.heartbeat?.steps_used ?? 0}`;
+  const amapUrl = snap
+    ? `${frameUrl(snap.accumulated_map_file)}&v=${snapKey}`
+    : `${frameUrl("map_latest.png")}&t=` +
+      `${harnessData?.depth?.obs ?? harnessData?.heartbeat?.steps_used ?? 0}`;
+  const amapModelUrl = snap
+    ? `${frameUrl(snap.model_map_file)}&v=${snapKey}`
+    : `${frameUrl("map_model_latest.png")}&t=` +
+      `${harnessData?.depth?.obs ?? harnessData?.heartbeat?.steps_used ?? 0}`;
+  // a retired panel must come back when you switch to a run that HAS a map,
+  // otherwise one 404 hides it for the rest of the session
+  if (shownRunEp !== `${run}#${shownEpisode}`) {
+    setShownRunEp(`${run}#${shownEpisode}`);
+    if (topdownDead) setTopdownDead(false);
+    if (amapDead) setAmapDead(false);
+  }
   const epList = mode === "browse" ? browseEpisodes : (status?.episodes ?? []);
   const epSummary = (i: number) => epList.find((e) => e.index === i);
   const selEpisodes = mode === "browse" ? browseStarted : (status?.started_episodes ?? []);
@@ -485,7 +674,7 @@ export default function CodingAgentPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-3 overflow-hidden bg-gray-950 p-3 text-gray-200">
+    <div className="flex h-full flex-col gap-3 overflow-y-auto bg-gray-950 p-3 text-gray-200">
       {/* ── control panel ── */}
       <div className="flex flex-wrap items-center gap-3 rounded border border-gray-800 bg-gray-900 px-3 py-2">
         <div className="flex items-center gap-2 text-sm font-semibold text-blue-400">
@@ -670,6 +859,9 @@ export default function CodingAgentPage() {
                 ["claude-sdk", "Claude SDK"],
                 ["mini-swe", "mini-swe-agent"],
                 ["codex", "Codex CLI"],
+                ["eharness", "Embodied Harness"],
+                ["vla", "VLA Harness"],
+                ["imagine", "ImagineVLN"],
               ] as const
             ).map(([h, label]) => (
               <button
@@ -804,7 +996,7 @@ export default function CodingAgentPage() {
 
       {/* ── stats report (charts + tables generated after each run's metrics) ── */}
       {showStats && run && (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-800">
+        <div className="flex h-[70vh] shrink-0 flex-col overflow-hidden rounded border border-gray-800">
           <div className="flex items-center justify-between border-b border-gray-800 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-400">
             <span>Stats — {run}</span>
             <a
@@ -824,8 +1016,350 @@ export default function CodingAgentPage() {
         </div>
       )}
 
+      {/* ── eharness organ panel: the state block the model actually sees,
+             the harness-written heartbeat, event keyframes, receipts ── */}
+      {harnessData && (harnessData.state || harnessData.heartbeat) && (
+        <div className="shrink-0 space-y-2 rounded border border-gray-800 bg-gray-900 p-2 text-xs">
+          <div className="flex items-center justify-between font-semibold text-gray-400">
+            <button
+              onClick={() => setShowHarness((v) => !v)}
+              className="flex items-center gap-1 hover:text-gray-200"
+              title={showHarness ? "collapse" : "expand"}
+            >
+              <span>{showHarness ? "▾" : "▸"}</span>
+              <span>🧠 Harness — 状态块 · 心跳 · 关键帧</span>
+            </button>
+            {harnessData.heartbeat && (
+              <span className="font-normal text-gray-500">
+                💓 {harnessData.heartbeat.status ?? "—"}
+                {harnessData.heartbeat.subgoal
+                  ? ` · ${harnessData.heartbeat.subgoal.slice(0, 50)}`
+                  : ""}
+                {" · steps "}
+                {harnessData.heartbeat.steps_used ?? 0}
+                {harnessData.heartbeat.steps_budget
+                  ? `/${harnessData.heartbeat.steps_budget}`
+                  : ""}
+                {" · guards "}
+                {harnessData.heartbeat.guard_trips ?? 0}
+              </span>
+            )}
+          </div>
+          {showHarness && (
+          <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+          {harnessData.state && (
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="space-y-0.5">
+                {(harnessData.state.sub_instructions ?? []).map((si, i) => {
+                  const cur = harnessData.state?.cursor ?? 0;
+                  return (
+                    <div
+                      key={i}
+                      className={clsx(
+                        "truncate rounded px-1.5 py-0.5",
+                        i < cur
+                          ? "text-gray-600 line-through"
+                          : i === cur
+                            ? "bg-blue-600/20 font-semibold text-blue-300"
+                            : "text-gray-500",
+                      )}
+                      title={si}
+                    >
+                      {i === cur ? "▸ " : "  "}
+                      [{i + 1}] {si}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="space-y-1">
+                {harnessData.state.current_place && (
+                  <div className="text-gray-300">
+                    📍 {harnessData.state.current_place}
+                  </div>
+                )}
+                {Object.keys(harnessData.state.landmarks ?? {}).length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {Object.keys(harnessData.state.landmarks ?? {}).map((n) => (
+                      <span
+                        key={n}
+                        className="rounded bg-emerald-600/20 px-1.5 py-0.5 text-emerald-300"
+                      >
+                        🚩 {n}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(harnessData.state.negative_facts ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {(harnessData.state.negative_facts ?? []).map((f, i) => (
+                      <span
+                        key={i}
+                        className="rounded bg-red-600/15 px-1.5 py-0.5 text-red-300"
+                        title={f.verified ? "verified" : "unverified"}
+                      >
+                        🚫 {f.fact}
+                        {!f.verified && " ?"}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(harnessData.state.last_action || harnessData.state.expectation) && (
+                  <div className="text-gray-400">
+                    {harnessData.state.last_action && (
+                      <span>🦶 just did: {harnessData.state.last_action}</span>
+                    )}
+                    {harnessData.state.expectation && (
+                      <span className="ml-2 text-amber-300/80">
+                        🔮 expected: {harnessData.state.expectation.slice(0, 70)}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {harnessData.state.delegation && (
+                  <div className="text-purple-300">
+                    📦 delegating: {harnessData.state.delegation.subgoal.slice(0, 60)} (
+                    {harnessData.state.delegation.used}/
+                    {harnessData.state.delegation.budget} steps)
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {/* Depth organ readout. Deliberately keyed off the IMAGE, not off the
+              harness JSON: the top-down map is served by the frame endpoint that
+              already exists, and its numbers are burned into the picture, so the
+              panel works without a backend restart. The JSON (when a newer
+              backend supplies it) only enriches the text beside it. */}
+          {/* hide-not-unmount: a dead flag from one 404 must not unmount the
+              img — a mounted img reloads when its src advances on the next
+              good snapshot and onLoad revives the panel by itself */}
+          {(
+            <div
+              style={topdownDead ? { display: "none" } : undefined}
+              className="rounded border border-cyan-900/60 bg-cyan-950/20 p-2"
+            >
+              <div className="mb-1 flex items-center justify-between text-cyan-300">
+                <span>🗺️ 深度器官 · 实时俯视图（机器人在底部中央，朝上）</span>
+                <span className="text-[10px] text-gray-500">
+                  模型看不到这些 · 仅供人观察
+                </span>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setZoomFrame(topdownUrl)}
+                  className="shrink-0"
+                  title="点击放大"
+                >
+                  <img
+                    src={topdownUrl}
+                    alt="top-down map"
+                    onError={() => setTopdownDead(true)}
+                    onLoad={() => setTopdownDead(false)}
+                    className="h-52 rounded border border-gray-800 bg-black object-contain"
+                  />
+                </button>
+                <div className="min-w-0 flex-1 space-y-0.5 text-[11px]">
+                  {harnessData.depth ? (
+                    <>
+                      <div className="text-gray-400">
+                        正前方可走{" "}
+                        <span className="text-cyan-300">{harnessData.depth.ahead_m}m</span>
+                        {" · 最开阔 "}
+                        <span className="text-cyan-300">
+                          {(harnessData.depth.widest_bearing_deg ?? 0) > 0 ? "左" : "右"}
+                          {Math.abs(harnessData.depth.widest_bearing_deg ?? 0)}° @{" "}
+                          {harnessData.depth.widest_m}m
+                        </span>
+                      </div>
+                      <div className="text-gray-500">
+                        地图 free {harnessData.depth.free_pct}% · occ{" "}
+                        {harnessData.depth.occupied_pct}% · unknown{" "}
+                        {harnessData.depth.unknown_pct}% · 格 {harnessData.depth.cell_m}m ·
+                        上限 {harnessData.depth.range_cap_m}m
+                      </div>
+                      <div className="text-gray-600">
+                        深度单位 {harnessData.depth.depth_units} · 相机离地{" "}
+                        {harnessData.depth.floor_below_camera_m}m · goto ×
+                        {harnessData.depth.gotos ?? 0} · SAM3 {harnessData.depth.detector}
+                      </div>
+                      {(harnessData.depth.candidates ?? []).map((c) => (
+                        <div key={c.n} className="text-gray-300">
+                          <span className="text-cyan-400">{c.n}</span>{" "}
+                          <span className="text-gray-500">[{c.kind}]</span> {c.where}
+                          <span className="text-gray-600">
+                            {" "}
+                            → {c.env_steps} 步
+                            {c.squeeze_m != null ? ` · 最窄处 ${c.squeeze_m}m` : ""}
+                          </span>
+                        </div>
+                      ))}
+                      {(harnessData.depth.landmarks ?? []).length > 0 && (
+                        <div className="text-emerald-300">
+                          👁 SAM3:{" "}
+                          {(harnessData.depth.landmarks ?? [])
+                            .map(
+                              (l) =>
+                                `${l.phrase} ${l.bearing_deg > 0 ? "左" : "右"}${Math.abs(l.bearing_deg)}° ${l.distance_m}m`,
+                            )
+                            .join(" · ")}
+                        </div>
+                      )}
+                      {harnessData.depth.landmark_ledger && (
+                        <details className="text-gray-600">
+                          <summary className="cursor-pointer select-none hover:text-gray-400">
+                            地标账本（喂裁判，不给模型）
+                          </summary>
+                          {Object.entries(harnessData.depth.landmark_ledger).map(
+                            ([k, v]) => (
+                              <div key={k} className="pl-2">
+                                <span className="text-gray-500">{k}:</span> {v}
+                              </div>
+                            ),
+                          )}
+                        </details>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-gray-500">
+                      读数已烧录在图片下方的字幕条里。重启后端（picks up the{" "}
+                      <code>depth</code> key）后这里会显示可点开的结构化版本。
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          {(
+            <div
+              style={amapDead ? { display: "none" } : undefined}
+              className="rounded border border-indigo-900/60 bg-indigo-950/20 p-2"
+            >
+              <div className="mb-1 flex items-center justify-between text-indigo-300">
+                <span title="2.5D：深度压成占据+语义俯视层；楼梯/多层/悬空障碍不在此图的表达范围">
+                  🧭 2.5D accumulated top-down map（左：锚定全景·给人看 / 右：模型每轮收到的 IMAGE 2）
+                </span>
+                <span className="text-[10px] text-gray-500">
+                  {snap
+                    ? `snapshot obs#${snap.obs_id} · step ${snap.env_step} · map v${snap.map_version}` +
+                      (snap.identity
+                        ? ` · ${[
+                            snap.identity.executor,
+                            snap.identity.run_id && snap.identity.episode
+                              ? `${snap.identity.run_id}/${snap.identity.episode}`
+                              : snap.identity.run_id || snap.identity.episode,
+                            snap.identity.action_id,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}`
+                        : "") +
+                      (snap.consistent ? "" : " · ⚠ 文件不齐")
+                    : "latest 文件（旧 run 兼容）"}{" "}
+                  · 右图机器人居中朝上 · 实心=当前看见 · 虚环=记忆 · 琥珀=瞥见未验证
+                </span>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setZoomFrame(amapUrl)} className="shrink-0" title="点击放大">
+                  <img
+                    src={amapUrl}
+                    alt="accumulated map"
+                    onError={() => setAmapDead(true)}
+                    onLoad={() => setAmapDead(false)}
+                    className="h-64 rounded border border-gray-800 bg-black object-contain"
+                  />
+                </button>
+                <button onClick={() => setZoomFrame(amapModelUrl)} className="shrink-0" title="点击放大">
+                  <img
+                    src={amapModelUrl}
+                    alt="model-facing map"
+                    onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+                    onLoad={(e) => ((e.target as HTMLImageElement).style.display = "")}
+                    className="h-64 rounded border border-gray-800 bg-black object-contain"
+                  />
+                </button>
+              </div>
+            </div>
+          )}
+          {harnessData.state?._rendered && (
+            <details className="text-gray-500">
+              <summary className="cursor-pointer select-none hover:text-gray-300">
+                模型看到的 [STATE] 原文
+              </summary>
+              <pre className="mt-1 whitespace-pre-wrap rounded bg-gray-950 p-2 text-[11px] text-gray-400">
+                {harnessData.state._rendered}
+              </pre>
+            </details>
+          )}
+          {harnessData.keyframes.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {harnessData.keyframes.map((kf) => (
+                <button
+                  key={kf.idx}
+                  onClick={() => kf.png && setZoomFrame(kf.png)}
+                  className="shrink-0 text-left"
+                  title={kf.events.join(" · ")}
+                >
+                  {kf.png ? (
+                    <img
+                      src={frameUrl(kf.png)}
+                      alt={`kf ${kf.idx}`}
+                      className="h-20 rounded border border-gray-700"
+                    />
+                  ) : (
+                    <div className="flex h-20 w-28 items-center justify-center rounded border border-gray-700 text-gray-600">
+                      #{kf.idx}
+                    </div>
+                  )}
+                  <div className="w-28 truncate text-[10px] text-gray-500">
+                    #{kf.idx} {kf.events.slice(-1)[0] ?? ""}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {(harnessData.segments ?? []).length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wide text-gray-600">
+                走过的段落（集内长期记忆 · recall("segment N") 可回放）
+              </div>
+              {(harnessData.segments ?? []).map((sg) => (
+                <button
+                  key={sg.seg}
+                  onClick={() => setZoomFrame(sg.png)}
+                  className="block w-full text-left"
+                  title={`route: ${sg.route || "—"} · moved: ${sg.motion || "—"}`}
+                >
+                  <div className="truncate text-[11px] text-gray-400">
+                    🎞 seg {sg.seg} · {sg.label}
+                    {sg.route ? ` — ${sg.route.slice(0, 60)}` : ""}
+                  </div>
+                  <img
+                    src={frameUrl(sg.png)}
+                    alt={`segment ${sg.seg}`}
+                    className="max-h-24 rounded border border-gray-700"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+          {harnessData.receipts.length > 0 && (
+            <div className="space-y-0.5">
+              {harnessData.receipts.map((r, i) => (
+                <div key={i} className="truncate text-gray-400">
+                  📦 {r.claim === "reached" ? "✅" : "⚠"} {r.claim} ·{" "}
+                  {r.subgoal.slice(0, 70)} · {r.steps_used ?? "?"} steps
+                  {r.verdict ? ` · ⚖ ${r.verdict}` : ""}
+                  {r.not_done ? ` · not done: ${r.not_done.slice(0, 60)}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          </div>
+          )}
+        </div>
+      )}
+
       {/* ── unified log (frames embedded inline at their observe calls) ── */}
-      <div className="flex min-h-0 flex-1 flex-col rounded border border-gray-800 bg-gray-900">
+      <div className="flex h-[65vh] shrink-0 flex-col rounded border border-gray-800 bg-gray-900">
         <div className="flex items-center justify-between border-b border-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-400">
           <span>
             {mode === "browse" ? `Log — ${run ?? "…"}` : "Live Log"}
@@ -921,6 +1455,18 @@ export default function CodingAgentPage() {
               if (f.includes("_depth")) groups[groupAt[key]].depth = f;
               else groups[groupAt[key]].rgb = f;
             }
+            // tool_use line index → the frame names its own result declared.
+            const framesByLineIdx: Record<number, string[]> = {};
+            {
+              const pending: number[] = [];
+              lines.forEach((l, idx) => {
+                if (l.kind === "tool_use") pending.push(idx);
+                else if (l.kind === "tool_result" && Array.isArray(l.frames)) {
+                  const owner = pending.length ? pending.pop()! : idx;
+                  framesByLineIdx[owner] = l.frames as string[];
+                }
+              });
+            }
             let groupCursor = 0;
             return lines.map((line, i) => {
               // A tool_use's viewpoints = image blocks in its paired result NOT
@@ -933,26 +1479,84 @@ export default function CodingAgentPage() {
               // lines never desync and tiles fill in on the next poll.
               const tiles: { url: string | null; label: string | null }[] = [];
               let nViews = 0;
-              if (line.kind === "tool_use") {
+              // Data-driven path: a driver that knows which frames its call
+              // wrote says so on the tool_result (`frames: [...]`). Nothing to
+              // infer, no cursor to keep in sync — the VLA harness writes one
+              // group per dispatch (leg start/middle/end plus the side views),
+              // so a segment's whole image history renders at its own call.
+              const explicit = framesByLineIdx[i];
+              if (explicit?.length) {
+                for (const name of explicit) {
+                  const m = name.match(/^obs_\d+_(.+)\.[a-z]+$/i);
+                  const tag = m ? m[1] : "";
+                  tiles.push({
+                    url: name,
+                    label:
+                      tag === "left" ? "left" :
+                      tag === "right" ? "right" :
+                      tag === "0" ? "leg start" :
+                      tag === "2" ? "leg end" :
+                      tag ? `during ${tag}` : null,
+                  });
+                }
+              } else if (line.kind === "tool_use") {
                 const res = resultByLineIdx[i];
                 if (res) {
                   const labels: string[] = [];
                   for (let j = 0; j < res.length; j++) {
                     if (res[j] !== IMG || res[j - 1] === IMG) continue;
                     const prev = j > 0 ? res[j - 1] : undefined;
+                    // §10.6: every result now carries the accumulated map as
+                    // a SECOND image. It is not a camera viewpoint and has no
+                    // obs_* group on disk — counting it advanced the group
+                    // cursor twice per action and left every later tile
+                    // showing "frame pending…". It has its own panel above.
+                    // (`includes`, not startsWith: the event mirror joins
+                    // adjacent texts, so the label often arrives glued after
+                    // a "[frame#N]" marker. Match the STABLE "IMAGE 2" head
+                    // only — the tail is the canonical map legend and its
+                    // wording legitimately evolves; pinning the old tail
+                    // ("— accumulated…") silently re-counted every map as a
+                    // camera viewpoint when §20.4 reworded the legend, and
+                    // every later tile went back to "frame pending…".)
+                    if (prev != null && prev.includes("IMAGE 2"))
+                      continue;
                     labels.push(
                       prev != null && prev !== IMG && !prev.trim().startsWith("{")
-                        ? prev
+                        ? (prev.includes("IMAGE 1 —") ? "current view" : prev)
                         : "",
                     );
                   }
                   nViews = labels.length;
-                  for (let v = 0; v < nViews; v++) {
-                    const g = groups[groupCursor + v];
-                    tiles.push({ url: g?.rgb ?? null, label: labels[v] || null });
-                    if (g?.depth) tiles.push({ url: g.depth, label: "depth" });
+                  // Pair by ENV STEP, not by a running cursor: the result's
+                  // own steps_taken_total names the obs_*_stepNNN group that
+                  // was written with it. The cursor drifted whenever an
+                  // internal look wrote a group no result ever showed, and
+                  // every later line rendered someone else's frame or
+                  // "frame pending…".
+                  let stepKey: string | null = null;
+                  for (const t of res) {
+                    const m = String(t).match(/"steps_taken_total":\s*(\d+)/);
+                    if (m) stepKey = m[1].padStart(3, "0");
                   }
-                  groupCursor += nViews;
+                  const byStep = stepKey != null
+                    ? frames.filter(
+                        (f) => f.includes(`_step${stepKey}`) && !f.includes("_depth"))
+                    : [];
+                  if (nViews === 1 && byStep.length) {
+                    const rgb = byStep[byStep.length - 1];
+                    const gm = rgb.match(/^obs_(\d+)_/);
+                    const g = gm != null ? groups[groupAt[gm[1]]] : undefined;
+                    tiles.push({ url: rgb, label: labels[0] || null });
+                    if (g?.depth) tiles.push({ url: g.depth, label: "depth" });
+                  } else {
+                    for (let v = 0; v < nViews; v++) {
+                      const g = groups[groupCursor + v];
+                      tiles.push({ url: g?.rgb ?? null, label: labels[v] || null });
+                      if (g?.depth) tiles.push({ url: g.depth, label: "depth" });
+                    }
+                    groupCursor += nViews;
+                  }
                 }
               }
               // Thinking content is withheld upstream (signature-only blocks,

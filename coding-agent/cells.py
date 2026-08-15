@@ -246,6 +246,10 @@ MODELS = {
     # a cell whose sampling is not pinned.
     "qwen3.5-4b": "ollama_chat/qwen3.5:4b-bf16-std",
     "qwen3.5-9b": "ollama_chat/qwen3.5:9b-bf16-std",
+    # local capacity probe: same shell, same pinned sampling, 3x the
+    # weights — separates "the harness is wrong" from "9B cannot do the
+    # cross-modal step" without needing an API key or the SDK path
+    "qwen3.6-27b": "ollama_chat/qwen3.6-27b-udq4-std:latest",
     # qwen API column, served by Alibaba DashScope's OpenAI-compatible endpoint.
     # litellm's `openai/` route + the api_base in MODEL_EXTRA below; the key
     # rides OPENAI_API_KEY (set it to the DashScope key for the run shell —
@@ -368,6 +372,12 @@ CONDITIONS = {
     #   sdk  -> coding-agent/bridges/hybrid_bridge.py
     #   mini -> toolset.HybridToolSet (in-process port; see check_equivalence.py)
     "hybrid": {"bare": True, "hybrid": True},
+    # ImagineVLN: the wp surface + goto-auto-observe. `imagine` adds a
+    # world-model rollout sheet per candidate on every look; `imagine0` is the
+    # matched control with the rollouts off — identical tools, identical
+    # auto-observe, one fewer image set. Both write to OUTPUT_ROOTS["imagine"].
+    "imagine": {"bare": True, "imagine": True, "imagine_rollouts": True},
+    "imagine0": {"bare": True, "imagine": True, "imagine_rollouts": False},
 }
 
 # harness key → output root (the Monitor's SOURCE_ROOTS, unchanged)
@@ -375,6 +385,12 @@ OUTPUT_ROOTS = {
     "sdk": REPO_ROOT / "outputs" / "beta-coding-agent",
     "mini": REPO_ROOT / "outputs" / "beta-react-harness",
     "codex": REPO_ROOT / "outputs" / "beta-codex-agent",
+    # embodied-harness shell (eharness/): two-tier planner/sub-agent over the
+    # mini executor. Own root so its runs never mix with the mini baselines.
+    "eharness": REPO_ROOT / "outputs" / "beta-eharness",
+    # ImagineVLN runner (ImagineVLN/agent/run_mapgpt.py) writes the same
+    # summary.json + episode_{i}.jsonl + live_{i}/ layout into its own root.
+    "imagine": REPO_ROOT / "outputs" / "beta-imaginevln",
 }
 
 
@@ -389,7 +405,10 @@ class CellSpec:
     wp: bool = False   # waypoint-selection action space (wp_bridge.py)
     go2: bool = False  # real Unitree Go2 embodiment (go2_bridge.py)
     hybrid: bool = False  # primitive + waypoint in one surface (hybrid_bridge.py)
-    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hmeqa | vlnverse | libero
+    imagine: bool = False           # ImagineVLN: wp surface + goto-auto-observe
+    imagine_rollouts: bool = True   # ...with world-model rollout sheets (False = control)
+    benchmark: str = "r2r"  # r2r (habitat-r2r std line) | hm3d | mp3d | ovon*
+                            # | hmeqa | vlnverse | libero
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
     max_turns: int | None = None  # None → STD_FROZEN's cap (std-v2: 200)
@@ -405,6 +424,14 @@ class CellSpec:
 
     @property
     def output_root(self) -> Path:
+        # anything with the eharness organs lives under the eharness root —
+        # 5173's embodied-harness source lists that root, and its 🧠 panel
+        # reads the live_0/state.json the organ bridge writes (用户 2026-08-07:
+        # 只要是 eh 就放到 embodied harness 5173 那里)
+        if dict(self.extra).get("eh_bridge"):
+            return OUTPUT_ROOTS["eharness"]
+        if self.imagine:
+            return OUTPUT_ROOTS["imagine"]
         return OUTPUT_ROOTS[self.harness]
 
     @property
@@ -429,6 +456,8 @@ def _cell(harness: str, model_key: str, condition: str,
         bare=cond["bare"],
         wp=cond.get("wp", False),
         hybrid=cond.get("hybrid", False),
+        imagine=cond.get("imagine", False),
+        imagine_rollouts=cond.get("imagine_rollouts", True),
         effort_tier=tier,
         extra=tuple(sorted(extra.items())),
         # the turn cap follows the cell line: wp and hybrid both move by goto
@@ -525,6 +554,133 @@ for _h, _m in WP_BOARD:
 for _h, _m, _c in LOCAL_WP_BOARD:
     spec = _cell(_h, _m, _c)
     CELLS[spec.name] = spec
+
+# ── ImagineVLN line (2026-08-14): the wp surface + world-model rollouts ──
+# imagine  = rollout sheets on every look;  imagine0 = the matched control.
+# Both add goto-auto-observe, both write to outputs/beta-imaginevln, and both
+# need the world-model service (ImagineVLN/service/mw_service.py, :9270) on top
+# of the habitat + waypoint-predictor auto_hosts the wp cells already need.
+IMAGINE_BOARD = (("mini", "qwen3.5-4b"), ("mini", "qwen3.5-9b"))
+for _h, _m in IMAGINE_BOARD:
+    for _c in ("imagine", "imagine0"):
+        spec = _cell(_h, _m, _c)
+        CELLS[spec.name] = spec
+
+# ── eharness line (2026-08-04): the embodied-harness shell over the wp surface ──
+# Two-tier planner/sub-agent, SAME model for both tiers and the V1 judge (the
+# tiers separate context and permissions, not weights). Rides the wp toolset —
+# the strongest small-model baseline (9b wp = 44) is the number to beat.
+# Knobs are additive: the wp baseline cells above are untouched.
+EH_EXTRA = {
+    "paradigm": "solo",       # solo (default; solo-harness.html) | two_tier (S4 arm)
+    "auto_view": 1,           # imageless moves carry their outcome view (transient)
+    "verify_moves": 1,        # expect-vs-outcome reconciliation per move
+    "compact_at": 12000,      # L2 trigger, estimated request tokens
+    "image_window": 6,        # bounded visual context per sub-session (B′ arm)
+    "subgoal_budget": 60,     # default env steps per delegate (planner may override)
+    "subgoal_turn_cap": 30,   # turn cap per sub-session
+    "planner_max_turns": 24,  # commander decisions per episode
+    "verify": 1,              # V1 judge on (verify=0 → ablation arm)
+}
+EHARNESS_BOARD = (
+    ("eharness", "qwen3.5-9b", "wp"),   # primary target (user 2026-08-04)
+    ("eharness", "qwen3.5-4b", "wp"),
+    ("eharness", "sonnet-5", "wp"),     # frontier reference on the same shell
+    # bare (primitives) under the same shell — the wrapper is surface-agnostic
+    # by construction, so this measures organ value on the WEAKEST interface
+    # (9b bare baseline = 7: batching starvation + stopping wall; the organs
+    # address the second, not the first — expect help, not rescue).
+    ("eharness", "qwen3.5-9b", "bare"),
+    ("eharness", "qwen3.5-4b", "bare"),
+    ("eharness", "sonnet-5", "bare"),   # frontier reference, weakest interface
+)
+for _h, _m, _c in EHARNESS_BOARD:
+    spec = _cell(_h, _m, _c)
+    spec = replace(spec, extra=tuple(sorted({**dict(spec.extra), **EH_EXTRA}.items())))
+    CELLS[spec.name] = spec
+
+# Depth-waypoint arm (2026-08-05): the SAME organs and the same numbered-
+# candidate surface as wp, but the candidates come from ONE 90° depth frame
+# through eharness/depthmap.py instead of from smartway_waypoint__predict.
+# It is a strictly better-informed proposer on three counts verified in code:
+# the learned heatmap cannot express a stride past 3.00 m (12 bins × 0.25 m);
+# it is fed per-frame min-max-normalised 8-bit depth, so absolute scale is not
+# in its input at all; and it offers candidates with no reachability guarantee
+# while step_hightolow blind-walks and slides. Geometry measures the free space
+# it is proposing into. SAM 3 (sam_url) grounds the route's landmark nouns as
+# advisory garnish; with the detector off the arm is pure geometry, which is
+# the ablation that isolates the proposer.
+_dwp_base = CELLS["std_eharness_qwen3.5-9b_bare"]
+_dwp = replace(
+    _dwp_base,
+    name="std_eharness_qwen3.5-9b_dwp",
+    extra=tuple(sorted({**dict(_dwp_base.extra), "dwp": 1, "judge_think": "1",
+                        "sam_url": "http://127.0.0.1:9220",
+                        # landmarks every look: with detector-friendly phrases from
+                        # the splitter this is the strongest signal the model
+                        # gets, and ~2.5 s/phrase is affordable next to a 9B turn
+                        "landmark_every": 1, "dwp_max_moves": 60,
+                        # block a move every 6 and demand a yes/no on
+                        # "segment done?" / "stop condition met?"
+                        "reflect_every": 6}.items())),
+)
+CELLS[_dwp.name] = _dwp
+
+# Capacity probe on the SAME shell: 3x the weights, identical organs, identical
+# pinned sampling. If the 27B follows the route where the 9B wanders, the
+# bottleneck is the model's cross-modal step (tying "the detector sees the bar
+# counter ahead" to "candidate 2 points there"), not the action space — and no
+# further harness tuning will fix it. Local, so no API key and no SDK port.
+# The other end of the scale column, same organs, same pinned sampling. The
+# question is not "does the 4b succeed" — it is whether the harness's help
+# CHANGES SIGN with model size. An in-context demo already did exactly that in
+# this repo (helped the 4b, hurt the 27b), so a second instance would stop that
+# being an anecdote. Local, so no key and no SDK port.
+_dwp4 = replace(_dwp, name="std_eharness_qwen3.5-4b_dwp",
+                model_key="qwen3.5-4b",
+                model_id=MODELS["qwen3.5-4b"])
+CELLS[_dwp4.name] = _dwp4
+
+_dwp27 = replace(_dwp, name="std_eharness_qwen3.6-27b_dwp",
+                 model_key="qwen3.6-27b",
+                 model_id=MODELS["qwen3.6-27b"])
+CELLS[_dwp27.name] = _dwp27
+
+
+
+# S4 executor port: SDK loop (subscription auth) + eharness organs living in
+# the bridge process (bridges/eharness_bridge.py); judge = local qwen — the
+# perception-diversity arm the reception-desk failure motivated (executor and
+# judge no longer share one pair of eyes).
+_sdkeh_base = CELLS["std_sdk_sonnet-5_bare_default"]
+_sdkeh = replace(
+    _sdkeh_base,
+    name="std_sdkeh_sonnet-5_bare",
+    extra=tuple(sorted({**dict(_sdkeh_base.extra),
+                        "eh_bridge": 1, "judge_think": "1"}.items())),
+)
+CELLS[_sdkeh.name] = _sdkeh
+
+# …and the same executor on the geometry line. This is the arm that asks the
+# question the whole ablation ladder is built around: does the harness's help
+# change SIGN with capability? An in-context demo already flipped between 4b and
+# 27b in this repo; the menu, the pacing cap and the place memory are all
+# candidates to flip too. Subscription auth (no key), local qwen judge.
+_sdkeh_dwp = replace(
+    _sdkeh,
+    name="std_sdkeh_sonnet-5_dwp",
+    extra=tuple(sorted({**dict(_sdkeh.extra), "dwp": 1,
+                        "sam_url": "http://127.0.0.1:9220",
+                        "landmark_every": 1}.items())),
+)
+CELLS[_sdkeh_dwp.name] = _sdkeh_dwp
+
+# Opus 5 on the same sdk-executor + eharness-organs + geometry surface — the
+# strong-model-first probe of the freshly landed §10/§12 payload (double image
+# + telemetry). Subscription auth like every sdk cell; judge stays local qwen.
+_sdkeh_dwp_opus = replace(_sdkeh_dwp, name="std_sdkeh_opus-5_dwp",
+                          model_key="opus-5", model_id=MODELS["opus-5"])
+CELLS[_sdkeh_dwp_opus.name] = _sdkeh_dwp_opus
 
 # API-qwen waypoint pilots. Same mini + toolset.WaypointToolSet path as the
 # local qwen wp cells, so the wp column now spans local 4b/9b AND the API
