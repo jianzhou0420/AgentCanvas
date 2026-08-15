@@ -127,8 +127,8 @@ ENV_OPTIONS: list[str] = _discover_modules("envs")
 # Lazy adapter caches — the in-process replacement for the old managers'
 # ensure_robot / ensure_env_adapter slices. Adapters are cheap pure-numpy
 # objects, immutable after construction; the lock guards cache population
-# when K LoopRunners share this hub process (parallelism is a server-mode
-# concept — in-process nodes all run here).
+# when K LoopRunners share this hub process (worker fan-out is a
+# server-mode concept — in-process nodes all run here).
 # ══════════════════════════════════════════════════════════════════════
 
 _LOCK = threading.Lock()

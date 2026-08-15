@@ -2381,7 +2381,7 @@ class EnvHabitatNodeSet(BaseNodeSet):
         else {}
     )
     env_panel = HabitatEnvPanel
-    parallelism = "replicated"  # Stateful simulator: per-worker scene + agent pose.
+    statefulness = "stateful"  # Stateful simulator: per-worker scene + agent pose.
     # ADR-028: Habitat steps are physics-bound and typically complete in
     # well under a second; 30s/step is loose headroom that absorbs
     # per-step overhead from policy/VLM contention under high worker_count

@@ -403,7 +403,7 @@ class JobScheduler:
         """Advisory per-resource estimate for running ``graph_name`` at
         ``worker_count``.
 
-        Resolves the graph's shared singletons (parallelism + loaded state
+        Resolves the graph's shared singletons (statefulness + loaded state
         + source hash) from the registry, then defers to the calibration-
         backed estimator. Read-only: loads nothing, reserves nothing.
         """
@@ -413,7 +413,7 @@ class JobScheduler:
             if self._registry is None:
                 break
             try:
-                if self._registry._get_parallelism(ns) != "shared":
+                if self._registry._get_statefulness(ns) != "stateless":
                     continue
                 ns_obj = getattr(self._registry, "_discovered_nodesets", {}).get(ns)
                 shared_infos.append(
@@ -781,7 +781,7 @@ class JobScheduler:
 
     def _graph_shared_nodesets(self, spec: dict) -> set[str]:
         """Shared nodesets needed by the spec's graph — same derivation as
-        ``estimate_run`` (``__``-prefix scan + parallelism filter)."""
+        ``estimate_run`` (``__``-prefix scan + statefulness filter)."""
         nodes = (spec.get("graph") or {}).get("nodes") or []
         needed = {n.get("type", "").split("__")[0] for n in nodes if "__" in n.get("type", "")}
         out: set[str] = set()
@@ -789,7 +789,7 @@ class JobScheduler:
             if self._registry is None:
                 break
             try:
-                if self._registry._get_parallelism(ns) == "shared":
+                if self._registry._get_statefulness(ns) == "stateless":
                     out.add(ns)
             except Exception:
                 continue

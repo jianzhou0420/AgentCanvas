@@ -857,7 +857,7 @@ class EnvOpenEQAEMNodeSet(BaseNodeSet):
     description = "OpenEQA — Embodied QA (Episodic Memory mode), free-form + LLM-judge"
     server_python = _resolve_server_python()
     env_panel = OpenEQAEMEnvPanel
-    parallelism = "replicated"  # Stateful per-episode frame cache
+    statefulness = "stateful"  # Stateful per-episode frame cache
     # LLM judge call dominates per-episode time (10–60 s); give a roomy budget.
     default_per_step_budget_sec = 90.0
 

@@ -118,6 +118,17 @@ def main() -> None:
             "/call are never narrowed by this."
         ),
     )
+    parser.add_argument(
+        "--mcp-exclusive",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help=(
+            "Session policy for the /mcp projection: 'auto' derives from the "
+            "nodeset's statefulness contract (stateful => one exclusive "
+            "session), 'on'/'off' force it. /manifest and /call are "
+            "unaffected."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.file and not args.module:
@@ -133,7 +144,7 @@ def main() -> None:
 
     from .auto_server_app import AutoServerApp
 
-    app = AutoServerApp(nodeset_cls)
+    app = AutoServerApp(nodeset_cls, mcp_exclusive=args.mcp_exclusive)
     app.port = args.port
     if args.mcp_tools:
         app.mcp_tools = [t.strip() for t in args.mcp_tools.split(",") if t.strip()]

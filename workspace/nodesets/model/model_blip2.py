@@ -239,7 +239,7 @@ class Blip2NodeSet(BaseNodeSet):
     name = "model_blip2"
     description = "BLIP-2 FlanT5-XL per-view captioning — dedicated server-mode FM nodeset"
     # Stateless captioner — one shared server, K eval workers coalesce onto it.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env) — byte-identical captions vs the
     # previous agentcanvas hosting (parity gate 2026-07-05). $BLIP2_PYTHON
     # overrides.

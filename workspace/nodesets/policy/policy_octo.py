@@ -298,7 +298,7 @@ class PolicyOctoNodeSet(BaseNodeSet):
     # (sibling models resident) that exceeds free VRAM and sample_actions
     # dies with CUDA_ERROR_OUT_OF_MEMORY. Allocate on demand instead.
     server_env = {"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
-    parallelism = "replicated"  # Per-worker JAX state.
+    statefulness = "stateful"  # Per-worker JAX state.
     default_per_step_budget_sec = 30.0
 
     def get_tools(self) -> list:

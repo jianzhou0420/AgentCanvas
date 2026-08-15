@@ -526,7 +526,7 @@ class EnvTumNodeSet(BaseNodeSet):
 
     Local mode: the reader is pure numpy + PIL (both in the agentcanvas env), so
     no ``server_python`` / conda env / container. Stateful cursor per worker →
-    ``parallelism = "replicated"``.
+    ``statefulness = "stateful"``.
     """
 
     name = "env_tum"
@@ -535,7 +535,7 @@ class EnvTumNodeSet(BaseNodeSet):
     # framework env. Keep it local (model_pyslam owns the GPL container boundary).
     server_python: ClassVar[str | None] = None
     env_panel = TumEnvPanel
-    parallelism: ClassVar[str] = "replicated"  # per-worker sequence + cursor
+    statefulness: ClassVar[str] = "stateful"  # per-worker sequence + cursor
     # Pure disk I/O + PNG decode per step — sub-second; roomy headroom.
     default_per_step_budget_sec: ClassVar[float] = 5.0
 

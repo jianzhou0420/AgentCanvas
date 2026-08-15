@@ -61,7 +61,7 @@ def patched_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Workspa
 
     class FakeNS(BaseNodeSet):
         name = "fake_vlm"
-        parallelism = "shared"
+        statefulness = "stateless"
 
         def get_tools(self):
             return []

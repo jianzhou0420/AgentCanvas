@@ -1356,7 +1356,7 @@ class EnvHMEQANodeSet(BaseNodeSet):
     )
     server_env = {"LD_PRELOAD": _SHIM_PATH} if os.path.exists(_SHIM_PATH) else {}
     env_panel = HMEQAEnvPanel
-    parallelism = "replicated"  # Stateful simulator: per-worker scene + agent pose.
+    statefulness = "stateful"  # Stateful simulator: per-worker scene + agent pose.
     # Per-step budget — teleport + 2× sensor render is fast (<0.5s), but
     # ExploreEQA's per-step graph also issues 6× Prismatic VLM token-score
     # calls against a shared-singleton VLM. Under high worker_count those

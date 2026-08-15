@@ -401,7 +401,7 @@ class CotrackerNodeSet(BaseNodeSet):
         "on a dedicated ac-cotracker server"
     )
     # Stateless tracking primitives — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Dedicated env: CoTracker installs from git (pinned commit, not on PyPI); kept
     # out of the shared ac-fm transformers env for provenance/cleanliness — not a
     # numpy-forced split (CoTracker is numpy-2-compatible). Override

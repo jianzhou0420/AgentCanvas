@@ -402,7 +402,7 @@ class MatchingNodeSet(BaseNodeSet):
         "front-end, on the shared ac-fm server"
     )
     # Stateless perception primitives — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Rides transformers' keypoint task heads → shares ac-fm (no dedicated env).
     # Override $MATCHING_PYTHON; device via $MATCHING_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "MATCHING_PYTHON")

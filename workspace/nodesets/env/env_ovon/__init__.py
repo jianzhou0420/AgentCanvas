@@ -1158,7 +1158,7 @@ class EnvOvonNodeSet(BaseNodeSet):
     server_python = conda_env_python("ac-objnav", "OVON_PYTHON")
     env_panel = OvonEnvPanel
     # ADR-server-003: stateful simulator — per-worker scene + agent pose.
-    parallelism: ClassVar[str] = "replicated"
+    statefulness: ClassVar[str] = "stateful"
     # ADR-eval-002: same sizing as env_objnav — the habitat step is
     # sub-second, but every OVON graph puts a VLM in the loop.
     default_per_step_budget_sec: ClassVar[float] = 30.0

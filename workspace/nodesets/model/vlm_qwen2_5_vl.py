@@ -347,7 +347,7 @@ class VLMQwen25VLNodeSet(BaseNodeSet):
         "Qwen2.5-VL — generic generate(messages|prompt, image_paths) primitive"
     )
     # K callers coalesce through one hosted copy; no per-call state.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env) — greedy output byte-identical vs the
     # retired ac-qwenvl hosting (parity gate 2026-07-05). $QWENVL_PYTHON overrides.
     server_python: ClassVar[str] = conda_env_python("ac-fm", "QWENVL_PYTHON")

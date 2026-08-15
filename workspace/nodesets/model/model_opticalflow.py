@@ -301,7 +301,7 @@ class OpticalFlowNodeSet(BaseNodeSet):
         "frame-to-frame motion field on the shared ac-fm server"
     )
     # Stateless flow estimator — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; torchvision RAFT is native there, no HF
     # download). Override with $OPTICAL_FLOW_PYTHON; device via
     # $OPTICAL_FLOW_DEVICE (auto → cuda).

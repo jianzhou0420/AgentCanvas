@@ -29,7 +29,7 @@ Four verbs (old node → verb):
 
 Server mode: dedicated ``hmeqa`` env (Python 3.9 + numba + open3d). Heavy imports
 stay deferred (in ``_explore_eqa_tsdf.py``) so the ``agentcanvas`` parent env can
-discover this class and read its ``parallelism`` ClassVar natively.
+discover this class and read its ``statefulness`` ClassVar natively.
 
 last updated: 2026-06-14
 """
@@ -554,8 +554,8 @@ class ExploreEQATSDFNodeSet(BaseNodeSet):
         "integrate_sem / next_pose) — replicated, pure-data container states"
     )
     # Stateful, per-worker world model → framework gives per-worker subprocess +
-    # container instance (ADR-server-003). Read natively by registry._get_parallelism.
-    parallelism: ClassVar[str] = "replicated"
+    # container instance (ADR-server-003). Read natively by registry._get_statefulness.
+    statefulness: ClassVar[str] = "stateful"
     server_python: ClassVar[str] = os.environ.get(
         "HMEQA_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-hmeqa/bin/python")
     )

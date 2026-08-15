@@ -26,7 +26,7 @@ Architecture — three-layer pattern mirroring ``libero.py``:
 
 3. ``EnvSimplerNodeSet`` (collection + lifecycle)
      server_python defaults to ``$SIMPLER_PYTHON`` (the env created by
-     ``scripts/install/install_ac_simpler.sh``). ``parallelism="replicated"``
+     ``scripts/install/install_ac_simpler.sh``). ``statefulness="stateful"``
      because the SAPIEN scene is per-worker stateful.
 
 Action contract (TEXT JSON):
@@ -891,7 +891,7 @@ class EnvSimplerNodeSet(BaseNodeSet):
     description = "SIMPLER — VLA evaluation benchmark (SAPIEN/ManiSkill2, 25 tasks)"
     server_python = conda_env_python("ac-simpler", "SIMPLER_PYTHON")
     env_panel = SimplerEnvPanel
-    parallelism = "replicated"  # Per-worker SAPIEN scene state.
+    statefulness = "stateful"  # Per-worker SAPIEN scene state.
     # SAPIEN step latency varies by task (3 Hz Google Robot to 5 Hz WidowX
     # control freq); ~50-200 ms per env.step. 30 s / step is loose headroom
     # for VLA inference + worker contention.

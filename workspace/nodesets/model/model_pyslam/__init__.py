@@ -58,7 +58,7 @@ Deployment — **container bridge** (design §1, §5; superseding the conda-env 
     - The nodeset dir is bind-mounted read-only into the container, so
       ``_server``/``_backend`` are available inside without baking our code into
       the image (only fastapi/uvicorn + pyslam live in the image).
-    - ``parallelism = "replicated"``: the map is mutable per-episode state; each
+    - ``statefulness = "stateful"``: the map is mutable per-episode state; each
       batch-eval worker gets its own container (one container per client). For a
       single graph run that is exactly one container.
 
@@ -1061,7 +1061,7 @@ class ModelPySlamNodeSet(BaseNodeSet):
     # Local mode: the pyslam dependency lives in a Docker container reached over
     # HTTP (see _client.py), NOT a conda env — so no server_python interpreter.
     server_python: ClassVar[str | None] = None
-    parallelism: ClassVar[str] = "replicated"  # map is mutable per-episode state
+    statefulness: ClassVar[str] = "stateful"  # map is mutable per-episode state
 
     def __init__(self) -> None:
         self._session: Any = None

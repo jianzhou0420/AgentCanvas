@@ -339,7 +339,7 @@ class SamVideoNodeSet(BaseNodeSet):
         "box) and propagate its mask across the whole clip on the shared ac-fm server"
     )
     # Stateless server: the inference session is call-local, no cross-call state.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Sam2VideoModel is native there).
     # Override with $SAM_VIDEO_PYTHON; device via $SAM_VIDEO_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "SAM_VIDEO_PYTHON")

@@ -1724,7 +1724,7 @@ class EnvVLNVerseNodeSet(BaseNodeSet):
     description = "VLNVerse (Isaac Sim 5.1) VLN environment — kujiale scenes"
     server_python = conda_env_python("ac-vlnverse", "VLNVERSE_PYTHON")
     env_panel = VLNVerseEnvPanel
-    parallelism = "replicated"  # Stateful env: per-worker scene + agent pose.
+    statefulness = "stateful"  # Stateful env: per-worker scene + agent pose.
     # A step is a macro action (turn+walk) but the render cost sits in
     # observe_*; panorama = 12 Isaac renders with warmup. 60s/step leaves
     # headroom for cross-scene episode switches (USD load + stabilize)

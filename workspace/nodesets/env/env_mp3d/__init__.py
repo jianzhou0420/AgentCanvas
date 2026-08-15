@@ -2350,7 +2350,7 @@ class EnvMP3DNodeSet(BaseNodeSet):
     description = "Matterport3D discrete panoramic navigation (R2R)"
     server_python = conda_env_python("ac-mp3d", "MP3D_PYTHON")
     env_panel = MP3DEnvPanel
-    parallelism = "replicated"  # Stateful simulator: per-worker scene + agent pose.
+    statefulness = "stateful"  # Stateful simulator: per-worker scene + agent pose.
 
     def __init__(self) -> None:
         super().__init__()

@@ -650,7 +650,7 @@ class VoxPoserNodeSet(BaseNodeSet):
 
     name = "voxposer"
     description = "VoxPoser v2 — decomposed method graph for LIBERO"
-    parallelism = "shared"  # pure-functional method nodes, no per-worker state
+    statefulness = "stateless"  # pure-functional method nodes, no per-worker state
 
     def __init__(self) -> None:
         super().__init__()

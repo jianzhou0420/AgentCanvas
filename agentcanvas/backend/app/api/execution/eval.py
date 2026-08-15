@@ -305,10 +305,10 @@ async def start_eval_v2(req: StartEvalV2Request):
             if "__" in node.type:
                 needed.add(node.type.split("__")[0])
         for ns_name, _ns in registry._live_nodesets.items():
-            if registry._get_parallelism(ns_name) == "shared":
+            if registry._get_statefulness(ns_name) == "stateless":
                 needed.add(ns_name)
         for ns_name in needed:
-            if registry._get_parallelism(ns_name) != "shared":
+            if registry._get_statefulness(ns_name) != "stateless":
                 continue
             url = registry.get_server_url(ns_name)
             if url:

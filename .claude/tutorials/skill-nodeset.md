@@ -109,7 +109,7 @@ class MyToolsNodeSet(BaseNodeSet):
 |-------|---------|-------------|
 | `description` | `""` | Always recommended — shown in NodeSet Manager UI |
 | `server_python` | `None` | Set when nodes need a different Python env (see `skill-env-nodeset.md`) |
-| `parallelism` | `"shared"` | Eval-time parallelism contract (ADR-server-003). `"shared"` = 1 instance, K callers may rendezvous through `BatchedInferenceServer` (right default for stateless tools). `"replicated"` = N tagged subprocesses, one per worker — required for stateful nodesets like envs. Tool/method nodesets should leave the default; env nodesets opt into `"replicated"` (covered in `skill-env-nodeset.md`). |
+| `statefulness` | `"stateless"` | Statefulness contract (ADR-server-003): declare the fact, the framework derives deployment. `"stateless"` = pure-function tools → deployed as 1 shared instance, K callers may rendezvous through `BatchedInferenceServer`. `"stateful"` = mutable cross-call state → deployed as N tagged subprocesses, one per worker. Tool/method nodesets should leave the default; env nodesets declare `"stateful"` (covered in `skill-env-nodeset.md`). |
 | `env_panel` | `None` | Set to a `BaseEnvPanel` subclass to register a control-plane panel for this nodeset (right-side props panel that exposes runtime state, e.g. episode picker, dataset switcher). When set, `WorkspaceComponentRegistry` instantiates and registers it on load. |
 | `default_per_step_budget_sec` | `5.0` | Per-nodeset eval timeout knob (ADR-028). The batch runner clamps each episode at `max_steps * per_step_budget_sec`. Override on nodesets whose step latency diverges from the default — Habitat ~2.0, LLM-heavy method nodesets (e.g. MapGPT) ~30.0. |
 | `initialize()` | no-op | GPU/model loading, connection setup |
@@ -140,14 +140,14 @@ class WriteNode(BaseCanvasNode):
 | **Eager** (in `initialize()`) | Resource is always needed, fast to load | `await self.load_model()` |
 | **Lazy** (in first `forward()`) | Resource is expensive, may not be used | `if ctx.model is None: ctx.model = load()` |
 
-### Parallelism in batched eval
+### Statefulness in batched eval
 
-Most tool/method nodesets are stateless — leave `parallelism` at the default
-`"shared"`. Under `worker_count > 1` the framework runs a single instance
+Most tool/method nodesets are stateless — leave `statefulness` at the default
+`"stateless"`. Under `worker_count > 1` the framework runs a single instance
 and routes K callers through `BatchedInferenceServer`. If the nodeset holds
 per-episode state that cannot be cleanly partitioned (env scene state,
-simulator handles, RNN buffers tied to a specific episode), opt into
-`"replicated"` and read `skill-env-nodeset.md` for the full contract — the
+simulator handles, RNN buffers tied to a specific episode), declare
+`"stateful"` and read `skill-env-nodeset.md` for the full contract — the
 framework will then spawn N tagged subprocesses, one per worker.
 
 ### Loading a nodeset at runtime
@@ -170,5 +170,5 @@ POST /api/components/nodesets/{name}/load?mode=server
 6. [ ] Module docstring includes `Load: POST /api/components/nodesets/{name}/load`
 7. [ ] Nodeset lives under `workspace/nodesets/` (single file or folder), not elsewhere — sidecars (`_wrapper.py`, vendored subtrees, presets) go *inside* the folder, not as `_xxx.py` siblings
 8. [ ] `from __future__ import annotations` at file top
-9. [ ] `parallelism` left at default `"shared"` for stateless tool/method nodesets; set to `"replicated"` only for stateful env-style nodesets
+9. [ ] `statefulness` left at default `"stateless"` for pure-function tool/method nodesets; set to `"stateful"` only for env-style nodesets with mutable cross-call state
 10. [ ] `default_per_step_budget_sec` overridden if step latency genuinely diverges from the 5.0s framework default (e.g. LLM-heavy nodesets)

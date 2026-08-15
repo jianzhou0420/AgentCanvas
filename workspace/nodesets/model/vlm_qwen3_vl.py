@@ -318,7 +318,7 @@ class VLMQwen3VLNodeSet(BaseNodeSet):
         "Qwen3-VL — generic generate(messages|prompt, image_paths, video_paths) primitive over images and video"
     )
     # K callers coalesce through one hosted copy; no per-call state.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Qwen3VL is native there).
     # $QWEN3VL_PYTHON overrides.
     server_python: ClassVar[str] = conda_env_python("ac-fm", "QWEN3VL_PYTHON")

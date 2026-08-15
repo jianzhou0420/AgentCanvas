@@ -288,7 +288,7 @@ class PointmapNodeSet(BaseNodeSet):
         "coordinates from one RGB frame on the shared ac-fm server"
     )
     # Stateless pointmap estimator — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Sapiens2ForPointmapEstimation
     # is native there). Override with $POINTMAP_PYTHON; device via $POINTMAP_DEVICE
     # (auto → cuda).

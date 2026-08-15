@@ -405,7 +405,7 @@ class SegmentationNodeSet(BaseNodeSet):
         "instance-aware panoptic maps from a single RGB frame on the shared ac-fm server"
     )
     # Stateless segmenter — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Mask2Former is native there).
     # Override with $SEGMENTATION_PYTHON; device via $SEGMENTATION_DEVICE
     # (auto → cuda).

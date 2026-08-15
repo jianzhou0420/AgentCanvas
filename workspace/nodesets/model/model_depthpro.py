@@ -279,7 +279,7 @@ class DepthProNodeSet(BaseNodeSet):
         "in metres + recovered field of view on the shared ac-fm server"
     )
     # Stateless depth estimator — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers DepthPro is native there).
     # Override with $DEPTHPRO_PYTHON; device via $DEPTHPRO_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "DEPTHPRO_PYTHON")

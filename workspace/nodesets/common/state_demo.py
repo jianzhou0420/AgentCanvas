@@ -61,7 +61,7 @@ class StateDemoNodeSet(BaseNodeSet):
     # subprocess copy). A `shared` server hosts one subprocess for all workers,
     # so the container would race under worker_count>1 — the #68 guardrail
     # warns about exactly that combination. (Was implicitly `shared` before.)
-    parallelism: ClassVar[str] = "replicated"
+    statefulness: ClassVar[str] = "stateful"
 
     def get_tools(self) -> list:
         return [BumpNode()]

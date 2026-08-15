@@ -307,7 +307,7 @@ class Owlv2NodeSet(BaseNodeSet):
         "the shared ac-fm server (GroundingDINO-compatible result schema)"
     )
     # Stateless detector — one shared server, K eval workers coalesce onto it.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Owlv2 is native there).
     # Override with $OWLV2_PYTHON; device via $OWLV2_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "OWLV2_PYTHON")

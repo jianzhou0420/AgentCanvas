@@ -474,7 +474,7 @@ class ClipNodeSet(BaseNodeSet):
         "classify) — language-aligned visual features on the shared ac-fm server"
     )
     # Stateless embedding primitives — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers CLIPModel is native there).
     # Override with $CLIP_PYTHON; device via $CLIP_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "CLIP_PYTHON")

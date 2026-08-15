@@ -275,7 +275,7 @@ class NormalNodeSet(BaseNodeSet):
         "single RGB frame on the shared ac-fm server"
     )
     # Stateless normal estimator — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers AutoModelForNormalEstimation
     # is native there). Override with $NORMAL_PYTHON; device via $NORMAL_DEVICE
     # (auto → cuda).

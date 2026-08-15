@@ -315,7 +315,7 @@ class VLMInternVL3NodeSet(BaseNodeSet):
         "InternVL3 — generic generate(messages|prompt, image_paths, video_paths) primitive over images and video"
     )
     # K callers coalesce through one hosted copy; no per-call state.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers InternVL is native there).
     # $INTERNVL3_PYTHON overrides.
     server_python: ClassVar[str] = conda_env_python("ac-fm", "INTERNVL3_PYTHON")

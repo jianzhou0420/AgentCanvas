@@ -36,7 +36,7 @@ pyslam's docker bridge): upstream is pip-installable, so it lives in the
 ``ac-vggt-slam`` env (torch 2.3.1 — incompatible with ac-vggt's 2.8) and this
 package is imported directly inside the AutoServerApp subprocess. Session
 state persists on the nodeset instance across /call's (auto_server_app.py
-constructs the nodeset once). ``parallelism = "replicated"``: the map is
+constructs the nodeset once). ``statefulness = "stateful"``: the map is
 mutable per-episode state; each eval worker gets its own server process.
 
 Environment:
@@ -522,7 +522,7 @@ class ModelVggtSlam2NodeSet(BaseNodeSet):
         "finalize / get_trajectory / get_map / eval_trajectory / query_object."
     )
     # Stateful session (accumulating map) — one server process per eval worker.
-    parallelism = "replicated"
+    statefulness = "stateful"
     # Dedicated env: upstream pins torch 2.3.1 (ac-vggt runs 2.8; ac-fm numpy 2).
     server_python = conda_env_python("ac-vggt-slam", "VGGT_SLAM_PYTHON")
     # VGGT-1B bf16 (~5 GB weights + submap activations) + SALAD, + PE/SAM3 under run_os.

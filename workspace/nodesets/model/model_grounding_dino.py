@@ -482,7 +482,7 @@ class GroundingDinoNodeSet(BaseNodeSet):
     name = "model_grounding_dino"
     description = "GroundingDINO open-vocabulary text→box detector — server-mode FM nodeset"
     # Stateless detector — one shared server, K eval workers coalesce onto it.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Env follows the deployment backend default: native needs ac-detany3d
     # (compiled groundingdino-py 0.4.0, frozen); hf_tiny lives in the shared
     # ac-fm env (transformers ≥4.40 — where the grounding_dino model family

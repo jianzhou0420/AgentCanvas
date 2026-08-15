@@ -483,7 +483,7 @@ class Siglip2NodeSet(BaseNodeSet):
         "zero-shot classify) — stronger open-vocab visual features on the shared ac-fm server"
     )
     # Stateless embedding primitives — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers SigLIP2 is native there).
     # Override with $SIGLIP2_PYTHON; device via $SIGLIP2_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "SIGLIP2_PYTHON")

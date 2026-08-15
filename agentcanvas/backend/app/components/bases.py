@@ -456,22 +456,21 @@ class BaseNodeSet(ABC):
     server_python: ClassVar[str | None] = (
         None  # Python interpreter for server mode; None = sys.executable
     )
-    # Parallelism contract (ADR-server-003). At eval worker_count > 1:
-    #   "shared"     → 1 instance, K callers may rendezvous through
-    #                  BatchedInferenceServer (stateless tools).
-    #   "replicated" → N independent tagged subprocesses, one per worker
-    #                  (stateful — env scene state, simulator handles).
-    # Default "shared" keeps non-env nodesets singleton; env nodesets must
-    # opt in to "replicated".
-    parallelism: ClassVar[Literal["shared", "replicated"]] = "shared"
-    # Native MCP projection session policy (server mode, /mcp endpoint).
-    #   True  → at most one live MCP session; a second initialize is
-    #           rejected until the first disconnects (stateful envs: a
-    #           singleton simulator can't serve interleaved episodes).
-    #   False → stateless projection, concurrent MCP clients allowed.
-    #   None  → derived from ``parallelism``: "replicated" (stateful) ⇒
-    #           exclusive, "shared" (stateless tools) ⇒ concurrent.
-    mcp_exclusive: ClassVar[bool | None] = None
+    # Statefulness contract (ADR-server-003). The nodeset declares the
+    # intrinsic fact — does it hold mutable cross-call state? — and the
+    # framework derives deployment from it ("shared"/"replicated" are
+    # framework-internal deployment vocabulary, never declared here):
+    #   "stateless" → pure-function tools; deployed as ONE shared instance,
+    #                 K eval workers may rendezvous through
+    #                 BatchedInferenceServer.
+    #   "stateful"  → mutable per-episode state (env scene, simulator
+    #                 handles, SLAM maps); deployed as N tagged
+    #                 subprocesses, one per worker, at eval
+    #                 worker_count > 1. The native /mcp projection likewise
+    #                 derives its session policy (stateful ⇒ exclusive
+    #                 session), overridable per host via
+    #                 ``auto_host --mcp-exclusive``.
+    statefulness: ClassVar[Literal["stateful", "stateless"]] = "stateless"
     # Author-declared steady-state VRAM footprint of this nodeset's loaded
     # process, in MB (e.g. SAM vit_b ≈ 600). Used by the admission
     # estimator as a fallback when no measured calibration exists on this

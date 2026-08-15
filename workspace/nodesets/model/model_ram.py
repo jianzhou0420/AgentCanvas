@@ -381,7 +381,7 @@ class RAMPerceptionNodeSet(BaseNodeSet):
     name = "model_ram"
     description = "Recognize Anything Model (RAM / RAM++, Swin-L 14M tags) — dedicated server-mode nodeset"
     # Stateless tagger — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     server_python = conda_env_python("ac-ram", "RAM_PERCEPTION_PYTHON")
 
     def get_tools(self) -> list:

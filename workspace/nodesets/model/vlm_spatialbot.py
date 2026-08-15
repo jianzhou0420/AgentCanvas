@@ -450,7 +450,7 @@ class SpatialBotNodeSet(BaseNodeSet):
     name = "vlm_spatialbot"
     description = "SpatialBot-3B depth-aware VLM (caption/generate) — server-mode FM nodeset"
     # Stateless VLM — one shared server, K eval workers coalesce onto it.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-ram (transformers 4.39.3 + torch 2.4.1) — in Bunny-Phi's
     # compatible range and the env that already hosted this exact forward
     # inside opennav_perception. Override with $SPATIALBOT_PYTHON.

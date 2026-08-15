@@ -456,7 +456,7 @@ class VggtNodeSet(BaseNodeSet):
         "on a dedicated ac-vggt server"
     )
     # Stateless geometry primitives — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Dedicated env: VGGT is the standalone `vggt` package (not transformers) and
     # pins numpy<2, so it cannot share ac-fm's numpy-2 stack. Override $VGGT_PYTHON;
     # device via $VGGT_DEVICE (auto → cuda).

@@ -201,22 +201,25 @@ class AutoServerApp(ServerApp):
     and ``output_ports``.
     """
 
-    def __init__(self, nodeset_cls: type[BaseNodeSet]) -> None:
+    def __init__(
+        self, nodeset_cls: type[BaseNodeSet], mcp_exclusive: str = "auto"
+    ) -> None:
         super().__init__()
         self._nodeset_cls = nodeset_cls
         self._nodeset: BaseNodeSet | None = None
         self._env_panel: Any | None = None
         self.name = nodeset_cls.name
         self.description = getattr(nodeset_cls, "description", "")
-        # MCP session policy: explicit ``mcp_exclusive`` declaration wins;
-        # None derives from the parallelism contract — "replicated" marks the
-        # nodeset stateful (env scene state, simulator handles), which is
-        # exactly what makes interleaved MCP clients unsafe.
-        declared = getattr(nodeset_cls, "mcp_exclusive", None)
-        if declared is None:
-            self.mcp_exclusive = getattr(nodeset_cls, "parallelism", "shared") == "replicated"
+        # MCP session policy (``auto_host --mcp-exclusive``): "on"/"off"
+        # force it; "auto" derives from the statefulness contract — a
+        # stateful nodeset (env scene state, simulator handles) is exactly
+        # what makes interleaved MCP clients unsafe.
+        if mcp_exclusive == "auto":
+            self.mcp_exclusive = (
+                getattr(nodeset_cls, "statefulness", "stateless") == "stateful"
+            )
         else:
-            self.mcp_exclusive = bool(declared)
+            self.mcp_exclusive = mcp_exclusive == "on"
         # ADR-028 PC-2.5: shared rendezvous tier for batched nodes hosted in
         # this subprocess. Lazily registered handlers (one per batched node
         # type) inside ``_make_handler``; queues materialise on first call.

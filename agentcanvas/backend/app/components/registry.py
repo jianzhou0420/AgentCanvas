@@ -995,20 +995,20 @@ class WorkspaceComponentRegistry:
         server, or any PB-1 tagged multi-worker copy)."""
         return name in self._live_nodesets or bool(self._tagged_server_keys_for(name))
 
-    def _get_parallelism(self, ns_name: str) -> str:
-        """Return ``"replicated"`` or ``"shared"`` for a nodeset by name.
+    def _get_statefulness(self, ns_name: str) -> str:
+        """Return ``"stateful"`` or ``"stateless"`` for a nodeset by name.
 
-        Reads ``BaseNodeSet.parallelism`` ClassVar on the discovered class.
+        Reads ``BaseNodeSet.statefulness`` ClassVar on the discovered class.
         Falls back to a static set for env nodesets that fail to import on
         the current Python env (e.g. ``env_habitat`` on the ``agentcanvas``
-        env without habitat-sim) — those still need ``"replicated"`` so
+        env without habitat-sim) — those still need ``"stateful"`` so
         eval fan-out works.
         """
         ns = self._live_nodesets.get(ns_name) or self._discovered_nodesets.get(ns_name)
         if ns is not None:
-            return getattr(type(ns), "parallelism", "shared")
-        _KNOWN_REPLICATED = {"env_habitat", "env_mp3d", "env_hmeqa"}
-        return "replicated" if ns_name in _KNOWN_REPLICATED else "shared"
+            return getattr(type(ns), "statefulness", "stateless")
+        _KNOWN_STATEFUL = {"env_habitat", "env_mp3d", "env_hmeqa"}
+        return "stateful" if ns_name in _KNOWN_STATEFUL else "stateless"
 
     def _check_container_ownership(
         self, name: str, container_ids: list, worker_count: int
@@ -1017,11 +1017,14 @@ class WorkspaceComponentRegistry:
 
         Returns a short status code (also used by tests) and logs a warning:
 
-        - ``"shared-stateful"`` (#68) — a ``shared`` server hosts ONE subprocess
-          for all workers, so any mutable owned container is shared and WILL
-          race under ``worker_count>1``. The nodeset should be ``replicated``
-          (per-worker private copy) or stateless. Warn now; escalate to a hard
-          reject once no legitimate shared+stateful nodeset remains.
+        - ``"stateless-owns-state"`` (#68) — the declaration contradicts the
+          code: a ``statefulness="stateless"`` nodeset owns mutable state
+          containers. Stateless deploys as ONE shared subprocess for all
+          workers, so this state WILL race under ``worker_count>1``. Declare
+          ``statefulness="stateful"`` (per-worker private copy) or drop the
+          containers. (Deliberately-shared stateful state is not declarable
+          since the statefulness rename — if that need ever materialises, a
+          deployment escape hatch must be added first.)
         - ``"replicated-fanout-unroutable"`` (#17 residual) — cross-nodeset
           access to a ``replicated`` nodeset's containers is not routable under
           fan-out: the home registry maps cid→base name and
@@ -1032,22 +1035,23 @@ class WorkspaceComponentRegistry:
         """
         if not container_ids:
             return None
-        para = self._get_parallelism(name)
-        if para == "shared":
+        statefulness = self._get_statefulness(name)
+        if statefulness == "stateless":
             log.warning(
-                "[#68] nodeset %r is parallelism='shared' but owns %d state "
-                "container(s) %s — a shared server shares ONE subprocess across "
-                "workers, so this state races under worker_count>1. Mark the "
-                "nodeset parallelism='replicated' (per-worker private copy) or "
-                "make it stateless.",
+                "[#68] nodeset %r declares statefulness='stateless' but owns %d "
+                "state container(s) %s — the declaration contradicts the code: "
+                "stateless deploys as ONE shared subprocess across workers, so "
+                "this state races under worker_count>1. Declare "
+                "statefulness='stateful' (per-worker private copy) or drop the "
+                "containers.",
                 name,
                 len(container_ids),
                 container_ids,
             )
-            return "shared-stateful"
-        if para == "replicated" and worker_count > 1:
+            return "stateless-owns-state"
+        if statefulness == "stateful" and worker_count > 1:
             log.warning(
-                "[#17] replicated nodeset %r homes %d container(s) %s under "
+                "[#17] stateful (replicated) nodeset %r homes %d container(s) %s under "
                 "worker_count=%d — cross-nodeset access to them from another "
                 "nodeset is not routable yet (broker resolves an untagged home "
                 "URL). Owner-local access is fine.",
@@ -1060,12 +1064,12 @@ class WorkspaceComponentRegistry:
         return None
 
     async def ensure_shared_nodesets_for_graph(self, graph: GraphDefinition) -> dict:
-        """Load only the ``parallelism="shared"`` nodesets a graph needs.
+        """Load only the ``statefulness="stateless"`` nodesets a graph needs.
 
         Counterpart to :meth:`ensure_nodesets_for_graph` for the subprocess
-        eval path: parent backend only owns shared singletons (long-lived,
-        cross-job reusable — e.g. Prismatic VLM); the eval subprocess
-        owns its own ``replicated`` / env-class nodesets via its own
+        eval path: parent backend only owns stateless shared singletons
+        (long-lived, cross-job reusable — e.g. Prismatic VLM); the eval
+        subprocess owns its own stateful / env-class nodesets via its own
         ``ensure_nodesets_for_graph`` call.
 
         This avoids the old "load everything then unload non-shared" dance
@@ -1073,7 +1077,7 @@ class WorkspaceComponentRegistry:
         the parent only to kill it before subprocess spawn.
 
         Workers are always singleton here — fan-out (``worker_count > 1``)
-        is a property of replicated nodesets and is decided by the eval
+        is a property of stateful nodesets and is decided by the eval
         subprocess, not the parent.
 
         Returns the same shape as :meth:`ensure_nodesets_for_graph`:
@@ -1091,7 +1095,7 @@ class WorkspaceComponentRegistry:
             "unknown": [],
         }
         for ns_name in sorted(needed):
-            if self._get_parallelism(ns_name) != "shared":
+            if self._get_statefulness(ns_name) != "stateless":
                 continue  # subprocess eval owns these
             if self.is_nodeset_loaded(ns_name):
                 result["already_loaded"].append(ns_name)
@@ -1118,10 +1122,10 @@ class WorkspaceComponentRegistry:
 
         Args:
             graph: Graph to inspect.
-            worker_count: ADR-028 PB-1. When > 1, ``parallelism="replicated"``
+            worker_count: ADR-028 PB-1. When > 1, ``statefulness="stateful"``
                 nodesets are spawned as ``worker_count`` tagged subprocesses
                 for parallel eval; any existing single-instance load is
-                unloaded first. ``parallelism="shared"`` nodesets stay
+                unloaded first. ``statefulness="stateless"`` nodesets stay
                 singleton — K callers rendezvous through
                 ``BatchedInferenceServer`` at runtime instead.
 
@@ -1139,12 +1143,12 @@ class WorkspaceComponentRegistry:
             "unknown": [],
         }
         for ns_name in sorted(needed):
-            # Dispatch on the nodeset's declared parallelism contract
-            # (ADR-server-003): only "replicated" nodesets fan out into
-            # N tagged subprocesses.
-            parallelism = self._get_parallelism(ns_name)
+            # Dispatch on the nodeset's declared statefulness contract
+            # (ADR-server-003): only "stateful" nodesets fan out into
+            # N tagged subprocesses (deployed replicated).
+            statefulness = self._get_statefulness(ns_name)
 
-            if worker_count > 1 and parallelism == "replicated":
+            if worker_count > 1 and statefulness == "stateful":
                 # Multi-worker env: always (re)spawn N tagged copies. If a
                 # prior load exists (untagged from canvas Play, or a different
                 # worker_count from a prior eval run), unload it first so the

@@ -304,7 +304,7 @@ class VLMGemma3NodeSet(BaseNodeSet):
         "Gemma 3 — generic generate(messages|prompt, image_paths) primitive over images (gated model)"
     )
     # K callers coalesce through one hosted copy; no per-call state.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Gemma3 is native there).
     # $GEMMA3_PYTHON overrides.
     server_python: ClassVar[str] = conda_env_python("ac-fm", "GEMMA3_PYTHON")

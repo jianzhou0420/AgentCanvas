@@ -708,7 +708,7 @@ class PolicyAdapterVlnceNodeSet(BaseNodeSet):
     server_env = {
         "LD_LIBRARY_PATH": f"{_vlnce_env_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}",
     }
-    parallelism = "shared"
+    statefulness = "stateless"
 
     def __init__(self) -> None:
         super().__init__()

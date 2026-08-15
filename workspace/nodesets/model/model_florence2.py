@@ -335,7 +335,7 @@ class Florence2NodeSet(BaseNodeSet):
         "seq2seq model on the shared ac-fm server"
     )
     # Stateless generator — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Florence2 is native there).
     # Override with $FLORENCE2_PYTHON; device via $FLORENCE2_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "FLORENCE2_PYTHON")

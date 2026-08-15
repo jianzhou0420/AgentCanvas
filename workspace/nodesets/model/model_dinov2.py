@@ -361,7 +361,7 @@ class DinoV2NodeSet(BaseNodeSet):
         "hf = transformers DINOv3 / HF DINOv2) — server-mode FM nodeset"
     )
     # Stateless feature extractor — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env) — byte-equal features vs the old
     # ac-smartway hosting given the use_fast=False PIL pin above (parity gate
     # 2026-07-05). Override with $DINOV2_PYTHON.

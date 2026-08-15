@@ -296,7 +296,7 @@ class DepthAnythingNodeSet(BaseNodeSet):
         "checkpoints as config) — dense per-pixel depth on the shared ac-fm server"
     )
     # Stateless depth estimator — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers AutoModelForDepthEstimation
     # is native there). Override with $DEPTH_ANYTHING_PYTHON; device via
     # $DEPTH_ANYTHING_DEVICE (auto → cuda).

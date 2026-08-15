@@ -198,7 +198,7 @@ def test_zero_vram_resident_server_is_calibrated_at_zero(tmp_path: Path) -> None
 
 
 def test_local_inprocess_shared_nodeset_calibrates_at_zero(tmp_path: Path) -> None:
-    # env_adapter case: parallelism="shared" but loaded in-process (no
+    # env_adapter case: statefulness="stateless" but loaded in-process (no
     # server PID). Must sediment 0 on every resource so it never blocks
     # estimate coverage.
     calib = tmp_path / "c.json"

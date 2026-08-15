@@ -12,38 +12,38 @@ from app.components.registry import WorkspaceComponentRegistry
 
 
 def _bare_registry() -> WorkspaceComponentRegistry:
-    # Skip __init__ (heavy) — the guardrail only needs _get_parallelism + log.
+    # Skip __init__ (heavy) — the guardrail only needs _get_statefulness + log.
     return WorkspaceComponentRegistry.__new__(WorkspaceComponentRegistry)
 
 
-def test_guardrail_shared_stateful_warns(caplog: pytest.LogCaptureFixture) -> None:
+def test_guardrail_stateless_owns_state_warns(caplog: pytest.LogCaptureFixture) -> None:
     reg = _bare_registry()
-    reg._get_parallelism = lambda n: "shared"  # type: ignore[method-assign]
+    reg._get_statefulness = lambda n: "stateless"  # type: ignore[method-assign]
     with caplog.at_level("WARNING"):
         status = reg._check_container_ownership("state_demo", ["state_demo"], worker_count=4)
-    assert status == "shared-stateful"
+    assert status == "stateless-owns-state"
     assert "#68" in caplog.text
     assert "state_demo" in caplog.text
 
 
-def test_guardrail_replicated_fanout_unroutable(caplog: pytest.LogCaptureFixture) -> None:
+def test_guardrail_stateful_fanout_unroutable(caplog: pytest.LogCaptureFixture) -> None:
     reg = _bare_registry()
-    reg._get_parallelism = lambda n: "replicated"  # type: ignore[method-assign]
+    reg._get_statefulness = lambda n: "stateful"  # type: ignore[method-assign]
     with caplog.at_level("WARNING"):
         status = reg._check_container_ownership("explore_eqa_tsdf", ["tsdf"], worker_count=4)
     assert status == "replicated-fanout-unroutable"
     assert "#17" in caplog.text
 
 
-def test_guardrail_replicated_single_worker_ok() -> None:
+def test_guardrail_stateful_single_worker_ok() -> None:
     reg = _bare_registry()
-    reg._get_parallelism = lambda n: "replicated"  # type: ignore[method-assign]
+    reg._get_statefulness = lambda n: "stateful"  # type: ignore[method-assign]
     assert reg._check_container_ownership("explore_eqa_tsdf", ["tsdf"], worker_count=1) is None
 
 
 def test_guardrail_no_containers_ok() -> None:
     reg = _bare_registry()
-    reg._get_parallelism = lambda n: "shared"  # type: ignore[method-assign]
+    reg._get_statefulness = lambda n: "stateless"  # type: ignore[method-assign]
     assert reg._check_container_ownership("vlm_prismatic", [], worker_count=4) is None
 
 
@@ -60,8 +60,8 @@ def test_resolve_executor_url_default_and_explicit() -> None:
         s.executor_url = None
 
 
-def test_state_demo_is_replicated() -> None:
-    # The footgun fixture must now declare replicated so the #68 warn path is
+def test_state_demo_is_stateful() -> None:
+    # The footgun fixture must declare stateful so the #68 warn path is
     # clean (it owns a mutable container).
     import importlib.util
     import pathlib
@@ -77,4 +77,4 @@ def test_state_demo_is_replicated() -> None:
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.StateDemoNodeSet.parallelism == "replicated"
+    assert mod.StateDemoNodeSet.statefulness == "stateful"

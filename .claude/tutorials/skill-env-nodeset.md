@@ -125,23 +125,26 @@ changes and the reset action.
 - `get_options(field)` — return `[{"value": ..., "label": ...}]` per cascade
   field, sourced from the manager
 
-### Parallelism contract (ADR-server-003)
+### Statefulness contract (ADR-server-003)
 
-Every env nodeset MUST declare its parallelism mode explicitly:
+Every env nodeset MUST declare its statefulness explicitly. The nodeset
+declares the intrinsic fact (does it hold mutable cross-call state?); the
+framework derives deployment from it — "replicated"/"shared" are
+framework-internal deployment vocabulary and never appear in declarations:
 
 ```python
 class EnvNodeSet(BaseNodeSet):
-    parallelism: ClassVar[str] = "replicated"   # for stateful sims
+    statefulness: ClassVar[str] = "stateful"   # stateful sims
 ```
 
-| Mode | Semantics under `worker_count > 1` | Use for |
+| Declaration | Derived deployment under `worker_count > 1` | Use for |
 |---|---|---|
-| `"replicated"` | `WorkspaceComponentRegistry` spawns N tagged subprocesses (`{name}#0` … `{name}#N-1`); `EnvWorkerPool` hands each `LoopRunner` its own `env_panel_overrides` + `server_url_overrides`. Per-worker scene + agent pose are isolated. | **All env nodesets shipped today**. Any sim that holds mutable scene/episode/pose state. |
-| `"shared"` (default) | One subprocess; K callers coalesce through `BatchedInferenceServer`. Pure-functional contract — no per-call state allowed. | LLM/policy/perception nodesets that are stateless across calls (e.g. `policy_cma`'s `forward`). |
+| `"stateful"` | Deployed **replicated**: `WorkspaceComponentRegistry` spawns N tagged subprocesses (`{name}#0` … `{name}#N-1`); `EnvWorkerPool` hands each `LoopRunner` its own `env_panel_overrides` + `server_url_overrides`. Per-worker scene + agent pose are isolated. | **All env nodesets shipped today**. Any sim that holds mutable scene/episode/pose state. |
+| `"stateless"` (default) | Deployed **shared**: one subprocess; K callers coalesce through `BatchedInferenceServer`. Pure-functional contract — no per-call state allowed. | LLM/policy/perception nodesets that are stateless across calls (e.g. `policy_cma`'s `forward`). |
 
-**`worker_count = 1` is bit-identical in both modes** — the contract only kicks in under multi-worker batch eval. Forgetting `parallelism = "replicated"` on an env nodeset is silent at single-worker eval and at canvas Play, then explodes (random scene state, wrong SPL, episodes from the wrong scan) the moment someone runs `worker_count = 4`.
+**`worker_count = 1` is bit-identical in both modes** — the contract only kicks in under multi-worker batch eval. Forgetting `statefulness = "stateful"` on an env nodeset is silent at single-worker eval and at canvas Play, then explodes (random scene state, wrong SPL, episodes from the wrong scan) the moment someone runs `worker_count = 4`.
 
-The mode follows the **wrapper**, not the upstream library: MatterSim supports `setBatchSize(K)` upstream, but our `env_mp3d` wrapper is single-batch + thread-affine, so it stays `replicated`. Decide based on what your `EnvManager` actually does, not what the underlying SDK could theoretically do.
+The declaration follows the **wrapper**, not the upstream library: MatterSim supports `setBatchSize(K)` upstream, but our `env_mp3d` wrapper is single-batch + thread-affine, so it stays `"stateful"`. Decide based on what your `EnvManager` actually does, not what the underlying SDK could theoretically do.
 
 ### Optional nodes — env-specific extras
 
@@ -451,11 +454,11 @@ class EnvNodeSet(BaseNodeSet):
     # repoint without editing source (all shipped env nodesets do this).
     server_python = conda_env_python("ac-{name}", "{NAME}_PYTHON")  # TODO
     env_panel = MyEnvPanel                         # Required
-    # ADR-server-003: stateful simulators MUST be "replicated" so each batch
-    # eval worker gets its own tagged subprocess. Default is "shared" (wrong
-    # for env nodesets — would coalesce K workers into one sim, corrupting
-    # per-worker scene + agent pose).
-    parallelism: ClassVar[str] = "replicated"      # Required
+    # ADR-server-003: simulators MUST declare "stateful" so each batch eval
+    # worker gets its own tagged subprocess (deployed replicated). Default is
+    # "stateless" (wrong for env nodesets — would coalesce K workers into one
+    # sim, corrupting per-worker scene + agent pose).
+    statefulness: ClassVar[str] = "stateful"       # Required
     # ADR-eval-002: BatchEvalRunner caps each episode at
     # ``max_steps * default_per_step_budget_sec``. Tune to actual step
     # latency: Habitat ~2.0, MP3D ~5.0 (default), HM-EQA ~5.0, LIBERO 30.0,
@@ -553,9 +556,9 @@ clear automatically (see `LIFETIME_TO_SIGNALS` in `state_containers.py`).
 15. [ ] `get_options(field)` returns dynamic option lists per cascade field
 16. [ ] `NodeSet.env_panel = MyEnvPanel` declared at class level
 
-### Parallelism + scheduling ClassVars
+### Statefulness + scheduling ClassVars
 
-17. [ ] `parallelism = "replicated"` declared on the NodeSet class (ADR-server-003) — required for any sim with mutable scene/episode/pose state
+17. [ ] `statefulness = "stateful"` declared on the NodeSet class (ADR-server-003) — required for any sim with mutable scene/episode/pose state
 18. [ ] `default_per_step_budget_sec` tuned to actual step latency (ADR-eval-002)
 19. [ ] `server_python = conda_env_python("ac-{name}", "{NAME}_PYTHON")` — dedicated conda env with env-var override
 
@@ -576,5 +579,5 @@ clear automatically (see `LIFETIME_TO_SIGNALS` in `state_containers.py`).
 - Real examples (folder): `workspace/nodesets/env/env_libero/`, `workspace/nodesets/env/env_simpler/` (each `__init__.py` + `_wrapper.py` sidecar), `workspace/nodesets/env/env_mp3d/`, `workspace/nodesets/env/env_hmeqa/`
 - Signal system (`episode_reset`, `step_end`, `run_end`): `agentcanvas/backend/app/agent_loop/state_containers.py` (`LIFETIME_TO_SIGNALS`)
 - ADR-server-002 (generic BaseEnvPanel contract): `docs/pages/developer-guide/core/decisions/server/adr-server-002-base-controller.html`
-- ADR-server-003 (env parallelism contract — `replicated` vs `shared`): `docs/pages/developer-guide/core/decisions/server/adr-server-003-env-parallelism-contract.html`
+- ADR-server-003 (env parallelism contract — `replicated` vs `shared`; the nodeset-facing declaration has since been renamed to `statefulness = "stateful"/"stateless"`, deployment is derived): `docs/pages/developer-guide/core/decisions/server/adr-server-003-env-parallelism-contract.html`
 - ADR-eval-002 (worker pool + batched inference + `default_per_step_budget_sec`): `docs/pages/developer-guide/core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html`

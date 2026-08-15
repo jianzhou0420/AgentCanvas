@@ -30,7 +30,7 @@ Architecture — three-layer pattern mirroring ``hmeqa.py``:
 
 3. ``EnvLiberoNodeSet`` (collection + lifecycle)
      server_python defaults to ``$LIBERO_PYTHON`` (the env created by
-     ``scripts/install/install_ac_libero.sh``). ``parallelism="replicated"``
+     ``scripts/install/install_ac_libero.sh``). ``statefulness="stateful"``
      because the robosuite scene is per-worker stateful.
 
 Action contract (TEXT JSON):
@@ -1837,7 +1837,7 @@ class EnvLiberoNodeSet(BaseNodeSet):
     description = "LIBERO — manipulation benchmark (5 task suites, 130 tasks)"
     server_python = conda_env_python("ac-libero", "LIBERO_PYTHON")
     env_panel = LiberoEnvPanel
-    parallelism = "replicated"  # Per-worker robosuite scene state.
+    statefulness = "stateful"  # Per-worker robosuite scene state.
     # Robosuite step ≈ 50 ms; with chunk=K and num_steps_wait=10 the first
     # reset takes ~1 s. 30 s / step is loose headroom that absorbs policy
     # inference + VLM contention under high worker_count.

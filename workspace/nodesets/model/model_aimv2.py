@@ -256,7 +256,7 @@ class Aimv2NodeSet(BaseNodeSet):
         "self-supervised backbone alongside DINOv2 on the shared ac-fm server"
     )
     # Stateless feature extractor — one shared server across eval workers.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers Aimv2 is native there).
     # Override with $AIMV2_PYTHON; device via $AIMV2_DEVICE (auto → cuda).
     server_python = conda_env_python("ac-fm", "AIMV2_PYTHON")

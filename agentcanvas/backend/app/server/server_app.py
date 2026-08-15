@@ -75,10 +75,11 @@ class ServerApp(ABC):
         )
         # Native MCP projection (mcp_projection.py). ``mcp_tools`` is the
         # optional tool allowlist (auto_host --mcp-tools); ``mcp_exclusive``
-        # gates the projection to one live MCP session (stateful envs —
-        # AutoServerApp derives it from the nodeset's declaration); the
-        # manager and exit stack are populated by _build_app / the startup
-        # hook when the ``mcp`` SDK is importable, else manifest-only.
+        # gates the projection to one live MCP session (AutoServerApp derives
+        # it from the nodeset's statefulness contract, overridable via
+        # auto_host --mcp-exclusive); the manager and exit stack are populated
+        # by _build_app / the startup hook when the ``mcp`` SDK is importable,
+        # else manifest-only.
         self.mcp_tools: Optional[list] = None
         self.mcp_exclusive: bool = False
         self._mcp_manager: Optional[Any] = None

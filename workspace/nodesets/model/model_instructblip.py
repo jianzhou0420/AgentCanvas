@@ -291,7 +291,7 @@ class InstructBlipNodeSet(BaseNodeSet):
     description = "InstructBLIP-FlanT5-XL scene captioning — dedicated server-mode FM nodeset"
     # Stateless captioner — one shared server, K eval workers coalesce onto it
     # (don't replicate the ~7 GB model per worker). Bit-identical at worker_count=1.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env) — beam-5 captions byte-identical vs
     # the previous agentcanvas hosting (parity gate 2026-07-05). NOT ac-ram
     # (tokenizers 0.15.2 + no sentencepiece → processor load fails).

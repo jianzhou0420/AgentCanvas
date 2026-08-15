@@ -362,7 +362,7 @@ class VLMPrismaticNodeSet(BaseNodeSet):
         "Prismatic VLM — generic primitives (score_tokens, generate) wired by method nodesets"
     )
     # Stateless VLM — one shared server, K eval workers coalesce onto it.
-    parallelism = "shared"
+    statefulness = "stateless"
     server_python: ClassVar[str] = conda_env_python("ac-hmeqa", "HMEQA_PYTHON")
 
     def get_tools(self) -> list:

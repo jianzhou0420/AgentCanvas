@@ -34,7 +34,7 @@ Architecture — three layers:
 
 3. ``PolicyAdapterVlaNodeSet`` (collection + lifecycle)
      server_python defaults to ``$VLA_POLICY_PYTHON`` (env created by
-     ``scripts/install/install_ac_vla_policy.sh``). ``parallelism="shared"``:
+     ``scripts/install/install_ac_vla_policy.sh``). ``statefulness="stateless"``:
      one subprocess hosts one VlaPolicyManager singleton; K eval workers
      fan in through ``BatchedInferenceServer`` on the
      ``policy_adapter_vla__predict`` node. RT-1's recurrent ``policy_state``
@@ -698,7 +698,7 @@ class PredictTool(BaseCanvasNode):
     )
     category = "policy"
     icon = "Cpu"
-    # ADR-eval-002 PC-3 + this nodeset's parallelism="shared": K eval workers
+    # ADR-eval-002 PC-3 + this nodeset's statefulness="stateless": K eval workers
     # rendezvous at this node through BatchedInferenceServer; one TF SavedModel
     # serves all of them. The TF policy is pinned to batch_size=1 so the
     # K-flush is unrolled into a sequential loop inside execute() — primary
@@ -919,7 +919,7 @@ class PolicyAdapterVlaNodeSet(BaseNodeSet):
     # but the K-flush is unrolled into a sequential loop because the TF
     # SavedModel is pinned to batch_size=1 — primary win is GPU memory (one
     # model + one USE encoder shared) not throughput.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Pi0 first call is slow (JAX→PT conversion + torch.compile) — give 60s budget.
     default_per_step_budget_sec = 60.0
 

@@ -220,7 +220,7 @@ class StateContainer:
         self.states = states
         # Per-key partitions: ``{name: {key: BaseState}}`` — lazily cloned from
         # the template on first keyed write. Empty for non-keyed containers.
-        # Used by nodeset-owned containers under worker parallelism: one
+        # Used by nodeset-owned containers under worker fan-out: one
         # container serves N concurrent workers, partitioned by an explicit
         # key (e.g. ``episode_id``) the caller passes at read/write time.
         self._keyed: dict[str, dict[str, BaseState]] = {}

@@ -540,7 +540,7 @@ class ModelDetAny3DNodeSet(BaseNodeSet):
     # serves all eval workers, which keeps the 12 GB model load singleton.
     # "shared" also makes the URL eligible for spec._shared_urls so the
     # eval subprocess can reach it. ADR-server-003.
-    parallelism = "shared"
+    statefulness = "stateless"
     default_per_step_budget_sec = 30.0
 
     def __init__(self) -> None:

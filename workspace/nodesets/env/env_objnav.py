@@ -1137,7 +1137,7 @@ class EnvObjnavNodeSet(BaseNodeSet):
     server_python = conda_env_python("ac-objnav", "OBJNAV_PYTHON")
     env_panel = ObjnavEnvPanel
     # ADR-server-003: stateful simulator — per-worker scene + agent pose.
-    parallelism: ClassVar[str] = "replicated"
+    statefulness: ClassVar[str] = "stateful"
     # ADR-eval-002: the habitat step itself is sub-second, but every ObjectNav
     # graph puts a VLM/LLM in the loop (the probe graph makes two vision calls
     # per step). 5.0 killed a 30-step probe at step 10 on wall-clock; mirror

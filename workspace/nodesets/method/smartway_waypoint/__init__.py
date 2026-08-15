@@ -168,7 +168,7 @@ class SmartWayWaypointNodeSet(BaseNodeSet):
     server_python = conda_env_python("ac-smartway", "SMARTWAY_PYTHON")
     # Pure-functional inference: K waypoint predictions per call, no
     # caller-scoped state — safe to share across batched-eval workers.
-    parallelism: ClassVar[str] = "shared"
+    statefulness: ClassVar[str] = "stateless"
 
     def get_tools(self) -> list:
         return [SmartwayWaypointPredictTool()]

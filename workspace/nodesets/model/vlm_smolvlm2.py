@@ -314,7 +314,7 @@ class VLMSmolVLM2NodeSet(BaseNodeSet):
         "SmolVLM2 — small/efficient generate(messages|prompt, image_paths, video_paths) primitive over images and video"
     )
     # K callers coalesce through one hosted copy; no per-call state.
-    parallelism = "shared"
+    statefulness = "stateless"
     # Default env: ac-fm (shared FM env; transformers SmolVLM is native there,
     # num2words installed). $SMOLVLM2_PYTHON overrides.
     server_python: ClassVar[str] = conda_env_python("ac-fm", "SMOLVLM2_PYTHON")

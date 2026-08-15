@@ -248,19 +248,15 @@ def test_manifest_and_call_untouched(client: TestClient) -> None:
 
 class _StatefulNodeSet(_DummyNodeSet):
     name = "dummy_env"
-    parallelism = "replicated"  # stateful → exclusive by derivation
-
-
-class _OptOutNodeSet(_DummyNodeSet):
-    name = "dummy_optout"
-    parallelism = "replicated"
-    mcp_exclusive = False  # explicit declaration wins over derivation
+    statefulness = "stateful"  # stateful → exclusive by derivation
 
 
 def test_mcp_exclusive_resolution() -> None:
     assert AutoServerApp(_DummyNodeSet).mcp_exclusive is False
     assert AutoServerApp(_StatefulNodeSet).mcp_exclusive is True
-    assert AutoServerApp(_OptOutNodeSet).mcp_exclusive is False
+    # The auto_host --mcp-exclusive flag overrides the derivation both ways.
+    assert AutoServerApp(_StatefulNodeSet, mcp_exclusive="off").mcp_exclusive is False
+    assert AutoServerApp(_DummyNodeSet, mcp_exclusive="on").mcp_exclusive is True
 
 
 _MCP_HEADERS = {

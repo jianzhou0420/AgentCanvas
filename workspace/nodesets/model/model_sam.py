@@ -1139,7 +1139,7 @@ class SamNodeSet(BaseNodeSet):
         "point/box/auto/text segmentation + image embedding, pure single-step "
         "primitives on the shared ac-fm server"
     )
-    parallelism = "shared"
+    statefulness = "stateless"
     server_python = conda_env_python("ac-fm", "SAM_PYTHON")
 
     def get_tools(self) -> list[BaseCanvasNode]:
