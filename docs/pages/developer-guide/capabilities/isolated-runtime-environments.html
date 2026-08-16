@@ -68,7 +68,7 @@
     <span class="sep">/</span>
     <span class="here">Isolated Runtime Environments</span>
   </div>
-  <div class="last-updated">2026-07-13</div>
+  <div class="last-updated">2026-08-13</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">3</span>Isolated Runtime Environments</h1>
@@ -114,7 +114,7 @@
   <text x="10" y="246" class="dim">batch eval: ×N tagged subprocesses per env nodeset (#0…#N-1), leased one per episode (worker_count=N)</text>
 </svg>
 
-<p><em>Design docs: <a href="../design-docs/operations/server-mode.html">Server Mode</a> · <a href="../design-docs/components/env-panels.html">Env Panels</a></em></p>
+<p><em>Design docs: <a href="../design-docs/operations/server-mode.html">Server Mode</a> · <a href="../design-docs/operations/mcp-projection.html">MCP Projection</a> · <a href="../design-docs/components/env-panels.html">Env Panels</a></em></p>
 <hr>
 <h2 id="1-problem"><span class="num">1.</span> Problem</h2>
 <p>AgentCanvas runs in <code>agentcanvas</code> (Python 3.10+, modern torch / HF / FastAPI — the primary env, ADR-platform-004). Research tools it drives often need <strong>different</strong> environments:</p>
@@ -182,6 +182,19 @@
     <span class="p">))</span>
 </code></pre></div>
 <p>No manual port re-declaration needed — the same <code>PortDef</code> used for local mode drives the server API. The <code>manifest.FunctionSchema.name</code> is the tool's <code>node_type</code>, so local and server-mode proxies register under the same <code>node_type</code> (TODO #33 closed).</p>
+<h3 id="32-mcp-projection"><span class="num">3.2</span> MCP Projection (<code>/mcp</code>)</h3>
+<p><em>Full design: <a href="../design-docs/operations/mcp-projection.html">MCP Projection</a>.</em></p>
+<p>The same introspected manifest has a second face. When the <code>mcp</code> SDK is importable in the server's environment, <code>ServerApp._build_app</code> additionally mounts a native MCP endpoint at <code>/mcp</code> (Streamable HTTP), so any MCP client — Claude Code, codex — can call the nodeset's tools directly. Every manifest function becomes an MCP tool with zero per-tool code: <code>mcp_projection.py</code> synthesizes each tool's <code>inputSchema</code> from the same declarations (<code>wire_type</code> → JSON type, <code>optional=False</code> → <code>required</code>, <code>config_fields</code> → enum / bounded-number / boolean properties), and <code>tools/call</code> invokes the registered handler in-process with the <code>/call</code> route's JSON-regime serialization. IMAGE output ports come back as MCP <code>ImageContent</code> (base64 PNG); other ndarray outputs are compacted to shape/dtype stubs so a depth map never floods the model's context.</p>
+<p>Session policy follows the nodeset's statefulness. <code>BaseNodeSet.mcp_exclusive</code> (ClassVar, default <code>None</code>) derives from the <code>parallelism</code> contract: <code>"shared"</code> nodesets (stateless model tools) serve concurrent MCP clients through a stateless transport, while <code>"replicated"</code> nodesets (stateful envs — one simulator per process) allow at most one live MCP session — a second <code>initialize</code> is rejected with 409 and a readable JSON-RPC error until the first client disconnects (its <code>DELETE</code>, or a 600&nbsp;s idle timeout). The <code>--mcp-tools</code> flag narrows the MCP tool list (e.g. keep <code>reset</code>/<code>evaluate</code> away from an agent); <code>/manifest</code> and <code>/call</code> are never affected by it. On py3.8 hosts (<code>ac-vlnce</code>) the SDK import fails and the server runs manifest-only, unchanged.</p>
+<pre class="hl">
+<span class="c1"># any nodeset server now doubles as an MCP server (needs the mcp SDK in its env)</span>
+python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<span class="w"> </span>--file<span class="w"> </span>workspace/nodesets/model/model_sam.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--class<span class="w"> </span>SamNodeSet<span class="w"> </span>--port<span class="w"> </span><span class="m">9200</span><span class="w"> </span>--mcp-tools<span class="w"> </span>segment_auto
+
+<span class="c1"># one-line client config (Claude Code)</span>
+claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--transport<span class="w"> </span>http<span class="w"> </span>sam<span class="w"> </span>http://127.0.0.1:9200/mcp
+</pre>
+<p>The projection is additive — no node class changes, and the manifest protocol behaves identically with or without it (<code>app/server/test_mcp_projection.py</code>). Two practical notes: pin <code>mcp==1.27.0</code> in nodeset envs (mcp 2.0 changed the lowlevel API; under it the server degrades to manifest-only), and mind output-port payloads — ports that carry graph-oriented bulk (e.g. <code>model_sam__segment_points</code>' always-on embedding envelope, ≈5.6&nbsp;MB base64) will overflow an MCP client's tool-output budget, so pick context-sized tools for the allowlist (<code>segment_auto</code>'s envelope is KB-scale).</p>
 <h2 id="4-proxy-nodes"><span class="num">4.</span> Proxy Nodes</h2>
 <p>After fetching the manifest, the framework generates <strong>proxy canvas nodes</strong> — <code>BaseCanvasNode</code> subclasses that forward <code>forward()</code> calls to the remote server via HTTP.</p>
 <div class="highlight"><pre><span></span><code>Canvas node forward()  →  HTTP POST /call/{fn}  →  subprocess: tool.forward()  →  HTTP response  →  return dict
@@ -313,6 +326,10 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <td>Wire-type (de)serialization for HTTP transport — base64 images, numpy arrays, nested dicts</td>
 </tr>
 <tr>
+<td><code>agentcanvas/backend/app/server/mcp_projection.py</code></td>
+<td>Native MCP projection — manifest → MCP tool schemas, in-process <code>tools/call</code>, <code>mcp_exclusive</code> session gate (§3.2)</td>
+</tr>
+<tr>
 <td><code>agentcanvas/backend/app/components/registry.py</code></td>
 <td><code>_load_nodeset_as_server(worker_count=N)</code>, tagged-proxy registration, rollback on partial failure</td>
 </tr>
@@ -383,6 +400,11 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <td><code>ServerApp</code> serves manifest with <code>FunctionSchema</code> entries; <code>node_type</code> is the schema name</td>
 </tr>
 <tr>
+<td>MCP projection (<code>/mcp</code> endpoint)</td>
+<td>Done</td>
+<td>Native Streamable HTTP MCP face of the manifest; <code>--mcp-tools</code> allowlist, <code>mcp_exclusive</code> session gate; py3.8 hosts degrade to manifest-only</td>
+</tr>
+<tr>
 <td>Env panel bridging (ADR-server-002)</td>
 <td>Done</td>
 <td><code>/env-panel/*</code> routes, <code>RemoteEnvPanelProxy</code>, env panel lives in subprocess</td>
@@ -426,6 +448,7 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
       <a class="toc-h2" href="#2-two-loading-modes">2. Two Loading Modes</a>
       <a class="toc-h2" href="#3-auto-server-architecture">3. Auto-Server Architecture</a>
       <a class="toc-h3" href="#31-autoserverapp-introspection">3.1 AutoServerApp Introspection</a>
+      <a class="toc-h3" href="#32-mcp-projection">3.2 MCP Projection (/mcp)</a>
       <a class="toc-h2" href="#4-proxy-nodes">4. Proxy Nodes</a>
       <a class="toc-h2" href="#5-env-panel-bridging">5. Env Panel Bridging</a>
       <a class="toc-h2" href="#6-worker-pool-fan-out-adr-eval-002">6. Worker-Pool Fan-Out (ADR-eval-002)</a>

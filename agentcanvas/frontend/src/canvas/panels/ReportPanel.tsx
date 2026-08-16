@@ -169,12 +169,15 @@ export default function ReportPanel() {
   const markAllRead = useErrorStore((s) => s.markAllRead);
   const clear = useErrorStore((s) => s.clear);
 
-  const [filter, setFilter] = useState<Set<ErrorSeverity>>(
-    () => new Set(SEVERITY_ORDER),
-  );
+  // Empty selection = no filter (show everything); selecting chips narrows
+  // the list to just those severities.
+  const [filter, setFilter] = useState<Set<ErrorSeverity>>(() => new Set());
 
   const visible = useMemo(
-    () => entries.filter((e) => filter.has(e.severity)),
+    () =>
+      filter.size === 0
+        ? entries
+        : entries.filter((e) => filter.has(e.severity)),
     [entries, filter],
   );
 
@@ -213,7 +216,7 @@ export default function ReportPanel() {
                 ? clsx(SEVERITY_STYLES[s].bg, SEVERITY_STYLES[s].text)
                 : "bg-gray-800 text-gray-600 hover:text-gray-400",
             )}
-            title={`Toggle ${s}`}
+            title={`Filter to ${s}`}
           >
             <span
               className={clsx(

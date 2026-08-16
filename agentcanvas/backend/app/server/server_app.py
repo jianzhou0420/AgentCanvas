@@ -73,6 +73,16 @@ class ServerApp(ABC):
             max_workers=2,
             thread_name_prefix=self.name,
         )
+        # Native MCP projection (mcp_projection.py). ``mcp_tools`` is the
+        # optional tool allowlist (auto_host --mcp-tools); ``mcp_exclusive``
+        # gates the projection to one live MCP session (stateful envs —
+        # AutoServerApp derives it from the nodeset's declaration); the
+        # manager and exit stack are populated by _build_app / the startup
+        # hook when the ``mcp`` SDK is importable, else manifest-only.
+        self.mcp_tools: Optional[list] = None
+        self.mcp_exclusive: bool = False
+        self._mcp_manager: Optional[Any] = None
+        self._mcp_exit_stack: Optional[Any] = None
 
     @abstractmethod
     def get_functions(self) -> list[ServerFunction]:
@@ -180,11 +190,25 @@ class ServerApp(ABC):
 
         @app.on_event("startup")
         async def _startup() -> None:
+            # The MCP session manager's run() context must wrap the serving
+            # period. Startup and shutdown handlers execute in the same
+            # lifespan task (Starlette's default lifespan), so entering the
+            # anyio task group here and closing it in _shutdown is safe.
+            if server._mcp_manager is not None:
+                from contextlib import AsyncExitStack
+
+                server._mcp_exit_stack = AsyncExitStack()
+                await server._mcp_exit_stack.enter_async_context(
+                    server._mcp_manager.run()
+                )
             await server.on_startup()
 
         @app.on_event("shutdown")
         async def _shutdown() -> None:
             await server.on_shutdown()
+            if server._mcp_exit_stack is not None:
+                await server._mcp_exit_stack.aclose()
+                server._mcp_exit_stack = None
             server._executor.shutdown(wait=False)
 
         @app.get("/manifest")
@@ -432,6 +456,34 @@ class ServerApp(ABC):
                 body = body or {}
                 params = body.get("params") or {}
                 return await panel.on_action(action, params)
+
+        # ── /mcp — native MCP projection ──
+        # The same introspected manifest, re-expressed as MCP tools over
+        # Streamable HTTP (mcp_projection.py). Additive: /manifest and /call
+        # are untouched. Requires the ``mcp`` SDK (py3.10+); on the pinned
+        # py3.8 hosts the import fails and the server runs manifest-only.
+        try:
+            from . import mcp_projection
+        except Exception:
+            mcp_projection = None  # type: ignore[assignment]
+            log.info("mcp SDK not importable — /mcp projection disabled")
+        if mcp_projection is not None:
+            try:
+                manager, mcp_asgi = mcp_projection.build_streamable_asgi(
+                    self, allowlist=self.mcp_tools, exclusive=self.mcp_exclusive
+                )
+                self._mcp_manager = manager
+                # ASGI shim, not app.mount — Mount 307s the bare /mcp path
+                # (see McpPathShim). /mcp requests bypass the router (and
+                # CORS middleware; the surface is local-client only).
+                app.add_middleware(mcp_projection.McpPathShim, mcp_asgi=mcp_asgi)
+                log.info(
+                    "MCP projection mounted at /mcp (%s, %s)",
+                    f"tools={','.join(self.mcp_tools)}" if self.mcp_tools else "all tools",
+                    "exclusive session" if self.mcp_exclusive else "concurrent",
+                )
+            except Exception:
+                log.exception("MCP projection failed to build — /mcp disabled")
 
         return app
 

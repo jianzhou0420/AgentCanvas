@@ -111,20 +111,44 @@ log = logging.getLogger("agentcanvas.env_ovon")
 # ══════════════════════════════════════════════════════════════════════
 
 # train omitted on purpose: HM3D train scenes are not staged (see docstring).
-_SPLITS: list[str] = ["val_seen", "val_seen_synonyms", "val_unseen"]
+# mip{N}_* are DERIVED evaluation splits: N episodes of the matching val
+# split, scene-stratified proportional random sample (seed 42), materialized
+# as dataset files. N ranges over _MIP_N (MIP-100 = full board, MIP-60 =
+# V1.0 long-horizon indicator). Generator (coding-agent/sample_episodes.py
+# --materialize) + the ovon audit manifests were trimmed with the coding-agent
+# objnav line — both live in git history at cecd19c.
+_MIP_N: tuple[int, ...] = (100, 60)
+
+# The three OVON val splits, each contributing a suffix to the mip{N}_* names.
+_OVON_VAL_SUFFIX: dict[str, str] = {
+    "val_seen": "seen",
+    "val_seen_synonyms": "seen_synonyms",
+    "val_unseen": "unseen",
+}
+
+_SPLITS: list[str] = [
+    "val_seen", "val_seen_synonyms", "val_unseen",
+    *(f"mip{n}_{suf}"
+      for n in _MIP_N for suf in _OVON_VAL_SUFFIX.values()),
+]
 
 # Directory name → the json.gz actually inside it. Upstream's tarball uses the
-# generation-time names (easy/hard) for two of the three published splits.
+# generation-time names (easy/hard) for two of the three published splits;
+# the derived mip{N}_* files are written by us, so names simply match.
 _SPLIT_FILES: dict[str, str] = {
     "val_seen": "val_seen",
     "val_seen_synonyms": "val_unseen_easy",
     "val_unseen": "val_unseen_hard",
+    **{f"mip{n}_{suf}": f"mip{n}_{suf}"
+       for n in _MIP_N for suf in _OVON_VAL_SUFFIX.values()},
 }
 
 _SPLIT_LABELS: dict[str, str] = {
     "val_seen": "val_seen — seen categories",
     "val_seen_synonyms": "val_seen_synonyms — unseen synonyms",
     "val_unseen": "val_unseen — unseen categories",
+    **{f"mip{n}_{suf}": f"mip{n}_{suf} — rand{n} of {val}"
+       for n in _MIP_N for val, suf in _OVON_VAL_SUFFIX.items()},
 }
 
 # The agent/measure config is ObjectNav's paper standard; the dataset type,
@@ -136,7 +160,7 @@ _DATA_ROOT = "data/datasets/ovon/hm3d"
 # value (0.1 in objectnav_hm3d.yaml) — that is the standard, and the standard
 # is what this nodeset exists to run.
 #
-# History, so nobody re-"fixes" this: on 2026-07-21 it was briefly pinned to
+# History, so nobody re-"fixes" this: it was briefly pinned to
 # 0.25 (upstream OVON's override) after an oracle scored only SR 0.50 at 0.1.
 # That was a bad inference — the oracle used at the time chased ONE hand-picked
 # viewpoint and used a follower radius below the step size, so it was the test

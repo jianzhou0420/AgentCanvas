@@ -72,7 +72,6 @@ from app.components import (
     ConfigField,
     NodeUIConfig,
     PortDef,
-    conda_env_python,
 )
 from app.components.env_panel import (
     BaseEnvPanel,
@@ -833,25 +832,25 @@ class OpenEQAEMEnvPanel(BaseEnvPanel):
 def _resolve_server_python() -> str | None:
     """Pick an interpreter for server-mode hosting, or None to stay local.
 
-    Order: explicit ``$HMEQA_PYTHON`` → known ``hmeqa`` conda env if present
-    → ``None``. Returning None lets ``ComponentRegistry.load_nodeset`` skip
-    the auto-route and keep the nodeset in local mode — fine here because
+    Explicit ``$HMEQA_PYTHON`` wins; otherwise ``None`` — local mode.
     OpenEQA EM-EQA only needs PIL + numpy + litellm, which the default
-    ``agentcanvas`` env already ships. A-EQA (E10) will require habitat-sim
-    and should re-pin to the hmeqa env at that time.
+    ``agentcanvas`` env already ships, and staying local keeps the /mcp
+    projection available (ac-habitat033, ex-ac-hmeqa, is py3.9; the mcp SDK needs ≥3.10).
+    A-EQA (E10) will require habitat-sim and should re-pin to the hmeqa
+    env at that time.
     """
-    return conda_env_python("ac-habitat033", "HMEQA_PYTHON")
+    return os.environ.get("HMEQA_PYTHON") or None
 
 
 class EnvOpenEQAEMNodeSet(BaseNodeSet):
     """OpenEQA EM-EQA mode as a NodeSet.
 
-    Server-hosted in the ``hmeqa`` conda env when available (set
-    ``$HMEQA_PYTHON`` or install the env). Falls back to local mode in the
-    backend's own interpreter when no hmeqa env is present — OpenEQA
-    EM-EQA's runtime needs (PIL, numpy, litellm, the app) are all in the
-    default ``agentcanvas`` env. A future A-EQA mode (E10) needs
-    habitat-sim and will re-require server mode.
+    Local mode by default — OpenEQA EM-EQA's runtime needs (PIL, numpy,
+    litellm, the app) are all in the default ``agentcanvas`` env, and local
+    hosting keeps the /mcp projection available (ac-hmeqa is py3.9; the mcp
+    SDK needs ≥3.10). Set ``$HMEQA_PYTHON`` to force server-mode hosting in
+    a specific interpreter. A future A-EQA mode (E10) needs habitat-sim and
+    will re-require server mode.
     """
 
     name = "env_openeqa_em"

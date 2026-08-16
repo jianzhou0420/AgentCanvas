@@ -15,7 +15,9 @@ Usage (package nodeset, e.g. ``policy_adapter_vla/__init__.py``)::
         --port 9200
 
 The process exposes ``GET /manifest``, ``POST /call/{fn}``, and
-``GET /health`` — the standard AgentCanvas manifest protocol.
+``GET /health`` — the standard AgentCanvas manifest protocol. When the
+``mcp`` SDK is importable it additionally mounts ``/mcp``, the native MCP
+projection of the same manifest (Streamable HTTP; see ``mcp_projection.py``).
 """
 
 from __future__ import annotations
@@ -107,6 +109,15 @@ def main() -> None:
     parser.add_argument("--class", dest="cls", required=True, help="BaseNodeSet class name")
     parser.add_argument("--port", type=int, default=9200, help="Port to serve on (default: 9200)")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    parser.add_argument(
+        "--mcp-tools",
+        default=None,
+        help=(
+            "Comma allowlist of node_types (or their __-suffixes) exposed on "
+            "the /mcp projection; empty/unset = all functions. /manifest and "
+            "/call are never narrowed by this."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.file and not args.module:
@@ -124,6 +135,8 @@ def main() -> None:
 
     app = AutoServerApp(nodeset_cls)
     app.port = args.port
+    if args.mcp_tools:
+        app.mcp_tools = [t.strip() for t in args.mcp_tools.split(",") if t.strip()]
     app.serve(host=args.host)
 
 

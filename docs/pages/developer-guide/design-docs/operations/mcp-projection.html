@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Projection — AgentCanvas</title>
+<meta name="description" content="mcp_projection, /mcp Streamable HTTP, schema synthesis, McpPathShim, mcp_exclusive">
+<meta property="og:title" content="MCP Projection — AgentCanvas">
+<meta property="og:description" content="mcp_projection, /mcp Streamable HTTP, schema synthesis, McpPathShim, mcp_exclusive">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/design-docs/operations/mcp-projection.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style id="ps-diagrams">
+  .rxsvg { width:100%; height:auto; max-width:720px; margin:1.2rem auto; display:block; }
+  .rxsvg text { fill: var(--fg); font-size:13px; font-family: inherit; }
+  .rxsvg .dim { fill: var(--muted); font-size:11px; }
+  .rxsvg .mono { font-family:"SF Mono",Menlo,monospace; font-size:11px; fill: var(--fg-dim); }
+  .rxsvg .box { fill: var(--bg-alt); stroke: var(--muted); stroke-width:1.2; }
+  .rxsvg .accent { fill: var(--designdoc-bg); stroke: var(--designdoc); stroke-width:1.6; }
+  .rxsvg .accent text, .rxsvg .at { fill: var(--designdoc); font-weight:600; }
+  .rxsvg .ghost { fill:none; stroke: var(--muted); stroke-width:1.1; stroke-dasharray:5 4; }
+  .rxsvg .edge { stroke: var(--muted); stroke-width:1.4; fill:none; marker-end:url(#psa); }
+  .rxsvg .edge-back { stroke: var(--designdoc); stroke-width:1.4; fill:none; marker-end:url(#psa); stroke-dasharray:4 3; }
+</style>
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/design-docs/operations/mcp-projection.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body designdoc">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="../index.html">Design Docs</a>
+    <span class="sep">/</span>
+    <a href="index.html">Operations</a>
+    <span class="sep">/</span>
+    <span class="here">MCP Projection</span>
+  </div>
+  <div class="last-updated">2026-08-13</div>
+</div>
+  <header class="page-header designdoc">
+  <h1>MCP Projection</h1>
+  <p class="tagline">mcp_projection, /mcp Streamable HTTP, schema synthesis, McpPathShim, mcp_exclusive</p>
+</header>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="psa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+</defs></svg>
+
+<p class="lede">The <strong>MCP projection</strong> makes every server-mode nodeset an MCP server: when the <code>mcp</code> SDK is importable in the server's env, the same introspection that feeds <code>GET /manifest</code> also mounts a native <code>/mcp</code> Streamable HTTP endpoint, so Claude Code, codex, or any MCP client calls the nodeset's tools with zero per-tool code and zero node-class changes. Its hard promise: <strong>the projection is additive</strong> — with or without <code>/mcp</code>, the manifest protocol behaves identically (guarded by <code>app/server/test_mcp_projection.py</code>). How-to-use lives in <a href="../../capabilities/isolated-runtime-environments.html#32-mcp-projection">Isolated Runtime Environments §3.2</a>; the host it extends is <a href="server-mode.html">Server Mode</a>.</p>
+
+<p class="diagram-label"><strong>How the code does it — one introspection, two faces of the same process.</strong></p>
+<svg class="rxsvg" viewBox="0 0 720 470" role="img" aria-label="One auto_host process. Node class declarations (bases.py) are introspected by AutoServerApp.get_functions into ServerApp's function registry. From that registry two faces are built in the same FastAPI app: Projection A, the manifest protocol routes /manifest, /call, /health consumed by the backend registry which generates proxy nodes; and Projection B, mcp_projection's lowlevel MCP Server plus StreamableHTTPSessionManager, reached at /mcp via the McpPathShim ASGI middleware, consumed by MCP clients such as Claude Code. A note marks that without the mcp SDK (py3.8 hosts) or under mcp 2.x, Projection B is absent and A is untouched.">
+  <rect class="ghost" x="12" y="12" width="696" height="360" rx="10"/>
+  <text class="dim" x="26" y="32">auto_host process (nodeset's server_python env)</text>
+
+  <rect class="box" x="210" y="44" width="300" height="46" rx="7"/>
+  <text x="360" y="63" text-anchor="middle">node class declarations</text>
+  <text class="mono" x="360" y="81" text-anchor="middle">node_type · PortDef in/out · ui_config · config</text>
+
+  <path class="edge" d="M360,90 V126"/>
+  <text class="mono" x="372" y="112">auto_server_app.py · get_functions</text>
+
+  <rect class="box" x="210" y="128" width="300" height="44" rx="7"/>
+  <text x="360" y="146" text-anchor="middle">function registry + manifest</text>
+  <text class="mono" x="360" y="163" text-anchor="middle">server_app.py · _register_functions / get_manifest</text>
+
+  <path class="edge" d="M300,172 C260,196 220,204 200,216"/>
+  <path class="edge" d="M420,172 C460,196 500,204 520,216"/>
+
+  <rect class="accent" x="52" y="218" width="290" height="96" rx="8"/>
+  <text class="at" x="197" y="240" text-anchor="middle">Projection A — manifest protocol</text>
+  <text class="mono" x="197" y="262" text-anchor="middle">GET /manifest · POST /call/{fn} · /health</text>
+  <text class="mono" x="197" y="280" text-anchor="middle">server_app.py · _build_app</text>
+  <text class="dim" x="197" y="300" text-anchor="middle">msgpack + __ndarray__ pass-through</text>
+
+  <rect class="accent" x="382" y="218" width="290" height="96" rx="8"/>
+  <text class="at" x="527" y="240" text-anchor="middle">Projection B — /mcp</text>
+  <text class="mono" x="527" y="262" text-anchor="middle">mcp_projection.py · build_mcp_server</text>
+  <text class="mono" x="527" y="280" text-anchor="middle">lowlevel Server → StreamableHTTPSessionManager</text>
+  <text class="dim" x="527" y="300" text-anchor="middle">stateless | stateful + mcp_exclusive gate (409)</text>
+
+  <rect class="box" x="432" y="326" width="190" height="30" rx="7"/>
+  <text class="mono" x="527" y="346" text-anchor="middle">McpPathShim — /mcp · /mcp/</text>
+  <path class="edge" d="M527,314 V326"/>
+
+  <path class="edge" d="M197,314 V396"/>
+  <path class="edge" d="M527,356 V396"/>
+
+  <rect class="box" x="72" y="398" width="250" height="46" rx="7"/>
+  <text x="197" y="417" text-anchor="middle">backend registry → proxy nodes</text>
+  <text class="mono" x="197" y="435" text-anchor="middle">registry.py · generate_proxy_nodes</text>
+
+  <rect class="box" x="402" y="398" width="250" height="46" rx="7"/>
+  <text x="527" y="417" text-anchor="middle">MCP clients</text>
+  <text class="mono" x="527" y="435" text-anchor="middle">claude mcp add --transport http · codex</text>
+
+  <text class="dim" x="360" y="464" text-anchor="middle">no mcp SDK (py3.8 host) or mcp 2.x → Projection B absent, A untouched (server_app.py · _build_app guard)</text>
+</svg>
+<hr>
+
+<h2 id="1-what-it-does"><span class="num">1.</span> What it does</h2>
+<p>The mental model (carried from the implementation plan): <strong>one source of truth, two projections</strong>. A nodeset's node classes already declare everything a tool surface needs — <code>node_type</code>, description, typed ports, config fields. Server mode has always projected those declarations once, into the framework-facing manifest protocol. The MCP projection adds a second, model-facing projection of the same declarations: each manifest function becomes an MCP tool with a synthesized JSON-Schema <code>inputSchema</code>, and <code>tools/call</code> executes the very handler <code>/call</code> would. Nothing is unified at the protocol level — the manifest keeps its msgpack channel and its superset of information; MCP is a second reading of the same source, generated, never hand-written.</p>
+
+<h2 id="2-smallest"><span class="num">2.</span> The smallest instance</h2>
+<p>Two commands — no bridge process, no per-tool code, no node edits:</p>
+<pre class="hl">
+<span class="c1"># 1. host any nodeset (env needs the mcp SDK: pip install &quot;mcp==1.27.0&quot;)</span>
+python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<span class="w"> </span>--file<span class="w"> </span>workspace/nodesets/model/model_sam.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--class<span class="w"> </span>SamNodeSet<span class="w"> </span>--port<span class="w"> </span><span class="m">9200</span><span class="w"> </span>--mcp-tools<span class="w"> </span>segment_auto
+
+<span class="c1"># 2. point any MCP client at it</span>
+claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--transport<span class="w"> </span>http<span class="w"> </span>sam<span class="w"> </span>http://127.0.0.1:9200/mcp
+</pre>
+
+<h2 id="3-schema-synthesis"><span class="num">3.</span> Schema synthesis</h2>
+<p>An MCP tool's <code>inputSchema</code> is a pure function of the manifest function dict: properties = input ports ∪ config fields, required = ports with <code>optional=False</code>, and a port wins a name collision with a config field (<code>mcp_projection.py · build_input_schema</code>).</p>
+<table>
+<thead><tr><th>Manifest source</th><th>JSON Schema fragment</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><code>wire_type</code> TEXT / BOOL / ACTION / IMAGE / METRICS</td><td><code>string</code> / <code>boolean</code> / <code>integer</code> / <code>string</code> (base64 PNG) / <code>object</code></td><td><code>_WIRE_JSON_TYPE</code></td></tr>
+<tr><td><code>wire_type</code> DEPTH / POSE / ANY</td><td>unconstrained <code>{}</code></td><td><code>_input_port_property</code></td></tr>
+<tr><td>config <code>select</code></td><td><code>enum</code> of option values + default</td><td rowspan="4"><code>_config_field_property</code></td></tr>
+<tr><td>config <code>slider</code></td><td><code>number</code> + minimum / maximum / multipleOf</td></tr>
+<tr><td>config <code>toggle</code></td><td><code>boolean</code></td></tr>
+<tr><td>config <code>text</code> / <code>textarea</code></td><td>type inferred from the default (bool before int); <code>label</code> fields are skipped</td></tr>
+</tbody>
+</table>
+<p>The <code>--mcp-tools</code> flag (<code>auto_host.py · main</code>) is a comma allowlist matched against the full <code>node_type</code> or its <code>__</code>-suffix (<code>mcp_projection.py · select_functions</code>). It narrows only the MCP tool list — <code>/manifest</code> and <code>/call</code> are never affected.</p>
+
+<h2 id="4-call-path"><span class="num">4.</span> The call path</h2>
+<p><code>tools/call</code> is the <code>/call</code> route's semantics, in-process — no HTTP self-call. Steps (<code>mcp_projection.py · build_mcp_server</code>):</p>
+<ol>
+<li><strong>Route arguments</strong> — the model's flat kwargs split into port inputs vs config by name; unknown keys are dropped (<code>split_args</code>).</li>
+<li><strong>Deserialize inputs</strong> — per input port's wire_type, the JSON regime of <code>serialization.deserialize_value</code> (base64 PNG → ndarray for IMAGE, <code>__ndarray__</code> markers restored elsewhere).</li>
+<li><strong>Invoke the registered handler</strong> — same arity contract as <code>/call</code>: 3-parameter (auto-generated) handlers get <code>exec_ctx=None</code>; MCP calls never carry cross-nodeset container grants. Buffered events are flushed at call granularity (<code>event_push.flush</code>), matching <code>/call</code>.</li>
+<li><strong>Serialize outputs</strong> — per output port via <code>serialize_value</code> (JSON regime), then mapped to MCP content by <code>outputs_to_content</code>: each IMAGE-port string becomes one <code>ImageContent</code> (base64 PNG, no re-encode); everything else is compacted — <code>__ndarray__</code> markers reduced to dtype/shape stubs (<code>_compact</code>) — into one trailing <code>TextContent</code> JSON.</li>
+</ol>
+<p>Failure shapes are model-readable, not protocol errors: a handler exception returns a structured <code>{"error", "type"}</code> TextContent; a <code>FireList</code> result (a graph-engine protocol an MCP client cannot dispatch) returns a structured refusal.</p>
+
+<h2 id="5-session-policy"><span class="num">5.</span> Session policy — <code>mcp_exclusive</code></h2>
+<p>Whether concurrent MCP clients are safe is a property of the nodeset, so it is declared there: <code>BaseNodeSet.mcp_exclusive</code> (<code>bases.py</code>), resolved at server construction (<code>auto_server_app.py · AutoServerApp.__init__</code>) — an explicit <code>True</code>/<code>False</code> wins; <code>None</code> derives from the existing parallelism contract, because <code>"replicated"</code> is precisely the declaration that the nodeset is stateful (env scene state, simulator handles).</p>
+<pre class="hl">
+<span class="k">class</span><span class="w"> </span><span class="nc">MyEnvNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">parallelism</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">replicated</span><span class="s2">&quot;</span>  <span class="c1"># stateful env -&gt; derived mcp_exclusive=True</span>
+    <span class="n">mcp_exclusive</span> <span class="o">=</span> <span class="kc">None</span>        <span class="c1"># None = derive; pin True/False to override</span>
+</pre>
+<ul>
+<li><strong>Non-exclusive</strong> (stateless model tools): the session manager runs <code>stateless=True</code> — every request gets a fresh transport, concurrent clients are fine.</li>
+<li><strong>Exclusive</strong> (stateful envs): sessions are tracked (<code>stateless=False</code>), and at most one may be live. A POST without an <code>mcp-session-id</code> header — the initialize path — while a live session exists is answered <code>409</code> with a readable JSON-RPC error (<code>mcp_projection.py · _reject_second_session</code>). The lock releases on the client's DELETE or on the idle reaper (<code>EXCLUSIVE_IDLE_TIMEOUT_S</code> = 600 s), so a crashed client cannot hold the simulator forever.</li>
+</ul>
+
+<h2 id="6-mount-lifecycle"><span class="num">6.</span> Mount and lifecycle</h2>
+<p><strong>Mount.</strong> <code>/mcp</code> is dispatched by <code>McpPathShim</code>, a thin ASGI middleware added in <code>server_app.py · _build_app</code> — not <code>app.mount</code>, because Starlette's Mount 307-redirects the bare <code>/mcp</code> path to <code>/mcp/</code>, an extra round trip for redirect-following clients and a hard failure for ones that don't re-POST. The shim sends both spellings straight to the transport, which routes by HTTP method, not path. Being outermost middleware, <code>/mcp</code> traffic also bypasses the CORS layer — the surface is local-client only.</p>
+<p><strong>Lifecycle.</strong> <code>StreamableHTTPSessionManager.run()</code> must wrap the serving period. The startup hook enters it through an <code>AsyncExitStack</code> and the shutdown hook closes it; both handlers execute in the same lifespan task under Starlette's default lifespan, which is what makes entering an anyio task group in one and closing it in the other safe (<code>server_app.py · _startup / _shutdown</code>).</p>
+<p><strong>Degrade ladder.</strong> Both failure modes leave Projection A byte-identical: if <code>import mcp</code> fails (the pinned py3.8 hosts), a log line notes the projection is disabled; if the build itself raises (e.g. an incompatible SDK), it is caught, logged, and the server runs manifest-only.</p>
+
+<h2 id="7-deviations"><span class="num">7.</span> Where it deviates from the mental model</h2>
+<div class="callout warn"><strong>The two projections are not equals — B is lossy.</strong> The model says "two projections of one source", but the manifest is the superset: wire-type semantics collapse to coarse JSON types (DEPTH/POSE/ANY are unconstrained <code>{}</code>), and containers, display fields, and output-port typing are not projected into MCP at all. Canvas-grade information lives only in Projection A.</div>
+<div class="callout warn"><strong>Output ports flow verbatim — graph-sized payloads reach the model.</strong> <code>_compact</code> stubs only <code>__ndarray__</code> markers; base64 carried in TEXT ports passes through untouched. Real case: <code>model_sam__segment_points</code> always returns its embedding envelope (≈5.6&nbsp;MB base64) plus 256&nbsp;KB logits per candidate — enough to overflow an MCP client's tool-output budget. The shipped mitigation is choosing context-sized tools via <code>--mcp-tools</code> (e.g. <code>segment_auto</code>, whose envelope is KB-scale); port-level output curation is a planned view layer, not built.</div>
+<div class="callout warn"><strong>SDK bound: mcp 1.x only.</strong> The projection is written against the mcp 1.x lowlevel API (verified on 1.27.0). mcp 2.0 removed the <code>Server.list_tools</code>/<code>call_tool</code> decorators, so under 2.x the build fails and the server degrades to manifest-only. 2.x compatibility is not built.</div>
+<div class="callout warn"><strong>py3.8 hosts have no /mcp.</strong> Nodesets pinned to py3.8 envs (the Habitat line) cannot import the SDK; they serve Projection A only. The out-of-process projector that would give them an equivalent MCP face exists as a verified spike recoverable from git history (<code>git show 68a2f0b^:coding-agent/bridges/nodeset_mcp.py</code>), but is not shipped in-tree.</div>
+<div class="callout warn"><strong>The exclusion gate reads SDK internals.</strong> It counts live sessions as entries of the manager's private <code>_server_instances</code> dict whose transport is not <code>is_terminated</code> — necessary because the SDK deliberately keeps DELETE-terminated transports in that dict (only crashed sessions are evicted). An SDK upgrade can move this ground.</div>
+
+<h2 id="8-key-files"><span class="num">8.</span> Key files</h2>
+<table>
+<thead><tr><th>File</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>agentcanvas/backend/app/server/mcp_projection.py</code></td><td>Schema synthesis, in-process <code>tools/call</code>, <code>McpPathShim</code>, session gate — the whole projection</td></tr>
+<tr><td><code>agentcanvas/backend/app/server/server_app.py</code></td><td>Conditional build + shim registration in <code>_build_app</code>; manager lifecycle in <code>_startup</code>/<code>_shutdown</code></td></tr>
+<tr><td><code>agentcanvas/backend/app/server/auto_server_app.py</code></td><td><code>mcp_exclusive</code> resolution (explicit &gt; parallelism-derived)</td></tr>
+<tr><td><code>agentcanvas/backend/app/server/auto_host.py</code></td><td><code>--mcp-tools</code> allowlist flag</td></tr>
+<tr><td><code>agentcanvas/backend/app/components/bases.py</code></td><td><code>BaseNodeSet.mcp_exclusive</code> ClassVar</td></tr>
+<tr><td><code>agentcanvas/backend/app/server/test_mcp_projection.py</code></td><td>12 tests: synthesis, tools/list ↔ manifest reconciliation, call roundtrips, allowlist, session gate, additivity</td></tr>
+</tbody>
+</table>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
+      <a class="toc-h2" href="#2-smallest">2. The smallest instance</a>
+      <a class="toc-h2" href="#3-schema-synthesis">3. Schema synthesis</a>
+      <a class="toc-h2" href="#4-call-path">4. The call path</a>
+      <a class="toc-h2" href="#5-session-policy">5. Session policy — mcp_exclusive</a>
+      <a class="toc-h2" href="#6-mount-lifecycle">6. Mount and lifecycle</a>
+      <a class="toc-h2" href="#7-deviations">7. Where it deviates from the mental model</a>
+      <a class="toc-h2" href="#8-key-files">8. Key files</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../../assets/nav.js"></script>
+
+</body>
+</html>

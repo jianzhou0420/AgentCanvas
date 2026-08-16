@@ -135,6 +135,9 @@ echo "=== Step 3: Installing LIBERO + runtime deps ==="
     'websockets' \
     'msgpack' \
     'mujoco==3.8.0'  # 3.11 drops MjData.qM access robosuite 1.4.1 relies on
+# MCP projection (/mcp on auto_host): mcp 1.x only — 2.0 removed the lowlevel
+# Server API the projection is written against (app/server/mcp_projection.py).
+"$LIBERO_PYTHON" -m pip install 'mcp==1.27.0'
 
 if [ "$LIBERO_INSTALL_TARGET" = "$LIBERO_SRC" ]; then
     "$LIBERO_PYTHON" -m pip install -e "$LIBERO_INSTALL_TARGET"

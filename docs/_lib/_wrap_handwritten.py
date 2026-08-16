@@ -69,6 +69,7 @@ SECTION_CLASS_BY_PREFIX = (
     ("pages/developer-guide/capabilities/", "capability"),
     ("pages/developer-guide/design-docs/", "designdoc"),
     ("pages/developer-guide/core/decisions/", "decisions"),
+    ("pages/developer-guide/beta/", "beta"),
     ("pages/developer-guide/", "guide"),
     ("pages/research/", "research"),
 )
