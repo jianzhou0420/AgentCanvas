@@ -126,9 +126,8 @@ def json_safe(obj: Any, _depth: int = 0) -> Any:
     return str(obj)
 
 
-# Restored 2026-08-01 after the two-machine merge dropped it (claude_sdk.py
-# still calls is_rate_limited at episode finalization — every claude-sdk
-# episode NameError'd at the result step without this). Source: 6d0bf63
+# claude_sdk.py calls is_rate_limited at episode finalization — every
+# claude-sdk episode NameError's at the result step without this. Source: 6d0bf63
 # (std-v2 rate-limit resilience). NOTE: that commit's worker-level
 # retry/backoff loop did NOT survive the merge and still needs a re-merge.
 # "session limit"/"usage limit" = the 5h subscription window (resets on a clock,
@@ -439,7 +438,7 @@ async def run_episode(
     # Blocking HTTP rides to_thread so parallel workers never stall the loop
     # (first play on a cold server can hold a scene load for ~30s).
     if spec.go2:
-        # Real robot, minimal episode loop (user decision 2026-07-20): no dataset
+        # Real robot, minimal episode loop: no dataset
         # to place into and no env-panel on the host — the instruction is
         # operator-supplied and reset just stands the dog up and zeroes counters.
         instruction = str(cfg["extra"].get("instruction") or "")
@@ -691,8 +690,8 @@ async def run_cell(
     # (RxR's long instructions need >100 — episode turn-exhausts otherwise).
     # Popped out of `extra` so they don't leak into the harness/model config;
     # absent → the frozen defaults for this benchmark line.
-    # (Merged 2026-08-01: this loop is the superset of the separate max_turns /
-    # split pops that used to sit here — one place, not three.)
+    # (One loop supersedes the separate max_turns / split pops that used to
+    # sit here — one place, not three.)
     for _k in ("dataset", "split", "max_turns"):
         if _k in cfg["extra"]:
             cfg[_k] = cfg["extra"].pop(_k)
@@ -897,7 +896,7 @@ async def run_cell(
         print(f"[std] run stats: {json.dumps(run_stats)}")
     print(json.dumps(final, indent=2))
     # Full statistics report (charts + tables, after the metric block) for
-    # every run — user decision 2026-07-23. Best-effort: a failed report
+    # every run. Best-effort: a failed report
     # must never lose a completed run.
     try:
         import sys

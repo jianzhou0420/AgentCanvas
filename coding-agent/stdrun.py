@@ -157,7 +157,7 @@ def _compare(args: argparse.Namespace) -> None:
         return {int(e["index"]): e for e in summary.get("episodes", [])}
 
     ea, eb = by_index(a), by_index(b)
-    # pair only indices where BOTH episodes are scored under the board口径;
+    # pair only indices where BOTH episodes are scored under the board protocol;
     # an episode excluded on either side can't be a paired McNemar cell
     common = sorted(i for i in set(ea) & set(eb)
                     if scored_success(ea[i]) is not None

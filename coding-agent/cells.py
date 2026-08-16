@@ -23,19 +23,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # ── frozen configuration (std-v2; change anything → that's std-v3) ──
-# std-v2 (user decision 2026-07-15): rgb 224→512, max_turns 80→200.
+# std-v2: rgb 512, max_turns 200 (std-v1 ran 224 / 80).
 # std-v1 ep0 smokes (224/80) are archived under <output_root>/archive/.
 STD_FROZEN: dict = {
     "dataset": "R2R-CE",
     "split": "rand100",
-    "episodes": "0-99",  # full SmartWay sample (user decision 2026-07-16); was 0-49
+    "episodes": "0-99",  # the full 100-episode SmartWay sample
     "max_turns": 200,
     "rgb_resolution": 512,
     "step_budget": 500,
     "episode_timeout": 2400,
 }
 
-# Derived mip{N} evaluation splits (user decisions 2026-07-22): seed-42
+# Derived mip{N} evaluation splits: seed-42
 # scene-stratified proportional samples of an official val, MATERIALIZED at
 # the dataset layer (same form as R2R-CE's rand100) — a derived split file
 # the env panel selects (split="mip100"), eval running episodes 0-99 of it.
@@ -44,13 +44,13 @@ STD_FROZEN: dict = {
 # each mip split contains). Generator: sample_episodes.py, in git history at
 # cecd19c — manifest + generator regenerate the materialized CSV
 # byte-identically. The ObjectNav family (hm3d / mp3d / ovon×3) that shared
-# this mechanism never entered the MIP paper and was removed 2026-08-03
+# this mechanism never entered the MIP paper and was removed
 # (cells + helper last at a942483; bridges/splits at cecd19c).
 
 SPLITS_DIR = REPO_ROOT / "coding-agent" / "bridges" / "splits"
 
 
-# ── HM-EQA benchmark line (2026-07-29): explore-eqa multiple-choice EQA ──
+# ── HM-EQA benchmark line: explore-eqa multiple-choice EQA ──
 # A benchmark line at the same level as the habitat-r2r std line. Success is
 # answer correctness (env_hmeqa__evaluate compares the agent's letter to GT);
 # the episode ends by answer("A".."D") via hmeqa_bridge.py, not STOP.
@@ -63,9 +63,8 @@ SPLITS_DIR = REPO_ROOT / "coding-agent" / "bridges" / "splits"
 # Episodes: split="mip100" — the MATERIALIZED dataset-layer split
 # (data/hm3d/hmeqa/questions_mip100.csv, row k = k-th sampled original
 # row) selected via the env panel, episodes 0-99 into it. Same semantics as
-# the objnav mip splits (aligned 2026-07-29 on user request; before that
-# the cell carried raw val indices — the trial20/smoke run dirs are indexed
-# in THAT original-CSV space).
+# the objnav mip splits. (Earlier runs carried raw val indices — the
+# trial20/smoke run dirs are indexed in THAT original-CSV space.)
 def _hmeqa_frozen() -> dict:
     manifest = SPLITS_DIR / "hmeqa_val_n100_seed42.json"
     if not manifest.exists():  # provenance must exist — never run unaudited
@@ -89,16 +88,16 @@ def _hmeqa_frozen() -> dict:
         "max_budget_usd": 18.0,
         "step_budget": 500,
         "episode_timeout": 2400,
-        # Camera-tilt actions 4/5 on the toolface (user decision 2026-07-29,
-        # option B: the native −30° pitch made near-overhead ceiling
-        # fixtures structurally unobservable — ep4 smoke analysis). Mask
+        # Camera-tilt actions 4/5 on the toolface: the native −30° pitch
+        # makes near-overhead ceiling fixtures structurally unobservable.
+        # Mask
         # with `--nonstd --set tilt_actions=0`: bridge validation, tool
         # description, and briefing all follow the one flag.
         "tilt_actions": True,
     }
 
 
-# ── VLNVerse line (2026-08-02): instruction-following VLN in Isaac Sim 5.1 ──
+# ── VLNVerse line: instruction-following VLN in Isaac Sim 5.1 ──
 # Seventh benchmark line, but NOT an ObjectNav sibling: vlnverse is the same
 # task shape as habitat-r2r (a language instruction, STOP within 3 m of the
 # goal), just a different simulator + scene corpus (262 kujiale scans, Isaac
@@ -166,21 +165,21 @@ WP_MAX_MOVES = 30
 # wp cells force visible reasoning: a thinking budget (so thinking blocks are
 # substantive, not adaptive one-liners) on top of the prompt's ReAct rule.
 WP_THINK_BUDGET = 4000
-# Turn cap for the goto-based surfaces (wp and hybrid). Re-measured 2026-07-31
+# Turn cap for the goto-based surfaces (wp and hybrid). Measured
 # at ~2.6 SDK turns per move (observe + reason + goto), so a 30-move budget is
 # ~80 turns and a wp episode only turn-exhausts after ~38 moves — well past the
 # move cap that is supposed to end it. Lowered 150 -> 100 so the whole wp column
 # sits at the SAME cap as bare/nav (the R2R std, rented compute) and is directly
 # comparable; the move cap in wp_bridge still binds first.
-# NOTE (two-machine merge 2026-08-01): runs recorded before this date used 150.
-# They are a different protocol — do not pool them with post-merge wp numbers.
+# NOTE: early recorded wp runs used a 150 cap — a different protocol; do
+# not pool them with current wp numbers.
 # RxR needs longer trajectories and lifts BOTH caps off-board:
 #   --nonstd --set wp_max_moves=N max_turns=M
 WP_MAX_TURNS = 100
 
 # model key (board column) → model id passed to the harness.
 # gpt slugs are USUALLY identical on the codex CLI and litellm's openai route —
-# but NOT for gpt-5.6. Probed 2026-07-17 (codex 0.144.5): plain "gpt-5.6" 400s on
+# but NOT for gpt-5.6. Probed on codex 0.144.5: plain "gpt-5.6" 400s on
 # a ChatGPT account ("The 'gpt-5.6' model is not supported when using Codex with a
 # ChatGPT account" — an ACCOUNT-ENTITLEMENT gate, not a CLI-version issue; the old
 # "needs CLI > 0.142" guess is disproven). The account-specific variant
@@ -193,7 +192,7 @@ MODELS = {
     "sonnet-5": "claude-sonnet-5",
     "opus-4.8": "claude-opus-4-8",
     "fable-5": "claude-fable-5",
-    # Opus 5 (released 2026-07; added 2026-07-25). Probed on the R2R board via
+    # Opus 5 (released 2026-07). Probed on the R2R board via
     # three targeted cells (OPUS5_CELLS below), NOT by joining CLAUDE_MODELS —
     # that would fan the model out across the whole sdk/mini/wp/objnav matrix.
     # _tier_extra keys off harness + gpt-prefix only, so opus-5 (sdk/mini, non-gpt)
@@ -234,7 +233,7 @@ MODELS = {
     # (litellm has no price entry for dashscope slugs).
     "qwen3.7-plus": "openai/qwen3.7-plus",
     "qwen3.6-plus": "openai/qwen3.6-plus",
-    # Qwen3.8 flagship (released 2026-07; added 2026-07-25). Slug assumed from the
+    # Qwen3.8 flagship (released 2026-07). Slug assumed from the
     # 3.6/3.7-plus pattern — VERIFY the exact DashScope model string against Model
     # Studio before launching the run.
     "qwen3.8-plus": "openai/qwen3.8-plus",
@@ -248,7 +247,7 @@ MODELS = {
 MODEL_ID_OVERRIDE: dict[tuple[str, str], str] = {
     ("codex", "gpt-5.6"): "gpt-5.6-sol",
     # OpenAI now rejects function tools + reasoning_effort on gpt-5.6 in
-    # /v1/chat/completions (probed 2026-08-14: "use /v1/responses or set
+    # /v1/chat/completions ("use /v1/responses or set
     # reasoning_effort to 'none'"). litellm's responses bridge keeps tools AND
     # reasoning, so mini reaches gpt-5.6 through it; gpt-5.5 chat stays fine.
     # NB the "openai/" prefix also flips mini's _is_local_model() heuristics
@@ -283,7 +282,7 @@ MODEL_EXTRA: dict[str, dict] = {
 
 # reasoning-effort tiers — the main board runs each cell at two tiers, carried
 # in the cell name (…_default / …_max) so both sit on disk without colliding.
-# Thinking policy (user decisions 2026-07-14 / 2026-07-17): thinking is ON for
+# Thinking policy: thinking is ON for
 # Claude in BOTH tiers (adaptive); only the effort param moves.
 #   max     — elevated / ablation: Claude effort="max" (API-accepted on all
 #             three board models, raw-probed; litellm's client gate is stale,
@@ -291,8 +290,8 @@ MODEL_EXTRA: dict[str, dict] = {
 #             enumerated top; verified on codex's ChatGPT account too).
 #   default — the effort a normal user gets: Claude sends NO effort param (the
 #             API picks the model default), GPT = "medium" (codex/openai
-#             default) EXCEPT codex+gpt-5.6, whose default is "low" (user
-#             decision 2026-07-17 — see _tier_extra). Claude keeps adaptive
+#             default) EXCEPT codex+gpt-5.6, whose default is "low" (see
+#             _tier_extra). Claude keeps adaptive
 #             thinking; the effort knob is the only thing dropped.
 # Cross-vendor labels are NOT commensurable — actual thinking spend is in the
 # per-call usage logs; report those alongside any comparison.
@@ -317,7 +316,7 @@ def _tier_extra(harness: str, model_key: str, tier: str) -> dict:
             return {}                                # no effort; thinking adaptive (harness default)
         if harness == "codex":
             # gpt-5.6 (as the ChatGPT-account "gpt-5.6-sol" variant) defaults to
-            # "low" on the codex CLI, not "medium" (user decision 2026-07-17);
+            # "low" on the codex CLI, not "medium";
             # gpt-5.5 keeps the medium GPT vendor default.
             return {"effort": "low" if model_key == "gpt-5.6" else "medium"}
         if harness == "mini":
@@ -326,7 +325,7 @@ def _tier_extra(harness: str, model_key: str, tier: str) -> dict:
     return {}
 
 # The nav / wp-nav (ledger skill) and persona ablation conditions were
-# retired 2026-08-03 with the skills/ dir — none entered the MIP paper.
+# retired with the skills/ dir — none entered the MIP paper.
 # Last present at a942483; skills/ files at cecd19c.
 CONDITIONS = {
     "bare": {"bare": True},
@@ -426,9 +425,9 @@ CLAUDE_MODELS = ("sonnet-5", "opus-4.8", "fable-5")
 
 # main board: bare-only, effort-tiered. Design: each closed harness vs the open
 # mini harness on the SAME models — claude side sdk↔mini (sonnet/opus/fable),
-# openai side codex↔mini (gpt-5.5 / gpt-5.6). (mini·fable-5 added 2026-07-17 on
-# user request — completes the claude sdk↔mini pairing; runs via litellm→
-# Anthropic at the same default=high regime as mini·sonnet/opus.)
+# openai side codex↔mini (gpt-5.5 / gpt-5.6). (mini·fable-5 completes the
+# claude sdk↔mini pairing; runs via litellm→Anthropic at the same
+# default=high regime as mini·sonnet/opus.)
 BOARD = (
     ("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"),
     ("codex", "gpt-5.5"), ("codex", "gpt-5.6"),
@@ -442,13 +441,13 @@ BOARD = (
 QWEN_API_BOARD = (
     ("mini", "qwen3.7-plus"),
     ("mini", "qwen3.6-plus"),
-    ("mini", "qwen3.8-plus"),   # newest Qwen flagship (2026-07-25) — sweep row
+    ("mini", "qwen3.8-plus"),   # newest Qwen flagship — sweep row
     ("mini", "qwen3.5-plus"),   # API sibling of the local 4b/9b column
 )
 
 # open-weight column: the same mini harness, locally served — the descend-to-
 # small read of the bare surface. (The nav pairing that once rode here was
-# retired with the skill condition, 2026-08-03.)
+# retired with the skill condition.)
 LOCAL_BOARD = (
     ("mini", "qwen3.5-4b", "bare"),
     ("mini", "qwen3.5-9b", "bare"),
@@ -485,7 +484,7 @@ for _h, _m in QWEN_API_BOARD:
     spec = _cell(_h, _m, "bare")
     CELLS[spec.name] = spec
 
-# Opus 5 probe (2026-07-25): three targeted R2R cells, bare surface, so the newest
+# Opus 5 probe: three targeted R2R cells, bare surface, so the newest
 # frontier Opus lands in the sweep (mini row → Table 2 / harness Table 4) and the
 # effort ablation (sdk default+max → Table 3) without expanding CLAUDE_MODELS.
 OPUS5_CELLS = (
@@ -543,9 +542,9 @@ for _h, _m in LOCAL_HYBRID_BOARD:
     spec = _cell(_h, _m, "hybrid")
     CELLS[spec.name] = spec
 
-# real-robot pilots (2026-07-20): the sdk cells re-embodied on the Unitree Go2
+# real-robot pilots: the sdk cells re-embodied on the Unitree Go2
 # via go2_bridge.py. BARE surface — observe + step only, no look_around, no
-# skill (user decision 2026-07-20: match the habitat main board's condition),
+# skill (matches the habitat main board's condition),
 # default effort. NOT part of the std board: instruction is operator-supplied
 # (--set instruction=...), the driver skips evaluate (no ground truth — success
 # is judged by a human from the recording), and the server is the go2 host on
@@ -556,7 +555,7 @@ for _h, _m in GO2_BOARD:
     spec = replace(_base, name=f"go2_{_h}_{_m}", condition="go2", go2=True)
     CELLS[spec.name] = spec
 
-# HM-EQA board (2026-07-29): sdk trio, bare surface, default effort — cell
+# HM-EQA board: sdk trio, bare surface, default effort — cell
 # names carry the benchmark prefix (hmeqa_sdk_fable-5), parallel to std_* and
 # go2_*. Servers: env_hmeqa auto_host (ac-hmeqa env); the driver refuses a
 # mismatched server name.
@@ -567,7 +566,7 @@ for _h, _m in SDK_TRIO:
                    benchmark="hmeqa")
     CELLS[spec.name] = spec
 
-# VLNVerse board (2026-08-02): same sdk trio, bare surface, default effort.
+# VLNVerse board: same sdk trio, bare surface, default effort.
 # Server: env_vlnverse auto_host (ac-vlnverse env, Isaac 5.1 worker behind it);
 # the driver refuses a mismatched server name. wp/hybrid cells are NOT built
 # for this line — the driver refuses that combination outright (CCW pano
@@ -582,7 +581,7 @@ for _h, _m in SDK_TRIO:
 # (*_default = vendor-default main experiment, *_max = elevated ablation);
 # Q/W/WQ are the untier-ed wp/local line.
 BATCHES = {
-    # new-model probes (2026-07-25): Opus 5 trio (mini sweep + sdk default/max
+    # new-model probes: Opus 5 trio (mini sweep + sdk default/max
     # effort) and the Qwen3.8 sweep row. All R2R-CE rand100, reusing STD_FROZEN.
     "O5": ["std_mini_opus-5_bare_default", "std_sdk_opus-5_bare_default",
            "std_sdk_opus-5_bare_max"],
@@ -614,11 +613,11 @@ BATCHES = {
 # by number ("run E7") and eyeball the exact knobs here. `section`/`label` are
 # the paper's grouping (not derivable); `cell` is the single source of truth for
 # every frozen knob and reasoning-effort tier (resolve via get_cell / the
-# `experiments` command). In scope (user decision 2026-07-17): 4.1 main (default
+# `experiments` command). In scope: 4.1 main (default
 # tier), 4.3 effort (max tier). OUT of scope and intentionally unregistered:
 # E10-E13 (mini · qwen*), E21-E24 (Waypoint), E25-E28 (VLNVerse) — the qwen/wp
 # CELLS above cover that line without E-numbers. The persona pair (E14/E15)
-# was retired 2026-08-03 with the persona condition — never entered the paper.
+# was retired with the persona condition — never entered the paper.
 EXPERIMENTS: dict[str, dict] = {
     # 4.1 Main — R2R-CE, bare tools, vendor-DEFAULT effort (paper main table)
     "E1": {"section": "4.1 main", "label": "SDK · sonnet-5",   "cell": "std_sdk_sonnet-5_bare_default"},
@@ -637,7 +636,7 @@ EXPERIMENTS: dict[str, dict] = {
     "E18": {"section": "4.3 effort", "label": "SDK · effort=max · fable-5",   "cell": "std_sdk_fable-5_bare_max"},
     "E19": {"section": "4.3 effort", "label": "Codex · effort=xhigh · gpt-5.5", "cell": "std_codex_gpt-5.5_bare_max"},
     "E20": {"section": "4.3 effort", "label": "mini · effort=xhigh · gpt-5.5",  "cell": "std_mini_gpt-5.5_bare_max"},
-    # new-model probes (2026-07-25). Opus 5 slots into the same tables as the
+    # new-model probes. Opus 5 slots into the same tables as the
     # other Claude models; qwen3.8 stays unregistered (mini·qwen line, like E10-E13).
     "E29": {"section": "4.1 main",   "label": "mini · opus-5",                 "cell": "std_mini_opus-5_bare_default"},
     "E30": {"section": "4.1 main",   "label": "SDK · opus-5",                  "cell": "std_sdk_opus-5_bare_default"},

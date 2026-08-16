@@ -108,7 +108,7 @@ _SCENE_ROOT = os.environ.get(
     "HMEQA_SCENE_ROOT", os.path.join(_REPO_ROOT, "data", "hm3d", "hm3dsem")
 )
 
-# Dataset-layer splits (2026-07-29, aligned with env_objnav's MIP
+# Dataset-layer splits (aligned with env_objnav's MIP
 # registration): "val" = the released 500-question CSV; "mip{n}" = the
 # derived scene-stratified subsample written by
 # coding-agent/sample_episodes.py --materialize (row k of the derived CSV =
@@ -153,8 +153,8 @@ _DEFAULTS = {
     "seed": 42,
 }
 
-# Discrete-action magnitudes (env_hmeqa__step_discrete, coding-agent EQA line
-# 2026-07-29). NOT part of the explore-eqa protocol — magnitudes mirror the
+# Discrete-action magnitudes (env_hmeqa__step_discrete, coding-agent EQA
+# line). NOT part of the explore-eqa protocol — magnitudes mirror the
 # ObjectNav line so the std board's bare toolface carries over unchanged.
 _FORWARD_M = 0.25
 _TURN_DEG = 30.0
@@ -868,7 +868,7 @@ class ResetHMEQATool(BaseCanvasNode):
                 "tsdf_bnds": None,
             }
         # current_episode() carries the RAW question text, so `question` and
-        # `raw_question` are the same on this path. NOTE (2026-07-29): the
+        # `raw_question` are the same on this path. NOTE: the
         # port description used to promise the A/B/C/D tail, but the tail
         # was never emitted here — and the verified explore_eqa_hmeqa graph
         # depends on the raw behavior (its build_question node appends the
@@ -1112,7 +1112,7 @@ class EvaluateHMEQATool(BaseCanvasNode):
     # GraphExecutor._post_loop_pass then fires the whole chain once,
     # in dependency order, so `pred_letter` resolves correctly. (The old
     # final_fire ClassVar re-fired a node in isolation and could not do
-    # this — retired 2026-05-21.)
+    # this — retired.)
     input_ports = [
         PortDef("pred_letter", "TEXT", "Agent's predicted letter (A/B/C/D)"),
     ]

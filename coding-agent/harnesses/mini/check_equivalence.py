@@ -41,7 +41,7 @@ BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "mcp_bridge.py"
 WP_BRIDGE_PATH = CODING_AGENT_DIR / "bridges" / "wp_bridge.py"
 PROMPTS_PATH = CODING_AGENT_DIR / "prompts.py"
 REPO_ROOT = CODING_AGENT_DIR.parent
-# The frozen legacy drivers left the tree on 2026-08-03 — git history is the
+# The frozen legacy drivers are out of the tree — git history is the
 # provenance store now. Fixtures are pinned to the two-machine merge d10591e,
 # whose copies were verified byte-identical to the last on-disk legacy/ at
 # deletion time. NEVER repoint this at a moving ref.

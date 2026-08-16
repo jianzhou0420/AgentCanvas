@@ -141,7 +141,7 @@ you are at the goal.
 - Work autonomously until you stop; nobody can answer questions.
 """
 
-# go2 surface (2026-07-20, NOT part of the std freeze): same shape as the
+# go2 surface (NOT part of the std freeze): same shape as the
 # habitat prompts but literally faithful to the real robot — 0.25 m / 15 deg
 # (habitat parity, calibrated under the StaticWalk gait — see go2_host.py),
 # no clearance readout (RGB-only camera), look_around costs 24 turn steps.
@@ -218,10 +218,10 @@ short deliberate batches over long speculative ones.
 """
 
 # The ObjectNav-family surface (OBJNAV_*_SYSTEM_PROMPT) was removed
-# 2026-08-03 with the objnav line — never entered the MIP paper; last present
+# with the objnav line — never entered the MIP paper; last present
 # at a942483 (bridges/splits at cecd19c).
 
-# HM-EQA surface (2026-07-29, NOT part of the std freeze): embodied question
+# HM-EQA surface (NOT part of the std freeze): embodied question
 # answering on HM3D (explore-eqa, Ren et al. 2024). Same bare toolface shape
 # as the nav lines, with the one benchmark-shaped difference that the episode
 # ends by ANSWERING a multiple-choice question (answer("A".."D")) instead of
@@ -230,9 +230,8 @@ short deliberate batches over long speculative ones.
 # benchmark's own (STARTS tilted 30° down — explore-eqa cfg/vlm_exp.yaml),
 # stated so the model can account for the floor-heavy framing.
 #
-# Camera-tilt slots (user decision 2026-07-29, option B, after the ep4 smoke
-# analysis showed the fixed −30° pitch makes near-overhead ceiling fixtures
-# structurally unobservable): {camera_sentence} / {tilt_actions} / {tilt_rule}
+# Camera-tilt slots (the fixed −30° pitch makes near-overhead ceiling
+# fixtures structurally unobservable): {camera_sentence} / {tilt_actions} / {tilt_rule}
 # render the 4/5 tilt actions in or out, keyed off the SAME flag the bridge's
 # HMEQA_TILT masking uses (cells tilt_actions, maskable via
 # `--nonstd --set tilt_actions=0`) — the prompt and the toolface never
@@ -401,7 +400,7 @@ def build_briefing(
     ``auto_observe`` MUST match the bridge's HABITAT_AUTO_OBSERVE: when True the
     prompt tells the model step()/goto() return the resulting view (observe()
     is first-look only); when False it prescribes the classic alternation."""
-    # Branch order (merged 2026-08-01): hybrid -> benchmark -> wp -> bare/std.
+    # Branch order: hybrid -> benchmark -> wp -> bare/std.
     # hybrid first because it owns the entire surface (own toolface, own first
     # prompt); the benchmark lines next because they replace the task framing
     # outright; wp and bare/std share the R2R framing and differ only in action

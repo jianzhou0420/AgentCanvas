@@ -106,7 +106,7 @@ _FRAME_HEADER = struct.Struct('>I')  # 4-byte big-endian length prefix
 # first response frame. Everything before it is launcher noise — Isaac's
 # python.sh prints e.g. "Warning: running in conda env..." to stdout before
 # python starts, and the parent would otherwise read "Warn" as a ~1.46 GB
-# length prefix and block forever (observed 2026-07-20). Must match
+# length prefix and block forever (observed empirically). Must match
 # _isaac_worker.STDIO_MAGIC byte-for-byte. Socket mode has no shared-fd
 # problem and skips this.
 STDIO_MAGIC = b'\x00\xffVLNVERSE-FRAMES\xff\x00'
