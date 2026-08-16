@@ -41,6 +41,7 @@ AgentCanvas lets researchers prototype embodied agents — for VLN, EQA, VLA, an
 
 ## What's NEW!
 
+- [2026/08] 🔥 **VLN-CE on modern habitat-sim** — "VLN-CE @ hs0.3.3" lands as the `env_vlnce033` nodeset: R2R-CE episodes on habitat-sim 0.3.3 with no habitat-lab dependency (faithful VLN-CE action/sensor caliber, in-nodeset metrics), wired to the CMA baseline through the policy-adapter pipeline. The legacy 0.1.7 stack stays frozen as the literature-comparable oracle. Docs: [Env nodesets](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/index.html).
 - [2026/08] 🔥 **Two new EQA benchmarks** — [EXPRESS-Bench](https://arxiv.org/abs/2503.11117) (ICCV 2025, exploration-aware open-vocab EQA) lands as the `env_express` nodeset with the benchmark's native judge and metrics; [MT-HM3D](https://arxiv.org/abs/2505.13948) plugs into the existing HM-EQA env as a dataset spec. Docs: [EXPRESS-Bench](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/express.html) · [HM-EQA](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/hmeqa.html).
 - [2026/08] 🎥 **[ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3)** — the classic feature-based visual-SLAM baseline (GPL-3.0; Campos et al., Univ. Zaragoza), wrapped as the first **Container-Launch** nodeset: `server_image = "agentcanvas/orbslam3"` is the entire deployment declaration — the framework runs the stock nodeset inside `docker run`, no conda env, no bridge code. The clip shows the live in-canvas run on TUM RGB-D: the replay env streams frames into the containerized SLAM session while the trajectory viewer grows the estimated camera path per step. Full walkthrough on the [ORB-SLAM3 nodeset docs](https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/model/model-orbslam3.html).
 
@@ -399,6 +400,7 @@ Every nodeset and graph is credited to its author/maintainer on the board below 
       <td>
         <ul>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/habitat.html">Habitat (VLN-CE)</a> ✅</li>
+          <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/index.html">VLN-CE @ hs0.3.3 (habitat-sim 0.3.3)</a> 🚧</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/matterport3d.html">MatterSim / MP3D</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/objnav.html">ObjectNav (HM3D / MP3D)</a> ✅</li>
           <li><a href="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/nodesets/env/ovon.html">HM3D-OVON (open-vocab)</a> 🚧</li>
