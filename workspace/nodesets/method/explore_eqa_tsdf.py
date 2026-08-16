@@ -557,7 +557,7 @@ class ExploreEQATSDFNodeSet(BaseNodeSet):
     # container instance (ADR-server-003). Read natively by registry._get_parallelism.
     parallelism: ClassVar[str] = "replicated"
     server_python: ClassVar[str] = os.environ.get(
-        "HMEQA_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-hmeqa/bin/python")
+        "HMEQA_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-habitat033/bin/python")
     )
 
     def get_tools(self) -> list:

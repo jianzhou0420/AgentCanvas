@@ -143,7 +143,7 @@ class HMEQAReplayParser(GenericReplayParser):
             self._renderer = ReplayRendererClient(
                 renderer_file=_THIS_DIR / "hmeqa_renderer.py",
                 class_name="HMEQARendererServer",
-                python=conda_env_python("ac-hmeqa", "HMEQA_PYTHON"),
+                python=conda_env_python("ac-habitat033", "HMEQA_PYTHON"),
                 env=_renderer_env(),
                 startup_timeout=600,
             )

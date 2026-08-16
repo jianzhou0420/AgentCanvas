@@ -835,7 +835,7 @@ def _resolve_server_python() -> str | None:
     Explicit ``$HMEQA_PYTHON`` wins; otherwise ``None`` — local mode.
     OpenEQA EM-EQA only needs PIL + numpy + litellm, which the default
     ``agentcanvas`` env already ships, and staying local keeps the /mcp
-    projection available (ac-hmeqa is py3.9; the mcp SDK needs ≥3.10).
+    projection available (ac-habitat033, ex-ac-hmeqa, is py3.9; the mcp SDK needs ≥3.10).
     A-EQA (E10) will require habitat-sim and should re-pin to the hmeqa
     env at that time.
     """
