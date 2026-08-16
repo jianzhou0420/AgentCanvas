@@ -9,7 +9,7 @@ the agent explores from a fixed start pose and answers a free-form
 question; scoring is exploration-aware — a GPT judge grades the answer
 against BOTH the ground truth and the agent's final first-person image.
 
-Runs in server mode inside the ``ac-hmeqa`` conda env (same stack as
+Runs in server mode inside the ``ac-habitat033`` conda env (same stack as
 env_hmeqa: Python 3.9, habitat-sim 0.3.x, pure habitat_sim — the
 upstream repo has no habitat-lab dependency either).
 
@@ -205,7 +205,7 @@ def _make_sim_cfg(
     scene_path: str, img_height: int, img_width: int, hfov: float, camera_height: float
 ) -> Any:
     """Build habitat_sim.Configuration with RGB + depth sensors."""
-    import habitat_sim  # lazy — only works in the ac-hmeqa env subprocess
+    import habitat_sim  # lazy — only works in the ac-habitat033 env subprocess
 
     sim_cfg = habitat_sim.SimulatorConfiguration()
     sim_cfg.scene_id = scene_path
@@ -1411,13 +1411,13 @@ class ExpressEnvPanel(BaseEnvPanel):
 class EnvExpressNodeSet(BaseNodeSet):
     """EXPRESS-Bench (exploration-aware open-vocab EQA) as a NodeSet.
 
-    Shares the ``ac-hmeqa`` conda env with env_hmeqa (identical stack:
+    Shares the ``ac-habitat033`` conda env with env_hmeqa (identical stack:
     pure habitat_sim, no habitat-lab). ``$EXPRESS_PYTHON`` overrides.
     """
 
     name = "env_express"
     description = "EXPRESS-Bench — exploration-aware open-vocabulary EQA on HM3D"
-    server_python = conda_env_python("ac-hmeqa", "EXPRESS_PYTHON")
+    server_python = conda_env_python("ac-habitat033", "EXPRESS_PYTHON")
     # Same NVIDIA driver-570 EGL workaround as env_hmeqa (habitat-sim
     # 0.3.x SIGSEGV at Simulator() construction) — see env_hmeqa for the
     # full story.

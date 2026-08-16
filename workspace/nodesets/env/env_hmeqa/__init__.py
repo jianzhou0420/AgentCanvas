@@ -1210,14 +1210,14 @@ class EnvHMEQANodeSet(BaseNodeSet):
 
     name = "env_hmeqa"
     description = "HM-EQA / MT-HM3D — HM3D scenes + explore-eqa-style question-answering"
-    server_python = conda_env_python("ac-hmeqa", "HMEQA_PYTHON")
+    server_python = conda_env_python("ac-habitat033", "HMEQA_PYTHON")
     # NVIDIA driver-570 workaround. habitat-sim 0.3.x SIGSEGVs at Simulator()
     # construction because driver 570 returns a bogus pointer from
     # glGetString(GL_VENDOR), which Magnum's WindowlessEglApplication.cpp:492
     # strlen's into invalid memory. The shim built by install_ac_hmeqa.sh
     # forges clearly-invalid returns to NULL so Magnum's NULL fast-path
     # kicks in. The conda env's activate.d hook only fires for interactive
-    # `conda activate ac-hmeqa`, but auto_host spawns the worker via Popen
+    # `conda activate ac-habitat033`, but auto_host spawns the worker via Popen
     # with the Python binary directly — so we have to inject LD_PRELOAD
     # into the subprocess env explicitly here.
     _SHIM_PATH = os.path.join(

@@ -523,7 +523,7 @@ class ToolEQAExploreNodeSet(BaseNodeSet):
         "ToolEQA go_next — TSDF frontier step + VLM (LSV/GSV) scoring + teleport"
     )
     server_python: ClassVar[str] = os.environ.get(
-        "HMEQA_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-hmeqa/bin/python")
+        "HMEQA_PYTHON", os.path.expanduser("~/miniforge3/envs/ac-habitat033/bin/python")
     )
 
     def get_tools(self) -> list:

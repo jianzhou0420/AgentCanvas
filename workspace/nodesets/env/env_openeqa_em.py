@@ -840,7 +840,7 @@ def _resolve_server_python() -> str | None:
     ``agentcanvas`` env already ships. A-EQA (E10) will require habitat-sim
     and should re-pin to the hmeqa env at that time.
     """
-    return conda_env_python("ac-hmeqa", "HMEQA_PYTHON")
+    return conda_env_python("ac-habitat033", "HMEQA_PYTHON")
 
 
 class EnvOpenEQAEMNodeSet(BaseNodeSet):

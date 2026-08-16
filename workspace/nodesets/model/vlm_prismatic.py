@@ -25,7 +25,7 @@ with a ``degraded``/``error`` self-log, and the consumer decides.
 Weights are HF-gated (TRI-ML) — set ``$HF_TOKEN`` for first download; the HF
 cache works without it thereafter.
 
-Runs **server mode** in the ``ac-hmeqa`` env (the Explore-EQA env whose
+Runs **server mode** in the ``ac-habitat033`` env (the Explore-EQA env whose
 prismatic install matches the checkpoint). Override with $HMEQA_PYTHON.
 
 Load: POST /api/components/nodesets/vlm_prismatic/load?mode=server
@@ -351,7 +351,7 @@ class GenerateNode(BaseCanvasNode):
 class VLMPrismaticNodeSet(BaseNodeSet):
     """Generic Prismatic VLM foundation-model nodeset.
 
-    Loads Prismatic in a dedicated subprocess (under the ``ac-hmeqa`` env)
+    Loads Prismatic in a dedicated subprocess (under the ``ac-habitat033`` env)
     and exposes ``score_tokens`` + ``generate`` as canvas-wirable
     primitives. Method nodesets consume these via canvas wires — there
     is no Python-level coupling to any specific method.
@@ -363,7 +363,7 @@ class VLMPrismaticNodeSet(BaseNodeSet):
     )
     # Stateless VLM — one shared server, K eval workers coalesce onto it.
     parallelism = "shared"
-    server_python: ClassVar[str] = conda_env_python("ac-hmeqa", "HMEQA_PYTHON")
+    server_python: ClassVar[str] = conda_env_python("ac-habitat033", "HMEQA_PYTHON")
 
     def get_tools(self) -> list:
         return [ScoreTokensNode(), GenerateNode()]
