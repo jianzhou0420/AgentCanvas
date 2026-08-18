@@ -1359,7 +1359,7 @@ export default function CodingAgentPage() {
       )}
 
       {/* ── unified log (frames embedded inline at their observe calls) ── */}
-      <div className="flex h-[65vh] shrink-0 flex-col rounded border border-gray-800 bg-gray-900">
+      <div className="flex min-h-[65vh] flex-1 flex-col rounded border border-gray-800 bg-gray-900">
         <div className="flex items-center justify-between border-b border-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-400">
           <span>
             {mode === "browse" ? `Log — ${run ?? "…"}` : "Live Log"}
