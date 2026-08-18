@@ -26,10 +26,35 @@ import numpy as np
 # package lives at <repo>/coding-agent/exp_workspace/<exp>/nodeset
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.normpath(os.path.join(_PKG_DIR, "..", "..", "..", ".."))
-DATASET_ROOT = os.environ.get(
-    "VLNCE033_DATA_ROOT",
-    os.path.join(REPO_ROOT, "data", "habitat", "datasets", "R2R_VLNCE_v1-3_preprocessed"),
-)
+
+# Corpus table (split-agnostic contract, 2026-08-18): the folder's code is
+# one METHOD ARM; which corpus a run reads is declared by the exp profile
+# (frozen "dataset") and pushed through the env panel. Default "r2r" keeps
+# the pre-profile behavior byte-for-byte. RxR's split dirs share names with
+# R2R's (both have rand100/), disambiguated purely by this table.
+CORPORA = {
+    "r2r": {
+        "root": os.environ.get(
+            "VLNCE033_DATA_ROOT",
+            os.path.join(REPO_ROOT, "data", "habitat", "datasets",
+                         "R2R_VLNCE_v1-3_preprocessed"),
+        ),
+        "episodes": "{split}.json.gz",
+        "gt": "{split}_gt.json.gz",
+    },
+    # RxR-CE guide role (English-only canon rand100 rebuilt 2026-08-18).
+    # Episode dicts share R2R's exact key set; GT entries carry "locations".
+    "rxr": {
+        "root": os.environ.get(
+            "VLNCE033_RXR_DATA_ROOT",
+            os.path.join(REPO_ROOT, "data", "habitat", "datasets",
+                         "RxR_VLNCE_v0"),
+        ),
+        "episodes": "{split}_guide.json.gz",
+        "gt": "{split}_guide_gt.json.gz",
+    },
+}
+DATASET_ROOT = CORPORA["r2r"]["root"]  # legacy alias (r2r-only callers)
 SCENE_ROOT = os.environ.get(
     "VLNCE033_SCENE_ROOT", os.path.join(REPO_ROOT, "data", "scene_datasets")
 )
@@ -44,28 +69,36 @@ def camera_intrinsics(hfov_deg: float, size: int) -> dict:
             "width": size, "height": size}
 
 
-def list_splits() -> list:
-    """Splits = subdirs of the dataset root that carry {split}.json.gz."""
-    if not os.path.isdir(DATASET_ROOT):
+def list_corpora() -> list:
+    return sorted(CORPORA)
+
+
+def list_splits(corpus: str = "r2r") -> list:
+    """Splits = subdirs of the corpus root that carry its episodes file."""
+    spec = CORPORA[corpus]
+    if not os.path.isdir(spec["root"]):
         return []
     out = []
-    for name in sorted(os.listdir(DATASET_ROOT)):
-        if os.path.isfile(os.path.join(DATASET_ROOT, name, f"{name}.json.gz")):
+    for name in sorted(os.listdir(spec["root"])):
+        fp = os.path.join(spec["root"], name, spec["episodes"].format(split=name))
+        if os.path.isfile(fp):
             out.append(name)
     return out
 
 
-def load_episodes(split: str) -> list:
-    path = os.path.join(DATASET_ROOT, split, f"{split}.json.gz")
+def load_episodes(split: str, corpus: str = "r2r") -> list:
+    spec = CORPORA[corpus]
+    path = os.path.join(spec["root"], split, spec["episodes"].format(split=split))
     if not os.path.isfile(path):
         return []
     with gzip.open(path, "rt", encoding="utf-8") as f:
         return json.load(f)["episodes"]
 
 
-def load_gt_locations(split: str) -> dict:
+def load_gt_locations(split: str, corpus: str = "r2r") -> dict:
     """episode_id -> gt locations (for nDTW). Empty dict when unavailable."""
-    path = os.path.join(DATASET_ROOT, split, f"{split}_gt.json.gz")
+    spec = CORPORA[corpus]
+    path = os.path.join(spec["root"], split, spec["gt"].format(split=split))
     if not os.path.isfile(path):
         return {}
     with gzip.open(path, "rt", encoding="utf-8") as f:

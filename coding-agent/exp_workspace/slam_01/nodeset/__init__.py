@@ -72,7 +72,8 @@ from app.components.env_panel import (
     EnvPanelField,
 )
 
-from ._env import SCENE_ROOT, camera_intrinsics, list_splits, load_episodes, load_gt_locations
+from ._env import (SCENE_ROOT, camera_intrinsics, list_corpora, list_splits,
+                   load_episodes, load_gt_locations)
 from ._frontier import frontier_mask
 from ._map_render import render_annotated_map, render_annotated_map_v2
 from ._slam_env import SlamEnv
@@ -143,6 +144,7 @@ class SlamVlnceEnvManager:
         )
         self._config: dict = dict(_DEFAULTS)
 
+        self._dataset: str = "r2r"  # corpus key into _env.CORPORA
         self._split: str = "val_unseen"
         self._episodes: list = []
         self._gt_locations: dict = {}
@@ -151,7 +153,7 @@ class SlamVlnceEnvManager:
         self._se: SlamEnv | None = None
         self._ep: dict = {}
         self._ep_index: int = -1
-        self._seated_key: tuple | None = None  # (split, index, instruments)
+        self._seated_key: tuple | None = None  # (dataset, split, index, instruments)
         self._boot: dict | None = None
         self._step_index = 0
         self._stop_called = False
@@ -175,13 +177,13 @@ class SlamVlnceEnvManager:
             for k, v in kwargs.items():
                 if k in self._config and v is not None:
                     self._config[k] = type(_DEFAULTS[k])(v)
-            splits = list_splits()
+            splits = list_splits(self._dataset)
             if self._split not in splits and splits:
                 self._split = "val_unseen" if "val_unseen" in splits else splits[0]
-            self._episodes = load_episodes(self._split)
-            self._gt_locations = load_gt_locations(self._split)
-            log.info("slam_vlnce: initialized split=%s (%d episodes, %d gt paths)",
-                     self._split, len(self._episodes), len(self._gt_locations))
+            self._episodes = load_episodes(self._split, self._dataset)
+            self._gt_locations = load_gt_locations(self._split, self._dataset)
+            log.info("slam_vlnce: initialized dataset=%s split=%s (%d episodes, %d gt paths)",
+                     self._dataset, self._split, len(self._episodes), len(self._gt_locations))
 
     def shutdown(self) -> None:
         with self._lock:
@@ -198,19 +200,43 @@ class SlamVlnceEnvManager:
 
     # ── Episode control ────────────────────────────────────────────────
 
+    def list_datasets(self) -> list:
+        return list_corpora()
+
+    def set_dataset(self, dataset: str) -> dict:
+        """Corpus switch (split-agnostic contract): reloads the split list
+        from the new corpus root; the current split reloads if it exists
+        there, else falls back like initialize()."""
+        with self._lock:
+            if dataset not in list_corpora():
+                return {"error": f"unknown dataset '{dataset}'"}
+            if dataset == self._dataset and self._episodes:
+                return {"dataset": dataset, "split": self._split,
+                        "episode_count": len(self._episodes)}
+            self._dataset = dataset
+            splits = list_splits(dataset)
+            if self._split not in splits and splits:
+                self._split = "val_unseen" if "val_unseen" in splits else splits[0]
+            self._episodes = load_episodes(self._split, dataset)
+            self._gt_locations = load_gt_locations(self._split, dataset)
+            self._ep_index = -1
+            self._ep = {}
+            return {"dataset": dataset, "split": self._split,
+                    "episode_count": len(self._episodes)}
+
     def list_splits(self) -> list:
-        return list_splits()
+        return list_splits(self._dataset)
 
     def set_split(self, split: str) -> dict:
         with self._lock:
             if split == self._split and self._episodes:
                 return {"split": split, "episode_count": len(self._episodes)}
-            episodes = load_episodes(split)
+            episodes = load_episodes(split, self._dataset)
             if not episodes:
                 return {"error": f"split '{split}' not found or empty"}
             self._split = split
             self._episodes = episodes
-            self._gt_locations = load_gt_locations(split)
+            self._gt_locations = load_gt_locations(split, self._dataset)
             self._ep_index = -1
             self._ep = {}
             return {"split": split, "episode_count": len(episodes)}
@@ -227,7 +253,7 @@ class SlamVlnceEnvManager:
     def list_episodes(self, split: str | None = None) -> list:
         with self._lock:
             if split and split != self._split:
-                episodes = load_episodes(split)
+                episodes = load_episodes(split, self._dataset)
             else:
                 episodes = self._episodes
             return [
@@ -247,7 +273,7 @@ class SlamVlnceEnvManager:
             if index < 0 or index >= len(self._episodes):
                 return {"error": f"index {index} out of range (0..{len(self._episodes) - 1})"}
 
-            key = (self._split, index, self._instruments)
+            key = (self._dataset, self._split, index, self._instruments)
             fresh = (self._se is not None and self._step_index == 0
                      and not self._done)
             if key == self._seated_key and fresh:
@@ -763,6 +789,7 @@ class SlamVlnceEnvPanel(BaseEnvPanel):
     display_name: ClassVar[str] = "SLAM-VLNCE Env"
 
     fields: ClassVar[list] = [
+        EnvPanelField("dataset", "select", "Dataset"),
         EnvPanelField("split", "select", "Split"),
         EnvPanelField("episode_index", "select", "Episode"),
         EnvPanelField("instruments", "select", "SLAM instruments"),
@@ -775,11 +802,12 @@ class SlamVlnceEnvPanel(BaseEnvPanel):
     ]
 
     def __init__(self) -> None:
-        self._state: dict = {"split": "val_unseen", "episode_index": 0,
-                             "instruments": 0}
+        self._state: dict = {"dataset": "r2r", "split": "val_unseen",
+                             "episode_index": 0, "instruments": 0}
 
     async def on_load(self) -> dict:
         mgr = _mgr()
+        await _run(mgr.set_dataset, self._state["dataset"])
         splits = await _run(mgr.list_splits)
         split = self._state["split"] if self._state["split"] in splits else (
             splits[0] if splits else ""
@@ -789,22 +817,34 @@ class SlamVlnceEnvPanel(BaseEnvPanel):
             await _run(mgr.set_split, split)
         episodes = await _run(mgr.list_episodes) if split else []
         return {
+            "dataset": self._state["dataset"],
             "split": split,
             "episode_index": int(self._state.get("episode_index", 0)),
             "instruments": int(self._state.get("instruments", 0)),
             "episode_count": len(episodes),
+            "datasets": await _run(mgr.list_datasets),
             "splits": splits,
             "step_budget": int(_DEFAULTS["max_steps"]),
         }
 
     async def _seat_episode(self) -> dict:
         mgr = _mgr()
+        await _run(mgr.set_dataset, self._state["dataset"])
         await _run(mgr.set_split, self._state["split"])
         await _run(mgr.set_instruments, int(self._state["instruments"]))
         return await _run(mgr.set_episode_by_index, int(self._state["episode_index"]))
 
     async def on_field_change(self, name: str, value: Any) -> dict:
-        self._state[name] = value if name == "split" else int(value)
+        self._state[name] = value if name in ("split", "dataset") else int(value)
+        if name == "dataset":
+            # corpus switch: re-derive the split list, reset the cursor; the
+            # (possibly expensive) placement happens on the next split/episode
+            # push or play/reset, mirroring the instruments semantics.
+            result = await _run(_mgr().set_dataset, value)
+            if "error" not in result:
+                self._state["split"] = result["split"]
+            self._state["episode_index"] = 0
+            return await self.on_load()
         if name == "split":
             self._state["episode_index"] = 0
         if name == "instruments":

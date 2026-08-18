@@ -49,6 +49,23 @@ the subdirectories hold the materialized split files the envs load.
 - **`r2r/heldout100`**: files are canonical; no generator. Do not resample
   — it would break comparability with recorded held-out boards.
 
+## Caution: comparing a split file against run records
+
+Run records live in PRESENTATION order, not file order. For the
+objnav/ovon lines, habitat 0.2.4 shuffles `dataset.episodes` IN PLACE at
+env load (default `shuffle=True`, `seed=habitat.seed`=100 — a fixed
+permutation for any 100-episode split), and `ObjectNavDatasetV1.from_json`
+reassigns `episode_id` positionally, so a run's episode_id is a file
+POSITION, not an identity. Comparing file order or raw episode_id
+directly against run records is a category error — it once produced a
+false "boards ran a different selection (5% overlap)" conclusion during
+the 2026-08-18 audit. Correct procedure: push the file through the load
+transform first (seed-100 permutation + id semantics of the dataset
+class), then compare — fingerprint by (scene, object_category) for
+objnav, by real-id multiset for ovon. R2R/RxR (env_habitat) are exempt:
+it sets `ITERATOR_OPTIONS.SHUFFLE = False` and VLN-CE preserves real ids,
+so index = file position there.
+
 ## Known composition notes
 
 - `r2r/rand100` under-samples multi-floor episodes ~2x vs full val_unseen

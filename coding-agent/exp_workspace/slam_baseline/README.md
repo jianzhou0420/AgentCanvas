@@ -1,4 +1,6 @@
-# slam_r2r_baseline — MIP bare arm (SLAM lineage)
+# slam_baseline — MIP bare arm (SLAM lineage)
+
+Folder = method arm; cells keep their lineage names (slam_r2r_baseline_*).
 
 Minimal interface: observe / step / STOP only — no instrument tools, no
 briefing addendum. Env runs GT pose, no SLAM container.
@@ -8,4 +10,6 @@ briefing addendum. Env runs GT pose, no SLAM container.
 - Serve: see exp.py header. Run: `stdrun.py run slam_r2r_baseline_sdk_<model>`.
 - Boards: slam_r2r_baseline_sdk_opus-5 (2026-08-18, SR 0.71/SPL 0.569) —
   ran pre-exp_workspace from the same code this folder froze.
+- Profiles (2026-08-18, split-agnostic contract): folder = METHOD ARM;
+  exp.py PROFILES declares each benchmark's frozen + cell prefix.
 - Rule: NEVER edit after a board runs — fork a new folder.

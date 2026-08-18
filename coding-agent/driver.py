@@ -85,6 +85,12 @@ EHARNESS_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "eharness_bridge
 # mcp_bridge's bypassPermissions finding). Replaces the probe's
 # slam_vlnce_bridge.py, whose env was a cross-worktree JSON-lines subprocess.
 # slamr2r bridges live in each exp_workspace folder (CellSpec.exp_dir)
+#
+# Split-agnostic profiles (2026-08-18): one exp folder = one METHOD ARM; its
+# exp.py may declare several benchmark profiles (slamr2r = R2R-CE rand100,
+# slamrxr = RxR-CE rand100) sharing the folder's code. Every driver branch
+# that used to test == "slamr2r" now tests membership here.
+SLAM_BENCHMARKS = ("slamr2r", "slamrxr")
 
 
 def env_verb_prefix(benchmark: str) -> str:
@@ -107,7 +113,7 @@ def env_verb_prefix(benchmark: str) -> str:
         return "env_ovon"
     if benchmark in ("hm3d", "mp3d"):
         return "env_objnav"
-    if benchmark == "slamr2r":
+    if benchmark in SLAM_BENCHMARKS:
         return "env_slam_vlnce"
     return "env_habitat"
 
@@ -493,7 +499,7 @@ class EpisodeContext:
                 "GO2_BARE": "1" if self.bare else "0",
                 "GO2_LIVE_DIR": str(self.live_dir),
             }
-        if self.benchmark == "slamr2r":
+        if self.benchmark in SLAM_BENCHMARKS:
             return {
                 "SLAMB_SERVER_URL": self.server_url,
                 "SLAMB_INSTRUMENTS": str(int(self.instruments)),
@@ -924,7 +930,7 @@ async def run_episode(
                 dwp=dwp,
                 objnav=spec.benchmark in OBJNAV_BENCHMARKS,
                 express=spec.benchmark == "express",
-                slam=spec.benchmark == "slamr2r",
+                slam=spec.benchmark in SLAM_BENCHMARKS,
                 slam_instruments=instruments,
                 exp_bridge=(str(Path(spec.exp_dir) / "bridge.py")
                             if spec.exp_dir else "")),
