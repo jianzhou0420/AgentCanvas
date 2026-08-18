@@ -39,15 +39,22 @@ STD_FROZEN: dict = {
 # scene-stratified proportional samples of an official val, MATERIALIZED at
 # the dataset layer (same form as R2R-CE's rand100) — a derived split file
 # the env panel selects (split="mip100"), eval running episodes 0-99 of it.
-# Audit manifests: coding-agent/bridges/splits/*_n100_seed42.json (committed
+# Audit manifests: coding-agent/splits/*_n100_seed42.json (committed
 # — data/ is gitignored, so the manifest is the ONE tracked record of what
 # each mip split contains). Generator: sample_episodes.py, in git history at
 # cecd19c — manifest + generator regenerate the materialized CSV
 # byte-identically. The ObjectNav family (hm3d / mp3d / ovon×3) that shared
 # this mechanism never entered the MIP paper and was removed
-# (cells + helper last at a942483; bridges/splits at cecd19c).
+# (cells + helper last at a942483; splits then lived at bridges/splits).
+#
+# coding-agent/splits/ is the single home for ALL split data (2026-08-18):
+# flat *_seed42.json manifests here, plus r2r/ and rxr/ subdirs holding the
+# habitat-format split dirs (rand100, rand100_smartway, heldout100, RxR
+# rand100). The dataset tree under data/habitat/datasets/ keeps symlinks at
+# the old locations so the VLN-CE loader path template — and the frozen
+# exp_workspace folders — resolve unchanged.
 
-SPLITS_DIR = REPO_ROOT / "coding-agent" / "bridges" / "splits"
+SPLITS_DIR = REPO_ROOT / "coding-agent" / "splits"
 
 
 # ── HM-EQA benchmark line: explore-eqa multiple-choice EQA ──
@@ -185,7 +192,7 @@ def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
     if not manifest.exists():  # provenance must exist — never run unaudited
         raise FileNotFoundError(
             f"{benchmark}: missing split manifest {manifest} — run "
-            "coding-agent/sample_episodes.py --materialize")
+            "coding-agent/scripts/sample_episodes.py --materialize")
     return {
         "benchmark": benchmark,
         "dataset": dataset,
@@ -242,7 +249,7 @@ def _mthm3d_frozen() -> dict:
     if not manifest.exists():  # provenance must exist — never run unaudited
         raise FileNotFoundError(
             f"mthm3d: missing split manifest {manifest} — run "
-            "coding-agent/sample_episodes.py --benchmark mt_hm3d --materialize")
+            "coding-agent/scripts/sample_episodes.py --benchmark mt_hm3d --materialize")
     derived = REPO_ROOT / "data" / "hm3d" / "mt_hm3d" / "questions_mip100.csv"
     if not derived.exists():  # the split the env panel selects must exist too
         raise FileNotFoundError(
@@ -282,7 +289,7 @@ def _express_frozen() -> dict:
     if not manifest.exists():  # provenance must exist — never run unaudited
         raise FileNotFoundError(
             f"express: missing split manifest {manifest} — run "
-            "coding-agent/sample_episodes.py --benchmark express --materialize")
+            "coding-agent/scripts/sample_episodes.py --benchmark express --materialize")
     derived = (REPO_ROOT / "data" / "hm3d" / "express_bench"
                / "express-bench_mip100.json")
     if not derived.exists():  # the split the env panel selects must exist too
