@@ -12,7 +12,8 @@ ONE core.
 
 ```
 prompts.py    briefing surfaces (bare/wp/hybrid/hmeqa/go2/libero)
-cells.py      the std board as code: the cells (std · go2 · hmeqa · vlnverse · libero), frozen knobs, batches
+cells.py      the std board as code: the cells (std · go2 · hmeqa · vlnverse · libero · objnav ·
+              mthm3d · express · slamr2r), frozen knobs, batches
 driver.py     shared episode loop + EventSink (single writer of the jsonl vocabulary)
 harnesses/    claude_sdk.py · mini_swe.py · codex_cli.py — one adapter each;
               mini/ = the mini harness's in-repo body (toolset/model/env/
@@ -22,9 +23,21 @@ monitor_api.py  the run-artifact + scoring contract — the ONE surface any
               monitor consumes runs through (layout, honest-SR rule, roots,
               uirun spawn contract); backend loads it by path
 bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
-              hmeqa · go2(+go2_host) · libero; splits/ = tracked sampling-provenance
+              hmeqa · express · objnav(singlestep) · go2(+go2_host) · libero ·
+              slam (bare surface + instrument-gated SLAM queries over
+              env_slam_vlnce); splits/ = tracked sampling-provenance
               manifests for the derived mip env splits (data/ is gitignored,
               so these are the one versioned record of what each split holds)
+exp_workspace/  one folder = ONE experiment (2026-08-18 rule: orchestration
+              is shared, execution code is DUPLICATED per experiment).
+              Each folder carries its own exp.py (frozen knobs + cell
+              registration, loaded by cells.py), bridge.py, prompts.py and
+              nodeset/ copy; fork a folder to start a new experiment, never
+              edit one whose boards have run. Serve an env with PYTHONPATH =
+              coding-agent + agentcanvas/backend and `python -m
+              app.server.auto_host --module exp_workspace.<exp>.nodeset
+              --class EnvSlamVlnceNodeSet --port 92xx` (ac-habitat033
+              python). Current: slam_r2r_baseline / slam_r2r_01 / slam_r2r_02
 scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
 ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
               run_stats.py (stats backfill) — spawned by the backend

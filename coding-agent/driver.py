@@ -31,7 +31,7 @@ from typing import Any, Protocol
 
 import requests
 
-from cells import (BENCHMARK_FROZEN, STD_FROZEN,
+from cells import (BENCHMARK_FROZEN, OBJNAV_BENCHMARKS, STD_FROZEN,
                    WP_MAX_MOVES, WP_THINK_BUDGET, CellSpec)
 from prompts import (DWP_FIRST_PROMPT, FIRST_PROMPT, HMEQA_FIRST_PROMPT,
                      HYBRID_FIRST_PROMPT, LIBERO_FIRST_PROMPT,
@@ -50,6 +50,22 @@ GO2_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "go2_bridge.py"
 # tool-result channel (EventSink.last_step_result) back to the driver, which
 # passes it to env_hmeqa__evaluate as pred_letter.
 HMEQA_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "hmeqa_bridge.py"
+# ObjectNav family (hm3d / mp3d / ovon — peer benchmarks, each with its own
+# board and frozen config). ONE bridge file serves all five lines: hm3d and
+# mp3d talk to an env_objnav auto_host, ovon to an env_ovon auto_host, and
+# the two nodesets mirror each other's port shapes so only the verb prefix
+# differs (OBJNAV_VERB_PREFIX, set per cell in bridge_env()). The frozen
+# surface is the SINGLE-TOOL variant (user decision 2026-08-16): one
+# step(actions) that executes and returns the resulting forward view,
+# step([]) = look without moving; no observe()/look_around(). The two-tool
+# original stays in-tree (objnav_bridge.py) for provenance only.
+OBJNAV_BRIDGE_PATH = (REPO_ROOT / "coding-agent" / "bridges"
+                      / "objnav_bridge_singlestep.py")
+# EXPRESS-Bench (Jiang et al. ICCV 2025): free-form EQA on HM3D. Structural
+# copy of the hmeqa bridge with answer(text) instead of answer(letter);
+# scoring is the benchmark's gpt-4o-mini judge over the answer AND the
+# final frame (driver-side, see express_judge / the evaluate branch).
+EXPRESS_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "express_bridge.py"
 # Agent-selected hybrid surface: primitive step() AND waypoint goto() in one
 # toolface, with the look-then-move gate that makes the choice of lens the
 # choice of interface. Same habitat auto_host peer as mcp_bridge, plus the
@@ -62,6 +78,13 @@ HYBRID_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "hybrid_bridge.py"
 LIBERO_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "libero_bridge.py"
 # eharness organs inside the bridge process (S4: any executor, same organs)
 EHARNESS_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "eharness_bridge.py"
+# slamr2r line (2026-08-17, promoted from the slam-frontier probe): R2R-CE on
+# habitat 0.3.3 SlamEnv via env_slam_vlnce. Bare observe/step surface
+# (mcp_bridge field-parity), plus three read-only SLAM query tools registered
+# ONLY when the cell carries instruments=1 (registration is the gate, per
+# mcp_bridge's bypassPermissions finding). Replaces the probe's
+# slam_vlnce_bridge.py, whose env was a cross-worktree JSON-lines subprocess.
+# slamr2r bridges live in each exp_workspace folder (CellSpec.exp_dir)
 
 
 def env_verb_prefix(benchmark: str) -> str:
@@ -72,16 +95,47 @@ def env_verb_prefix(benchmark: str) -> str:
     the pre-flight peer check (a mismatched server places the WRONG episodes)
     a one-liner for every line rather than a per-family special case.
     """
-    if benchmark == "hmeqa":
+    if benchmark in ("hmeqa", "mthm3d"):  # two corpora, one nodeset
         return "env_hmeqa"
+    if benchmark == "express":
+        return "env_express"
     if benchmark == "vlnverse":
         return "env_vlnverse"
     if benchmark == "libero":
         return "env_libero"
+    if benchmark.startswith("ovon"):  # the three OVON lines share one nodeset
+        return "env_ovon"
+    if benchmark in ("hm3d", "mp3d"):
+        return "env_objnav"
+    if benchmark == "slamr2r":
+        return "env_slam_vlnce"
     return "env_habitat"
 
 
 # ── habitat auto_host HTTP helpers (driver-side; not visible to the agent) ──
+
+
+def express_judge(system: str, user: str, rgb_b64: str | None) -> str:
+    """EXPRESS-Bench's gpt-4o-mini judge (upstream gpt.py:gpt_4o_mini
+    mirror): system + user text + the FINAL camera frame, default sampling
+    params like upstream. Driver-side; the agent never sees it. Raises on
+    transport failure — the caller records the error and evaluate scores
+    the benchmark's own judge_ok=0 zero."""
+    import litellm
+
+    content: list[dict[str, Any]] = [{"type": "text", "text": user}]
+    if rgb_b64:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{rgb_b64}"},
+        })
+    resp = litellm.completion(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": content}],
+        num_retries=2,
+    )
+    return str(resp.choices[0].message.content or "")
 
 
 def panel_field(server_url: str, name: str, value: Any) -> None:
@@ -171,6 +225,22 @@ def flag_on(v: Any) -> bool:
 
 _TOOL_SCHEMAS_CACHE: dict[tuple, Any] = {}
 
+_EXP_MODULE_CACHE: dict[str, Any] = {}
+
+
+def _exp_module(exp_dir: str) -> Any:
+    """Load (once) an exp_workspace folder's exp.py manifest — the folder's
+    own briefing builder and metadata for CellSpec.exp_dir cells."""
+    mod = _EXP_MODULE_CACHE.get(exp_dir)
+    if mod is None:
+        path = Path(exp_dir) / "exp.py"
+        ispec = importlib.util.spec_from_file_location(
+            f"_expmod_{Path(exp_dir).name}", path)
+        mod = importlib.util.module_from_spec(ispec)
+        ispec.loader.exec_module(mod)
+        _EXP_MODULE_CACHE[exp_dir] = mod
+    return mod
+
 
 async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                               hmeqa: bool = False,
@@ -181,7 +251,12 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
                               toolbox: bool = False,
                               toolbox_gt: bool = True,
                               eh_bridge: bool = False,
-                              dwp: bool = False) -> Any:
+                              dwp: bool = False,
+                              objnav: bool = False,
+                              express: bool = False,
+                              slam: bool = False,
+                              slam_instruments: int = 0,
+                              exp_bridge: str = "") -> Any:
     """The bridge's own tool definitions, introspected in-process from the
     bridge module the sessions actually talk to (mcp_bridge.py, or
     wp_bridge.py for the wp condition, hybrid_bridge.py for the hybrid
@@ -194,13 +269,17 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
     ``auto_observe`` mirrors the session's HABITAT_AUTO_OBSERVE so the recorded
     step()/goto() descriptions match."""
     key = (bare, wp, go2, hmeqa, hmeqa_tilt, auto_observe, hybrid, libero,
-           toolbox, toolbox_gt, eh_bridge, dwp)
+           toolbox, toolbox_gt, eh_bridge, dwp, objnav, express, slam,
+           slam_instruments, exp_bridge)
     if key in _TOOL_SCHEMAS_CACHE:
         return _TOOL_SCHEMAS_CACHE[key]
     # mirror EpisodeContext.bridge_path exactly — recording mcp_bridge's
     # surface for an eh_bridge cell falsified the one audit artifact
     # (session_inputs.tool_schemas) that §14.9 leans on (review P1)
-    bridge_path = (GO2_BRIDGE_PATH if go2
+    bridge_path = (Path(exp_bridge) if exp_bridge
+                   else GO2_BRIDGE_PATH if go2
+                   else OBJNAV_BRIDGE_PATH if objnav
+                   else EXPRESS_BRIDGE_PATH if express
                    else HMEQA_BRIDGE_PATH if hmeqa
                    else LIBERO_BRIDGE_PATH if libero
                    else HYBRID_BRIDGE_PATH if hybrid
@@ -210,9 +289,12 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
     # would silently return the non-bare toolset. (hybrid is a habitat bridge,
     # so it stays on HABITAT_BARE.)
     bare_var = ("GO2_BARE" if go2
+                else "OBJNAV_BARE" if objnav
+                else "EXPRESS_BARE" if express
                 else "HMEQA_BARE" if hmeqa
                 else "LIBERO_BARE" if libero else "HABITAT_BARE")
     saved = os.environ.get(bare_var)
+    saved_slami = os.environ.get("SLAMB_INSTRUMENTS")
     saved_tilt = os.environ.get("HMEQA_TILT")
     saved_ao = os.environ.get("HABITAT_AUTO_OBSERVE")
     saved_lao = os.environ.get("LIBERO_AUTO_OBSERVE")
@@ -230,6 +312,11 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
             os.environ["EH_DWP"] = "1" if dwp else "0"
         if hmeqa:
             os.environ["HMEQA_TILT"] = "1" if hmeqa_tilt else "0"
+        if slam:
+            # the slam bridge's arm switch: instruments gate the registration
+            # of get_pose/get_map/get_trajectory, so introspection must run
+            # under the same flag the session will
+            os.environ["SLAMB_INSTRUMENTS"] = str(int(slam_instruments))
         spec = importlib.util.spec_from_file_location("_bridge_introspect", bridge_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -244,6 +331,7 @@ async def bridge_tool_schemas(bare: bool, wp: bool = False, go2: bool = False,
         _TOOL_SCHEMAS_CACHE[key] = {"error": f"tool-schema introspection failed: {exc!r}"}
     finally:
         for _name, _saved in ((bare_var, saved), ("HMEQA_TILT", saved_tilt),
+                              ("SLAMB_INSTRUMENTS", saved_slami),
                               ("HABITAT_AUTO_OBSERVE", saved_ao),
                               ("LIBERO_AUTO_OBSERVE", saved_lao),
                               ("LIBERO_TOOLBOX", saved_ltb),
@@ -341,6 +429,11 @@ class EpisodeContext:
     hmeqa_tilt: bool = True  # hmeqa only: camera-tilt actions 4/5 on the
                              # toolface (cells tilt_actions; --set tilt_actions=0
                              # masks them — bridge + briefing follow together)
+    instruments: int = 0  # slamr2r only: env-panel arm switch (0 bare / 1 v1
+                          # / 2 map v2); the toolface + briefing now come from
+                          # the exp_workspace folder, not this flag
+    exp_dir: str = ""     # exp_workspace folder owning bridge.py/prompts.py
+                          # (CellSpec.exp_dir, "" = classic shared-code cells)
     max_budget_usd: float | None = None  # per-episode USD fuse (sdk harness only;
                                          # CLI --max-budget-usd, hmeqa frozen $18)
     hybrid: bool = False   # primitive + waypoint in one surface (hybrid_bridge.py)
@@ -366,10 +459,16 @@ class EpisodeContext:
     @property
     def bridge_path(self) -> Path:
         """Stdio bridge module for this condition's action space / embodiment."""
+        if self.exp_dir:  # exp_workspace cell: the folder owns its bridge
+            return Path(self.exp_dir) / "bridge.py"
         if self.go2:
             return GO2_BRIDGE_PATH
-        if self.benchmark == "hmeqa":
+        if self.benchmark in OBJNAV_BENCHMARKS:
+            return OBJNAV_BRIDGE_PATH
+        if self.benchmark in ("hmeqa", "mthm3d"):
             return HMEQA_BRIDGE_PATH
+        if self.benchmark == "express":
+            return EXPRESS_BRIDGE_PATH
         if self.benchmark == "libero":
             return LIBERO_BRIDGE_PATH
         if self.hybrid:
@@ -394,7 +493,23 @@ class EpisodeContext:
                 "GO2_BARE": "1" if self.bare else "0",
                 "GO2_LIVE_DIR": str(self.live_dir),
             }
-        if self.benchmark == "hmeqa":
+        if self.benchmark == "slamr2r":
+            return {
+                "SLAMB_SERVER_URL": self.server_url,
+                "SLAMB_INSTRUMENTS": str(int(self.instruments)),
+                "SLAMB_STEP_BUDGET": str(self.step_budget),
+                "SLAMB_LIVE_DIR": str(self.live_dir),
+            }
+        if self.benchmark in OBJNAV_BENCHMARKS:
+            return {
+                "OBJNAV_SERVER_URL": self.server_url,
+                "OBJNAV_VERB_PREFIX": env_verb_prefix(self.benchmark),
+                "OBJNAV_STEP_BUDGET": str(self.step_budget),
+                "OBJNAV_TURN_BUDGET": str(self.turn_budget),
+                "OBJNAV_BARE": "1" if self.bare else "0",
+                "OBJNAV_LIVE_DIR": str(self.live_dir),
+            }
+        if self.benchmark in ("hmeqa", "mthm3d"):
             return {
                 "HMEQA_SERVER_URL": self.server_url,
                 "HMEQA_STEP_BUDGET": str(self.step_budget),
@@ -402,6 +517,14 @@ class EpisodeContext:
                 "HMEQA_BARE": "1" if self.bare else "0",
                 "HMEQA_TILT": "1" if self.hmeqa_tilt else "0",
                 "HMEQA_LIVE_DIR": str(self.live_dir),
+            }
+        if self.benchmark == "express":
+            return {
+                "EXPRESS_SERVER_URL": self.server_url,
+                "EXPRESS_STEP_BUDGET": str(self.step_budget),
+                "EXPRESS_TURN_BUDGET": str(self.turn_budget),
+                "EXPRESS_BARE": "1" if self.bare else "0",
+                "EXPRESS_LIVE_DIR": str(self.live_dir),
             }
         if self.benchmark == "libero":
             return {
@@ -551,7 +674,26 @@ async def run_episode(
         ep = await asyncio.to_thread(
             call_function, url, "env_go2__reset", {"trigger": "driver"}
         )
-    elif spec.benchmark == "hmeqa":
+    elif spec.benchmark in OBJNAV_BENCHMARKS:
+        # Same placement flow as habitat-r2r (panel episode_index + play),
+        # but reset returns a goal CATEGORY, not an instruction — ObjectNav
+        # episodes carry no language. The recorded "instruction" is the goal
+        # text the briefing embeds (underscores are dataset-internal:
+        # "tv_monitor" -> "tv monitor"; OVON goals are already free text).
+        await asyncio.to_thread(panel_field, url, "episode_index", index)
+        await asyncio.to_thread(panel_action, url, "play")
+        ep = await asyncio.to_thread(
+            call_function, url, f"{env_verb_prefix(spec.benchmark)}__reset",
+            {"trigger": "driver"},
+        )
+        category = str(ep.get("object_category") or "").strip()
+        if not category:
+            raise RuntimeError(
+                f"{spec.benchmark} reset returned no object_category "
+                f"(episode {index}) — episode placement failed?"
+            )
+        instruction = category.replace("_", " ")
+    elif spec.benchmark in ("hmeqa", "mthm3d"):
         # Same placement flow (panel episode_index + play). reset's
         # `question` port is the RAW text (the verified explore_eqa_hmeqa
         # graph depends on that — it appends the choices itself), so the
@@ -573,6 +715,21 @@ async def run_episode(
         instruction = raw_q + "".join(
             f"\n{letter}. {c}" for letter, c in zip("ABCD", choices)
         )
+    elif spec.benchmark == "express":
+        # Same placement flow (panel episode_index + play). reset returns
+        # the open-vocabulary question (plus the GT answer, which stays
+        # driver-side for the judge — NEVER in the briefing).
+        await asyncio.to_thread(panel_field, url, "episode_index", index)
+        await asyncio.to_thread(panel_action, url, "play")
+        ep = await asyncio.to_thread(
+            call_function, url, "env_express__reset", {"trigger": "driver"}
+        )
+        instruction = str(ep.get("question") or "").strip()
+        if not instruction:
+            raise RuntimeError(
+                f"express reset returned no question (episode {index}) "
+                "— episode placement failed?"
+            )
     elif spec.benchmark == "libero":
         # Flat episode index over the suite: task_id = k % tasks_per_suite,
         # init state = k // tasks_per_suite (episodes 0-9 = every task once).
@@ -682,16 +839,22 @@ async def run_episode(
     # observe — verified against std_sdkeh_opus-5_dwp's recorded
     # session_inputs (§14.9/§14.3).
     dwp = flag_on(cfg["extra"].get("dwp", cfg.get("dwp", "")))
-    briefing = build_briefing(
-        instruction, cfg["step_budget"], bare=spec.bare,
-        wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
-        benchmark=spec.benchmark,
-        hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
-        auto_observe=auto_observe, hybrid=spec.hybrid, toolbox=toolbox,
-        toolbox_gt=toolbox_gt,
-        dwp=dwp,
-        imagine=spec.imagine, imagine_rollouts=spec.imagine_rollouts,
-    )
+    instruments = int(cfg.get("instruments") or 0)
+    if spec.exp_dir:
+        # exp_workspace cell: the folder's own (frozen) briefing builder
+        briefing = _exp_module(spec.exp_dir).build_briefing(
+            instruction, cfg["step_budget"])
+    else:
+        briefing = build_briefing(
+            instruction, cfg["step_budget"], bare=spec.bare,
+            wp=spec.wp, wp_max_moves=cfg.get("wp_max_moves", 30), go2=spec.go2,
+            benchmark=spec.benchmark,
+            hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
+            auto_observe=auto_observe, hybrid=spec.hybrid, toolbox=toolbox,
+            toolbox_gt=toolbox_gt,
+            dwp=dwp,
+            imagine=spec.imagine, imagine_rollouts=spec.imagine_rollouts,
+        )
 
     workdir = run_dir / f"workdir_{index}"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -703,7 +866,8 @@ async def run_episode(
         instruction=instruction,
         briefing=briefing,
         first_prompt=(HYBRID_FIRST_PROMPT if spec.hybrid
-                      else HMEQA_FIRST_PROMPT if spec.benchmark == "hmeqa"
+                      else HMEQA_FIRST_PROMPT
+                      if spec.benchmark in ("hmeqa", "mthm3d", "express")
                       else (LIBERO_TOOLBOX_FIRST_PROMPT if toolbox_gt
                             else LIBERO_TOOLBOX_VISION_FIRST_PROMPT)
                       if spec.benchmark == "libero" and toolbox
@@ -721,6 +885,8 @@ async def run_episode(
         raw_dir=raw_dir,
         benchmark=spec.benchmark,
         hmeqa_tilt=bool(cfg.get("tilt_actions", True)),
+        instruments=instruments,
+        exp_dir=spec.exp_dir,
         max_budget_usd=cfg.get("max_budget_usd"),
         wp=spec.wp,
         imagine=spec.imagine,
@@ -749,13 +915,19 @@ async def run_episode(
             "first_prompt": ctx.first_prompt,
             "tool_schemas": await bridge_tool_schemas(
                 spec.bare, spec.wp, spec.go2,
-                spec.benchmark == "hmeqa",
+                spec.benchmark in ("hmeqa", "mthm3d"),
                 bool(cfg.get("tilt_actions", True)),
                 auto_observe, spec.hybrid,
                 libero=spec.benchmark == "libero",
                 toolbox=toolbox, toolbox_gt=toolbox_gt,
                 eh_bridge=bool(cfg["extra"].get("eh_bridge")),
-                dwp=dwp),
+                dwp=dwp,
+                objnav=spec.benchmark in OBJNAV_BENCHMARKS,
+                express=spec.benchmark == "express",
+                slam=spec.benchmark == "slamr2r",
+                slam_instruments=instruments,
+                exp_bridge=(str(Path(spec.exp_dir) / "bridge.py")
+                            if spec.exp_dir else "")),
             **json_safe(adapter.describe(ctx)),
         })
 
@@ -772,7 +944,7 @@ async def run_episode(
         # made from the recording, so metrics stay empty rather than fabricated.
         metrics: dict[str, Any] = {}
         if not spec.go2:
-            if spec.benchmark == "hmeqa":
+            if spec.benchmark in ("hmeqa", "mthm3d"):
                 # The agent's letter rides the tool-result channel (see
                 # hmeqa_bridge.answer — its result carries steps_taken_total,
                 # so it lands as the sink's last parsed step result). An
@@ -783,6 +955,31 @@ async def run_episode(
                     "pred_letter": str(
                         (sink.last_step_result or {}).get("answer") or "")
                 }
+            elif spec.benchmark == "express":
+                # Free-form answer -> the benchmark's gpt-4o-mini judge over
+                # the answer AND the final frame (upstream gpt.py), then
+                # env_express__evaluate parses "δ, σ" into C/C*/E_path/d_T.
+                # No answer -> skip the judge; evaluate scores the
+                # benchmark's own zero (judge_ok=0).
+                pred = str((sink.last_step_result or {}).get("answer") or "")
+                judge_text = ""
+                if pred:
+                    try:
+                        jp = await asyncio.to_thread(
+                            call_function, url, "env_express__judge_prompt",
+                            {"pred_answer": pred})
+                        frame = await asyncio.to_thread(
+                            call_function, url,
+                            "env_express__observe_egocentric", {})
+                        judge_text = await asyncio.to_thread(
+                            express_judge, str(jp.get("system") or ""),
+                            str(jp.get("user") or ""), frame.get("rgb"))
+                    except Exception as exc:  # noqa: BLE001
+                        sink.emit("driver_error",
+                                  {"error": f"express judge failed: {exc!r}"})
+                evaluate_fn = "env_express__evaluate"
+                evaluate_inputs = {"pred_answer": pred,
+                                   "judge_text": judge_text}
             elif spec.benchmark == "libero":
                 # Success lives in the env manager's episode state (LIBERO's
                 # own done flag) — no agent-side terminal to read back.
@@ -827,7 +1024,7 @@ async def run_episode(
         },
         "wall_sec": round(wall, 1),
     }
-    if spec.benchmark == "hmeqa" and last.get("answer"):
+    if spec.benchmark in ("hmeqa", "mthm3d", "express") and last.get("answer"):
         episode["agent"]["answer"] = last.get("answer")
     if outcome.error:
         episode["error"] = outcome.error
@@ -953,6 +1150,11 @@ async def run_cell(
     # (condition libero_toolbox_vision)
     cfg["toolbox_gt"] = str(
         cfg["extra"].pop("toolbox_gt", 1)).lower() not in ("0", "false", "no")
+    # slamr2r arm switch: the _instr cells carry ("instruments", 1) in extra;
+    # popped so ONE flag drives the env-panel arm, the bridge's tool
+    # registration, and the briefing addendum together — never the model.
+    if "instruments" in cfg["extra"]:
+        cfg["instruments"] = int(cfg["extra"].pop("instruments"))
     # dwp / judge_think reach here as bools (--set json), ints (cells) or
     # strings; normalize ONCE to canonical "1"/"0" so the briefing branch,
     # the SDK allowlist (_is_dwp), bridge registration (EH_DWP) and the mini
@@ -1097,6 +1299,10 @@ async def run_cell(
             if cfg.get("dataset"):
                 panel_field(url, "dataset", cfg["dataset"])
             panel_field(url, "split", cfg["split"])
+            # slamr2r arm switch — pushed BEFORE any placement so the first
+            # seat already builds the right arm (bare vs SLAM+bootstrap)
+            if "instruments" in cfg:
+                panel_field(url, "instruments", int(cfg["instruments"]))
 
     queue: asyncio.Queue[int] = asyncio.Queue()
     for index in indices:

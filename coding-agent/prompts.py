@@ -282,6 +282,101 @@ short deliberate batches over long speculative ones.
 # with the objnav line — never entered the MIP paper; last present
 # at a942483 (bridges/splits at cecd19c).
 
+# EXPRESS-Bench surface (2026-08-17, NOT part of the std freeze): free-form
+# embodied question answering on HM3D (Jiang et al. ICCV 2025). Same bare
+# toolface shape as the hmeqa line — the episode ends by ANSWERING — with
+# two benchmark-shaped differences: the answer is free-form text (scored by
+# the benchmark's gpt-4o-mini judge over the answer AND the final camera
+# view, so the briefing tells the model to answer while the evidence is in
+# view), and the camera is level (512², hfov 90; no tilt actions).
+EXPRESS_SYSTEM_PROMPT = """\
+You are controlling a robot in a real indoor environment (a photorealistic \
+3D scan of a building). You interact only through these tools:
+
+- observe(): look through the robot's forward-facing camera (returns an RGB \
+image).
+- step(actions): execute movement actions in order. 1 = move forward \
+0.25 m, 2 = turn left 30 degrees, 3 = turn right 30 degrees. There is no \
+stop action.
+- answer(text): permanently END the episode by answering the question in \
+free-form natural language (one or two sentences).
+
+Your task is embodied question answering: explore the building until you \
+can answer this question about it:
+
+"{question}"
+
+Rules:
+- Alternate observing and stepping: look, decide where to go to find the \
+evidence the question needs, move, look again.
+- You have a budget of {budget} movement actions. If it runs out you can \
+still observe and answer from where you stand.
+- Your answer is judged on BOTH its correctness and whether your final \
+camera view supports it — walk up to the relevant object or place and \
+answer while it is in view.
+- answer() is permanent — call it once you have seen enough evidence to be \
+confident, and always answer before ending: an episode without answer() \
+scores zero.
+- Turning in place (e.g. step([2,2,2])) is a cheap way to look around when \
+unsure.
+- Work autonomously until you answer; nobody can help you.
+"""
+
+# ObjectNav-family surface (hm3d / mp3d / ovon-*, re-armed 2026-08-16):
+# the SINGLE-TOOL step(actions) interface — the frozen bare surface of the
+# family per the 2026-08-16 user decision, promoted from the 2026-07-22
+# mechanism experiment (objnav_bridge_singlestep.py). One tool: step
+# executes the actions and returns the resulting forward view; step([]) =
+# look without moving; observe()/look_around() do not exist. Text below is
+# byte-faithful to the briefing the smoke6/probe6 singlestep runs recorded
+# in session_inputs, with two conditional slots: {budget_note} (non-bare
+# budget broadcast) and {stop_note} (non-bare withheld-STOP gate), both
+# empty in the bare condition every board cell runs.
+OBJNAV_SYSTEM_PROMPT = """\
+You are controlling a robot in a real indoor environment (a photorealistic \
+3D scan of a building). You interact only through this tool:
+
+- step(actions): execute movement actions in order, then return the \
+robot's forward-facing camera view (an RGB image) after the last action. \
+0 = STOP (permanently ends the episode — declares you have found the \
+target), 1 = move forward 0.25 m, 2 = turn left 30 degrees, 3 = turn \
+right 30 degrees, 4 = tilt the camera up 30 degrees, 5 = tilt the camera \
+down 30 degrees (tilt changes the camera pitch only, not your position or \
+heading). Calling step([]) with no actions returns the current view \
+without moving.
+
+Your task is object-goal navigation: no route is given — search the \
+building until you find the target object, walk up to it, and stop there.
+
+Target object: "{goal}"
+
+Rules:
+- Call step([]) once at the start to see where you are.
+- Every step call shows you the view after your actions: study it, decide \
+where to search next, and issue the next step. You never need a separate \
+look call.
+- Explore efficiently: sweep toward where a "{goal}" is most likely to \
+be, and avoid re-walking areas you have already ruled out.
+- You have a budget of {budget} movement actions.{budget_note}
+- You succeed only if you issue action 0 (STOP) while within 0.5 meters \
+of a "{goal}". Any instance counts. STOP is permanent — issue it only \
+when you can see the target and are standing right next to it.{stop_note}
+- Turning in place (e.g. step([2,2,2])) is a cheap way to look around \
+when unsure; if you tilt the camera, level it again before moving on.
+- Work autonomously until you stop; nobody can answer questions.
+"""
+
+_OBJNAV_BUDGET_NOTE = (
+    " Each step() result reports roughly how many remain."
+)
+_OBJNAV_STOP_NOTE = (
+    " When plenty of budget remains, your first STOP request is withheld "
+    "pending a placement check — call step([0]) again to confirm."
+)
+
+# slamr2r briefings live in exp_workspace/<exp>/prompts.py (one frozen
+# copy per experiment folder; loaded via driver._exp_module).
+
 # HM-EQA surface (NOT part of the std freeze): embodied question
 # answering on HM3D (explore-eqa, Ren et al. 2024). Same bare toolface shape
 # as the nav lines, with the one benchmark-shaped difference that the episode
@@ -678,6 +773,8 @@ you are at the goal.
 
 FIRST_PROMPT = "Begin navigating. Call observe() first to see where you are."
 HMEQA_FIRST_PROMPT = "Begin exploring. Call observe() first to see where you are."
+# EXPRESS shares the hmeqa first prompt (same explore-then-answer shape);
+# only the system briefing differs (free-form answer, level camera).
 LIBERO_FIRST_PROMPT = "Begin the task. Call observe() first to see the workspace."
 LIBERO_TOOLBOX_FIRST_PROMPT = (
     "Begin the task. Call get_objects() and observe_third_person() first "
@@ -806,7 +903,20 @@ def build_briefing(
             step_note=(_LIBERO_STEP_NOTE_AUTO if auto_observe else ""),
             loop_rule=(_LIBERO_LOOP_AUTO if auto_observe else _LIBERO_LOOP_SEP),
         )
-    if benchmark == "hmeqa":  # instruction = the formatted multi-choice question
+    if benchmark in ("hm3d", "mp3d") or benchmark.startswith("ovon"):
+        # ObjectNav family: instruction = the goal category text; single-tool
+        # step() surface (see OBJNAV_SYSTEM_PROMPT note). The non-bare slots
+        # mirror objnav_bridge_singlestep.py's budget broadcast + STOP gate.
+        return OBJNAV_SYSTEM_PROMPT.format(
+            goal=instruction, budget=step_budget,
+            budget_note=("" if bare else _OBJNAV_BUDGET_NOTE),
+            stop_note=("" if bare else _OBJNAV_STOP_NOTE),
+        )
+    # slamr2r: handled by the exp_workspace folder's own build_briefing
+    if benchmark == "express":  # instruction = the open-vocabulary question
+        return EXPRESS_SYSTEM_PROMPT.format(
+            question=instruction, budget=step_budget)
+    if benchmark in ("hmeqa", "mthm3d"):  # instruction = the formatted multi-choice question
         base = HMEQA_BARE_SYSTEM_PROMPT if bare else HMEQA_SYSTEM_PROMPT
         fills = (
             {"camera_sentence": HMEQA_TILT_CAMERA_SENTENCE,

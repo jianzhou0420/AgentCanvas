@@ -165,6 +165,165 @@ BENCHMARK_FROZEN["vlnverse"] = {
     "episode_timeout": 2400,
 }
 
+
+# ── ObjectNav-family benchmarks (re-armed 2026-08-16 from cecd19c): five
+# lines — hm3d (objectnav_hm3d_v1), mp3d (objectnav_mp3d_v1) and the three
+# OVON val splits — each its own board with its own frozen config, exactly
+# as parked on 2026-08-03. Two changes against the parked state:
+# (a) split naming follows the repo-wide TEAPS->MIP rename (a942483): the
+#     materialized dataset-layer splits on disk are mip100/, the env panels
+#     select split="mip100...", manifests live in bridges/splits/;
+# (b) the bare surface is the SINGLE-TOOL step(actions) interface
+#     (objnav_bridge_singlestep.py — user decision 2026-08-16, promoted
+#     from the 2026-07-22 mechanism experiment where it beat the two-tool
+#     observe/step alternation on the sonnet smoke, SR 0.2 vs 0.0). The
+#     pre-park partial runs (hm3d_sdk_fable-5, 38 eps) used the TWO-tool
+#     bridge — a different protocol; never pool them with these boards.
+def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
+                   manifest_stem: str) -> dict:
+    manifest = SPLITS_DIR / f"{manifest_stem}.json"
+    if not manifest.exists():  # provenance must exist — never run unaudited
+        raise FileNotFoundError(
+            f"{benchmark}: missing split manifest {manifest} — run "
+            "coding-agent/sample_episodes.py --materialize")
+    return {
+        "benchmark": benchmark,
+        "dataset": dataset,
+        "split": split,       # mip100*: derived dataset-layer split
+        "episodes": "0-99",   # the whole MIP100 split, manifest order
+        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
+        # Objnav deviates from std-v2's max_turns=200 (user decision 2026-07-22;
+        # documented in the paper appendix): 150 turns + an $18/episode USD
+        # fuse. The fuse is the CLI's own --max-budget-usd — session ends with
+        # subtype error_max_budget_usd, scored as clean truncation (like
+        # error_max_turns), never retried. Motivation: hm3d smokes showed
+        # cap-burning episodes cost 2-4x a success (worst $38.9) because
+        # full-history resend makes cost grow ~quadratically in turns.
+        "max_turns": 150,
+        "max_budget_usd": 18.0,
+        "step_budget": 500,  # = habitat's ObjectNav max_episode_steps
+        "episode_timeout": 2400,
+    }
+
+
+# hm3d: objectnav_hm3d_v1 (val: 2000 eps / 20 scenes / 6 categories)
+# mp3d: objectnav_mp3d_v1 (val: 2195 eps / 11 scenes / 21 categories)
+# ovon-*: HM3D-OVON (3000 eps / 36 scenes per val split); no dataset
+# selector on its panel (one dataset — the split IS the axis) -> None.
+OBJNAV_FROZEN: dict[str, dict] = {
+    "hm3d": _objnav_frozen("hm3d", "hm3d_v1", "mip100",
+                           "hm3d_val_n100_seed42"),
+    "mp3d": _objnav_frozen("mp3d", "mp3d_v1", "mip100",
+                           "mp3d_val_n100_seed42"),
+    "ovon-seen": _objnav_frozen("ovon-seen", None, "mip100_seen",
+                                "ovon_val_seen_n100_seed42"),
+    "ovon-syn": _objnav_frozen("ovon-syn", None, "mip100_seen_synonyms",
+                               "ovon_val_seen_synonyms_n100_seed42"),
+    "ovon-unseen": _objnav_frozen("ovon-unseen", None, "mip100_unseen",
+                                  "ovon_val_unseen_n100_seed42"),
+}
+OBJNAV_BENCHMARKS = tuple(OBJNAV_FROZEN)  # the five ObjectNav-family lines
+BENCHMARK_FROZEN.update(OBJNAV_FROZEN)
+
+
+# ── MT-HM3D benchmark line (2026-08-17): env_hmeqa's second corpus ──
+# MemoryEQA's benchmark (Zhai et al., arXiv 2505.13948): 1,587 multi-choice
+# questions over 828 HM3D scenes, ridden through the SAME nodeset, bridge,
+# briefing and frozen knobs as the hmeqa line — the ONLY deltas are the
+# panel dataset field (mt_hm3d) and the split corpus. Split mip100 is
+# LABEL-stratified, not scene-stratified (user decision 2026-08-16: scene
+# strata degenerate on 828 scenes/100 slots and skewed Counting to 63%);
+# manifest records the method. 口径 caveats when reporting: answers skew
+# "A" (66/100 in mip100, 67.4% in the full corpus — ALWAYS report the
+# constant-A control beside SR), and published MemoryEQA numbers are on
+# the full 1,587.
+def _mthm3d_frozen() -> dict:
+    manifest = SPLITS_DIR / "mt_hm3d_val_n100_seed42.json"
+    if not manifest.exists():  # provenance must exist — never run unaudited
+        raise FileNotFoundError(
+            f"mthm3d: missing split manifest {manifest} — run "
+            "coding-agent/sample_episodes.py --benchmark mt_hm3d --materialize")
+    derived = REPO_ROOT / "data" / "hm3d" / "mt_hm3d" / "questions_mip100.csv"
+    if not derived.exists():  # the split the env panel selects must exist too
+        raise FileNotFoundError(
+            f"mthm3d: missing materialized split {derived} — regenerate with "
+            "sample_episodes.py --benchmark mt_hm3d --materialize")
+    return {
+        "benchmark": "mthm3d",
+        "dataset": "mt_hm3d",  # env_hmeqa _DATASET_SPECS key (panel field)
+        "split": "mip100",
+        "episodes": "0-99",
+        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
+        # Same posture as the hmeqa line: 150 turns + $18 fuse, std 500-step
+        # budget enforced bridge-side, tilt actions on.
+        "max_turns": 150,
+        "max_budget_usd": 18.0,
+        "step_budget": 500,
+        "episode_timeout": 2400,
+        "tilt_actions": True,
+    }
+
+
+BENCHMARK_FROZEN["mthm3d"] = _mthm3d_frozen()
+
+
+# ── EXPRESS-Bench benchmark line (2026-08-17): free-form EQA on HM3D ──
+# Jiang et al. ICCV 2025: 2,044 open-vocab QA over 174 scenes, env_express +
+# express_bridge.py (answer(text)), scored by the benchmark's gpt-4o-mini
+# judge over answer + final frame → C / C* / E_path / d_T (driver-side).
+# Split mip100 = scene-stratified seed-42 sample of the FULL 2,044 ("all":
+# the benchmark's train scenes are eval too; published numbers are on the
+# full set — state the 口径). Deviation from the benchmark-native protocol
+# (documented in the bridge docstring): discrete 0.25 m / 30° actions via
+# env_express__step_discrete replace the native free-pose teleports, and
+# the std 500-step budget replaces the scene-sized teleport budget.
+def _express_frozen() -> dict:
+    manifest = SPLITS_DIR / "express_all_n100_seed42.json"
+    if not manifest.exists():  # provenance must exist — never run unaudited
+        raise FileNotFoundError(
+            f"express: missing split manifest {manifest} — run "
+            "coding-agent/sample_episodes.py --benchmark express --materialize")
+    derived = (REPO_ROOT / "data" / "hm3d" / "express_bench"
+               / "express-bench_mip100.json")
+    if not derived.exists():  # the split the env panel selects must exist too
+        raise FileNotFoundError(
+            f"express: missing materialized split {derived} — regenerate "
+            "with sample_episodes.py --benchmark express --materialize")
+    return {
+        "benchmark": "express",
+        "dataset": None,       # single-JSON benchmark: no dataset selector
+        "split": "mip100",
+        "episodes": "0-99",
+        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
+        # Same posture as the hmeqa/mthm3d lines: 150 turns + $18 fuse,
+        # std 500-step budget enforced bridge-side.
+        "max_turns": 150,
+        "max_budget_usd": 18.0,
+        "step_budget": 500,
+        "episode_timeout": 2400,
+    }
+
+
+BENCHMARK_FROZEN["express"] = _express_frozen()
+
+
+# ── slamr2r benchmark line (2026-08-17): SLAM-instrumented R2R-CE ──
+# The promoted SLAM-instrument probe (formerly slamrun.py + the slam-frontier
+# worktree): R2R-CE episodes on habitat-sim 0.3.3 via env_slam_vlnce — every
+# coarse action decomposes into 5 micro-steps auto-fed to ORB-SLAM3 + an
+# occupancy grid. TWO conditions per model: bare (slam_r2r_baseline_sdk_<m>)
+# and instrumented (slam_r2r_01_sdk_<m>, extra instruments=1) — the arm delta
+# is exactly three read-only query tools (get_pose/get_map/get_trajectory)
+# plus the briefing addendum (prompts.SLAM_INSTRUMENT_ADDENDUM); this is the
+# "egocentric self-localization wall" A/B. 口径 caveats: habitat 0.3.3
+# dynamics, NOT 0.1.7-comparable — never pool with std_sdk_* R2R numbers;
+# metrics come from env_slam_vlnce__evaluate (full NE/SR/SPL/OSR/nDTW suite,
+# upgraded from the probe's stop-gated-geodesic-only rule; probe_slam_* run
+# dirs predate the promotion and stay off-board).
+# slamr2r frozen knobs are registered by the exp_workspace slam folders
+# (each folder's exp.py carries an identical copy; the loader asserts they
+# have not diverged).
+
 # Compute we own (local GPU, no API bill or rate limit) can take its own cap;
 # the knob is kept so the rented and owned columns can diverge.
 #
@@ -411,6 +570,9 @@ class CellSpec:
     effort_tier: str | None = None  # default | max | None (untier-ed wp/local cells)
     extra: tuple = ()  # model/tier knobs as (key, value) pairs (hashable)
     max_turns: int | None = None  # None → STD_FROZEN's cap (std-v2: 200)
+    exp_dir: str = ""  # exp_workspace folder owning this cell's execution
+                       # code (bridge.py / prompts.py / nodeset); "" = the
+                       # classic shared-code cells
 
     @property
     def extra_dict(self) -> dict:
@@ -806,6 +968,41 @@ for _h, _m in SDK_TRIO:
                    extra=_base.extra + (("toolbox", 1), ("toolbox_gt", 0)))
     CELLS[spec.name] = spec
 
+# ObjectNav-family boards (re-armed 2026-08-16): bare surface — which for
+# this family means the single-tool step() interface, see OBJNAV_FROZEN
+# note — default effort, sdk column. The go2/hmeqa trio plus opus-5: the
+# 2026-08-16 baseline sweep runs the opus-5 row first.
+OBJNAV_SDK_MODELS = SDK_TRIO + (("sdk", "opus-5"),)
+for _bench in OBJNAV_BENCHMARKS:
+    for _h, _m in OBJNAV_SDK_MODELS:
+        _base = _cell(_h, _m, "bare", "default")
+        spec = replace(_base, name=f"{_bench}_{_h}_{_m}", condition=_bench,
+                       benchmark=_bench)
+        CELLS[spec.name] = spec
+
+# MT-HM3D board (2026-08-17): same sdk column as the objnav re-arm —
+# servers: env_hmeqa auto_host (ac-hmeqa env); the driver refuses a
+# mismatched server name.
+for _h, _m in OBJNAV_SDK_MODELS:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"mthm3d_{_h}_{_m}", condition="mthm3d",
+                   benchmark="mthm3d")
+    CELLS[spec.name] = spec
+
+# EXPRESS-Bench board (2026-08-17): same sdk column — servers: env_express
+# auto_host (ac-hmeqa env, EXPRESS_PYTHON override); the driver refuses a
+# mismatched server name. The judge additionally needs OPENAI_API_KEY in
+# the driver's environment (gpt-4o-mini, driver-side).
+for _h, _m in OBJNAV_SDK_MODELS:
+    _base = _cell(_h, _m, "bare", "default")
+    spec = replace(_base, name=f"express_{_h}_{_m}", condition="express",
+                   benchmark="express")
+    CELLS[spec.name] = spec
+
+# slamr2r cells (the SLAM lineage) now live in exp_workspace/ — one folder
+# per experiment, self-registering via each folder's exp.py (loaded at the
+# bottom of this module). Only orchestration is shared.
+
 # batches: the tiered main board carries the effort tier in the cell name
 # (*_default = vendor-default main experiment, *_max = elevated ablation);
 # Q/W/WQ are the untier-ed wp/local line.
@@ -836,6 +1033,18 @@ BATCHES = {
     "EQ": [f"hmeqa_sdk_{m}" for m in CLAUDE_MODELS],
     # LIBERO board — servers: env_libero auto_host (ac-libero env)
     "LB": [f"libero_sdk_{m}" for m in CLAUDE_MODELS],
+    # ObjectNav-family boards — one batch per benchmark line (peer lines, not
+    # one merged "objnav" batch). Servers: env_objnav auto_host for OH/OM,
+    # env_ovon auto_host for the OV* trio (the driver refuses a mismatch).
+    "OH": [f"hm3d_sdk_{m}" for m in CLAUDE_MODELS],
+    "OM": [f"mp3d_sdk_{m}" for m in CLAUDE_MODELS],
+    "OVS": [f"ovon-seen_sdk_{m}" for m in CLAUDE_MODELS],
+    "OVY": [f"ovon-syn_sdk_{m}" for m in CLAUDE_MODELS],
+    "OVU": [f"ovon-unseen_sdk_{m}" for m in CLAUDE_MODELS],
+    # the 2026-08-16 opus-5 baseline sweep across all five objnav boards
+    "O5N": [f"{b}_sdk_opus-5" for b in OBJNAV_BENCHMARKS],
+    # slamr2r A/B — servers: env_slam_vlnce auto_host (ac-habitat033 env)
+    # SL / SLI / SL2 (slam lineage) are registered by exp_workspace folders
 }
 
 
@@ -893,3 +1102,27 @@ def get_experiment(num: str) -> CellSpec:
 def resolve_cell(token: str) -> CellSpec:
     """Accept either a cell name or an E-number and return the CellSpec."""
     return get_experiment(token) if token.upper() in EXPERIMENTS else get_cell(token)
+
+
+# ── exp_workspace loader (2026-08-18): one folder = one experiment ──
+# Each exp_workspace/<name>/exp.py self-registers its cells/batches/frozen
+# knobs and carries its OWN bridge/prompts/nodeset copies. Loaded LAST so
+# folders can rely on the full registry machinery above. A broken folder
+# fails loudly — silently dropping cells would corrupt board runs.
+
+def _load_exp_workspace() -> None:
+    import importlib.util as _ilu
+    root = Path(__file__).resolve().parent / "exp_workspace"
+    if not root.is_dir():
+        return
+    for exp_py in sorted(root.glob("*/exp.py")):
+        spec = _ilu.spec_from_file_location(f"_exp_{exp_py.parent.name}", exp_py)
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.register(CELLS=CELLS, BATCHES=BATCHES,
+                     BENCHMARK_FROZEN=BENCHMARK_FROZEN,
+                     cell=_cell, replace=replace,
+                     sdk_models=OBJNAV_SDK_MODELS, claude_models=CLAUDE_MODELS)
+
+
+_load_exp_workspace()
