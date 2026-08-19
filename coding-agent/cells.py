@@ -13,6 +13,14 @@ Two experiment lines share this registry (merged 2026-07-19):
   ``max_turns`` (WP_MAX_TURNS / LOCAL_MAX_TURNS). Runs from before this merge
   may have used other caps; every run's summary.json records the cap that
   actually applied — read the board, never the name, when comparing.
+
+Since 2026-08-18 this module holds ORCHESTRATION only: the model zoo,
+condition machinery, frozen std config and the batch/experiment registries.
+Every experiment line's cells (and its bridge/prompts/nodeset execution
+code) register from coding-agent/exp_workspace/<folder>/exp.py via
+``_load_exp_workspace()`` at the bottom; only the research lines (imagine ·
+eharness · sdkeh) still register inline below. Cell names are unchanged —
+the migration is invisible on the board.
 """
 
 from __future__ import annotations
@@ -57,261 +65,19 @@ STD_FROZEN: dict = {
 SPLITS_DIR = REPO_ROOT / "coding-agent" / "splits"
 
 
-# ── HM-EQA benchmark line: explore-eqa multiple-choice EQA ──
-# A benchmark line at the same level as the habitat-r2r std line. Success is
-# answer correctness (env_hmeqa__evaluate compares the agent's letter to GT);
-# the episode ends by answer("A".."D") via hmeqa_bridge.py, not STOP.
-# Deviations from the benchmark-native protocol (all documented in the
-# bridge docstring): discrete 0.25 m / 30° actions via env_hmeqa__
-# step_discrete (native is TSDF-planned free-pose teleports; explore-eqa's
-# scene-size-dependent num_step budget is a TELEPORT budget and does not
-# apply), step budget enforced bridge-side at the std 500. The camera stays
-# benchmark-native (640×480, hfov 120, starting tilted 30° down).
-# Episodes: split="mip100" — the MATERIALIZED dataset-layer split
-# (data/hm3d/hmeqa/questions_mip100.csv, row k = k-th sampled original
-# row) selected via the env panel, episodes 0-99 into it. Same semantics as
-# the objnav mip splits. (Earlier runs carried raw val indices — the
-# trial20/smoke run dirs are indexed in THAT original-CSV space.)
-def _hmeqa_frozen() -> dict:
-    manifest = SPLITS_DIR / "hmeqa_val_n100_seed42.json"
-    if not manifest.exists():  # provenance must exist — never run unaudited
-        raise FileNotFoundError(
-            f"hmeqa: missing split manifest {manifest} — restore it from git "
-            "(tracked; sampler sample_episodes.py lives at cecd19c)")
-    derived = REPO_ROOT / "data" / "hm3d" / "hmeqa" / "questions_mip100.csv"
-    if not derived.exists():  # the split the env panel selects must exist too
-        raise FileNotFoundError(
-            f"hmeqa: missing materialized split {derived} — regenerate with "
-            "sample_episodes.py --benchmark hmeqa --materialize (git, cecd19c)")
-    return {
-        "benchmark": "hmeqa",
-        "dataset": None,       # single-CSV benchmark: no dataset selector
-        "split": "mip100",   # dataset-layer derived split (mip semantics)
-        "episodes": "0-99",
-        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
-        # Same turn/fuse posture as the ObjectNav lines (exploration task,
-        # full-history resend cost tail): 150 turns + $18/episode USD fuse.
-        "max_turns": 150,
-        "max_budget_usd": 18.0,
-        "step_budget": 500,
-        "episode_timeout": 2400,
-        # Camera-tilt actions 4/5 on the toolface: the native −30° pitch
-        # makes near-overhead ceiling fixtures structurally unobservable.
-        # Mask
-        # with `--nonstd --set tilt_actions=0`: bridge validation, tool
-        # description, and briefing all follow the one flag.
-        "tilt_actions": True,
-    }
+# Benchmark frozen configs live with their exp_workspace folders
+# (2026-08-18): hmeqa/mthm3d/hmeqa500 → exp_workspace/hmeqa · libero →
+# exp_workspace/libero_* · vlnverse → exp_workspace/vlnverse · hm3d/mp3d →
+# exp_workspace/objnav · ovon-* → exp_workspace/ovon · express →
+# exp_workspace/express · rxr → exp_workspace/{bare,wp} · slam* →
+# exp_workspace/slam_*. Each folder's exp.py registers (and cross-asserts)
+# its entries via the loader at the bottom of this module.
+BENCHMARK_FROZEN: dict[str, dict] = {}
 
 
-# ── LIBERO manipulation line: coding-agent drives a robot arm ──
-# The minimal two-tool interface (observe + step) re-embodied on a Franka
-# Panda in LIBERO (Liu et al. 2023). step() takes the env's NATIVE 7-D
-# continuous action space (one action = one OSC control tick) — no bridge-side
-# discretization, unlike the nav lines' four primitives; see libero_bridge.py.
-# No terminal action: LIBERO detects success from scene state, so an episode
-# ends on task success or budget exhaustion, never by agent declaration.
-def _libero_frozen() -> dict:
-    return {
-        "benchmark": "libero",
-        "dataset": None,           # suite rides the split selector (env panel
-        "split": "libero_object",  # maps a suite-named split to the suite)
-        # Flat episode index over the suite: task_id = k % tasks_per_suite,
-        # init state = k // tasks_per_suite — episodes 0-9 run every task once
-        # at init state 0; 0-99 is 10 rollouts per task (init states 0-9), the
-        # same n=100 shape as the R2R board.
-        "episodes": "0-99",
-        "tasks_per_suite": 10,  # libero_spatial / object / goal / 10 all have 10
-        # Same turn/fuse posture as the hmeqa line (long tool-call episodes,
-        # full-history resend cost tail): 150 turns + $18/episode USD fuse.
-        "max_turns": 150,
-        "max_budget_usd": 18.0,
-        # The env's own per-episode cap (_SUITE_MAX_STEPS = 2500 control
-        # ticks); the bridge mirrors it to report remaining budget.
-        "step_budget": 2500,
-        "episode_timeout": 2400,
-        "rgb_resolution": 256,  # env_libero server render size (recorded, not a knob)
-    }
-
-
-BENCHMARK_FROZEN: dict[str, dict] = {
-    "hmeqa": _hmeqa_frozen(),
-    "libero": _libero_frozen(),
-}
-
-
-# ── VLNVerse line: instruction-following VLN in Isaac Sim 5.1 ──
-# Seventh benchmark line, but NOT an ObjectNav sibling: vlnverse is the same
-# task shape as habitat-r2r (a language instruction, STOP within 3 m of the
-# goal), just a different simulator + scene corpus (262 kujiale scans, Isaac
-# 5.1 renders at 1024²/90° behind an msgpack RPC seam). So it reuses the R2R
-# branch end to end — mcp_bridge with HABITAT_VERB_PREFIX=env_vlnverse, the
-# std briefing verbatim (identical action space: 0=STOP, 1=FWD 0.25 m,
-# 2/3=turn 15°), driver reset/evaluate through env_verb_prefix().
-#
-# PROVISIONAL — this is deliberately NOT a frozen protocol yet. The other six
-# lines run a MATERIALIZED, scene-stratified, seed-42 sample of 100 (rand100 /
-# mip100) with a committed audit manifest; no such sample exists for
-# vlnverse because sample_episodes.py has no vlnverse backend. Until it does,
-# this line runs the first 100 episodes of fine/val_unseen IN SPLIT-FILE ORDER
-# — deterministic and reproducible, but scene-clustered (the split is grouped
-# by scan, so eps 0-99 cover only a handful of the 262 scenes) and therefore
-# NOT comparable to the R2R std numbers. Use it for smoke + development;
-# freeze a mip100-style sample before it carries a paper claim.
-BENCHMARK_FROZEN["vlnverse"] = {
-    "benchmark": "vlnverse",
-    "dataset": "fine",         # fine-grained instructions (the R2R analogue)
-    "split": "val_unseen",     # 825 episodes
-    "episodes": "0-99",        # split-file order — see PROVISIONAL note above
-    # Same posture as the R2R std line, not the objnav one: this is a
-    # point-to-point instruction follow, not open-ended exploration, so it
-    # takes std-v2's 200 turns rather than objnav's 150 + USD fuse.
-    "max_turns": 200,
-    "rgb_resolution": 512,     # accepted-and-ignored: Isaac renders 1024²
-    "step_budget": 500,
-    "episode_timeout": 2400,
-}
-
-
-# ── ObjectNav-family benchmarks (re-armed 2026-08-16 from cecd19c): five
-# lines — hm3d (objectnav_hm3d_v1), mp3d (objectnav_mp3d_v1) and the three
-# OVON val splits — each its own board with its own frozen config, exactly
-# as parked on 2026-08-03. Two changes against the parked state:
-# (a) split naming follows the repo-wide TEAPS->MIP rename (a942483): the
-#     materialized dataset-layer splits on disk are mip100/, the env panels
-#     select split="mip100...", manifests live in bridges/splits/;
-# (b) the bare surface is the SINGLE-TOOL step(actions) interface
-#     (objnav_bridge_singlestep.py — user decision 2026-08-16, promoted
-#     from the 2026-07-22 mechanism experiment where it beat the two-tool
-#     observe/step alternation on the sonnet smoke, SR 0.2 vs 0.0). The
-#     pre-park partial runs (hm3d_sdk_fable-5, 38 eps) used the TWO-tool
-#     bridge — a different protocol; never pool them with these boards.
-def _objnav_frozen(benchmark: str, dataset: str | None, split: str,
-                   manifest_stem: str) -> dict:
-    manifest = SPLITS_DIR / f"{manifest_stem}.json"
-    if not manifest.exists():  # provenance must exist — never run unaudited
-        raise FileNotFoundError(
-            f"{benchmark}: missing split manifest {manifest} — run "
-            "coding-agent/scripts/sample_episodes.py --materialize")
-    return {
-        "benchmark": benchmark,
-        "dataset": dataset,
-        "split": split,       # mip100*: derived dataset-layer split
-        "episodes": "0-99",   # the whole MIP100 split, manifest order
-        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
-        # Objnav deviates from std-v2's max_turns=200 (user decision 2026-07-22;
-        # documented in the paper appendix): 150 turns + an $18/episode USD
-        # fuse. The fuse is the CLI's own --max-budget-usd — session ends with
-        # subtype error_max_budget_usd, scored as clean truncation (like
-        # error_max_turns), never retried. Motivation: hm3d smokes showed
-        # cap-burning episodes cost 2-4x a success (worst $38.9) because
-        # full-history resend makes cost grow ~quadratically in turns.
-        "max_turns": 150,
-        "max_budget_usd": 18.0,
-        "step_budget": 500,  # = habitat's ObjectNav max_episode_steps
-        "episode_timeout": 2400,
-    }
-
-
-# hm3d: objectnav_hm3d_v1 (val: 2000 eps / 20 scenes / 6 categories)
-# mp3d: objectnav_mp3d_v1 (val: 2195 eps / 11 scenes / 21 categories)
-# ovon-*: HM3D-OVON (3000 eps / 36 scenes per val split); no dataset
-# selector on its panel (one dataset — the split IS the axis) -> None.
-OBJNAV_FROZEN: dict[str, dict] = {
-    "hm3d": _objnav_frozen("hm3d", "hm3d_v1", "mip100",
-                           "hm3d_val_n100_seed42"),
-    "mp3d": _objnav_frozen("mp3d", "mp3d_v1", "mip100",
-                           "mp3d_val_n100_seed42"),
-    "ovon-seen": _objnav_frozen("ovon-seen", None, "mip100_seen",
-                                "ovon_val_seen_n100_seed42"),
-    "ovon-syn": _objnav_frozen("ovon-syn", None, "mip100_seen_synonyms",
-                               "ovon_val_seen_synonyms_n100_seed42"),
-    "ovon-unseen": _objnav_frozen("ovon-unseen", None, "mip100_unseen",
-                                  "ovon_val_unseen_n100_seed42"),
-}
-OBJNAV_BENCHMARKS = tuple(OBJNAV_FROZEN)  # the five ObjectNav-family lines
-BENCHMARK_FROZEN.update(OBJNAV_FROZEN)
-
-
-# ── MT-HM3D benchmark line (2026-08-17): env_hmeqa's second corpus ──
-# MemoryEQA's benchmark (Zhai et al., arXiv 2505.13948): 1,587 multi-choice
-# questions over 828 HM3D scenes, ridden through the SAME nodeset, bridge,
-# briefing and frozen knobs as the hmeqa line — the ONLY deltas are the
-# panel dataset field (mt_hm3d) and the split corpus. Split mip100 is
-# LABEL-stratified, not scene-stratified (user decision 2026-08-16: scene
-# strata degenerate on 828 scenes/100 slots and skewed Counting to 63%);
-# manifest records the method. 口径 caveats when reporting: answers skew
-# "A" (66/100 in mip100, 67.4% in the full corpus — ALWAYS report the
-# constant-A control beside SR), and published MemoryEQA numbers are on
-# the full 1,587.
-def _mthm3d_frozen() -> dict:
-    manifest = SPLITS_DIR / "mt_hm3d_val_n100_seed42.json"
-    if not manifest.exists():  # provenance must exist — never run unaudited
-        raise FileNotFoundError(
-            f"mthm3d: missing split manifest {manifest} — run "
-            "coding-agent/scripts/sample_episodes.py --benchmark mt_hm3d --materialize")
-    derived = REPO_ROOT / "data" / "hm3d" / "mt_hm3d" / "questions_mip100.csv"
-    if not derived.exists():  # the split the env panel selects must exist too
-        raise FileNotFoundError(
-            f"mthm3d: missing materialized split {derived} — regenerate with "
-            "sample_episodes.py --benchmark mt_hm3d --materialize")
-    return {
-        "benchmark": "mthm3d",
-        "dataset": "mt_hm3d",  # env_hmeqa _DATASET_SPECS key (panel field)
-        "split": "mip100",
-        "episodes": "0-99",
-        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
-        # Same posture as the hmeqa line: 150 turns + $18 fuse, std 500-step
-        # budget enforced bridge-side, tilt actions on.
-        "max_turns": 150,
-        "max_budget_usd": 18.0,
-        "step_budget": 500,
-        "episode_timeout": 2400,
-        "tilt_actions": True,
-    }
-
-
-BENCHMARK_FROZEN["mthm3d"] = _mthm3d_frozen()
-
-
-# ── EXPRESS-Bench benchmark line (2026-08-17): free-form EQA on HM3D ──
-# Jiang et al. ICCV 2025: 2,044 open-vocab QA over 174 scenes, env_express +
-# express_bridge.py (answer(text)), scored by the benchmark's gpt-4o-mini
-# judge over answer + final frame → C / C* / E_path / d_T (driver-side).
-# Split mip100 = scene-stratified seed-42 sample of the FULL 2,044 ("all":
-# the benchmark's train scenes are eval too; published numbers are on the
-# full set — state the 口径). Deviation from the benchmark-native protocol
-# (documented in the bridge docstring): discrete 0.25 m / 30° actions via
-# env_express__step_discrete replace the native free-pose teleports, and
-# the std 500-step budget replaces the scene-sized teleport budget.
-def _express_frozen() -> dict:
-    manifest = SPLITS_DIR / "express_all_n100_seed42.json"
-    if not manifest.exists():  # provenance must exist — never run unaudited
-        raise FileNotFoundError(
-            f"express: missing split manifest {manifest} — run "
-            "coding-agent/scripts/sample_episodes.py --benchmark express --materialize")
-    derived = (REPO_ROOT / "data" / "hm3d" / "express_bench"
-               / "express-bench_mip100.json")
-    if not derived.exists():  # the split the env panel selects must exist too
-        raise FileNotFoundError(
-            f"express: missing materialized split {derived} — regenerate "
-            "with sample_episodes.py --benchmark express --materialize")
-    return {
-        "benchmark": "express",
-        "dataset": None,       # single-JSON benchmark: no dataset selector
-        "split": "mip100",
-        "episodes": "0-99",
-        "episodes_manifest": str(manifest.relative_to(REPO_ROOT)),
-        # Same posture as the hmeqa/mthm3d lines: 150 turns + $18 fuse,
-        # std 500-step budget enforced bridge-side.
-        "max_turns": 150,
-        "max_budget_usd": 18.0,
-        "step_budget": 500,
-        "episode_timeout": 2400,
-    }
-
-
-BENCHMARK_FROZEN["express"] = _express_frozen()
+# ── ObjectNav-family benchmarks# ObjectNav-family membership — driver branches import this tuple; the
+# frozen configs + cells live in exp_workspace/objnav and exp_workspace/ovon.
+OBJNAV_BENCHMARKS = ("hm3d", "mp3d", "ovon-seen", "ovon-syn", "ovon-unseen")
 
 
 # ── slamr2r benchmark line (2026-08-17): SLAM-instrumented R2R-CE ──
@@ -641,87 +407,10 @@ def _cell(harness: str, model_key: str, condition: str,
 
 CLAUDE_MODELS = ("sonnet-5", "opus-4.8", "fable-5")
 
-# main board: bare-only, effort-tiered. Design: each closed harness vs the open
-# mini harness on the SAME models — claude side sdk↔mini (sonnet/opus/fable),
-# openai side codex↔mini (gpt-5.5 / gpt-5.6). (mini·fable-5 completes the
-# claude sdk↔mini pairing; runs via litellm→Anthropic at the same
-# default=high regime as mini·sonnet/opus.)
-BOARD = (
-    ("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"),
-    ("codex", "gpt-5.5"), ("codex", "gpt-5.6"),
-    ("mini", "sonnet-5"), ("mini", "opus-4.8"), ("mini", "fable-5"),
-    ("mini", "gpt-5.5"), ("mini", "gpt-5.6"),
-)
-
-# qwen API flagship — same mini harness as the local qwen column, so the
-# 4b → 9b → API-flagship scaling read stays within one stack. Untier-ed
-# (vendor-default reasoning), bare only.
-QWEN_API_BOARD = (
-    ("mini", "qwen3.7-plus"),
-    ("mini", "qwen3.6-plus"),
-    ("mini", "qwen3.8-plus"),   # newest Qwen flagship — sweep row
-    ("mini", "qwen3.5-plus"),   # API sibling of the local 4b/9b column
-)
-
-# open-weight column: the same mini harness, locally served — the descend-to-
-# small read of the bare surface. (The nav pairing that once rode here was
-# retired with the skill condition.)
-LOCAL_BOARD = (
-    ("mini", "qwen3.5-4b", "bare"),
-    ("mini", "qwen3.5-9b", "bare"),
-)
-
-# waypoint-action-space pilots. sdk + codex only: both reach the env
-# through the stdio bridge, so wp_bridge.py covers them for free; the mini
-# column waits for the toolset.py port (checked by check_equivalence.py).
-WP_BOARD = (
-    ("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "opus-5"), ("sdk", "fable-5"),
-    ("codex", "gpt-5.5"), ("codex", "gpt-5.6"),
-)
-
-# open-weight waypoint pilots. The mini harness now reaches wp through
-# toolset.WaypointToolSet (in-process port of wp_bridge.py, gated by
-# check_equivalence.py) — so qwen runs wp with no MCP subprocess, same path as
-# bare. wp is the action space that structurally removes the two failure
-# modes the step()-space 2×2 found in small models: batching starvation (one
-# goto = one real move the predictor executes, so a single-action model is not
-# penalized) and the stopping wall (a discrete "pick a number / stop" choice).
-LOCAL_WP_BOARD = (
-    ("mini", "qwen3.5-4b", "wp"),
-    ("mini", "qwen3.5-9b", "wp"),
-)
-
 CELLS: dict[str, CellSpec] = {}
-for _h, _m in BOARD:
-    for _t in EFFORT_TIERS:
-        spec = _cell(_h, _m, "bare", _t)
-        CELLS[spec.name] = spec
-
-# wp / local / qwen-API line — untier-ed names (match the existing on-disk runs)
-for _h, _m in QWEN_API_BOARD:
-    spec = _cell(_h, _m, "bare")
-    CELLS[spec.name] = spec
-
-# Opus 5 probe: three targeted R2R cells, bare surface, so the newest
-# frontier Opus lands in the sweep (mini row → Table 2 / harness Table 4) and the
-# effort ablation (sdk default+max → Table 3) without expanding CLAUDE_MODELS.
-OPUS5_CELLS = (
-    ("mini", "opus-5", "bare", "default"),
-    ("sdk",  "opus-5", "bare", "default"),
-    ("sdk",  "opus-5", "bare", "max"),
-)
-for _h, _m, _c, _t in OPUS5_CELLS:
-    spec = _cell(_h, _m, _c, _t)
-    CELLS[spec.name] = spec
-for _h, _m, _c in LOCAL_BOARD:
-    spec = _cell(_h, _m, _c)
-    CELLS[spec.name] = spec
-for _h, _m in WP_BOARD:
-    spec = _cell(_h, _m, "wp")
-    CELLS[spec.name] = spec
-for _h, _m, _c in LOCAL_WP_BOARD:
-    spec = _cell(_h, _m, _c)
-    CELLS[spec.name] = spec
+# (The bare / wp / hybrid / go2 / benchmark-line boards all register from
+# their exp_workspace folders via the loader at the bottom of this module;
+# only the research lines below — imagine, eharness, sdkeh — register here.)
 
 # ── ImagineVLN line (2026-08-14): the wp surface + world-model rollouts ──
 # imagine  = rollout sheets on every look;  imagine0 = the matched control.
@@ -819,8 +508,10 @@ CELLS[_dwp27.name] = _dwp27
 # S4 executor port: SDK loop (subscription auth) + eharness organs living in
 # the bridge process (bridges/eharness_bridge.py); judge = local qwen — the
 # perception-diversity arm the reception-desk failure motivated (executor and
-# judge no longer share one pair of eyes).
-_sdkeh_base = CELLS["std_sdk_sonnet-5_bare_default"]
+# judge no longer share one pair of eyes). Derived via _cell (not a CELLS
+# lookup): the bare std cells register later, from exp_workspace/bare/, and
+# this line must NOT inherit that folder's exp_dir anyway.
+_sdkeh_base = _cell("sdk", "sonnet-5", "bare", "default")
 _sdkeh = replace(
     _sdkeh_base,
     name="std_sdkeh_sonnet-5_bare",
@@ -850,161 +541,12 @@ _sdkeh_dwp_opus = replace(_sdkeh_dwp, name="std_sdkeh_opus-5_dwp",
                           model_key="opus-5", model_id=MODELS["opus-5"])
 CELLS[_sdkeh_dwp_opus.name] = _sdkeh_dwp_opus
 
-# API-qwen waypoint pilots. Same mini + toolset.WaypointToolSet path as the
-# local qwen wp cells, so the wp column now spans local 4b/9b AND the API
-# flagships. Untier-ed; WP_MAX_TURNS puts every wp cell at the same 100.
-API_WP_BOARD = (
-    ("mini", "qwen3.7-plus", "wp"),
-    ("mini", "qwen3.6-plus", "wp"),
-    ("mini", "qwen3.5-plus", "wp"),
-)
-for _h, _m, _c in API_WP_BOARD:
-    spec = _cell(_h, _m, _c)
-    CELLS[spec.name] = spec
-
-# Agent-selected Hybrid Interface — primitive actions AND the waypoint tool in
-# one surface, the model choosing when to use/combine/switch. Same models as the
-# wp column so the hybrid vs primitive-only (bare) vs waypoint-only (wp)
-# contrast stays paired. Needs --wp-server, same as wp.
-HYBRID_BOARD = (
-    ("sdk", "fable-5"), ("sdk", "sonnet-5"),
-)
-for _h, _m in HYBRID_BOARD:
-    spec = _cell(_h, _m, "hybrid")
-    CELLS[spec.name] = spec
-
-# open-weight hybrid pilots. The mini harness reaches the hybrid surface through
-# toolset.HybridToolSet (in-process port of hybrid_bridge.py) — same path as the
-# WaypointToolSet wp cells, no MCP subprocess. This is the descend-to-small read
-# for the interface-choice condition: bare (SR ~0) and wp (the rescue, SR ~0.3)
-# already pin the two standalone action spaces for qwen-4b; hybrid asks whether a
-# small model can PICK between them turn by turn, or whether the added choice —
-# a freedom the frontier models exploit — is one more thing it cannot execute.
-LOCAL_HYBRID_BOARD = (
-    ("mini", "qwen3.5-4b"), ("mini", "qwen3.5-9b"),
-)
-for _h, _m in LOCAL_HYBRID_BOARD:
-    spec = _cell(_h, _m, "hybrid")
-    CELLS[spec.name] = spec
-
-# real-robot pilots: the sdk cells re-embodied on the Unitree Go2
-# via go2_bridge.py. BARE surface — observe + step only, no look_around, no
-# skill (matches the habitat main board's condition),
-# default effort. NOT part of the std board: instruction is operator-supplied
-# (--set instruction=...), the driver skips evaluate (no ground truth — success
-# is judged by a human from the recording), and the server is the go2 host on
-# the robot's machine, not an agentcanvas backend.
-GO2_BOARD = (("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"))
-for _h, _m in GO2_BOARD:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"go2_{_h}_{_m}", condition="go2", go2=True)
-    CELLS[spec.name] = spec
-
-# HM-EQA board: sdk trio, bare surface, default effort — cell
-# names carry the benchmark prefix (hmeqa_sdk_fable-5), parallel to std_* and
-# go2_*. Servers: env_hmeqa auto_host (ac-hmeqa env); the driver refuses a
-# mismatched server name.
+# The go2 / hmeqa(+mthm3d/hmeqa500) / vlnverse / libero(×4 rungs) /
+# objnav-family / express boards register from their exp_workspace folders.
+# These two tuples remain the shared sdk columns the loader hands to every
+# folder (register(..., sdk_models=OBJNAV_SDK_MODELS, claude_models=...)):
 SDK_TRIO = (("sdk", "sonnet-5"), ("sdk", "opus-4.8"), ("sdk", "fable-5"))
-for _h, _m in SDK_TRIO:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"hmeqa_{_h}_{_m}", condition="hmeqa",
-                   benchmark="hmeqa")
-    CELLS[spec.name] = spec
-
-# VLNVerse board: same sdk trio, bare surface, default effort.
-# Server: env_vlnverse auto_host (ac-vlnverse env, Isaac 5.1 worker behind it);
-# the driver refuses a mismatched server name. wp/hybrid cells are NOT built
-# for this line — the driver refuses that combination outright (CCW pano
-# indexing + a habitat-trained waypoint predictor); see driver.py.
-for _h, _m in SDK_TRIO:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"vlnverse_{_h}_{_m}", condition="vlnverse",
-                   benchmark="vlnverse")
-    CELLS[spec.name] = spec
-
-# LIBERO board: sdk trio, bare surface (observe + 7-D step only),
-# default effort — cell names carry the benchmark prefix (libero_sdk_fable-5),
-# parallel to std_* / go2_* / hmeqa_*. Servers: env_libero auto_host
-# (ac-libero env, MUJOCO_GL=egl); the driver refuses a mismatched server name.
-for _h, _m in SDK_TRIO:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"libero_{_h}_{_m}", condition="libero",
-                   benchmark="libero")
-    CELLS[spec.name] = spec
-
-# LIBERO full condition: the SENSOR rung of the interface ladder,
-# after the fable ep0 anatomy showed the bare wall is the depth/height DoF.
-# Same two tools; observe adds the wrist view + proprio readout, step reports
-# measured EE movement, and auto-observe carries the post-move views (halves
-# the look-move turn cost, nav-line precedent). Sensors and feedback only —
-# no skills, no planner, no task logic; see libero_bridge.py.
-for _h, _m in SDK_TRIO:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"libero_{_h}_{_m}_full",
-                   condition="libero_full", benchmark="libero", bare=False,
-                   extra=_base.extra + (("auto_observe", 1),))
-    CELLS[spec.name] = spec
-
-# LIBERO toolbox condition: max out the tool surface first, attribute
-# downward later. Atomic tools —
-# observe_third_person / observe_wrist / get_state / get_objects (the
-# simulator's GT scene readout) / move_to servo / gripper macro — plus the
-# native step() escape hatch, all over the env's frozen VoxPoser-era nodes.
-# Deliberately PRIVILEGED (GT positions): this rung asks "does the loaded
-# surface complete tasks at all", not "is the interface minimal"; the
-# minimal-interface story keeps bare/full, and ablation walks down from
-# here one tool at a time. See libero_bridge.py TOOLBOX.
-for _h, _m in SDK_TRIO:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"libero_{_h}_{_m}_tb",
-                   condition="libero_toolbox", benchmark="libero", bare=False,
-                   extra=_base.extra + (("toolbox", 1),))
-    CELLS[spec.name] = spec
-
-# LIBERO toolbox-vision condition: the toolbox with its ONE privileged
-# tool swapped out — get_objects
-# (sim GT) → pixel_to_3d (depth backprojection over the new
-# env_libero__pixel_to_3d node; camera geometry + depth buffer only).
-# Everything else identical, so _tb vs _tbv prices exactly the perception
-# privilege. sonnet _tb baseline: 9/10.
-for _h, _m in SDK_TRIO:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"libero_{_h}_{_m}_tbv",
-                   condition="libero_toolbox_vision", benchmark="libero",
-                   bare=False,
-                   extra=_base.extra + (("toolbox", 1), ("toolbox_gt", 0)))
-    CELLS[spec.name] = spec
-
-# ObjectNav-family boards (re-armed 2026-08-16): bare surface — which for
-# this family means the single-tool step() interface, see OBJNAV_FROZEN
-# note — default effort, sdk column. The go2/hmeqa trio plus opus-5: the
-# 2026-08-16 baseline sweep runs the opus-5 row first.
 OBJNAV_SDK_MODELS = SDK_TRIO + (("sdk", "opus-5"),)
-for _bench in OBJNAV_BENCHMARKS:
-    for _h, _m in OBJNAV_SDK_MODELS:
-        _base = _cell(_h, _m, "bare", "default")
-        spec = replace(_base, name=f"{_bench}_{_h}_{_m}", condition=_bench,
-                       benchmark=_bench)
-        CELLS[spec.name] = spec
-
-# MT-HM3D board (2026-08-17): same sdk column as the objnav re-arm —
-# servers: env_hmeqa auto_host (ac-hmeqa env); the driver refuses a
-# mismatched server name.
-for _h, _m in OBJNAV_SDK_MODELS:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"mthm3d_{_h}_{_m}", condition="mthm3d",
-                   benchmark="mthm3d")
-    CELLS[spec.name] = spec
-
-# EXPRESS-Bench board (2026-08-17): same sdk column — servers: env_express
-# auto_host (ac-hmeqa env, EXPRESS_PYTHON override); the driver refuses a
-# mismatched server name. The judge additionally needs OPENAI_API_KEY in
-# the driver's environment (gpt-4o-mini, driver-side).
-for _h, _m in OBJNAV_SDK_MODELS:
-    _base = _cell(_h, _m, "bare", "default")
-    spec = replace(_base, name=f"express_{_h}_{_m}", condition="express",
-                   benchmark="express")
-    CELLS[spec.name] = spec
 
 # slamr2r cells (the SLAM lineage) now live in exp_workspace/ — one folder
 # per experiment, self-registering via each folder's exp.py (loaded at the
@@ -1014,44 +556,10 @@ for _h, _m in OBJNAV_SDK_MODELS:
 # (*_default = vendor-default main experiment, *_max = elevated ablation);
 # Q/W/WQ are the untier-ed wp/local line.
 BATCHES = {
-    # new-model probes: Opus 5 trio (mini sweep + sdk default/max
-    # effort) and the Qwen3.8 sweep row. All R2R-CE rand100, reusing STD_FROZEN.
-    "O5": ["std_mini_opus-5_bare_default", "std_sdk_opus-5_bare_default",
-           "std_sdk_opus-5_bare_max"],
-    "Q8": ["std_mini_qwen3.8-plus_bare"],
-    # default-effort main experiment (paper main table)
-    "Ad": [f"std_sdk_{m}_bare_default" for m in CLAUDE_MODELS],
-    "Bd": ["std_mini_sonnet-5_bare_default", "std_mini_opus-4.8_bare_default"],  # anthropic key
-    "Gd": ["std_mini_gpt-5.5_bare_default", "std_mini_gpt-5.6_bare_default"],    # openai key
-    "Xd": ["std_codex_gpt-5.5_bare_default", "std_codex_gpt-5.6_bare_default"],
-    # max-effort ablation (already run)
-    "A": [f"std_sdk_{m}_bare_max" for m in CLAUDE_MODELS],
-    "B": ["std_mini_sonnet-5_bare_max", "std_mini_opus-4.8_bare_max"],
-    "G": ["std_mini_gpt-5.5_bare_max", "std_mini_gpt-5.6_bare_max"],
-    "X": ["std_codex_gpt-5.5_bare_max", "std_codex_gpt-5.6_bare_max"],
-    # local GPU, $0. The mini adapter brings ollama up with the context
-    # pinned; it refuses to run if it can't.
-    "Q": ["std_mini_qwen3.5-4b_bare", "std_mini_qwen3.5-9b_bare"],
-    # waypoint pilots (needs --wp-server; see coding-agent/README.md)
-    "W": ["std_sdk_sonnet-5_wp", "std_sdk_fable-5_wp"],
-    # open-weight waypoint pilots, local GPU $0 (needs --wp-server)
-    "WQ": ["std_mini_qwen3.5-4b_wp", "std_mini_qwen3.5-9b_wp"],
-    # HM-EQA board — servers: env_hmeqa auto_host (ac-hmeqa env)
-    "EQ": [f"hmeqa_sdk_{m}" for m in CLAUDE_MODELS],
-    # LIBERO board — servers: env_libero auto_host (ac-libero env)
-    "LB": [f"libero_sdk_{m}" for m in CLAUDE_MODELS],
-    # ObjectNav-family boards — one batch per benchmark line (peer lines, not
-    # one merged "objnav" batch). Servers: env_objnav auto_host for OH/OM,
-    # env_ovon auto_host for the OV* trio (the driver refuses a mismatch).
-    "OH": [f"hm3d_sdk_{m}" for m in CLAUDE_MODELS],
-    "OM": [f"mp3d_sdk_{m}" for m in CLAUDE_MODELS],
-    "OVS": [f"ovon-seen_sdk_{m}" for m in CLAUDE_MODELS],
-    "OVY": [f"ovon-syn_sdk_{m}" for m in CLAUDE_MODELS],
-    "OVU": [f"ovon-unseen_sdk_{m}" for m in CLAUDE_MODELS],
-    # the 2026-08-16 opus-5 baseline sweep across all five objnav boards
-    "O5N": [f"{b}_sdk_opus-5" for b in OBJNAV_BENCHMARKS],
-    # slamr2r A/B — servers: env_slam_vlnce auto_host (ac-habitat033 env)
-    # SL / SLI / SL2 (slam lineage) are registered by exp_workspace folders
+    # ALL batches now register from the exp_workspace folders (bare: O5 Q8
+    # Ad Bd Gd Xd A B G X Q RX · wp: W WQ RXW · hmeqa: EQ · libero_bare: LB
+    # · objnav: OH OM O5N · ovon: OVS OVY OVU · slam folders: SL SLI SL2
+    # SXI).
 }
 
 

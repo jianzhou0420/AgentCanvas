@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -91,6 +92,10 @@ EHARNESS_BRIDGE_PATH = REPO_ROOT / "coding-agent" / "bridges" / "eharness_bridge
 # slamrxr = RxR-CE rand100) sharing the folder's code. Every driver branch
 # that used to test == "slamr2r" now tests membership here.
 SLAM_BENCHMARKS = ("slamr2r", "slamrxr")
+# hmeqa family (2026-08-18, exp_workspace hmeqa folder): two corpora plus the
+# full-500 val profile ride ONE nodeset/bridge/briefing — every branch that
+# used to test the hmeqa/mthm3d pair literal tests membership here instead.
+HMEQA_BENCHMARKS = ("hmeqa", "mthm3d", "hmeqa500")
 
 
 def env_verb_prefix(benchmark: str) -> str:
@@ -101,7 +106,7 @@ def env_verb_prefix(benchmark: str) -> str:
     the pre-flight peer check (a mismatched server places the WRONG episodes)
     a one-liner for every line rather than a per-family special case.
     """
-    if benchmark in ("hmeqa", "mthm3d"):  # two corpora, one nodeset
+    if benchmark in HMEQA_BENCHMARKS:  # two corpora, one nodeset
         return "env_hmeqa"
     if benchmark == "express":
         return "env_express"
@@ -471,7 +476,7 @@ class EpisodeContext:
             return GO2_BRIDGE_PATH
         if self.benchmark in OBJNAV_BENCHMARKS:
             return OBJNAV_BRIDGE_PATH
-        if self.benchmark in ("hmeqa", "mthm3d"):
+        if self.benchmark in HMEQA_BENCHMARKS:
             return HMEQA_BRIDGE_PATH
         if self.benchmark == "express":
             return EXPRESS_BRIDGE_PATH
@@ -515,7 +520,7 @@ class EpisodeContext:
                 "OBJNAV_BARE": "1" if self.bare else "0",
                 "OBJNAV_LIVE_DIR": str(self.live_dir),
             }
-        if self.benchmark in ("hmeqa", "mthm3d"):
+        if self.benchmark in HMEQA_BENCHMARKS:
             return {
                 "HMEQA_SERVER_URL": self.server_url,
                 "HMEQA_STEP_BUDGET": str(self.step_budget),
@@ -699,7 +704,7 @@ async def run_episode(
                 f"(episode {index}) — episode placement failed?"
             )
         instruction = category.replace("_", " ")
-    elif spec.benchmark in ("hmeqa", "mthm3d"):
+    elif spec.benchmark in HMEQA_BENCHMARKS:
         # Same placement flow (panel episode_index + play). reset's
         # `question` port is the RAW text (the verified explore_eqa_hmeqa
         # graph depends on that — it appends the choices itself), so the
@@ -847,9 +852,15 @@ async def run_episode(
     dwp = flag_on(cfg["extra"].get("dwp", cfg.get("dwp", "")))
     instruments = int(cfg.get("instruments") or 0)
     if spec.exp_dir:
-        # exp_workspace cell: the folder's own (frozen) briefing builder
-        briefing = _exp_module(spec.exp_dir).build_briefing(
-            instruction, cfg["step_budget"])
+        # exp_workspace cell: the folder's own (frozen) briefing builder.
+        # Builders declare only the knobs their surface needs; extra kwargs
+        # are passed ONLY when the signature names them, so the frozen
+        # two-arg folders (slam_*, bare) keep their exact historical call.
+        _builder = _exp_module(spec.exp_dir).build_briefing
+        _kw = {}
+        if "wp_max_moves" in inspect.signature(_builder).parameters:
+            _kw["wp_max_moves"] = cfg.get("wp_max_moves", 30)
+        briefing = _builder(instruction, cfg["step_budget"], **_kw)
     else:
         briefing = build_briefing(
             instruction, cfg["step_budget"], bare=spec.bare,
@@ -873,7 +884,7 @@ async def run_episode(
         briefing=briefing,
         first_prompt=(HYBRID_FIRST_PROMPT if spec.hybrid
                       else HMEQA_FIRST_PROMPT
-                      if spec.benchmark in ("hmeqa", "mthm3d", "express")
+                      if (spec.benchmark in HMEQA_BENCHMARKS or spec.benchmark == "express")
                       else (LIBERO_TOOLBOX_FIRST_PROMPT if toolbox_gt
                             else LIBERO_TOOLBOX_VISION_FIRST_PROMPT)
                       if spec.benchmark == "libero" and toolbox
@@ -921,7 +932,7 @@ async def run_episode(
             "first_prompt": ctx.first_prompt,
             "tool_schemas": await bridge_tool_schemas(
                 spec.bare, spec.wp, spec.go2,
-                spec.benchmark in ("hmeqa", "mthm3d"),
+                spec.benchmark in HMEQA_BENCHMARKS,
                 bool(cfg.get("tilt_actions", True)),
                 auto_observe, spec.hybrid,
                 libero=spec.benchmark == "libero",
@@ -950,7 +961,7 @@ async def run_episode(
         # made from the recording, so metrics stay empty rather than fabricated.
         metrics: dict[str, Any] = {}
         if not spec.go2:
-            if spec.benchmark in ("hmeqa", "mthm3d"):
+            if spec.benchmark in HMEQA_BENCHMARKS:
                 # The agent's letter rides the tool-result channel (see
                 # hmeqa_bridge.answer — its result carries steps_taken_total,
                 # so it lands as the sink's last parsed step result). An
@@ -1030,7 +1041,7 @@ async def run_episode(
         },
         "wall_sec": round(wall, 1),
     }
-    if spec.benchmark in ("hmeqa", "mthm3d", "express") and last.get("answer"):
+    if (spec.benchmark in HMEQA_BENCHMARKS or spec.benchmark == "express") and last.get("answer"):
         episode["agent"]["answer"] = last.get("answer")
     if outcome.error:
         episode["error"] = outcome.error

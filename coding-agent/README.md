@@ -22,10 +22,15 @@ stdrun.py     CLI: run / batch / board / compare
 monitor_api.py  the run-artifact + scoring contract — the ONE surface any
               monitor consumes runs through (layout, honest-SR rule, roots,
               uirun spawn contract); backend loads it by path
-bridges/      the agent-facing tool surfaces (stdio MCP): mcp · wp · hybrid ·
-              hmeqa · express · objnav(singlestep) · go2(+go2_host) · libero ·
-              slam (bare surface + instrument-gated SLAM queries over
-              env_slam_vlnce); splits/ = tracked sampling-provenance
+bridges/      SHARED bridge sources (stdio MCP). Since 2026-08-18 every
+              experiment line runs its own exp_workspace copy; these files
+              remain as (a) the byte-gate references for the folder copies
+              and mini's in-process ports (check_equivalence.py) — folder
+              copy and shared file must not drift, (b) the introspection
+              surface for the research lines still registered in cells.py
+              (eharness · imagine · sdkeh), and (c) provenance
+              (objnav_bridge.py = the retired two-tool variant).
+              splits/ = tracked sampling-provenance
               manifests for the derived mip env splits (data/ is gitignored,
               so these are the one versioned record of what each split holds)
 exp_workspace/  one folder = ONE experiment (2026-08-18 rule: orchestration
@@ -36,8 +41,19 @@ exp_workspace/  one folder = ONE experiment (2026-08-18 rule: orchestration
               edit one whose boards have run. Serve an env with PYTHONPATH =
               coding-agent + agentcanvas/backend and `python -m
               app.server.auto_host --module exp_workspace.<exp>.nodeset
-              --class EnvSlamVlnceNodeSet --port 92xx` (ac-habitat033
-              python). Current: slam_r2r_baseline / slam_r2r_01 / slam_r2r_02
+              --class <NodeSet> --port 92xx` (the folder's env python; see
+              each folder's exp.py header). Since 2026-08-18 ALL experiment
+              lines live here — cells.py registers only the research lines
+              (imagine · eharness · sdkeh) plus shared machinery. Folders:
+              slam_baseline/01/02 (ac-habitat033) · bare · wp · hybrid
+              (ac-vlnce; wp/hybrid also need the :9210 predictor) ·
+              vlnverse (ac-vlnverse) · hmeqa (3 profiles: hmeqa / mthm3d /
+              hmeqa500; ac-hmeqa) · express (ac-hmeqa) · objnav · ovon
+              (ac-objnav) · libero_bare/_full/_tb/_tbv (ac-libero, arm
+              flags BAKED per folder) · go2 (bridge + robot-side host, no
+              nodeset). Historical cell names unchanged everywhere; new
+              seats: rxr_sdk_*_bare_default (RX) · rxr_sdk_*_wp (RXW) ·
+              hmeqa500_sdk_fable-5
 scripts/      standalone analysis scripts: analyze_hybrid.py (feeds the paper's hybrid section)
 ac_support/   AgentCanvas Monitor support: uirun.py (Run-button entry) ·
               run_stats.py (stats backfill) — spawned by the backend
