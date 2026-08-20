@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Define a Model with Docker — AgentCanvas</title>
+<meta name="description" content="Container Launch — one ClassVar turns a nodeset into a docker-served model">
+<meta property="og:title" content="Define a Model with Docker — AgentCanvas">
+<meta property="og:description" content="Container Launch — one ClassVar turns a nodeset into a docker-served model">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentCanvas">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:url" content="https://jianzhou0420.github.io/AgentCanvas/pages/developer-guide/tutorial/define-a-model-with-docker.html">
+<meta property="og:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<meta name="twitter:image" content="https://jianzhou0420.github.io/AgentCanvas/assets/screenshots/landing-light.png">
+<link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../../assets/style.css">
+<script>
+  // Apply theme before paint to avoid flash.
+  (function() {
+    var t = localStorage.getItem('site-theme');
+    if (!t) { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="nav-title" content="Define a Model with Docker">
+
+<!-- site-layout -->
+</head>
+<body data-asset-prefix="../../../" data-tab="Developer Guide" data-page-rel="pages/developer-guide/tutorial/define-a-model-with-docker.html">
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="site-logo" href="../../../index.html">AgentCanvas</a>
+    <nav class="site-tabs" id="site-tabs" aria-label="Site sections"></nav>
+    <div class="site-actions">
+      <button class="site-action search-btn" aria-label="Search" title="Search (press /)">🔍</button>
+      <button class="site-action share-btn" aria-label="Share" title="Share this page" aria-haspopup="true" aria-expanded="false">🔗</button>
+      <button class="site-action theme-toggle" aria-label="Toggle theme" title="Toggle dark mode">🌙</button>
+      <button class="site-action mobile-nav-toggle" aria-label="Menu" title="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<div class="site-layout has-right-toc">
+
+<aside class="sidebar-left" id="sidebar-left" aria-label="Section navigation"><div class="sidebar-inner"></div></aside>
+
+<main class="doc-body guide">
+  <div class="topbar">
+  <div class="crumbs">
+    <a href="../../../index.html">AgentCanvas</a>
+    <span class="sep">/</span>
+    Pages
+    <span class="sep">/</span>
+    Developer Guide
+    <span class="sep">/</span>
+    <a href="index.html">Tutorial</a>
+    <span class="sep">/</span>
+    <span class="here">Define a Model with Docker</span>
+  </div>
+  <div class="last-updated">2026-08-20</div>
+</div>
+  <header class="page-header guide">
+  <h1>Define a Model with Docker</h1>
+  <p class="tagline">Container Launch — one ClassVar turns a nodeset into a docker-served model</p>
+</header>
+
+<p class="lede">Some models can't be expressed as a conda environment at all: a compiled C++ world with its own build system (ORB-SLAM3), a GPL codebase that must stay out of the framework's process and env (pySLAM), a stack that insists on its own OS packages. For these, declare a <strong>docker image</strong> instead of an interpreter — <strong>Container Launch</strong> (<a href="../design-docs/operations/container-launch.html">design doc</a>, <a href="../core/decisions/server/adr-server-005-container-launch.html">ADR-server-005</a>). Everything else about the nodeset is ordinary: nodes are written as in <a href="define-a-node.html">Define a Node</a>, the class as in <a href="define-a-nodeset.html">Define a NodeSet</a>, and the canvas sees auto-generated proxy nodes exactly as for a conda-served nodeset. Prerequisite: a rootless docker daemon (<a href="../getting-started/installation.html#26-rootless-docker">Installation §2.6</a>).</p>
+
+<h2 id="1-when"><span class="num">1.</span> When Docker, not conda</h2>
+<p>Server mode has two launch vehicles; pick per nodeset:</p>
+<table>
+<thead><tr><th>Situation</th><th>Declare</th><th>Vehicle</th></tr></thead>
+<tbody>
+<tr><td>Model installs cleanly into a conda env (its own torch, pinned Python)</td><td><code>server_python</code></td><td>Native Launch — host subprocess</td></tr>
+<tr><td>Model needs a compiled system stack, its own OS packages, or license isolation (GPL out of the framework env)</td><td><code>server_image</code></td><td>Container Launch — <code>docker run</code></td></tr>
+</tbody>
+</table>
+<p>When both are set, <strong><code>server_image</code> wins</strong>. Either way the container/subprocess serves the same protocol (<code>/manifest</code> · <code>/call/{fn}</code> · <code>/health</code> · <code>/mcp</code>), so nothing downstream changes — and the framework is <em>never</em> baked into the image: the repo is bind-mounted read-only at <code>/opt/agentcanvas-workspace</code> and the container runs the stock <code>auto_host</code> from that mount. A framework upgrade never requires an image rebuild.</p>
+
+<h2 id="2-layout"><span class="num">2.</span> Folder layout</h2>
+<p>An image recipe is a sidecar, so the nodeset is a <strong>folder package</strong> (see <a href="define-a-nodeset.html">Define a NodeSet</a> §1). Everything you author lives in the folder; the built image lives in the docker store, weights under <code>data/</code>, outputs under <code>outputs/</code>:</p>
+<pre>
+workspace/nodesets/model/model_mymodel/
+├── __init__.py            # nodes + nodeset class + all Container-Launch ClassVars
+├── _backend.py            # (optional) in-container logic, imported by the nodes
+└── docker/
+    ├── Dockerfile         # model deps + requirements-serve.txt — never framework code
+    ├── build.sh           # builds into the rootless store
+    ├── requirements-serve.txt
+    ├── patches/           # (optional) build fixes applied to the upstream clone
+    └── weights/           # (optional) download scripts + README — not the weights themselves
+</pre>
+
+<h2 id="3-dockerfile"><span class="num">3.</span> The Dockerfile contract</h2>
+<p>The image carries the model's own world plus the small serve set — nothing else:</p>
+<!-- BLOCK:dockerfile -->
+<pre class="hl">
+<span class="c"># workspace/nodesets/model/model_mymodel/docker/Dockerfile</span>
+<span class="k">FROM</span><span class="s"> ubuntu:22.04</span>
+
+<span class="c"># 1. The model&#x27;s own world — compilers, libs, the model stack itself</span>
+<span class="k">RUN</span> apt-get update <span class="o">&amp;&amp;</span> apt-get install -y --no-install-recommends <span class="se">\</span>
+        python3 python3-pip git cmake build-essential <span class="se">\</span>
+    <span class="o">&amp;&amp;</span> rm -rf /var/lib/apt/lists/*
+<span class="c"># ... clone / build / install your model here ...</span>
+
+<span class="c"># 2. Serve deps — lets the stock app.server.auto_host run from the repo mount</span>
+<span class="k">COPY</span> requirements-serve.txt /tmp/
+<span class="k">RUN</span> pip install --no-cache-dir -r /tmp/requirements-serve.txt
+
+<span class="c"># 3. Build-time smoke — the import your nodes rely on must resolve</span>
+<span class="k">RUN</span> python3 -c <span class="s2">&quot;import mymodel; print(&#x27;binding OK&#x27;)&quot;</span>
+
+<span class="c"># No ENTRYPOINT, no CMD, no framework code. The command comes from the</span>
+<span class="c"># framework at run time; the framework comes from the read-only repo mount.</span>
+</pre>
+<p>Three rules, each learned the hard way (they are pinned in the <a href="../design-docs/operations/container-launch.html">design doc</a>'s deviations):</p>
+<ul>
+<li><strong>No framework code in the image.</strong> <code>requirements-serve.txt</code> (fastapi / uvicorn / httpx / msgpack / numpy / pydantic / pyyaml; optional <code>mcp</code>) is the only framework-adjacent content — copy the reference file from <code>agentcanvas/backend/requirements-serve.txt</code> into <code>docker/</code>.</li>
+<li><strong>Prefer no ENTRYPOINT.</strong> An entrypoint that mutates the environment (pyenv/conda activation) wipes the framework's <code>-e PYTHONPATH</code> injection — the container then dies with <code>No module named 'app'</code>. If the image must have one, save and restore <code>PYTHONPATH</code> inside it.</li>
+<li><strong>Mind the image's <code>USER</code>.</strong> Under rootless docker, container root <em>is</em> the invoking host user, but a non-root image user maps to a foreign subuid that cannot write host-owned rw mounts. An image that drops to a non-root user needs <code>server_container_user = "0:0"</code> (§4) — this loosens nothing.</li>
+</ul>
+<p><code>build.sh</code> targets the rootless daemon explicitly, so it works from any shell:</p>
+<!-- BLOCK:buildsh -->
+<pre class="hl">
+<span class="ch">#!/usr/bin/env bash</span>
+<span class="c1"># docker/build.sh — targets the rootless daemon regardless of shell context</span>
+<span class="nb">export</span> <span class="nv">DOCKER_HOST</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">unix:///run/user/</span><span class="k">$(</span>id -u<span class="k">)</span><span class="s2">/docker.sock</span><span class="s2">&quot;</span>
+docker build -t agentcanvas/mymodel:latest <span class="s2">&quot;</span><span class="k">$(</span>dirname <span class="s2">&quot;</span><span class="nv">$0</span><span class="s2">&quot;</span><span class="k">)</span><span class="s2">&quot;</span>
+</pre>
+
+<h2 id="4-nodeset"><span class="num">4.</span> The nodeset class</h2>
+<p>One ClassVar is the whole trigger; the rest of the family tunes the container. Note the two-import life of this module: the backend imports it on the host during discovery (declarations only — model imports must be lazy), and the stock <code>auto_host</code> imports it again <em>inside</em> the container, where the lazy imports resolve and the nodes actually run.</p>
+<!-- BLOCK:nodeset -->
+<pre class="hl">
+<span class="sd">&quot;&quot;&quot;MyModel NodeSet — served via Container Launch.</span>
+
+<span class="sd">Load:  POST /api/components/nodesets/model_mymodel/load</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span> <span class="nn">__future__</span> <span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">ClassVar</span>
+
+<span class="kn">from</span> <span class="nn">app.components</span> <span class="kn">import</span> <span class="n">BaseCanvasNode</span><span class="p">,</span> <span class="n">BaseNodeSet</span><span class="p">,</span> <span class="n">PortDef</span>
+
+<span class="n">_SESSION</span> <span class="o">=</span> <span class="bp">None</span>  <span class="c1"># module-level: the container process is long-lived</span>
+
+
+<span class="k">class</span> <span class="nc">MyModelInfer</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">)</span><span class="p">:</span>
+    <span class="n">node_type</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">model_mymodel__infer</span><span class="s2">&quot;</span>
+    <span class="c1"># ... ports and identity as in Define a Node ...</span>
+
+    <span class="n">async</span> <span class="k">def</span> <span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="kn">import</span> <span class="nn">mymodel</span>  <span class="c1"># lazy: resolves only inside the container</span>
+        <span class="o">.</span><span class="o">.</span><span class="o">.</span>
+
+
+<span class="k">class</span> <span class="nc">MyModelNodeSet</span><span class="p">(</span><span class="n">BaseNodeSet</span><span class="p">)</span><span class="p">:</span>
+    <span class="sd">&quot;&quot;&quot;MyModel via Container Launch.&quot;&quot;&quot;</span>
+
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">model_mymodel</span><span class="s2">&quot;</span>
+    <span class="n">description</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">MyModel inference nodes</span><span class="s2">&quot;</span>
+
+    <span class="n">server_image</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">agentcanvas/mymodel:latest</span><span class="s2">&quot;</span>  <span class="c1"># &lt;- the whole trigger</span>
+    <span class="n">server_image_gpu</span> <span class="o">=</span> <span class="bp">True</span>                      <span class="c1"># CDI; one CPU-degrade retry</span>
+    <span class="n">server_mounts</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;</span><span class="s2">data/models/mymodel</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">/opt/weights:ro</span><span class="s2">&quot;</span><span class="p">,</span>  <span class="c1"># missing ro -&gt; skipped (warn)</span>
+        <span class="s2">&quot;</span><span class="s2">outputs/mymodel_runs</span><span class="s2">&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="s2">/opt/out</span><span class="s2">&quot;</span><span class="p">,</span>        <span class="c1"># missing rw -&gt; created</span>
+    <span class="p">}</span>
+    <span class="c1"># server_container_python = &quot;/opt/venv/bin/python&quot;  # image with a baked venv</span>
+    <span class="c1"># server_container_user = &quot;0:0&quot;    # image whose USER is non-root + rw mounts</span>
+    <span class="n">parallelism</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">replicated</span><span class="s2">&quot;</span>         <span class="c1"># stateful session: one container per worker</span>
+
+    <span class="k">def</span> <span class="nf">get_tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">list</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">MyModelInfer</span><span class="p">(</span><span class="p">)</span><span class="p">]</span>
+</pre>
+<p>The Container-Launch ClassVar family:</p>
+<table>
+<thead><tr><th>Field</th><th>Default</th><th>What it decides</th></tr></thead>
+<tbody>
+<tr><td><code>server_image</code></td><td><code>None</code></td><td>Docker image tag. Setting it auto-routes the nodeset to server mode on Container Launch; takes precedence over <code>server_python</code>. The image must already be in the rootless store — a missing image fails the load with an explicit "build it" error, nothing is auto-pulled.</td></tr>
+<tr><td><code>server_image_gpu</code></td><td><code>False</code></td><td>Request the GPU via CDI (<code>--device nvidia.com/gpu=all</code>). A failed GPU start degrades once to a CPU start of the same image.</td></tr>
+<tr><td><code>server_mounts</code></td><td><code>{}</code></td><td>Extra binds, <code>{host_path: "container_path[:ro]"}</code>. Host paths may be absolute, <code>~</code>-prefixed, or repo-root-relative. Missing <strong>ro</strong> path → skipped with a warning (an optional weights dir degrades that capability, not the start). Missing <strong>rw</strong> path → <em>created</em> (it is an output drop; skipping would strand writes inside the container).</td></tr>
+<tr><td><code>server_container_python</code></td><td><code>"python3"</code></td><td>Interpreter <em>inside</em> the container. Images with a baked venv must point at its exact python.</td></tr>
+<tr><td><code>server_container_user</code></td><td><code>None</code></td><td><code>docker run --user</code> override. Set <code>"0:0"</code> for images whose <code>USER</code> is non-root and that write rw mounts (§3); pair with a <code>HOME</code> entry in <code>server_env</code> when the image's paths assume the baked user's home.</td></tr>
+<tr><td><code>server_env</code></td><td><code>{}</code></td><td>Env vars injected into the container (<code>-e</code>) — model knobs, <code>HOME</code>, cache paths.</td></tr>
+</tbody>
+</table>
+
+<h2 id="5-verify"><span class="num">5.</span> Build, load, verify</h2>
+<!-- BLOCK:verify -->
+<pre class="hl">
+<span class="c1"># 1. build the image into the rootless store (repeat only when the recipe changes)</span>
+bash workspace/nodesets/model/model_mymodel/docker/build.sh
+
+<span class="c1"># 2. load — server_image auto-routes the nodeset to server mode, Container Launch</span>
+curl -X POST http://127.0.0.1:8000/api/components/nodesets/model_mymodel/load
+
+<span class="c1"># 3. see it running: deterministic name, protocol port on 127.0.0.1</span>
+docker ps --format <span class="s1">&#x27;{{.Names}}&#x27;</span>   <span class="c1"># -&gt; ac_auto_model_mymodel_&lt;port&gt;</span>
+</pre>
+<p>What the load does, in order: checks the image exists → reaps any stale container of the same name → starts a foreground <code>docker run --rm --init</code> as a direct child (so health polling and process cleanup work exactly as for a conda subprocess) → waits for <code>/health</code> → fetches <code>/manifest</code> → generates one proxy node per function. From here on, everything is the ordinary server-mode feature set: canvas wiring, env-panel bridge, batch eval with per-worker containers (<code>parallelism = "replicated"</code>), the <code>/mcp</code> projection. Node code that must call back into the executor reaches it automatically — loopback executor URLs are rewritten to <code>host.docker.internal</code> at assembly time.</p>
+
+<h2 id="6-checklist"><span class="num">6.</span> Checklist</h2>
+<ul class="checklist">
+<li>Folder package with the recipe in <code>docker/</code>; weights <em>scripts</em> in the folder, weight <em>files</em> under <code>data/</code> via <code>server_mounts</code></li>
+<li>Image = model deps + <code>requirements-serve.txt</code>; no framework code, no <code>ENTRYPOINT</code>/<code>CMD</code></li>
+<li>Build-time smoke <code>RUN python3 -c "import …"</code> so a broken binding fails the build, not the first load</li>
+<li>Model imports lazy (inside <code>forward()</code> / <code>initialize()</code>) — the module must import cleanly on the host during discovery</li>
+<li>Non-root image <code>USER</code> + rw mounts ⇒ <code>server_container_user = "0:0"</code> (+ <code>HOME</code> in <code>server_env</code>)</li>
+<li>Baked venv ⇒ <code>server_container_python</code> points at its exact interpreter</li>
+<li>Stateful session ⇒ <code>parallelism = "replicated"</code> and a module-level session singleton, torn down in <code>shutdown()</code></li>
+<li>Worked examples: <a href="../nodesets/model/model-orbslam3.html">model_orbslam3</a> (minimal, CPU, root image) and <a href="../nodesets/model/model-pyslam.html">model_pyslam</a> (GPU, baked venv, non-root image — the full ClassVar family in use)</li>
+</ul>
+
+  <footer>
+    <span>AgentCanvas docs</span>
+  </footer>
+</main>
+
+<aside class="sidebar-right" aria-label="On this page">
+  <div class="sidebar-inner">
+    <span class="toc-label">On this page</span>
+    <nav class="toc-list">
+      <a class="toc-h2" href="#1-when">1. When Docker, not conda</a>
+      <a class="toc-h2" href="#2-layout">2. Folder layout</a>
+      <a class="toc-h2" href="#3-dockerfile">3. The Dockerfile contract</a>
+      <a class="toc-h2" href="#4-nodeset">4. The nodeset class</a>
+      <a class="toc-h2" href="#5-verify">5. Build, load, verify</a>
+      <a class="toc-h2" href="#6-checklist">6. Checklist</a>
+    </nav>
+  </div>
+</aside>
+
+</div>
+
+<script src="../../../assets/nav.js"></script>
+
+</body>
+</html>

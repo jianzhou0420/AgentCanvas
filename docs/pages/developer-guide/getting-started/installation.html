@@ -73,7 +73,7 @@
     <span class="sep">/</span>
     <span class="here">Installation</span>
   </div>
-  <div class="last-updated">2026-07-06 22:15</div>
+  <div class="last-updated">2026-08-20</div>
 </div>
   <header class="page-header guide">
   <h1>Installation</h1>
@@ -208,6 +208,7 @@
 <li><strong>Linux</strong> (tested on Ubuntu 20.04+) with an <strong>NVIDIA GPU</strong> + recent driver — each env brings its own CUDA runtime, so no system CUDA toolkit is needed.</li>
 <li><strong>Conda</strong> or <strong>Mamba</strong> (Miniforge recommended; the satellite installers use <code>mamba</code> when present).</li>
 <li><strong>Git</strong> — a plain clone is enough. The per-env installers clone the simulators / policies into <code>third_party/</code> at pinned commits for you (there are no git submodules to initialize).</li>
+<li><strong>Rootless Docker</strong> — only if you will run a <strong>Container-Launch</strong> nodeset (<code>model_orbslam3</code>, <code>model_pyslam</code>). Not needed for anything else; setup in <a href="#26-rootless-docker">§2.6</a>.</li>
 </ul>
 <!-- BLOCK:clone -->
 <pre class="hl">
@@ -349,6 +350,62 @@ conda<span class="w"> </span>activate<span class="w"> </span>agentcanvas<span cl
 <li>LLM keys: copy <code>agentcanvas/.env.example</code> → <code>.env</code> and set <code>AGENTCANVAS_API_KEY</code> / <code>AGENTCANVAS_MODEL</code> / <code>AGENTCANVAS_BASE_URL</code>.</li>
 </ul>
 
+<h3 id="26-rootless-docker"><span class="num">2.6</span> Rootless Docker (Container-Launch nodesets only)</h3>
+<p>Some nodesets skip conda entirely and run inside a Docker container — <strong>Container Launch</strong> (<a href="../design-docs/operations/container-launch.html">design doc</a>, <a href="../core/decisions/server/adr-server-005-container-launch.html">ADR-server-005</a>). Today that is <code>model_orbslam3</code> and <code>model_pyslam</code>; if you don't use them, skip this section. The framework talks <em>only</em> to a <strong>rootless</strong> daemon on your user socket (<code>unix:///run/user/&lt;uid&gt;/docker.sock</code> — hardcoded in <code>ContainerServer</code>, the system daemon at <code>/var/run/docker.sock</code> is never used), so the daemon must be set up per-user once. Root privileges are needed only for the two <code>apt</code> installs below; everything the daemon does afterwards runs as you.</p>
+
+<p><strong>1. Engine + user daemon.</strong> Install the engine packages, then create the per-user daemon (<a href="https://docs.docker.com/engine/security/rootless/">upstream rootless guide</a>):</p>
+<!-- BLOCK:docker-rootless -->
+<pre class="hl">
+<span class="c1"># one-time, needs sudo — engine + rootless extras (docs.docker.com/engine/install/ubuntu)</span>
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras uidmap
+
+<span class="c1"># subordinate-id ranges must exist for your user (installers usually add them)</span>
+grep <span class="s2">&quot;</span><span class="nv">$USER</span><span class="s2">&quot;</span> /etc/subuid /etc/subgid        <span class="c1"># expect &lt;user&gt;:100000:65536</span>
+
+<span class="c1"># per-user from here on, no sudo — create and start the user daemon</span>
+dockerd-rootless-setuptool.sh install
+systemctl --user <span class="nb">enable</span> --now docker
+docker context use rootless
+</pre>
+
+<p><strong>2. Daemon config — big-disk <code>data-root</code> + CDI.</strong> Server images are large (the pySLAM image is ~55&nbsp;GB); point <code>data-root</code> at a disk with room <em>before</em> pulling anything, and enable CDI while you're in the file (it is how GPUs reach rootless containers, step 3). Adjust the path to your machine:</p>
+<!-- BLOCK:docker-daemon-json -->
+<pre class="hl">
+mkdir -p ~/.config/docker
+cat &gt; ~/.config/docker/daemon.json <span class="s">&lt;&lt;&#x27;EOF&#x27;</span>
+<span class="s">{</span>
+<span class="s">  &quot;data-root&quot;: &quot;/data/docker-rootless&quot;,</span>
+<span class="s">  &quot;features&quot;: { &quot;cdi&quot;: true }</span>
+<span class="s">}</span>
+<span class="s">EOF</span>
+systemctl --user restart docker             <span class="c1"># safe while no containers run</span>
+</pre>
+
+<p><strong>3. GPU via CDI.</strong> The legacy <code>--gpus all</code> flag <strong>fails</strong> under rootless Docker on cgroup-v1 hosts (it cannot write device rules); the working path is CDI, which the framework already uses — a nodeset with <code>server_image_gpu = True</code> is started with <code>--device nvidia.com/gpu=all</code> and degrades to CPU once if the GPU start fails.</p>
+<!-- BLOCK:docker-cdi -->
+<pre class="hl">
+<span class="c1"># one-time, needs sudo — the toolkit that writes CDI specs</span>
+sudo apt-get install nvidia-container-toolkit
+
+<span class="c1"># user-level — declare the GPUs to the daemon (rerun after a driver upgrade)</span>
+mkdir -p ~/.config/cdi
+nvidia-ctk cdi generate --output<span class="o">=</span><span class="nv">$HOME</span>/.config/cdi/nvidia.yaml
+</pre>
+
+<p><strong>4. Verify.</strong></p>
+<!-- BLOCK:docker-verify -->
+<pre class="hl">
+docker run --rm hello-world                                   <span class="c1"># daemon works</span>
+docker run --rm --device nvidia.com/gpu<span class="o">=</span>all ubuntu nvidia-smi <span class="c1"># GPU visible via CDI</span>
+sudo loginctl enable-linger <span class="s2">&quot;</span><span class="nv">$USER</span><span class="s2">&quot;</span>   <span class="c1"># optional: keep the daemon alive after logout</span>
+</pre>
+
+<ul>
+<li>Without <code>enable-linger</code>, the daemon stops when you fully log out; after a reboot, <code>systemctl --user start docker</code> brings it back.</li>
+<li>The backend forces <code>DOCKER_HOST</code> to the user socket itself, so canvas runs need no environment variable. For <em>manual</em> <code>docker build</code>/<code>run</code> from a non-login shell, <code>export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock</code> first.</li>
+<li>Server images are built locally, never auto-pulled: each Container-Launch nodeset ships its recipe, e.g. <code>bash workspace/nodesets/model/model_orbslam3/docker/build.sh</code>. Loading a nodeset whose image is missing fails with an explicit "build it" error.</li>
+</ul>
+
   <footer>
     <span>AgentCanvas docs</span>
   </footer>
@@ -365,6 +422,7 @@ conda<span class="w"> </span>activate<span class="w"> </span>agentcanvas<span cl
       <a class="toc-h3" href="#23-per-env">2.3 Per-env specifics</a>
       <a class="toc-h3" href="#24-download-data">2.4 Download data</a>
       <a class="toc-h3" href="#25-verify">2.5 Run &amp; verify</a>
+      <a class="toc-h3" href="#26-rootless-docker">2.6 Rootless Docker (Container-Launch nodesets only)</a>
     </nav>
   </div>
 </aside>
