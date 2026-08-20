@@ -35,10 +35,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cells import (BATCHES, BENCHMARK_FROZEN, CELLS, EXPERIMENTS, STD_FROZEN,
+from core.cells import (BATCHES, BENCHMARK_FROZEN, CELLS, EXPERIMENTS, STD_FROZEN,
                    get_cell, resolve_cell)
-from driver import run_cell
-from harnesses import get_adapter
+from core.driver import run_cell
+from core.harnesses import get_adapter
 
 
 def _servers(arg: str) -> list[str]:

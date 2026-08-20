@@ -4,7 +4,7 @@ Backs the Coding-Agent Monitor tab. One run at a time (v1, single worker):
 ``start()`` spawns a dedicated ``env_habitat`` auto_host (via ``BaseServer``,
 dynamic free port, PDEATHSIG), a ``smartway_waypoint`` auto_host when the
 condition needs one (wp / hybrid), and then the UI driver entry
-(``coding-agent/ac_support/uirun.py`` — the shared std core with the selected
+(``coding-agent/uirun.py`` — the shared std core with the selected
 harness adapter; artifact + scoring contract: ``coding-agent/monitor_api.py``)
 as a process-group child; ``stop()``
 tears them down (driver first). Run state beyond process liveness is derived
@@ -34,7 +34,7 @@ from typing import Any
 log = logging.getLogger("agentcanvas.coding-agent")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DRIVER_PATH = REPO_ROOT / "coding-agent" / "ac_support" / "uirun.py"
+DRIVER_PATH = REPO_ROOT / "coding-agent" / "uirun.py"
 OUTPUT_ROOT = REPO_ROOT / "outputs" / "beta-coding-agent"
 
 # Monitor source name → (driver harness key, output root). Mirrors
@@ -64,7 +64,7 @@ def _api() -> Any:
     if _monitor_api is None:
         import importlib.util
 
-        path = REPO_ROOT / "coding-agent" / "monitor_api.py"
+        path = REPO_ROOT / "coding-agent" / "core" / "monitor_api.py"
         spec = importlib.util.spec_from_file_location("coding_agent_monitor_api", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

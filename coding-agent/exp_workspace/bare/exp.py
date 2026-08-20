@@ -7,8 +7,8 @@ One folder = one METHOD ARM. This one is the minimal two-tool bare surface
 Migrated from the shared bridges/mcp_bridge.py + prompts.py bare branch on
 2026-08-18 with byte-parity (cell specs, briefing, tool schemas); the r2r
 profile's cells keep their historical std_* names — only CellSpec.exp_dir is
-new. bridges/mcp_bridge.py itself stays in place until the vlnverse line
-(same bridge, verb-prefix env) migrates too.
+new. The shared bridges/ dir was dissolved 2026-08-20 (this folder's
+bridge.py was cmp-verified identical first); vlnverse carries its own copy.
 
 Serve the env with (ac-vlnce python — py3.8, habitat 0.1.7):
   cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../../coding-agent \
@@ -49,6 +49,16 @@ OPUS5_CELLS = (
 LOCAL_BOARD = (
     ("mini", "qwen3.5-4b", "bare"),
     ("mini", "qwen3.5-9b", "bare"),
+    ("mini", "qwen3.8-27b", "bare"),
+)
+# cross-API seats (2026-08-20): a harness driven through the litellm gateway
+# to the OTHER vendor's model — the harness×model decoupling probes. The
+# route is the mini column's litellm slug for the same model key; the
+# gateway (coding-agent/api/proxy.py) serves it under the harness's native
+# wire format. xapi_ prefix, NOT std_: off-board until the seats are vetted.
+XAPI_BOARD = (
+    ("sdk", "gpt-5.6", "openai/responses/gpt-5.6"),
+    ("codex", "opus-4.8", "claude-opus-4-8"),
 )
 # RxR profile column: the SDK Claude rows the RxR archive runs cover
 # (rxr_bare_{sonnet,opus*,fable,opus5} named runs — pre-profile, off-board).
@@ -57,7 +67,7 @@ RXR_SDK_MODELS = ("sonnet-5", "opus-4.8", "fable-5", "opus-5")
 # method knobs shared by every profile of this arm (r2r values = STD_FROZEN;
 # the r2r profile is NOT re-registered into BENCHMARK_FROZEN — benchmark
 # "r2r" keeps resolving to cells.STD_FROZEN so the frozen std board stays
-# byte-identical, wp/hybrid/eharness r2r cells included. This dict documents
+# byte-identical, wp/hybrid r2r cells included. This dict documents
 # the arm's shared posture and feeds the rxr profile.)
 _METHOD = {
     "episodes": "0-99",
@@ -116,6 +126,13 @@ def register(*, CELLS, BATCHES, BENCHMARK_FROZEN, cell, replace,
         CELLS[spec.name] = spec
     for _h, _m, _c in LOCAL_BOARD:
         spec = _own(cell(_h, _m, _c))
+        CELLS[spec.name] = spec
+    for _h, _m, _route in XAPI_BOARD:
+        base = cell(_h, _m, "bare", "default")
+        spec = replace(base, name=f"xapi_{_h}_{_m}_bare",
+                       extra=base.extra + (("api_gateway", "litellm"),
+                                           ("gateway_route", _route)),
+                       exp_dir=str(EXP_DIR))
         CELLS[spec.name] = spec
 
     # rxr profile — new board seats for the paper's long-horizon 口径.
