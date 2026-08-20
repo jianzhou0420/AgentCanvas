@@ -58,7 +58,8 @@ RELOAD_SNIPPET = b"""
 </script>
 """
 
-EXCLUDED_DIR_NAMES = {".git", "__pycache__", "node_modules", ".idea", ".vscode"}
+EXCLUDED_DIR_NAMES = {".git", "__pycache__", "node_modules", ".idea", ".vscode",
+                      "_store"}  # _store: page-written JSON, must not trigger reloads
 EXCLUDED_SUFFIXES = (".swp", ".swo", ".tmp", ".pyc")
 
 # Committed assets with a gitignored ".local" twin holding the full view —
@@ -258,6 +259,71 @@ class LiveReloadHandler(SimpleHTTPRequestHandler):
         if (self.path.endswith(".html") or self.path.endswith("/")) and self._serve_html():
             return
         super().do_GET()
+
+    # ---- local scratch store (dev-only) ----
+    # POST /__store/<rel>.json with a JSON body writes the body verbatim to
+    # pages/developer-guide/tmp/_store/<rel>.json — the gitignored comm-render
+    # area — so interactive tmp pages (annotated trees, checklists) can save
+    # state that Claude can read back from disk. Reads go through plain GET of
+    # the same path. Never served on the public site (tmp/ is gitignored and
+    # the deploy has no server); keys are confined to that one directory.
+    _STORE_DIR = "pages/developer-guide/tmp/_store"
+
+    def _store_key(self):
+        """Validated store key from self.path, or None (error already sent)."""
+        if not self.path.startswith("/__store/"):
+            self.send_error(404)
+            return None
+        rel = self.path[len("/__store/"):].split("?", 1)[0]
+        import re as _re
+        if (not rel or not _re.fullmatch(r"[A-Za-z0-9_./-]+", rel)
+                or ".." in rel.split("/") or not rel.endswith(".json")):
+            self.send_error(400, "bad store key")
+            return None
+        return rel
+
+    def _store_reply(self, obj):
+        import json as _json
+        out = _json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def do_DELETE(self):
+        rel = self._store_key()
+        if rel is None:
+            return
+        dst = Path(self.translate_path("/" + self._STORE_DIR + "/" + rel))
+        existed = dst.is_file()
+        if existed:
+            dst.unlink()
+        self._store_reply({"ok": True, "deleted": existed,
+                           "path": self._STORE_DIR + "/" + rel})
+
+    def do_POST(self):
+        rel = self._store_key()
+        if rel is None:
+            return
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > 32 * 1024 * 1024:
+            self.send_error(413)
+            return
+        body = self.rfile.read(n)
+        try:
+            import json as _json
+            _json.loads(body)
+        except Exception:
+            self.send_error(400, "body must be JSON")
+            return
+        dst = Path(self.translate_path("/" + self._STORE_DIR + "/" + rel))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_suffix(dst.suffix + ".part")
+        tmp.write_bytes(body)
+        os.replace(tmp, dst)
+        self._store_reply({"ok": True, "path": self._STORE_DIR + "/" + rel,
+                           "bytes": len(body)})
 
     def do_HEAD(self):
         if self.path == "/__reload-stream":
