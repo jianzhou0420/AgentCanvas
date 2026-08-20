@@ -64,7 +64,7 @@ probe_auto_host() {
         sleep 1
     done
     kill "$pid" 2>/dev/null
-    wait "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true  # killed -> 143; must not trip the caller's set -e
     if [ "$ok" = true ]; then
         echo "  [ok] $cls booted and answered /health in the bare server context"
     else

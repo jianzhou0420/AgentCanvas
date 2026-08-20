@@ -19,7 +19,7 @@ surface).
 ## Dependencies
 Env auto_host = this folder's nodeset (byte copy of exp_workspace/bare's,
 ac-vlnce python) + the smartway_waypoint predictor auto_host (:9210, ac-wp
-env over the SHARED coding-agent/ac_wp_predictor_shim tree — infra asset).
+env over this folder's `ac_wp_predictor_shim/` tree — wp-arm-owned; hybrid/imagine launch the same one).
 mini cells ride harnesses/mini/toolset.py WaypointToolSet (byte gate
 check_equivalence.py vs the SHARED bridges/wp_bridge.py — folder copy and
 shared file must not drift).

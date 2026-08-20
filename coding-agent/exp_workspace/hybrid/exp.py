@@ -10,7 +10,8 @@ keep their in-process port (toolset.HybridToolSet, byte gate against the
 shared bridge — folder copy and shared file must not drift).
 
 Servers: env auto_host (this folder's nodeset, ac-vlnce python) + the
-waypoint predictor (--wp-server), same pair as the wp arm.
+waypoint predictor (--wp-server), same pair as the wp arm — the predictor
+server runs over exp_workspace/wp/ac_wp_predictor_shim/ (wp-arm-owned).
 """
 import importlib.util
 from pathlib import Path

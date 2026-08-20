@@ -14,22 +14,22 @@ py3.10 + torch cu128). No vendored/nodeset file is modified:
 
 | Entry | What it is |
 |---|---|
-| `waypoint_predictor/` | symlink to the vendored tree (TRM + cross-attn + bert — already habitat-free) |
+| `waypoint_predictor/` | symlink (`../../../../workspace/nodesets/method/smartway_waypoint/_vendored/waypoint_predictor`) to the vendored tree (TRM + cross-attn + bert — already habitat-free) |
 | `wp_ddppo_resnet/resnet.py`, `running_mean_and_var.py` | verbatim copies of the vendored ones (torch-only) |
 | `wp_ddppo_resnet/resnet_policy.py` | `ResNetEncoder` extracted verbatim from `third_party/habitat-lab/.../resnet_policy.py` (what the gibson-2plus DDPPO ckpt was trained with), imports rewritten to the sibling copies |
 | `vlnce_baselines/models/encoders/resnet_encoders.py` | verbatim vendored copy; only the three habitat imports rewritten (plain `logging` logger + the `wp_ddppo_resnet` package above) |
 
-Launch (see also `coding-agent/README.md`):
+Lives inside the wp method arm (`exp_workspace/wp/`, moved 2026-08-19 from `coding-agent/`); the hybrid and imagine arms point at this same tree — one predictor server serves them all. Launch (see also `coding-agent/README.md`):
 
 ```bash
 cd agentcanvas/backend && PYTHONPATH=$PWD:$PWD/../.. \
-  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/ac_wp_predictor_shim \
+  SMARTWAY_REPO_PATH=$PWD/../../coding-agent/exp_workspace/wp/ac_wp_predictor_shim \
   TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
-  ~/miniconda3/envs/ac-wp/bin/python -m app.server.auto_host \
+  "$(conda run -n ac-wp which python)" -m app.server.auto_host \
   --file ../../workspace/nodesets/method/smartway_waypoint/__init__.py \
   --class SmartWayWaypointNodeSet --port 9210
 ```
 
-(`TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` because torch ≥ 2.6 defaults
+(Env install: `bash scripts/install/install_ac_wp.sh` → `scripts/install/envs/ac_wp.yaml`, pins mirrored from the reference env on aiml-xunyi-zhao-5090. `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` because torch ≥ 2.6 defaults
 `torch.load(weights_only=True)` and the engine loads trusted local
 checkpoints written by older torch.)

@@ -75,6 +75,7 @@ Every env has one idempotent script under `scripts/install/` — run each as `ba
 | `install_ac_vlnce.sh` | `ac-vlnce` | VLN-CE / Habitat-Sim 0.1.7 (CMA, NavGPT-CE) |
 | `install_ac_mp3d.sh` `[--osmesa]` | `ac-mp3d` | Matterport3D Simulator, built from source (R2R, RxR, REVERIE); `--osmesa` = CPU render |
 | `install_ac_smartway.sh` | `ac-smartway` | SmartWay nodeset on the Habitat base |
+| `install_ac_wp.sh` | `ac-wp` | Habitat-free SmartWay waypoint-predictor server (torch cu128; required on sm_120 / RTX 5090) for the coding-agent wp/hybrid arms |
 | `install_ac_hmeqa.sh` | `ac-hmeqa` | HM-EQA evaluation (Habitat + HM-EQA scenes/questions) |
 | `install_ac_vla_policy.sh` | `ac-vla-policy` | VLA policy stack (lerobot + libero + openpi-client) |
 | `install_ac_libero.sh` | `ac-libero` | LIBERO manipulation suite |

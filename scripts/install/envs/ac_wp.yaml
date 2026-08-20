@@ -1,0 +1,70 @@
+name: ac-wp
+# Waypoint-predictor server env (habitat-free) for the coding-agent wp / hybrid
+# arms: hosts `SmartWayWaypointNodeSet` via auto_host (:9210) over the
+# habitat-free shim tree `coding-agent/exp_workspace/wp/ac_wp_predictor_shim/`
+# (SMARTWAY_REPO_PATH). Modern torch so the predictor runs on sm_120 cards
+# (RTX 5090 needs cu128 -> torch >= 2.7 -> py >= 3.9); the legacy ac-smartway
+# env (py3.8 + torch 2.1.1+cu121 + habitat-sim 0.1.7) cannot drive them.
+#
+# Source of truth: the reference env on aiml-xunyi-zhao-5090
+# (xunyi@10.12.103.170, created 2026-07-15), captured 2026-08-19 via
+# `pip list --format=freeze` + conda-meta/history. That env was built as
+# `conda create -n ac-wp python=3.10` + pip; the top-level pins below are
+# copied verbatim from it (transitive deps left to pip).
+channels:
+  - defaults
+dependencies:
+  # ── Python ──────────────────────────────────────────────────────────
+  - python=3.10.20
+  - pip
+
+  - pip:
+      # ── PyTorch 2.11.0 + cu128 (reference box: 2.11.0+cu128, CUDA 12.8) ──
+      # cu128 wheels live only on the PyTorch index; the +cu128 local tag
+      # pins that build even though the extra index is consulted second.
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.11.0+cu128
+      - torchvision==0.26.0+cu128
+
+      # ── Predictor import chain (shim tree) ──
+      # wp_ddppo_resnet/resnet_policy.py: `from gym import spaces`
+      # (observation_space dict for the DDPPO depth encoder).
+      - gym==0.26.2   # prints a "does not support NumPy 2.0" banner on import; spaces.Dict (all we use) works — same on the reference box
+      # waypoint_predictor/TRM_net.py: `from pytorch_transformers import
+      # BertConfig` (pytorch-pretrained-bert era); its file_utils pulls boto3,
+      # sacremoses, sentencepiece, regex — all transitive.
+      - pytorch-transformers==1.2.0
+      # numpy 2.x is what the reference env runs the vendored predictor on.
+      - numpy==2.2.6
+      - pillow
+      - scipy==1.15.3
+
+      # ── Present on the reference env; not on the engine's import path ──
+      # (vlnce_baselines-era deps — the engine loads the shim's
+      # resnet_encoders.py by FILE PATH, bypassing vlnce_baselines/__init__,
+      # so tensorflow / habitat never enter. Kept for parity with the box.)
+      - transformers==5.13.1
+      - opencv-python-headless==4.10.0.84
+      - numba==0.67.0
+      - lmdb==2.3.0
+      - numpy-quaternion==2024.0.13
+      - webdataset==1.0.2
+      - ifcfg==0.24
+      - yacs==0.1.8
+      - tensorboard==2.21.0
+      - msgpack==1.2.1
+      - imageio==2.37.4
+      - tqdm
+
+      # ── AgentCanvas backend (auto_host / server_app in-process) ──
+      - fastapi[standard]>=0.115.0
+      - uvicorn
+      - httpx>=0.28.0
+      - pydantic>=2.10.0
+      - requests
+      - pyyaml
+
+      # ── /mcp projection (optional; NOT on the reference box) ──
+      # py3.10 can run the official SDK natively (no mcp-backport needed);
+      # server_app.py imports it lazily and runs manifest-only without it.
+      - mcp>=1.0,<2   # mcp 2.0 removed the lowlevel Server API mcp_projection.py uses (same pin as backend requirements.txt)

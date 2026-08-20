@@ -13,8 +13,9 @@ shared file must not drift).
 Needs TWO servers: the env auto_host (this folder's nodeset, ac-vlnce
 python — same launch as exp_workspace/bare) and the waypoint predictor
 (--wp-server, smartway_waypoint auto_host on :9210 in the ac-wp env over
-the SHARED coding-agent/ac_wp_predictor_shim tree — infra asset, not
-folder-owned; see coding-agent/README.md).
+this folder's ac_wp_predictor_shim/ tree — owned by the wp arm since
+2026-08-19; the hybrid/imagine arms launch the same tree; see
+coding-agent/README.md).
 """
 import importlib.util
 from pathlib import Path

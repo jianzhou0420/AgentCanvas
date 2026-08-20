@@ -45,30 +45,6 @@ class HabitatEnvironmentConfig(BaseModel):
     # Uses the same predictor (wp_server_url) as wp; no wp_max_moves cap (a goto
     # just spends more of the shared 500 step budget). Mutually exclusive with wp.
     hybrid: bool = False
-    # Depth-waypoint action space (dwp condition): the SAME numbered-candidate
-    # surface as wp, but the candidates are derived geometrically from one 90°
-    # depth frame instead of predicted by a network — no second auto_host, no
-    # 3 m heatmap ceiling, and a straight-line reachability guarantee. Optional
-    # SAM 3 landmark grounding rides along on `dwp_sam_url`.
-    dwp: bool = False
-    dwp_max_moves: int = 60
-    dwp_sam_url: str = ""
-    dwp_landmark_every: int = 3
-    # 0 = follow the organ's own RANGE_CAP_M. A literal here is a second
-    # place to remember, and it went stale the moment the grid moved to 12 m:
-    # the agent would have kept building a 6 m map while the human tab built a
-    # 12 m one, off the same code.
-    dwp_range_cap_m: float = 0.0
-    dwp_places: int = 0        # collapse operator: place memory replaces metric recall
-    # §14.8: 0 = event-driven SAM (post-turn first frame, scene transitions,
-    # low-frequency backstop every 4th sensor frame) — the run default.
-    # N>0 pins a fixed every-Nth-SENSOR-frame cadence (1 = the correctness
-    # upper bound, ~2.5 s/phrase/frame of latency).
-    dwp_sam_intermediate_every: int = 0
-    dwp_traj_archive: int = 1             # §4.3: per-primitive RGB-D archive on disk
-    instruction: str = ""
-    sub_instructions: tuple = ()
-    terminate: str = ""
 
 
 class HabitatEnvironment:
@@ -84,28 +60,6 @@ class HabitatEnvironment:
                 turn_budget=self.config.turn_budget,
                 pano_view_px=self.config.pano_view_px,
                 live_dir=live_dir,
-            )
-        elif self.config.dwp:
-            from depth_toolset import DepthWaypointToolSet
-
-            self.toolset = DepthWaypointToolSet(
-                self.config.server_url,
-                instruction=self.config.instruction,
-                segments=list(self.config.sub_instructions),
-                terminate=self.config.terminate,
-                bare=self.config.bare,
-                step_budget=self.config.step_budget,
-                turn_budget=self.config.turn_budget,
-                pano_view_px=self.config.pano_view_px,
-                live_dir=live_dir,
-                sam_url=self.config.dwp_sam_url,
-                landmark_every=self.config.dwp_landmark_every,
-                **({"range_cap_m": self.config.dwp_range_cap_m}
-                   if self.config.dwp_range_cap_m else {}),
-                places=self.config.dwp_places,
-                sam_intermediate_every=self.config.dwp_sam_intermediate_every,
-                traj_archive=bool(self.config.dwp_traj_archive),
-                executor="mini",
             )
         elif self.config.imagine:
             import os as _os

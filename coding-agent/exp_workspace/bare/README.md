@@ -11,8 +11,8 @@ shared `bridges/mcp_bridge.py` + `prompts.py` bare branch on 2026-08-18.
 - **r2r** — cells keep their historical `std_{sdk,mini,codex}_{model}_bare_{tier}`
   names (29 cells; qwen columns untier-ed). Frozen = `cells.STD_FROZEN`
   (R2R-CE / rand100 / 0-99 / 200 turns / rgb 512 / 500 steps / 2400 s) — NOT
-  re-registered under a benchmark key, so the frozen std board (wp / hybrid /
-  eharness r2r cells included) resolves exactly as before. Batches:
+  re-registered under a benchmark key, so the frozen std board (wp / hybrid
+  r2r cells included) resolves exactly as before. Batches:
   O5 Q8 Ad Bd Gd Xd A B G X Q.
 - **rxr** — `rxr_sdk_{model}_bare_default` (sonnet-5 / opus-4.8 / fable-5 /
   opus-5), batch `RX`. Frozen from the paper's archive runs

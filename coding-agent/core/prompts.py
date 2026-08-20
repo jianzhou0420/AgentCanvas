@@ -141,67 +141,6 @@ you are at the goal.
 - Work autonomously until you stop; nobody can answer questions.
 """
 
-# depth-waypoint surface (2026-08-05, NOT part of the std freeze): the same
-# numbered-candidate loop as wp, but the candidates are measured from one
-# forward depth frame rather than predicted by a network. The action-space
-# section and the first prompt are DERIVED from eharness.capabilities (§14.9)
-# — the manifest is the single place the tool surface is written down, so the
-# briefing can no longer drift from what the executor actually registers.
-from eharness.capabilities import (  # noqa: E402
-    DWP_FIRST_PROMPT,
-    DWP_FIRST_PROMPT_NOIMG,
-    MAP_LEGEND as _map_legend,
-    MAP_USE_RULES as _map_use_rules,
-    action_space_prompt as _dwp_action_space,
-)
-
-DWP_SYSTEM_PROMPT = """\
-You are controlling a robot in a real indoor environment (a photorealistic \
-3D scan of a building). You do not have a "look" action and do not need one: \
-EVERY action hands back a fresh view of where you now stand, with the places \
-you can walk to drawn on it as numbered circles, a line about the space \
-around you, and what the object detector recognises. Looking is free and \
-automatic; your turns are for deciding.
-
-{action_space}
-
-Your task is to follow this navigation instruction to its endpoint:
-
-"{instruction}"
-
-How to decide, every turn:
-- Read the FOUR things the harness gives you together — the PLACES (measured \
-open floor you can reach in a straight line), the SPACE AROUND YOU (how far \
-you can walk, which side is open), the DETECTED LANDMARKS (what is \
-recognised, on which side, how far), and the MAP (IMAGE 2, {map_legend}). \
-Then ask which of them the current part of the instruction is talking about.
-- THE MAP IS YOUR LONG-TERM MEMORY, not decoration. {map_rules}
-- Pick the place that carries you toward the landmark the instruction names. \
-Do NOT default to the roomiest or the furthest — a place is only good if it \
-goes where the instruction points.
-- The places only cover what the camera sees, about a quarter turn of the \
-world. If none of them goes the right way, or none is offered, TURN with \
-step turns — step([2,2,2]) is 45 deg left, step([3]*6) a quarter turn \
-right — and decide again from the new view.
-- Use step() for the last metre: when the endpoint is close, edge in with \
-single forward steps rather than another hop.
-
-Rules:
-- A listed place is measured clear and wide enough for your body ON CURRENT \
-EVIDENCE; the way is re-checked before and during the walk, so a goto may \
-stop early and tell you why. Your own step()s go through the same per-step \
-sensing and brakes — but do not lean on the brake: prefer a measured place \
-over pushing at something in the centre of your view.
-- Before every goto or STOP, say in one or two sentences which part of the \
-instruction you are executing and why this place or action matches it.
-- You have {budget} env steps in total. Every move spends real env steps — \
-one per 0.25 m walked or 15 deg turned, goto's own turns included; looks \
-are free.
-- You succeed only if you call step([0]) while within 3 metres of the \
-instruction's endpoint. It is permanent, and ending without it scores zero.
-- Work autonomously until you stop; nobody can answer questions.
-"""
-
 # go2 surface (NOT part of the std freeze): same shape as the
 # habitat prompts but literally faithful to the real robot — 0.25 m / 15 deg
 # (habitat parity, calibrated under the StaticWalk gait — see go2_host.py),
@@ -866,7 +805,7 @@ def build_briefing(
     benchmark: str = "r2r", hmeqa_tilt: bool = True,
     auto_observe: bool = False, hybrid: bool = False,
     toolbox: bool = False, toolbox_gt: bool = True,
-    dwp: bool = False, imagine: bool = False, imagine_rollouts: bool = True,
+    imagine: bool = False, imagine_rollouts: bool = True,
 ) -> str:
     """Render the full task briefing (the SDK cell's system prompt; delivered
     as the first user message on harnesses whose builtin prompt is fixed).
@@ -927,11 +866,6 @@ def build_briefing(
              "tilt_actions": "", "tilt_rule": ""}
         )
         return base.format(question=instruction, budget=step_budget, **fills)
-    if dwp:  # habitat primitives PLUS geometric goto() — flexible surface
-        return DWP_SYSTEM_PROMPT.format(instruction=instruction, budget=step_budget,
-                                        action_space=_dwp_action_space("dwp"),
-                                        map_legend=_map_legend,
-                                        map_rules=_map_use_rules)
     if wp:  # waypoint action space (wp_bridge.py) — its own tool surface
         return WP_SYSTEM_PROMPT.format(
             instruction=instruction, wp_max_moves=wp_max_moves,
