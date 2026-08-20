@@ -44,6 +44,13 @@ def test_gpu_flag_adds_cdi_device_only_when_requested() -> None:
     assert "nvidia.com/gpu=all" not in srv._docker_command(gpu=False)
 
 
+def test_user_override_rides_the_command_only_when_set() -> None:
+    assert "--user" not in _server()._docker_command(gpu=False)
+    cmd = _server(user="0:0")._docker_command(gpu=False)
+    i = cmd.index("--user")
+    assert cmd[i + 1] == "0:0"
+
+
 def test_mounts_and_container_env_ride_the_command() -> None:
     srv = _server(
         mounts=[f"/repo:{WORKSPACE_MOUNT}:ro", "/weights:/opt/w:ro"],

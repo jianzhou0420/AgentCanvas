@@ -44,50 +44,59 @@ it is "feed frames in, map accumulates, read products out", so it lives in
 ``model/`` with ``model_sam`` as the template (SAM 2's cross-call ``_tracks``
 state is isomorphic to pySLAM's accumulating map). It is **not** an ``env/``.
 
-Deployment — **container bridge** (design §1, §5; superseding the conda-env plan):
-    - This nodeset runs in **local mode** (``server_python = None``). It does *not*
-      import pyslam itself; instead :meth:`initialize` ``docker run``s the
-      ``agentcanvas/pyslam`` image and holds a :class:`_client.PySlamContainerClient`
-      as its session. The client speaks HTTP to a FastAPI shim (``_server.py``)
-      running **inside** the container, which drives the real
-      :class:`_backend.PySlamSession`. So ``import pyslam`` happens only in the
+Deployment — **Container Launch** (ADR-server-005; superseding the private
+container bridge that lived in ``_client.py``/``_server.py`` until 2026-08-20):
+    - This nodeset declares ``server_image``, which routes it to **server mode**
+      with ``docker run`` as the launch vehicle: the framework's
+      :class:`ContainerServer` starts the ``agentcanvas/pyslam`` image with the
+      repo bind-mounted read-only and runs the stock ``app.server.auto_host``
+      inside it. This whole module — nodeset, nodes, :class:`_backend.PySlamSession`
+      — executes **inside the container**; the backend process only ever talks to
+      the auto-generated proxy nodes. So ``import pyslam`` happens only in the
       container — the GPL-3.0 source is never vendored into this repo and never
       loaded into the framework env (same treatment as ``habitat_sim``). Rootless
       Docker keeps the whole thing sudo-free (see the ``reference_rootless_docker``
       memory).
-    - The nodeset dir is bind-mounted read-only into the container, so
-      ``_server``/``_backend`` are available inside without baking our code into
-      the image (only fastapi/uvicorn + pyslam live in the image).
+    - No framework or nodeset code is baked into the image (only pyslam + the
+      requirements-serve set live there); the code rides the read-only repo mount.
     - ``parallelism = "replicated"``: the map is mutable per-episode state; each
-      batch-eval worker gets its own container (one container per client). For a
-      single graph run that is exactly one container.
+      batch-eval worker gets its own container. For a single graph run that is
+      exactly one container.
 
 Configure via environment variables (defaults = pure-CPU, no weights):
     PYSLAM_SENSOR   = mono | stereo | rgbd     (default: rgbd)
     PYSLAM_FEATURE  = ORB2 | SUPERPOINT | ...  (default: ORB2  — feature_tracker_configs)
     PYSLAM_LOOP     = DBOW3 | off | ...        (default: DBOW3 — loop_detector_configs)
     PYSLAM_CAM_W / PYSLAM_CAM_H / PYSLAM_CAM_HFOV  — default camera intrinsics
-    PYSLAM_IMAGE    — pin the container image; unset → GPU picks :cuda (full surface,
-                      incl. reconstruct_multiview), no-GPU picks :cpu-fixed
-    PYSLAM_GPU      = 0 | 1                     GPU on/off (default 1; CPU fallback if absent)
-    PYSLAM_WEIGHTS_DIR — host folder of external multiview weights (default data/models/pyslam)
-    PYSLAM_ARTIFACT_DIR — host dir where get_map writes handles (default outputs/pyslam_maps)
+    PYSLAM_IMAGE    — pin the container image (default agentcanvas/pyslam:cuda —
+                      the full surface incl. reconstruct_multiview; its neural
+                      layers are lazy, so it runs fine CPU-only too)
+    PYSLAM_GPU      = 0 | 1                     GPU on/off (default 1; ContainerServer
+                      retries CPU-degraded once if the GPU device is absent)
+    PYSLAM_WEIGHTS_DIR — host folder of external multiview weights (default
+                      <repo>/data/models/pyslam; absolute path recommended)
+    PYSLAM_ARTIFACT_DIR — host dir where get_map writes handles (default
+                      <repo>/outputs/pyslam_maps; resolved absolute at import so
+                      in-container nodes can hand back host-resolvable paths)
     PYSLAM_VOLUMETRIC = 0 | 1                  enable Slam's dense volumetric integrator
     PYSLAM_VOLUMETRIC_TYPE = VOXEL_GRID | TSDF | VOXEL_SEMANTIC_GRID   (get_dense_map output)
     PYSLAM_ENV      = INDOOR | OUTDOOR         dense depth-truncation regime (default INDOOR)
 
 Status: the backend pipeline (``_backend.py``) is validated end-to-end on a TUM
 RGB-D sequence through the real container (both former seams — camera marshalling,
-sparse-map export — confirmed; see ``_backend.py`` header). The container bridge
-(``_client.py`` + ``_server.py``) wires that backend into the graph executor.
+sparse-map export — confirmed; see ``_backend.py`` header). The private container
+bridge (``_client.py`` + ``_server.py``) was deleted in the Container Launch
+migration; the framework's server mode now wires this module into the executor.
 
-last updated: 2026-07-07 (container bridge — local-mode nodeset ↔ dockerised pyslam)
+last updated: 2026-08-20 (Container Launch migration — ADR-server-005)
 """
 
 import asyncio
+import itertools
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -102,13 +111,12 @@ from app.components import (
 
 log = logging.getLogger("agentcanvas.pyslam")
 
-# The graph executor fires FRESH ``node_cls()`` instances (graph_executor.py
-# ~L1123) — it never uses the ``get_tools(self)`` instances that carry a
-# ``self._nodeset`` back-reference. So a local-mode nodeset can't reach its
-# session through the node's back-ref; nodes read this process-level singleton
-# instead, which ``initialize()`` sets. Local mode is always single-process
-# (worker_count>1 is auto-routed to server mode), so one module global is the
-# correct per-worker isolation — each replicated worker is its own subprocess.
+# In-container, auto_host's handlers close over the ``get_tools(self)``
+# instances, so the ``self._nodeset`` back-reference works — this global is the
+# safety net for any dispatch path that fires a fresh ``node_cls()`` instead
+# (the host executor does; see graph_executor.py ~L1123). ``initialize()`` sets
+# it. ``parallelism = "replicated"`` gives each eval worker its own container —
+# its own process — so one module global is the correct per-worker isolation.
 _NODESET: ModelPySlamNodeSet | None = None
 
 # Per-node call counters for get_map's ``stream_every`` throttle (live in-loop
@@ -117,6 +125,39 @@ _NODESET: ModelPySlamNodeSet | None = None
 # throttled (in-loop) get_map node touches this — the default stream_every=0
 # (after-loop / one-shot) never counts.
 _GETMAP_COUNTERS: dict[str, int] = {}
+
+# ── Container Launch wiring (ADR-server-005) ────────────────────────────────
+#
+# This module is imported twice: by the backend during discovery (host paths)
+# and inside the container by stock auto_host (host env rides in via -e). Host
+# dirs are resolved absolute at import time on the host and frozen into
+# ``server_mounts`` / ``server_env``; in-container the env copies win, so nodes
+# can hand back handles that resolve on the host.
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]  # model_pyslam → … → repo root
+_CONTAINER_OUT = "/opt/out"  # in-container artifact drop (rw mount, orbslam3 pattern)
+
+
+def _abs_env_dir(var: str, default: Path) -> str:
+    """Host-absolute directory from an env override, else *default*."""
+    v = os.environ.get(var)
+    return str(Path(v).expanduser().resolve()) if v else str(default)
+
+
+_HOST_ARTIFACT_DIR = _abs_env_dir("PYSLAM_ARTIFACT_DIR", _REPO_ROOT / "outputs" / "pyslam_maps")
+_WEIGHTS_DIR = _abs_env_dir("PYSLAM_WEIGHTS_DIR", _REPO_ROOT / "data" / "models" / "pyslam")
+
+# Sequence for reconstruct_multiview scene handles (module-level: the executor
+# may fire fresh node instances, and one container = one process = one line of
+# handles, same reasoning as _GETMAP_COUNTERS).
+_SCENE_SEQ = itertools.count(1)
+
+
+def _backend_mod():
+    """Lazy sibling import — pyslam's deps exist only inside the container."""
+    from . import _backend
+
+    return _backend
 
 
 # ── payload decoding (mirrors model_detany3d: accept ndarray or path) ──────
@@ -135,7 +176,7 @@ def _decode_image_input(value: Any) -> np.ndarray:
     if isinstance(value, str):
         if value.endswith(".npy"):
             return np.load(value)
-        from PIL import Image  # local — Pillow lives in the ac-pyslam env
+        from PIL import Image  # lazy — Pillow lives in the container's pyslam venv
 
         return np.asarray(Image.open(value).convert("RGB"), dtype=np.uint8)
     raise TypeError(f"cannot decode image input of type {type(value).__name__}")
@@ -465,9 +506,12 @@ class PySlamGetMapTool(BaseCanvasNode):
             if n % every != 0:
                 return {"map_handle": "", "num_points": 0, "num_keyframes": 0}
         try:
-            result = ns._session.get_map()
+            # Write in-container to the rw drop; hand back the host-side path so
+            # host consumers (pointCloudViewer) can np.load the handle.
+            result = ns._session.get_map(out_dir=_CONTAINER_OUT)
+            handle = os.path.join(_HOST_ARTIFACT_DIR, os.path.basename(result["map_handle"]))
             return {
-                "map_handle": result["map_handle"],
+                "map_handle": handle,
                 "num_points": result["num_points"],
                 "num_keyframes": result["num_keyframes"],
             }
@@ -512,12 +556,15 @@ class PySlamGetDenseMapTool(BaseCanvasNode):
         if ns is None or ns._session is None or not ns._session.is_built:
             return {"dense_handle": "", "num_points": 0, "num_vertices": 0}
         try:
-            result = ns._session.get_dense_map()
+            result = ns._session.get_dense_map(out_dir=_CONTAINER_OUT)
             log.info("pyslam get_dense_map: type=%s points=%s verts=%s tris=%s",
                      result.get("type"), result["num_points"],
                      result["num_vertices"], result["num_triangles"])
+            handle = result["dense_handle"]
+            if handle:  # empty when volumetric integration is off / nothing fused
+                handle = os.path.join(_HOST_ARTIFACT_DIR, os.path.basename(handle))
             return {
-                "dense_handle": result["dense_handle"],
+                "dense_handle": handle,
                 "num_points": result["num_points"],
                 "num_vertices": result["num_vertices"],
             }
@@ -530,14 +577,14 @@ class PySlamGetDenseMapTool(BaseCanvasNode):
 #
 # These do not touch the SLAM session's map — they are pure functions over
 # pyslam's standalone feature front-end and evo trajectory eval (design note
-# nodes 7-12). They need the container up (``ns._session``) but not a built
-# ``Slam`` — so, unlike track/get_map, they do not gate on ``is_built``.
+# nodes 7-12). They call ``_backend``'s module-level functions directly: no
+# session, no gate — the whole module already runs inside the container.
 
 
 def _decode_array_input(value: Any) -> np.ndarray:
     """Accept an ndarray / list / .npy path → ndarray (dtype preserved for ndarray).
 
-    In local mode the executor passes objects in-process, so a descriptor block
+    The server-mode wire carries numpy natively (msgpack), so a descriptor block
     keeps its uint8/float32 dtype across the wire — which the matcher relies on
     to pick Hamming vs L2. Only a list literal or a staged .npy needs decoding.
     """
@@ -596,12 +643,9 @@ class PySlamExtractFeaturesTool(BaseCanvasNode):
         self._nodeset = nodeset
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        ns = self._nodeset or _NODESET
-        if ns is None or ns._session is None:
-            return {"keypoints": None, "descriptors": None, "num_keypoints": 0}
         try:
             rgb = _decode_image_input(inputs["rgb"])
-            out = ns._session.extract_features(
+            out = _backend_mod().extract_features(
                 rgb,
                 detector=self.config.get("detector") or "ORB",
                 descriptor=self.config.get("descriptor") or self.config.get("detector") or "ORB",
@@ -662,13 +706,10 @@ class PySlamMatchFeaturesTool(BaseCanvasNode):
         self._nodeset = nodeset
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        ns = self._nodeset or _NODESET
-        if ns is None or ns._session is None:
-            return {"idxs_a": None, "idxs_b": None, "num_matches": 0}
         try:
             des_a = _decode_array_input(inputs["descriptors_a"])
             des_b = _decode_array_input(inputs["descriptors_b"])
-            out = ns._session.match_features(
+            out = _backend_mod().match_features(
                 des_a, des_b,
                 matcher_type=self.config.get("matcher_type") or "BF",
                 ratio_test=float(self.config.get("ratio_test") or 0.7),
@@ -728,10 +769,6 @@ class PySlamEvalTrajectoryTool(BaseCanvasNode):
         self._nodeset = nodeset
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        ns = self._nodeset or _NODESET
-        if ns is None or ns._session is None:
-            return {"ate_rmse": None, "rpe_rmse": None,
-                    "metrics": '{"error": "pyslam nodeset not initialized"}'}
         try:
             mono_in = inputs.get("is_monocular")
             if mono_in is None:
@@ -749,7 +786,7 @@ class PySlamEvalTrajectoryTool(BaseCanvasNode):
                         "metrics": json.dumps({"error": "no frame-aligned est/gt pose pairs"})}
             est = [e for e, _ in pairs]
             gt = [g for _, g in pairs]
-            out = ns._session.eval_trajectory(est, gt, is_monocular=mono)
+            out = _backend_mod().eval_trajectory(est, gt, is_monocular=mono)
             return {
                 "ate_rmse": out.get("ate", {}).get("rmse"),
                 "rpe_rmse": out.get("rpe", {}).get("rmse"),
@@ -832,14 +869,11 @@ class PySlamPredictDepthTool(BaseCanvasNode):
         self._nodeset = nodeset
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        ns = self._nodeset or _NODESET
-        if ns is None or ns._session is None:
-            return {"depth": None, "depth_range": None, "estimator": "ERROR: not initialized"}
         try:
             rgb = _decode_image_input(inputs["rgb"])
             right = inputs.get("image_right")
             right = _decode_image_input(right) if right is not None else None
-            out = ns._session.predict_depth(
+            out = _backend_mod().predict_depth(
                 rgb, right,
                 estimator=self.config.get("estimator") or "DEPTH_ANYTHING_V2",
                 min_depth=float(self.config.get("min_depth") or 0.0),
@@ -923,12 +957,9 @@ class PySlamSegmentSemanticTool(BaseCanvasNode):
         self._nodeset = nodeset
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        ns = self._nodeset or _NODESET
-        if ns is None or ns._session is None:
-            return {"semantics": None, "instances": None, "num_classes": 0}
         try:
             rgb = _decode_image_input(inputs["rgb"])
-            out = ns._session.segment_semantic(
+            out = _backend_mod().segment_semantic(
                 rgb,
                 model=self.config.get("model") or "DEEPLABV3",
                 feature_type=self.config.get("feature_type") or "LABEL",
@@ -1011,25 +1042,33 @@ class PySlamReconstructMultiviewTool(BaseCanvasNode):
         self._nodeset = nodeset
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        ns = self._nodeset or _NODESET
-        if ns is None or ns._session is None:
-            return {"scene_handle": "ERROR: not initialized", "camera_poses": None,
-                    "num_points": 0, "num_views": 0}
         try:
             raw = inputs["images"]
             if not isinstance(raw, (list, tuple)):
                 raise TypeError("reconstruct_multiview: 'images' must be a list of ≥2 views")
             images = [_decode_image_input(im) for im in raw]
-            out = ns._session.reconstruct_multiview(
+            out = _backend_mod().reconstruct_multiview(
                 images,
                 backend=self.config.get("backend") or "MAST3R",
                 as_pointcloud=str(self.config.get("as_pointcloud") or "true").lower() == "true",
             )
             log.info("pyslam reconstruct_multiview: backend=%s views=%s points=%s verts=%s",
                      out["backend"], out["num_views"], out["num_points"], out["num_vertices"])
+            # Heavy geometry rides a handle (design §5a): write in-container to
+            # the rw drop, hand back the host-side path; poses are small enough
+            # to also travel inline on the wire.
+            os.makedirs(_CONTAINER_OUT, exist_ok=True)
+            fname = f"scene_{next(_SCENE_SEQ):04d}_{out['num_points']:06d}.npz"
+            np.savez_compressed(
+                os.path.join(_CONTAINER_OUT, fname),
+                points=out["points"], colors=out["colors"],
+                vertices=out["vertices"], faces=out["faces"],
+                camera_poses=np.asarray(out["camera_poses"]),
+                intrinsics=np.asarray(out["intrinsics"]),
+            )
             return {
-                "scene_handle": out["scene_handle"],
-                "camera_poses": out["camera_poses"],
+                "scene_handle": os.path.join(_HOST_ARTIFACT_DIR, fname),
+                "camera_poses": [np.asarray(p).tolist() for p in out["camera_poses"]],
                 "num_points": out["num_points"],
                 "num_views": out["num_views"],
             }
@@ -1043,25 +1082,60 @@ class PySlamReconstructMultiviewTool(BaseCanvasNode):
 
 
 class ModelPySlamNodeSet(BaseNodeSet):
-    """pySLAM streaming-SLAM session nodeset (Tier-1 skeleton).
+    """pySLAM streaming-SLAM session nodeset.
 
-    All four nodes are always registered. When the session is not yet built (no
+    All nodes are always registered. When the session is not yet built (no
     camera configured / Slam not started), nodes return a benign error rather
     than crashing the server — the capability-flag discipline from ``model_sam``.
 
-    Runs in **local mode** (``server_python = None``): the session is a
-    :class:`_client.PySlamContainerClient` that ``docker run``s the
-    ``agentcanvas/pyslam`` image and drives it over HTTP. The only place
-    ``import pyslam`` happens is inside that container (``_server.py`` →
-    ``_backend.py``), keeping the GPL dependency behind the container boundary.
+    Runs via **Container Launch** (ADR-server-005): ``server_image`` routes the
+    nodeset to server mode with ``docker run`` as the launch vehicle, so this
+    class — and its :class:`_backend.PySlamSession` — lives inside the
+    ``agentcanvas/pyslam`` container, keeping the GPL dependency behind the
+    container boundary. The backend talks to auto-generated proxy nodes only.
     """
 
     name = "model_pyslam"
     description = "pySLAM streaming SLAM session (track / trajectory / sparse map)"
-    # Local mode: the pyslam dependency lives in a Docker container reached over
-    # HTTP (see _client.py), NOT a conda env — so no server_python interpreter.
-    server_python: ClassVar[str | None] = None
+    # Container Launch (ADR-server-005). :cuda is the full-surface superset of
+    # :cpu-fixed (its neural layers are lazy — it runs fine CPU-only), so it is
+    # the single default; ContainerServer retries CPU-degraded once when the GPU
+    # device is absent. PYSLAM_IMAGE pins a different tag.
+    server_image: ClassVar[str] = os.environ.get("PYSLAM_IMAGE", "agentcanvas/pyslam:cuda")
+    server_image_gpu: ClassVar[bool] = (
+        os.environ.get("PYSLAM_GPU", "1").lower() not in ("0", "false", "no")
+    )
+    server_container_python: ClassVar[str] = "/home/slam/.python/venvs/pyslam/bin/python"
+    # Rootless identity alignment: the image drops to USER slam (uid 1000),
+    # which rootless docker maps to a foreign host subuid that cannot write
+    # host-owned rw mounts (/opt/out, HF/torch caches). Container-root IS the
+    # invoking host user under rootless, so run as 0:0 — handles land on the
+    # host owned by the user, no perms loosening anywhere. HOME is pinned in
+    # server_env because the image's cache/venv paths assume /home/slam.
+    server_container_user: ClassVar[str] = "0:0"
+    # Host dirs frozen absolute at import time (host discovery pass); missing
+    # host paths are skipped by the registry with a warning — the same semantics
+    # the legacy bridge had. Checkpoint dirs mount read-only; the HF / torch
+    # caches mount rw so first-use downloads persist across runs; /opt/out is
+    # the rw handle drop.
+    server_mounts: ClassVar[dict[str, str]] = {
+        f"{_WEIGHTS_DIR}/mast3r/checkpoints": "/home/slam/pyslam/thirdparty/mast3r/checkpoints:ro",
+        f"{_WEIGHTS_DIR}/mvdust3r/checkpoints": "/home/slam/pyslam/thirdparty/mvdust3r/checkpoints:ro",
+        f"{_WEIGHTS_DIR}/dust3r/checkpoints": "/home/slam/pyslam/thirdparty/dust3r/checkpoints:ro",
+        f"{_WEIGHTS_DIR}/hf_cache": "/home/slam/.cache/huggingface",
+        f"{_WEIGHTS_DIR}/torch_cache": "/home/slam/.cache/torch",
+        _HOST_ARTIFACT_DIR: _CONTAINER_OUT,
+    }
+    # PYSLAM_* config rides into the container via -e so the in-container
+    # initialize() reads the same env the user set on the host; the artifact dir
+    # is forced absolute so nodes hand back host-resolvable handles.
+    server_env: ClassVar[dict[str, str]] = {
+        **{k: v for k, v in os.environ.items() if k.startswith("PYSLAM_")},
+        "PYSLAM_ARTIFACT_DIR": _HOST_ARTIFACT_DIR,
+        "HOME": "/home/slam",  # image paths assume the baked user's home (see server_container_user)
+    }
     parallelism: ClassVar[str] = "replicated"  # map is mutable per-episode state
+    expected_ram_mb: ClassVar[int] = 4000  # SLAM core + loop/volumetric bg threads
 
     def __init__(self) -> None:
         self._session: Any = None
@@ -1073,11 +1147,11 @@ class ModelPySlamNodeSet(BaseNodeSet):
         self._gt_traj: list = []
 
     async def initialize(self, **kwargs: Any) -> None:
-        # Runs in the framework process. Create the container client (cheap) then
-        # `docker run` the pyslam image + wait for its shim to answer — the heavy
-        # part, offloaded off the event loop. The Slam instance itself is built
-        # lazily on first reset once camera intrinsics are known.
-        from ._client import PySlamContainerClient
+        # Runs INSIDE the container (auto_host's startup hook). Constructing the
+        # session is cheap — the Slam instance itself is built lazily on first
+        # reset once camera intrinsics are known. PYSLAM_* env arrives via the
+        # class-level server_env (-e injection).
+        from . import _backend
 
         self._config = {
             "sensor_type": os.environ.get("PYSLAM_SENSOR", "rgbd"),
@@ -1090,7 +1164,7 @@ class ModelPySlamNodeSet(BaseNodeSet):
             "volumetric_type": os.environ.get("PYSLAM_VOLUMETRIC_TYPE", "VOXEL_GRID"),
             "environment": os.environ.get("PYSLAM_ENV", "INDOOR"),
         }
-        self._session = PySlamContainerClient(
+        self._session = _backend.PySlamSession(
             sensor_type=self._config["sensor_type"],
             feature_preset=self._config["feature_preset"],
             loop_preset=self._config["loop_preset"],
@@ -1099,11 +1173,10 @@ class ModelPySlamNodeSet(BaseNodeSet):
             volumetric_type=self._config["volumetric_type"],
             environment=self._config["environment"],
         )
-        await asyncio.to_thread(self._session.start_container)
         global _NODESET
         _NODESET = self  # nodes reach the session through this (see _NODESET note)
         log.info(
-            "pyslam nodeset ready (container bridge): sensor=%s feature=%s loop=%s",
+            "pyslam nodeset ready (container launch): sensor=%s feature=%s loop=%s",
             self._config["sensor_type"], self._config["feature_preset"],
             self._config["loop_preset"],
         )
@@ -1136,8 +1209,9 @@ class ModelPySlamNodeSet(BaseNodeSet):
 
     async def shutdown(self) -> None:
         if self._session is not None:
-            # close() quits Slam in-container then `docker rm -f`s it; offload
-            # the blocking docker call off the event loop.
+            # close() quits Slam and joins its background threads — blocking, so
+            # offload it off the event loop. The container itself is stopped by
+            # the framework's ContainerServer (docker stop, --rm reaps it).
             await asyncio.to_thread(self._session.close)
             self._session = None
         global _NODESET

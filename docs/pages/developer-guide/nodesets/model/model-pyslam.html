@@ -75,7 +75,7 @@
     <span class="sep">/</span>
     <span class="here">pySLAM</span>
   </div>
-  <div class="last-updated">2026-07-09</div>
+  <div class="last-updated">2026-08-20</div>
 </div>
   <header class="page-header guide">
   <h1>pySLAM NodeSet</h1>
@@ -83,7 +83,7 @@
 
 <p>The <strong>pySLAM NodeSet</strong> (<code>ModelPySlamNodeSet</code>, <code>workspace/nodesets/model/model_pyslam/</code>) wraps <a href="https://github.com/luigifreda/pyslam">pySLAM</a> (Luigi Freda, GPL-3.0) as a <strong>streaming visual-SLAM session</strong>. Where <a href="model-vggt.html">VGGT</a> reconstructs geometry from N views in one feed-forward pass, pySLAM ingests an RGB-D stream <strong>one frame at a time</strong> and incrementally tracks the camera pose while accumulating a sparse 3-D map — classic feature SLAM (ORB features + DBoW3 loop closure, C++ core), a moving camera building a map as it goes. Feed it a policy's egocentric frames and it reconstructs the walked scene alongside the run.</p>
 <p>The nodeset has <strong>eleven nodes in three groups</strong>: the streaming session above (five nodes — the four core verbs plus a dense volumetric map); three <strong>stateless perception</strong> nodes that use pySLAM's standalone classes as pure functions — feature extraction, feature matching, and <code>evo</code> trajectory evaluation (ATE / RPE); and three <strong>neural full-surface</strong> nodes — dense depth prediction, semantic segmentation, and feed-forward multi-view reconstruction (DUSt3R / MASt3R / VGGT). The last two groups share the same container but never touch the map. The aim is to expose pySLAM's <em>whole</em> capability surface — AgentCanvas supporting pySLAM-the-model, not a curated subset for one downstream graph.</p>
-<p>env: <strong>container</strong> — <code>agentcanvas/pyslam:cpu-fixed</code> for the SLAM / feature / depth / semantic path, <code>agentcanvas/pyslam:cuda</code> (adds compiled multi-view backends) for <code>reconstruct_multiview</code>, rootless Docker, <em>not</em> a conda env · backend: GPL-3.0 pySLAM behind an HTTP bridge, never imported in the framework process · front-end: <code>ORB2</code> features + <code>DBOW3</code> loop closure, RGB-D by default · GPU via rootless CDI, on by default</p>
+<p>env: <strong>Container Launch</strong> (<a href="../../core/decisions/server/adr-server-005-container-launch.html">ADR-server-005</a>) — <code>server_image = agentcanvas/pyslam:cuda</code> by default (full surface incl. <code>reconstruct_multiview</code>; <code>PYSLAM_IMAGE</code> pins <code>:cpu-fixed</code> for the leaner build), rootless Docker, <em>not</em> a conda env · backend: GPL-3.0 pySLAM stays inside the container, never imported in the framework process · front-end: <code>ORB2</code> features + <code>DBOW3</code> loop closure, RGB-D by default · GPU via rootless CDI, on by default</p>
 <figure class="demo-video">
   <video controls muted playsinline preload="none" poster="../../../../assets/videos/pyslam-tum-slam-poster.jpg">
     <source src="../../../../assets/videos/pyslam-tum-slam-demo.mp4" type="video/mp4">
@@ -113,11 +113,11 @@
 </table>
 <hr>
 
-<h2 id="1-container-bridge"><span class="num">1.</span> The container bridge</h2>
-<p>pySLAM is GPL-3.0 and carries a native C++ core (g2o, Pangolin, DBoW3) pinned to Python 3.11.9. Rather than vendor that source or build a sibling conda env, the nodeset keeps the whole dependency <strong>behind a container boundary</strong> — the same treatment <code>habitat_sim</code> gets. Three layers sit between a canvas node and the SLAM math; the framework side never runs <code>import pyslam</code>, and every per-frame call is one HTTP round-trip to a shim running inside the container.</p>
+<h2 id="1-container-bridge"><span class="num">1.</span> Container Launch</h2>
+<p>pySLAM is GPL-3.0 and carries a native C++ core (g2o, Pangolin, DBoW3) pinned to Python 3.11.9. Rather than vendor that source or build a sibling conda env, the nodeset keeps the whole dependency <strong>behind a container boundary</strong> — the same treatment <code>habitat_sim</code> gets. Since 2026-08-20 the boundary is the framework's own <strong>Container Launch</strong> vehicle (<a href="../../design-docs/operations/container-launch.html">design doc</a>, <a href="../../core/decisions/server/adr-server-005-container-launch.html">ADR-server-005</a>): the nodeset declares <code>server_image</code> and the registry routes it to server mode with <code>docker run</code> as the launch vehicle — the stock <code>auto_host</code> serves the manifest protocol from inside the container, and the framework talks to auto-generated proxy nodes. The framework side never runs <code>import pyslam</code>; the whole nodeset module (nodes + <code>PySlamSession</code>) executes in-container. This replaced the nodeset's original private bridge (a hand-written <code>_client.py</code> docker driver + an in-container FastAPI shim), which was this mechanism's validated prototype.</p>
 
 <figure class="rxfig">
-<svg class="rxsvg" viewBox="0 0 760 466" style="max-width:720px" role="img" aria-label="How the pySLAM container bridge plugs into AgentCanvas, drawn as three stacked layers. Top layer, AgentCanvas: the canvas graph and GraphExecutor — an env observe node feeds rgb and depth into the pySLAM nodes (reset, track, get_map), whose pose and map handle flow on typed wires into the trajectory and point-cloud viewer nodes; the executor fires each node once per step. Middle layer, the nodeset framework side, running in the agentcanvas env which never imports pyslam: when the executor fires a pySLAM node, a fresh node instance reaches the shared session through the _NODESET process singleton set by initialize(), then the PySlamContainerClient, which docker-runs and docker-removes the container and speaks HTTP over a loopback port. Bottom layer, the Docker container running the pyslam venv where the GPL code stays: a FastAPI shim in _server.py forwards to the PySlamSession in _backend.py, which drives pySLAM's Slam C++ core (ORB2 + DBoW3 + g2o) on a single worker thread. A return arrow carries the pose and map handle back up the wires into the viewer nodes, so results re-enter AgentCanvas.">
+<svg class="rxsvg" viewBox="0 0 760 466" style="max-width:720px" role="img" aria-label="How pySLAM plugs into AgentCanvas via Container Launch, drawn as three stacked layers. Top layer, AgentCanvas: the canvas graph and GraphExecutor — an env observe node feeds rgb and depth into the pySLAM nodes (reset, track, get_map), whose pose and map handle flow on typed wires into the trajectory and point-cloud viewer nodes; the executor fires each node once per step. Middle layer, the framework side, running in the agentcanvas env which never imports pyslam: the pySLAM nodes are proxy nodes auto-generated from the container's manifest, and the framework's ContainerServer owns the container lifecycle — docker run with rm and init flags, health wait, docker stop. Bottom layer, the Docker container running the pyslam venv where the GPL code stays: the stock auto_host serves the manifest protocol and dispatches each call to the real nodeset and nodes from __init__.py, which drive the PySlamSession in _backend.py — pySLAM's Slam C++ core (ORB2 + DBoW3 + g2o) on a single worker thread. A return arrow carries the pose and map handle back up the wires into the viewer nodes, so results re-enter AgentCanvas.">
   <defs><marker id="psa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
 
   <!-- LAYER 1 · AgentCanvas -->
@@ -138,47 +138,44 @@
   <path class="edge" d="M480,82 L572,82"/>
   <text class="dim" x="390" y="140" text-anchor="middle">the GraphExecutor fires each node per step · wires are typed</text>
 
-  <!-- LAYER 2 · nodeset, framework side -->
+  <!-- LAYER 2 · framework side -->
   <rect class="region" x="8" y="186" width="724" height="100" rx="12"/>
-  <text class="grp" x="24" y="206">NODESET · framework side · agentcanvas env — never imports pyslam</text>
-  <rect class="box" x="40" y="220" width="180" height="46" rx="8"/>
-  <text x="130" y="240" text-anchor="middle">fresh node instance</text>
-  <text class="dim" x="130" y="256" text-anchor="middle">executor builds per step</text>
-  <rect class="box" x="290" y="220" width="160" height="46" rx="8"/>
-  <text x="370" y="240" text-anchor="middle">_NODESET singleton</text>
-  <text class="dim" x="370" y="256" text-anchor="middle">set by initialize()</text>
-  <rect class="box" x="520" y="220" width="200" height="46" rx="8"/>
-  <text x="620" y="240" text-anchor="middle">PySlamContainerClient</text>
-  <text class="dim" x="620" y="256" text-anchor="middle">docker run/rm · HTTP</text>
-  <path class="edge" d="M220,243 L290,243"/>
-  <path class="edge" d="M450,243 L520,243"/>
+  <text class="grp" x="24" y="206">FRAMEWORK · agentcanvas env — never imports pyslam</text>
+  <rect class="box" x="60" y="220" width="240" height="46" rx="8"/>
+  <text x="180" y="240" text-anchor="middle">proxy nodes</text>
+  <text class="dim" x="180" y="256" text-anchor="middle">auto-generated from /manifest</text>
+  <rect class="box" x="440" y="220" width="240" height="46" rx="8"/>
+  <text x="560" y="240" text-anchor="middle">ContainerServer</text>
+  <text class="dim" x="560" y="256" text-anchor="middle">docker run --rm --init · health · stop</text>
 
   <!-- LAYER 3 · Docker container -->
   <rect class="region" x="8" y="320" width="724" height="126" rx="12"/>
-  <text class="grp" x="24" y="340">DOCKER CONTAINER · pyslam venv · GPL-3.0 stays here</text>
+  <text class="grp" x="24" y="340">DOCKER CONTAINER · pyslam venv · GPL-3.0 stays here · repo mounted ro</text>
   <rect class="box" x="40" y="356" width="195" height="54" rx="8"/>
-  <text x="137" y="378" text-anchor="middle">FastAPI shim</text>
-  <text class="dim" x="137" y="395" text-anchor="middle">_server.py</text>
+  <text x="137" y="378" text-anchor="middle">stock auto_host</text>
+  <text class="dim" x="137" y="395" text-anchor="middle">/manifest · /call/{fn}</text>
   <rect class="box" x="290" y="356" width="195" height="54" rx="8"/>
-  <text x="387" y="378" text-anchor="middle">PySlamSession</text>
-  <text class="dim" x="387" y="395" text-anchor="middle">_backend.py · 1 thread · map</text>
+  <text x="387" y="378" text-anchor="middle">nodeset + nodes</text>
+  <text class="dim" x="387" y="395" text-anchor="middle">__init__.py · initialize()</text>
   <rect class="box" x="540" y="356" width="180" height="54" rx="8"/>
-  <text x="630" y="378" text-anchor="middle">pySLAM · Slam</text>
-  <text class="dim" x="630" y="395" text-anchor="middle">ORB2 + DBoW3 + g2o · C++</text>
+  <text x="630" y="378" text-anchor="middle">PySlamSession → Slam</text>
+  <text class="dim" x="630" y="395" text-anchor="middle">_backend.py · 1 thread · C++</text>
   <path class="edge" d="M235,383 L290,383"/>
   <path class="edge" d="M485,383 L540,383"/>
 
   <!-- inter-layer connectors -->
   <path class="edge" d="M255,152 L255,186"/>
-  <text class="dim" x="267" y="172" text-anchor="start">executor fires the node</text>
-  <path class="edge" d="M387,286 L387,320"/>
-  <text class="dim" x="399" y="306" text-anchor="start">HTTP · JSON light / npz bytes</text>
+  <text class="dim" x="267" y="172" text-anchor="start">executor fires the proxy node</text>
+  <path class="edge" d="M180,266 L180,340 L137,340 L137,356"/>
+  <text class="dim" x="192" y="306" text-anchor="start">POST /call/{fn} · msgpack (numpy native)</text>
+  <path class="edge" d="M560,266 L560,320"/>
+  <text class="dim" x="572" y="306" text-anchor="start">owns the lifecycle</text>
 
   <!-- results climb back up the wires into AgentCanvas -->
   <path class="edge" d="M732,383 C752,383 752,82 722,82"/>
   <text class="dim" x="716" y="128" text-anchor="end">↑ results → viewers</text>
 </svg>
-<figcaption>How pySLAM enters AgentCanvas. <strong>Top</strong> — on the canvas it is ordinary nodes: an env feeds <code>rgb</code>/<code>depth</code> into the pySLAM nodes, whose <code>pose</code> and map handle flow on typed wires into the viewer nodes, and the GraphExecutor fires each per step. <strong>Middle</strong> — firing a pySLAM node reaches the shared session through the <code>_NODESET</code> singleton, then the client, which never imports pySLAM and instead <code>docker run</code>s the container and talks HTTP. <strong>Bottom</strong> — the shim forwards to the session driving <code>Slam</code>. Results ride back up the wires into the viewers (right), so the container's output re-enters the graph.</figcaption>
+<figcaption>How pySLAM enters AgentCanvas under Container Launch. <strong>Top</strong> — on the canvas it is ordinary nodes: an env feeds <code>rgb</code>/<code>depth</code> into the pySLAM nodes, whose <code>pose</code> and map handle flow on typed wires into the viewer nodes, and the GraphExecutor fires each per step. <strong>Middle</strong> — those nodes are <em>proxies</em> auto-generated from the container's manifest; the framework's <code>ContainerServer</code> owns the container lifecycle (<code>docker run --rm --init</code>, health wait, <code>docker stop</code>) and never imports pySLAM. <strong>Bottom</strong> — the stock <code>auto_host</code> dispatches each call to the real nodes, which drive the session and <code>Slam</code>. Results ride back up the wires into the viewers (right), so the container's output re-enters the graph.</figcaption>
 </figure>
 
 <table>
@@ -186,43 +183,26 @@
 <tr><th>Layer</th><th>File</th><th>Where</th><th>Role</th></tr>
 </thead>
 <tbody>
-<tr><td>Nodes + NodeSet</td><td><code>__init__.py</code></td><td>framework</td><td>Eleven canvas nodes (five session verbs + three stateless perception + three neural full-surface); the nodeset owns the container lifecycle and holds the client as its session.</td></tr>
-<tr><td>Client</td><td><code>_client.py</code></td><td>framework</td><td><code>PySlamContainerClient</code> — presents the exact surface of a <code>PySlamSession</code> but forwards every call over HTTP; <code>docker run</code>/<code>rm</code>; writes map handles host-side.</td></tr>
-<tr><td>Shim</td><td><code>_server.py</code></td><td>container</td><td>A small FastAPI app — the only place <code>import pyslam</code> is legal. Holds one session; exposes <code>/reset</code>, <code>/track</code>, <code>/get_map</code>, …</td></tr>
-<tr><td>Session</td><td><code>_backend.py</code></td><td>container</td><td><code>PySlamSession</code> — drives one pySLAM <code>Slam</code> pinned to a single worker thread (pySLAM's background threads have thread affinity).</td></tr>
+<tr><td>Nodes + NodeSet</td><td><code>__init__.py</code></td><td>container</td><td>Eleven canvas nodes (five session verbs + three stateless perception + three neural full-surface) plus the <code>server_image</code>/<code>server_mounts</code>/<code>server_env</code> declaration. Imported twice: by the backend during discovery (declaration only) and inside the container by the stock <code>auto_host</code> (execution).</td></tr>
+<tr><td>Session</td><td><code>_backend.py</code></td><td>container</td><td><code>PySlamSession</code> — drives one pySLAM <code>Slam</code> pinned to a single worker thread (pySLAM's background threads have thread affinity), plus the stateless module-level functions the Tier-2 / neural nodes call.</td></tr>
+<tr><td>Launch vehicle</td><td><code>app/server/container_server.py</code></td><td>framework</td><td><code>ContainerServer</code> — foreground <code>docker run --rm --init</code>, deterministic container names, stale-namesake reap, health wait, <code>docker stop</code>-first teardown, one CPU-degrade retry. Framework-owned; nothing pySLAM-specific.</td></tr>
+<tr><td>Wiring</td><td><code>app/components/registry.py</code></td><td>framework</td><td><code>_build_container_server</code> — mounts the repo read-only at <code>/opt/agentcanvas-workspace</code>, rewrites paths/<code>PYTHONPATH</code>/executor URLs, resolves <code>server_mounts</code>, injects <code>server_env</code>.</td></tr>
 </tbody>
 </table>
-<p>The nodeset directory is bind-mounted read-only into the container, so <code>_server.py</code>/<code>_backend.py</code> run inside without baking our code into the image — only fastapi/uvicorn and pySLAM live there. Container access is forced onto the user's <strong>rootless</strong> Docker daemon (<code>DOCKER_HOST</code>/<code>XDG_RUNTIME_DIR</code> set to the user socket), so the whole thing needs no sudo.</p>
+<p>No framework or nodeset code is baked into the image — the repo rides the read-only mount, so a framework upgrade never needs an image rebuild. The image carries only pySLAM's own venv (which already includes the <code>requirements-serve.txt</code> set). Container access is forced onto the user's <strong>rootless</strong> Docker daemon (<code>DOCKER_HOST</code>/<code>XDG_RUNTIME_DIR</code> set to the user socket), so the whole thing needs no sudo.</p>
 
-<p><strong>One call, end to end.</strong> The graph executor fires a freshly-constructed node each step, so a node cannot hold the session on <code>self</code> — it reaches the shared client through the process-level singleton <code>_NODESET</code> that <code>initialize()</code> set (§3). A single <code>track</code> then flows <em>node → client → shim → session</em>: the client serialises the frame and <code>POST</code>s it over the loopback port; the shim hands it to the <code>PySlamSession</code>, which marshals the call onto its <strong>one</strong> worker thread and returns the pose as JSON. The single thread is not incidental — pySLAM's local-mapping / loop-closing / volumetric background threads are bound to the thread that constructed <code>Slam</code>, so every <code>track</code> must run on that same thread (the same single-thread-affinity discipline the GL/physics env nodesets use).</p>
+<p><strong>One call, end to end.</strong> On the canvas the pySLAM nodes are <em>proxy nodes</em> the registry generated from the container's <code>/manifest</code>. A single <code>track</code> flows <em>proxy → auto_host → node → session</em>: the proxy <code>POST</code>s the inputs to <code>/call/model_pyslam__track</code> over the loopback port (numpy arrays ride msgpack natively — no base64, no custom wire protocol); <code>auto_host</code> dispatches to the real track node running in-container, which hands the frame to the <code>PySlamSession</code>, which marshals the call onto its <strong>one</strong> worker thread and returns the pose. The single thread is not incidental — pySLAM's local-mapping / loop-closing / volumetric background threads are bound to the thread that constructed <code>Slam</code>, so every <code>track</code> must run on that same thread (the same single-thread-affinity discipline the GL/physics env nodesets use).</p>
 
-<p><strong>What rides the wire.</strong> Two payload classes cross the bridge differently. Light results (pose, tracking state, point counts) travel as <strong>JSON</strong>; heavy geometry — frames in, sparse / dense maps and multi-view clouds out — travels as raw <code>.npz</code> <strong>bytes</strong> over an octet-stream, never base64-in-JSON. And on the <em>graph</em> wire only a <strong>handle path</strong> travels: the client writes the returned <code>.npz</code> to a host-side file (framework-user-owned, sidestepping rootless-Docker uid remapping) and passes that path downstream, so a multi-thousand-point map never inflates the executor's in-memory state.</p>
+<p><strong>What rides the wire.</strong> Light results (pose, tracking state, point counts) and frames travel on the manifest protocol like any server-mode nodeset's. Heavy geometry — sparse / dense maps and multi-view clouds — never rides a wire at all: the in-container node writes the <code>.npz</code> into <code>/opt/out</code> (the <code>server_mounts</code> rw drop, host side <code>outputs/pyslam_maps/</code>) and passes only the <strong>host-resolvable handle path</strong> downstream, so a multi-thousand-point map never inflates the executor's in-memory state. The private HTTP endpoint zoo of the old bridge (<code>/track</code>, <code>/get_map</code> npz-over-octet-stream, …) is gone — the stock <code>GET /manifest</code> · <code>POST /call/{fn}</code> · <code>GET /health</code> surface replaced all of it.</p>
 
-<table>
-<thead>
-<tr><th>Endpoint (POST unless noted)</th><th>Body → response</th></tr>
-</thead>
-<tbody>
-<tr><td><code>GET /health</code></td><td>→ <code>{ok, built}</code> — the readiness probe the client polls after <code>docker run</code></td></tr>
-<tr><td><code>/configure_camera</code></td><td>JSON intrinsics → <code>{ok}</code> — pins the pinhole camera</td></tr>
-<tr><td><code>/start</code> · <code>/reset</code> · <code>/close</code></td><td>→ <code>{ok}</code> — build <code>Slam</code> · clear the map · quit (join bg threads)</td></tr>
-<tr><td><code>/track</code></td><td>npz(rgb[, depth[, ts]]) → JSON <code>pose</code> · <code>tracking_state</code> · <code>num_map_points</code></td></tr>
-<tr><td><code>/get_trajectory</code></td><td>→ JSON <code>poses</code> · <code>states</code> · <code>num_frames</code></td></tr>
-<tr><td><code>/get_map</code> · <code>/get_dense_map</code></td><td>→ npz <strong>bytes</strong> (points, …) + <code>X-Num-*</code> headers; the client writes the host handle</td></tr>
-<tr><td colspan="2"><strong>Stateless perception</strong> — no session, npz in / npz out:</td></tr>
-<tr><td><code>/extract_features</code> · <code>/match_features</code> · <code>/predict_depth</code> · <code>/segment_semantic</code> · <code>/reconstruct_multiview</code></td><td>npz(images / descriptors) → npz(results) + <code>X-*</code> count headers</td></tr>
-<tr><td><code>/eval_trajectory</code></td><td>JSON(poses_est, poses_gt) → JSON(ate, rpe) — pure math, no arrays</td></tr>
-</tbody>
-</table>
-
-<p><strong>The session's shape is fixed at launch, not per call.</strong> Sensor mode, feature / loop presets, volumetric integration, indoor/outdoor regime — all chosen when the container starts: <code>initialize()</code> passes them as <code>-e</code> environment variables on <code>docker run</code>, and the shim reads them when it lazily builds the session (<code>_get_session()</code>). That is why those knobs live as environment variables (§7) rather than call arguments — they define the <em>container</em>, while only per-frame data (images, depth) rides the HTTP body. The per-node <strong>Reset</strong> config fields override the env defaults right before the first <code>configure_camera</code>.</p>
+<p><strong>The session's shape is fixed at launch, not per call.</strong> Sensor mode, feature / loop presets, volumetric integration, indoor/outdoor regime — all chosen when the container starts: the class-level <code>server_env</code> snapshots every <code>PYSLAM_*</code> variable from the host environment at import time and the registry injects them as <code>-e</code> on <code>docker run</code>; the in-container <code>initialize()</code> reads them back when it builds the session. That is why those knobs live as environment variables (§7) rather than call arguments — they define the <em>container</em>, while only per-frame data (images, depth) rides the call. The per-node <strong>Reset</strong> config fields override the env defaults right before the first <code>configure_camera</code>.</p>
 <hr>
 
 <h2 id="2-streaming-session"><span class="num">2.</span> A streaming session, not a stateless pass</h2>
 <p>Every other <a href="index.html">foundation-model</a> nodeset here is a <strong>stateless</strong> primitive (<code>parallelism = "shared"</code>, one server across eval workers). pySLAM is the exception: its map is <strong>mutable per-episode state</strong> that accumulates across <code>track</code> calls, so it is a <em>session</em>. Consequences:</p>
 <ul>
-<li><code>parallelism = "replicated"</code> — each batch-eval worker needs its own map, hence its own container (one container per client).</li>
-<li><code>server_python = None</code> — the nodeset runs in <strong>local mode</strong>: it is not itself a server-mode subprocess (the container is). It reaches pySLAM over HTTP, not by importing it.</li>
+<li><code>parallelism = "replicated"</code> — each batch-eval worker needs its own map, hence its own container (server-mode fan-out spawns one <code>ContainerServer</code> per worker).</li>
+<li><code>server_image</code> — the nodeset runs in <strong>server mode</strong> with the container as the launch vehicle: the whole module executes inside the container, and the framework only ever talks to its proxy nodes.</li>
 <li>The <code>Slam</code> instance is built <strong>lazily</strong> on the first <code>reset</code> (once camera intrinsics are known), then reused; per-episode <code>reset</code> only clears the map.</li>
 </ul>
 <p>The three Tier-2 perception nodes (§5) are the counterexample <em>within</em> this nodeset: they are stateless pure functions that reuse the same container but never touch the <code>Slam</code> object, so — unlike <code>track</code> / <code>get_map</code> — they do not gate on the session being built.</p>
@@ -231,7 +211,7 @@
 <h2 id="3-weaving-dataflow"><span class="num">3.</span> Weaving a passive observer into the dataflow</h2>
 <p>A SLAM observer riding alongside a navigation policy is easy to wire <em>wrong</em>, because two graph-executor facts fight the naïve topology:</p>
 <ul>
-<li><strong>Fresh instances.</strong> The executor fires freshly-constructed <code>node_cls()</code> objects, not the <code>get_tools(self)</code> instances that carry a nodeset back-reference. So nodes reach the shared session through a <strong>process-level singleton</strong> that <code>initialize()</code> sets, read as <code>self._nodeset or _NODESET</code> — safe because local mode is always single-process.</li>
+<li><strong>Fresh instances.</strong> The host executor fires freshly-constructed <code>node_cls()</code> objects, not the <code>get_tools(self)</code> instances that carry a nodeset back-reference — and in-container the same discipline holds as a safety net. So nodes reach the shared session as <code>self._nodeset or _NODESET</code>, a process-level singleton that <code>initialize()</code> sets — safe because one container is one process (replicated: one per worker).</li>
 <li><strong>Demand-driven pruning.</strong> A node whose outputs feed nothing is pruned and never fires. A passive observer therefore must be woven into the live path: <code>track</code>'s <code>num_map_points</code> is wired to an <code>iterOut</code> port, and <code>reset</code>'s <code>episode_ok</code> to an <code>iterIn</code> init port, so both actually run every step / once per episode.</li>
 </ul>
 <p>The shipped example, <code>vln/unverified/pyslam_slam_probe.json</code>, is a pure-policy VLN-CE navigator (CMA policy, no LLM) with pySLAM observing: the policy drives, pySLAM reconstructs the walked scene, and the wiring above keeps the observer alive.</p>
@@ -294,12 +274,12 @@
 <tbody>
 <tr><td>Inputs</td><td><code>trigger</code> (ANY, opt)</td></tr>
 <tr><td>Outputs</td><td><code>map_handle</code> (TEXT — path to a <code>.npz</code>), <code>num_points</code> (ANY), <code>num_keyframes</code> (ANY)</td></tr>
-<tr><td>Backend call</td><td>shim ships points as <code>.npz</code> bytes; the client writes them host-side (framework-user-owned, sidestepping rootless-Docker uid remapping)</td></tr>
+<tr><td>Backend call</td><td>the node writes the <code>.npz</code> in-container into <code>/opt/out</code> (the rw <code>server_mounts</code> drop) and returns the matching host-side path under <code>outputs/pyslam_maps/</code></td></tr>
 </tbody>
 </table>
 <pre class="hl">
 <span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;map_handle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;outputs/pyslam_maps/map_0001_001862.npz&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;map_handle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;repo&gt;/outputs/pyslam_maps/map_000060.npz&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">&quot;num_points&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1862</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">&quot;num_keyframes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span>
 <span class="p">}</span>
@@ -403,19 +383,19 @@
 <h2 id="6-deployment"><span class="num">6.</span> Deployment &amp; lifecycle</h2>
 
 <figure class="rxfig">
-<svg class="rxsvg" viewBox="0 0 760 596" style="max-width:720px" role="img" aria-label="The pySLAM session lifecycle as a two-column timeline — framework actions on the left, the container effect each triggers on the right, time flowing downward. initialize() docker-runs the container, which boots the shim and answers the health poll. The first reset() configures the camera and starts Slam, built lazily with ORB2 features and DBoW3 loop closure. Then track() is called once per step, running Slam.track on a single worker thread while the map grows. After the loop, get_map and get_trajectory return npz bytes that the client writes to a host-side handle, so only the path rides the graph wire. reset() for the next episode calls reset_session, which clears the map but keeps the loop database, looping back to track. Finally shutdown() posts close — quitting Slam and joining its background threads — then docker rm removes the container. A per-episode loop arrow wraps the track, get-map and reset rows.">
+<svg class="rxsvg" viewBox="0 0 760 596" style="max-width:720px" role="img" aria-label="The pySLAM session lifecycle as a two-column timeline — framework actions on the left, the container effect each triggers on the right, time flowing downward. Loading the nodeset makes the registry's ContainerServer docker-run the image; inside, the stock auto_host boots, calls the nodeset's initialize(), and answers the health poll. The first reset() call — through the proxy node — configures the camera and starts Slam, built lazily with ORB2 features and DBoW3 loop closure. Then track() is called once per step, running Slam.track on a single worker thread while the map grows. After the loop, get_map and get_trajectory write npz files into the mounted /opt/out drop and hand back host-side handle paths, so only the path rides the graph wire. reset() for the next episode calls reset_session, which clears the map but keeps the loop database, looping back to track. Finally unloading the nodeset (or backend exit) has auto_host call shutdown() — quitting Slam and joining its background threads — then ContainerServer docker-stops the container, which the rm flag reaps. A per-episode loop arrow wraps the track, get-map and reset rows.">
   <rect class="region" x="8" y="30" width="344" height="548" rx="12"/>
   <text class="grp" x="24" y="50">FRAMEWORK · agentcanvas env</text>
   <rect class="region" x="408" y="30" width="344" height="548" rx="12"/>
   <text class="grp" x="424" y="50">CONTAINER · pyslam venv</text>
 
-  <!-- r1 initialize -->
+  <!-- r1 load -->
   <rect class="box" x="44" y="66" width="272" height="52" rx="8"/>
-  <text x="180" y="88" text-anchor="middle">initialize()</text>
-  <text class="dim" x="180" y="105" text-anchor="middle">docker run -d · bind-mount · publish port</text>
+  <text x="180" y="88" text-anchor="middle">load nodeset · ContainerServer</text>
+  <text class="dim" x="180" y="105" text-anchor="middle">docker run --rm --init · repo mounted ro</text>
   <rect class="box" x="444" y="66" width="272" height="52" rx="8"/>
-  <text x="580" y="88" text-anchor="middle">container up</text>
-  <text class="dim" x="580" y="105" text-anchor="middle">shim boots · /health polled until ready</text>
+  <text x="580" y="88" text-anchor="middle">auto_host boots</text>
+  <text class="dim" x="580" y="105" text-anchor="middle">initialize() · /health polled until ready</text>
   <path class="edge" d="M316,92 L444,92"/>
 
   <!-- r2 first reset -->
@@ -441,8 +421,8 @@
   <text x="180" y="334" text-anchor="middle">get_map / get_trajectory</text>
   <text class="dim" x="180" y="351" text-anchor="middle">after the loop</text>
   <rect class="box" x="444" y="312" width="272" height="52" rx="8"/>
-  <text x="580" y="334" text-anchor="middle">npz bytes → host handle</text>
-  <text class="dim" x="580" y="351" text-anchor="middle">only the path rides the graph wire</text>
+  <text x="580" y="334" text-anchor="middle">npz written to /opt/out</text>
+  <text class="dim" x="580" y="351" text-anchor="middle">only the host path rides the graph wire</text>
   <path class="edge" d="M316,338 L444,338"/>
 
   <!-- r5 next reset -->
@@ -454,12 +434,12 @@
   <text class="dim" x="580" y="433" text-anchor="middle">clears map · keeps loop DB</text>
   <path class="edge" d="M316,420 L444,420"/>
 
-  <!-- r6 shutdown -->
+  <!-- r6 unload -->
   <rect class="box" x="44" y="476" width="272" height="52" rx="8"/>
-  <text x="180" y="498" text-anchor="middle">shutdown()</text>
-  <text class="dim" x="180" y="515" text-anchor="middle">/close → docker rm -f</text>
+  <text x="180" y="498" text-anchor="middle">unload / backend exit</text>
+  <text class="dim" x="180" y="515" text-anchor="middle">docker stop · --rm reaps</text>
   <rect class="box" x="444" y="476" width="272" height="52" rx="8"/>
-  <text x="580" y="498" text-anchor="middle">Slam.quit()</text>
+  <text x="580" y="498" text-anchor="middle">shutdown() → Slam.quit()</text>
   <text class="dim" x="580" y="515" text-anchor="middle">joins bg threads · container removed</text>
   <path class="edge" d="M316,502 L444,502"/>
 
@@ -474,13 +454,14 @@
   <path class="edge" d="M44,414 C18,414 18,262 44,262"/>
   <text class="dim" transform="rotate(-90 20 338)" x="20" y="338" text-anchor="middle">per-episode loop</text>
 </svg>
-<figcaption>The session lifecycle: each framework call (left) drives one container effect (right), top to bottom. The <code>Slam</code> instance is built <strong>lazily</strong> on the first <code>reset</code>; <code>track</code>/<code>get_map</code>/<code>reset</code> repeat per episode (the loop clears the map but reuses the built session and container); <code>shutdown</code> quits <code>Slam</code> and removes the container.</figcaption>
+<figcaption>The session lifecycle: each framework action (left) drives one container effect (right), top to bottom. Loading the nodeset starts the container (and <code>auto_host</code> calls <code>initialize()</code> inside it); the <code>Slam</code> instance is built <strong>lazily</strong> on the first <code>reset</code>; <code>track</code>/<code>get_map</code>/<code>reset</code> repeat per episode (the loop clears the map but reuses the built session and container); unloading calls <code>shutdown()</code> in-container then <code>docker stop</code>s the container.</figcaption>
 </figure>
 
-<p><code>initialize()</code> constructs the client and <code>docker run -d</code>s the image (nodeset dir bind-mounted at <code>/opt/bridge</code>, a free loopback port published), then polls <code>/health</code> until the shim answers — the blocking Docker call offloaded off the event loop. <code>shutdown()</code> posts <code>/close</code> (quits <code>Slam</code>, joins its background threads) then <code>docker rm -f</code>s the container. The image is built once via rootless Docker; pySLAM is cloned and compiled <strong>at build time</strong>, never entering the repo.</p>
-<p><strong>GPU.</strong> The container is launched with <code>--device nvidia.com/gpu=all</code> so the neural backends (learned depth, semantic segmentation, multi-view reconstruction) run on the GPU — the classic SLAM core stays on CPU. Rootless Docker reaches the GPU through <strong>CDI</strong> (the legacy <code>--gpus</code> cgroup path fails unprivileged). GPU is on by default and falls back to CPU when unavailable — set <code>PYSLAM_GPU=0</code> to force CPU.</p>
-<p><strong>Two images, auto-selected.</strong> <code>cpu-fixed</code> already carries a CUDA <code>torch</code> ("cpu" only means the SLAM C++ core is CPU-built), so the depth and semantic backends run on the GPU there with no separate image. The <em>multi-view</em> backends are the exception: they carry compiled CUDA kernels (<code>curope</code>) that must be built with <code>nvcc</code> present, so <code>reconstruct_multiview</code> needs the heavier <code>agentcanvas/pyslam:cuda</code> image (built by <code>docker/Dockerfile.cuda</code>). When <code>PYSLAM_IMAGE</code> is unset the client picks the image by GPU: <strong>GPU present → <code>:cuda</code></strong> (the whole surface works out of the box), <strong>no GPU → <code>:cpu-fixed</code></strong> (the leaner image; multi-view needs a GPU anyway). A GPU start that fails on a host without CDI also degrades to the CPU image. Pin <code>PYSLAM_IMAGE</code> to override.</p>
-<p><strong>Weights are external.</strong> Neither image bakes in model weights — they carry only code and compiled kernels. The multi-view checkpoints live in a host <code>data/models/pyslam/</code> folder and mount read-only into the container at runtime (<code>PYSLAM_WEIGHTS_DIR</code> overrides the location); the HuggingFace-runtime backends download into a mounted cache on first use. Fetch the explicit checkpoints with the tracked scripts under <code>docker/weights/</code>:</p>
+<p>Loading the nodeset makes the registry's <code>ContainerServer</code> run a foreground <code>docker run --rm --init</code> (repo bind-mounted read-only at <code>/opt/agentcanvas-workspace</code>, weights and the <code>/opt/out</code> handle drop mounted per <code>server_mounts</code>, a loopback port published), then poll <code>/health</code> until the stock <code>auto_host</code> answers — <code>auto_host</code> has already called the nodeset's <code>initialize()</code> by then. Teardown is framework-owned too: <code>auto_host</code> runs <code>shutdown()</code> (quits <code>Slam</code>, joins its background threads), then <code>ContainerServer</code> issues <code>docker stop</code> and <code>--rm</code> reaps the container — a SIGKILLed backend can no longer orphan it. The image is built once via rootless Docker; pySLAM is cloned and compiled <strong>at build time</strong>, never entering the repo.</p>
+<p><strong>GPU.</strong> With <code>server_image_gpu</code> on (the default) the container is launched with <code>--device nvidia.com/gpu=all</code> so the neural backends (learned depth, semantic segmentation, multi-view reconstruction) run on the GPU — the classic SLAM core stays on CPU. Rootless Docker reaches the GPU through <strong>CDI</strong> (the legacy <code>--gpus</code> cgroup path fails unprivileged). When the GPU device is absent, <code>ContainerServer</code> retries once without it — set <code>PYSLAM_GPU=0</code> to skip the GPU claim outright.</p>
+<p><strong>One default image.</strong> <code>server_image</code> defaults to <code>agentcanvas/pyslam:cuda</code> — the full surface out of the box. Its neural layers load lazily, so the same image runs fine CPU-only; the old bridge's per-GPU tag auto-selection is gone. <code>cpu-fixed</code> still exists as the leaner base (it already carries a CUDA <code>torch</code> — "cpu" only means the SLAM C++ core is CPU-built — but lacks the compiled multi-view kernels, so <code>reconstruct_multiview</code> needs <code>:cuda</code>). Pin <code>PYSLAM_IMAGE=agentcanvas/pyslam:cpu-fixed</code> to use it.</p>
+<p><strong>Identity alignment, not open perms.</strong> The image bakes a non-root <code>slam</code> user, which rootless docker maps to a foreign host <em>subuid</em> that cannot write host-owned rw mounts — so the nodeset declares <code>server_container_user = "0:0"</code>: under rootless, container-root <em>is</em> the invoking host user, so the handle drop stays a normal 755 directory and every <code>.npz</code> lands on the host owned by the user (<code>HOME=/home/slam</code> rides <code>server_env</code> because the image's venv/cache paths assume the baked user's home). The registry also creates a missing <code>outputs/pyslam_maps/</code> automatically — no manual setup.</p>
+<p><strong>Weights are external.</strong> Neither image bakes in model weights — they carry only code and compiled kernels. The multi-view checkpoints live in a host <code>data/models/pyslam/</code> folder and mount read-only into the container via <code>server_mounts</code> (<code>PYSLAM_WEIGHTS_DIR</code> overrides the location; missing dirs are skipped, that backend just errors at call time); the HuggingFace-runtime backends download into a mounted rw cache on first use. Fetch the explicit checkpoints with the tracked scripts under <code>docker/weights/</code>:</p>
 <pre class="hl">
 <span class="nb">cd</span><span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/weights
 bash<span class="w"> </span>download_mast3r.sh<span class="w">      </span><span class="c1"># MASt3R (~2.5GB) — the verified default</span>
@@ -490,15 +471,15 @@ bash<span class="w"> </span>download_all.sh<span class="w">         </span><span
 <span class="nb">export</span><span class="w"> </span><span class="nv">DOCKER_HOST</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">unix:///run/user/</span><span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="s2">/docker.sock</span><span class="s2">&quot;</span>
 bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.sh<span class="w"> </span>agentcanvas/pyslam:cpu-fixed
 </pre>
-<p>Run the probe graph through the experiment wrapper. <strong><code>worker_count=1</code> is required</strong> — a higher count auto-routes the nodeset to server mode, which the container-bridge (local-mode) design does not support.</p>
+<p>Run the TUM showcase graph through the experiment wrapper (profile <code>pyslam-tum</code>, CPU-only):</p>
 <pre class="hl">
-<span class="c1"># One episode of the pure-policy probe graph, submitted to the slot backend.</span>
-<span class="c1"># worker_count=1 is REQUIRED: &gt;1 auto-routes the nodeset to server mode,</span>
-<span class="c1"># which the container-bridge (local-mode) nodeset does not support.</span>
-<span class="nv">AGENTCANVAS_BACKEND_URL</span><span class="o">=</span>http://127.0.0.1:8002<span class="w"> </span><span class="se">\</span>
+<span class="c1"># One episode of the TUM showcase, submitted to the slot backend.</span>
+<span class="c1"># Container Launch fans out one container per eval worker, so worker_count</span>
+<span class="c1"># is no longer pinned to 1 by the nodeset (the map is per-worker state).</span>
+<span class="nv">AGENTCANVAS_BACKEND_URL</span><span class="o">=</span>http://127.0.0.1:8001<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>python<span class="w"> </span>.claude/commands/experiment/bin/submit.py<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>architect-cma<span class="w"> </span>pyslam_slam_probe<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="nv">episode_count</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">worker_count</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">split</span><span class="o">=</span>val_unseen<span class="w"> </span><span class="nv">step_budget</span><span class="o">=</span><span class="m">80</span>
+<span class="w">  </span>pyslam-tum<span class="w"> </span>pyslam_tum_slam<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">split</span><span class="o">=</span>freiburg1<span class="w"> </span><span class="nv">episode_count</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">worker_count</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">step_budget</span><span class="o">=</span><span class="m">60</span>
 </pre>
 <hr>
 
@@ -511,16 +492,16 @@ bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.s
 <tr><td><code>PYSLAM_SENSOR</code></td><td><code>rgbd</code></td><td>Sensor mode — <code>mono</code> / <code>stereo</code> / <code>rgbd</code></td></tr>
 <tr><td><code>PYSLAM_FEATURE</code></td><td><code>ORB2</code></td><td>A <code>feature_tracker_configs</code> preset name</td></tr>
 <tr><td><code>PYSLAM_LOOP</code></td><td><code>DBOW3</code></td><td>A <code>loop_detector_configs</code> preset name, or <code>off</code></td></tr>
-<tr><td><code>PYSLAM_IMAGE</code></td><td><em>auto</em> (GPU → <code>:cuda</code>, else <code>:cpu-fixed</code>)</td><td>Pin the container image; unset picks by GPU availability</td></tr>
-<tr><td><code>PYSLAM_ARTIFACT_DIR</code></td><td><code>outputs/pyslam_maps</code></td><td>Host dir where map / scene handles are written</td></tr>
+<tr><td><code>PYSLAM_IMAGE</code></td><td><code>agentcanvas/pyslam:cuda</code></td><td>Pin the container image (<code>server_image</code>); <code>:cpu-fixed</code> for the leaner build</td></tr>
+<tr><td><code>PYSLAM_ARTIFACT_DIR</code></td><td><code>&lt;repo&gt;/outputs/pyslam_maps</code></td><td>Host dir where map / scene handles land (mounted rw at <code>/opt/out</code>; resolved absolute)</td></tr>
 <tr><td><code>PYSLAM_VOLUMETRIC</code></td><td><code>0</code></td><td>Enable the dense volumetric integrator for <code>get_dense_map</code></td></tr>
 <tr><td><code>PYSLAM_VOLUMETRIC_TYPE</code></td><td><code>VOXEL_GRID</code></td><td>Dense-map output — <code>VOXEL_GRID</code> / <code>TSDF</code> / <code>VOXEL_SEMANTIC_GRID</code></td></tr>
 <tr><td><code>PYSLAM_ENV</code></td><td><code>INDOOR</code></td><td>Dense depth-truncation regime — <code>INDOOR</code> / <code>OUTDOOR</code></td></tr>
 <tr><td><code>PYSLAM_WEIGHTS_DIR</code></td><td><code>data/models/pyslam</code></td><td>Host folder of external multi-view weights mounted into the container</td></tr>
-<tr><td><code>PYSLAM_GPU</code></td><td><code>1</code></td><td>GPU on/off; <code>0</code> forces CPU-only</td></tr>
+<tr><td><code>PYSLAM_GPU</code></td><td><code>1</code></td><td>GPU device claim (<code>server_image_gpu</code>); <code>0</code> skips it</td></tr>
 </tbody>
 </table>
-<p>Per-node config fields on the <strong>Reset</strong> node (sensor type, presets, HFOV, depth scale) override these env defaults.</p>
+<p>All <code>PYSLAM_*</code> variables are snapshotted from the host environment when the backend imports the nodeset (the class-level <code>server_env</code>) and injected into the container via <code>-e</code> — set them <strong>before starting the backend</strong>. Per-node config fields on the <strong>Reset</strong> node (sensor type, presets, HFOV, depth scale) override these env defaults.</p>
 <hr>
 
 <h2 id="8-operational-notes"><span class="num">8.</span> Operational notes</h2>
@@ -539,7 +520,7 @@ bash<span class="w"> </span>workspace/nodesets/model/model_pyslam/docker/build.s
   <div class="sidebar-inner">
     <span class="toc-label">On this page</span>
     <nav class="toc-list">
-      <a class="toc-h2" href="#1-container-bridge">1. The container bridge</a>
+      <a class="toc-h2" href="#1-container-bridge">1. Container Launch</a>
       <a class="toc-h2" href="#2-streaming-session">2. A streaming session, not a stateless pass</a>
       <a class="toc-h2" href="#3-weaving-dataflow">3. Weaving a passive observer into the dataflow</a>
       <a class="toc-h2" href="#4-camera-depth">4. Camera intrinsics &amp; depth scale</a>

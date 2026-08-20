@@ -470,12 +470,23 @@ class BaseNodeSet(ABC):
     # Extra bind mounts, {host_path: container_spec}. host_path may be
     # absolute, ~-prefixed, or repo-root-relative (e.g. weights under
     # "data/models/..."); container_spec is "container_path" or
-    # "container_path:ro". Host paths that don't exist are skipped so a
-    # missing optional weights dir degrades that capability, not the start.
+    # "container_path:ro". A missing read-only host path is skipped so an
+    # optional weights dir degrades that capability, not the start; a missing
+    # read-write host path is CREATED (it is an output drop — a skipped rw
+    # mount would silently strand the container's writes inside the container).
     server_mounts: ClassVar[dict[str, str]] = {}
     # Interpreter path INSIDE the container (images with a baked venv need
     # its exact python; plain images use the default).
     server_container_python: ClassVar[str] = "python3"
+    # `docker run --user` override. Under ROOTLESS docker, container uid 0 is
+    # the invoking host user while any non-root image USER maps to a foreign
+    # subuid that cannot write host-owned rw mounts — so an image that drops
+    # to a non-root USER (e.g. pyslam's `slam`) should set "0:0" here to run
+    # as the host user (rootless already caps container-root at the host
+    # user's privileges, so this loosens nothing). Pair it with a HOME entry
+    # in server_env when the image's paths assume the baked user's home.
+    # None = keep the image's USER.
+    server_container_user: ClassVar[str | None] = None
     # Parallelism contract (ADR-server-003). At eval worker_count > 1:
     #   "shared"     → 1 instance, K callers may rendezvous through
     #                  BatchedInferenceServer (stateless tools).

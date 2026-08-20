@@ -95,6 +95,7 @@ class ContainerServer(BaseServer):
         gpu: bool = False,
         mounts: list[str] | None = None,
         container_env: dict[str, str] | None = None,
+        user: str | None = None,
         **overrides: Any,
     ) -> None:
         super().__init__(**overrides)
@@ -103,6 +104,7 @@ class ContainerServer(BaseServer):
         self.gpu = gpu
         self.mounts = list(mounts or [])
         self.container_env = dict(container_env or {})
+        self.user = user
         # The docker client must talk to the rootless daemon regardless of
         # what the backend inherited from its shell.
         self.env = {**self.env, **{
@@ -133,6 +135,12 @@ class ContainerServer(BaseServer):
         ]
         if gpu:
             cmd += GPU_DEVICE_ARGS
+        if self.user:
+            # Rootless identity alignment: "0:0" runs the process as
+            # container-root == the invoking host user, so rw mounts and the
+            # files written into them stay host-user-owned (see
+            # BaseNodeSet.server_container_user).
+            cmd += ["--user", self.user]
         for spec in self.mounts:
             cmd += ["-v", spec]
         for key, val in self.container_env.items():

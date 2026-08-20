@@ -81,9 +81,21 @@ RUN printf '/home/slam/pyslam/cpp/lib\n/home/slam/pyslam/pyslam/slam/cpp/lib\n/h
 # Activate the pyslam env for any interactive/entrypoint shell.
 RUN echo 'source /home/'${USER}'/pyslam/pyenv-activate.sh' >> /home/${USER}/.bashrc
 
-# XDG_RUNTIME_DIR shim (pyslam viz libs touch it even headless).
+# XDG_RUNTIME_DIR shim (pyslam viz libs touch it even headless). The injected
+# PYTHONPATH must survive pyenv-activate.sh (it clears the variable) — Container
+# Launch (ADR-server-005) rides the framework paths in via `-e PYTHONPATH`, and
+# the sourced script must get an explicit venv name or it misreads this
+# entrypoint's "$@" as its own positional args.
 USER root
-RUN printf '#!/bin/bash\nexport XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)\nmkdir -p "$XDG_RUNTIME_DIR"\nchmod 700 "$XDG_RUNTIME_DIR"\nsource /home/'${USER}'/pyslam/pyenv-activate.sh 2>/dev/null || true\nexec "$@"\n' > /usr/local/bin/entrypoint.sh \
+RUN printf '%s\n' \
+      '#!/bin/bash' \
+      'export XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)' \
+      'mkdir -p "$XDG_RUNTIME_DIR"' \
+      'chmod 700 "$XDG_RUNTIME_DIR"' \
+      '_AC_PYTHONPATH="${PYTHONPATH:-}"' \
+      'source /home/'${USER}'/pyslam/pyenv-activate.sh pyslam 2>/dev/null || true' \
+      'if [ -n "$_AC_PYTHONPATH" ]; then export PYTHONPATH="$_AC_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"; fi' \
+      'exec "$@"' > /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh
 USER ${USER}
 WORKDIR /home/${USER}/pyslam

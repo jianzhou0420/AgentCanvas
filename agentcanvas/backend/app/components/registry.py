@@ -774,6 +774,17 @@ class WorkspaceComponentRegistry:
                 hp = Path(root) / hp
             if hp.exists():
                 mounts.append(f"{hp.resolve()}:{container_spec}")
+            elif not container_spec.endswith(":ro"):
+                # A read-write mount is an output drop — create it rather
+                # than skip it (a skipped rw mount silently strands the
+                # container's writes inside the container filesystem).
+                hp.mkdir(parents=True, exist_ok=True)
+                mounts.append(f"{hp.resolve()}:{container_spec}")
+                log.info(
+                    "%s: created missing rw server_mounts dir %s",
+                    server_label,
+                    hp,
+                )
             else:
                 log.warning(
                     "%s: server_mounts host path %s missing — skipped (the "
@@ -793,6 +804,7 @@ class WorkspaceComponentRegistry:
             image=image,
             inner_command=inner_command,
             gpu=getattr(nodeset_cls, "server_image_gpu", False),
+            user=getattr(nodeset_cls, "server_container_user", None),
             mounts=mounts,
             container_env={
                 "PYTHONPATH": inner_pythonpath,

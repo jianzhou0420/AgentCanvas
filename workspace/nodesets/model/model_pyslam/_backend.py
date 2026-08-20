@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-"""pySLAM backend — drives one ``Slam`` instance inside the ac-pyslam subprocess.
+"""pySLAM backend — drives one ``Slam`` instance inside the pyslam container.
 
-This module is imported **only** in the ac-pyslam server-mode subprocess
-(``server_python`` resolves to the ``ac-pyslam`` conda env). It is *not*
-imported at nodeset-scan time — the framework (agentcanvas) env has no
+This module is imported **only** inside the ``agentcanvas/pyslam`` container
+(Container Launch, ADR-server-005 — ``server_image`` on the nodeset). It is
+*not* imported at nodeset-scan time — the framework (agentcanvas) env has no
 pyslam — so every ``import pyslam`` here is lazy, inside a method, mirroring
 ``model_sam`` / ``model_detany3d``.
 
@@ -343,12 +343,7 @@ class PySlamSession:
                 "num_frames": self._img_id}
 
     def get_map_arrays(self) -> dict:
-        """Return the raw sparse map (points + counts) **without** touching disk.
-
-        The container bridge uses this: the shim ships the points back to the
-        framework side, which writes the host-side handle file — so the file is
-        owned by the framework user, sidestepping rootless-Docker uid remapping.
-        """
+        """Return the raw sparse map (points + counts) **without** touching disk."""
         return self._run(self._get_map_arrays)
 
     def _get_map_arrays(self) -> dict:
@@ -397,10 +392,8 @@ class PySlamSession:
     def get_dense_map_arrays(self) -> dict:
         """Return the dense volumetric map as raw numpy arrays (no disk).
 
-        The container bridge uses this: the shim ships points/colors/vertices/
-        triangles to the framework side, which writes the host-owned handle (same
-        rootless-uid sidestep as get_map_arrays). Empty arrays if volumetric
-        integration is off or nothing has been integrated yet."""
+        Empty arrays if volumetric integration is off or nothing has been
+        integrated yet."""
         return self._run(self._get_dense_map_arrays)
 
     def _get_dense_map_arrays(self) -> dict:
@@ -440,8 +433,7 @@ class PySlamSession:
         }
 
     def get_dense_map(self, out_dir: str | None = None) -> dict:
-        """Standalone/local export of the dense map to a handle (bridge uses
-        get_dense_map_arrays instead). Empty handle if nothing to export."""
+        """Export the dense map to a handle. Empty handle if nothing to export."""
         arrs = self.get_dense_map_arrays()
         if arrs["num_points"] == 0 and arrs["num_vertices"] == 0:
             return {"dense_handle": "", "num_points": 0, "num_vertices": 0,

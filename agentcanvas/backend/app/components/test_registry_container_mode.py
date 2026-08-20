@@ -85,6 +85,38 @@ def test_server_mounts_resolve_and_skip_missing(tmp_path: Path) -> None:
     assert not any("absent" in s for s in specs)
 
 
+def test_missing_rw_mount_dir_is_created_not_skipped(tmp_path: Path) -> None:
+    class _WithRwDrop(_ContainerNodeSetCls):
+        server_mounts = {"outputs/drop": "/opt/out"}
+
+    srv = _build(
+        tmp_path,
+        _WithRwDrop,
+        ["--file", f"{tmp_path}/workspace/ns.py"],
+    )
+    assert (tmp_path / "outputs" / "drop").is_dir()
+    assert f"{tmp_path}/outputs/drop:/opt/out" in srv.mounts
+
+
+def test_container_user_passes_through(tmp_path: Path) -> None:
+    class _WithUser(_ContainerNodeSetCls):
+        server_container_user = "0:0"
+
+    srv = _build(
+        tmp_path,
+        _WithUser,
+        ["--file", f"{tmp_path}/workspace/ns.py"],
+    )
+    assert srv.user == "0:0"
+    # the base class default keeps the image's USER
+    srv_default = _build(
+        tmp_path,
+        _ContainerNodeSetCls,
+        ["--file", f"{tmp_path}/workspace/ns.py"],
+    )
+    assert srv_default.user is None
+
+
 def test_executor_url_rewritten_to_host_gateway(tmp_path: Path) -> None:
     srv = _build(
         tmp_path,
