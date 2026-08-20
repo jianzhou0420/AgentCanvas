@@ -137,7 +137,22 @@ _PLANNER_CFG = {
     "max_unoccupied_check_frontier": 1,
 }
 
-_SPLITS = ["val", "train", "all"]
+_SPLITS = ["val", "train", "all", "mip100"]
+# mip100: the coding-agent line's frozen 100-episode evaluation subset —
+# scene-stratified seed-42 sample of the full 2,044 (split "all"; the
+# benchmark's train scenes are eval too). The derived record list sits next
+# to the official JSON (express-bench_mip100.json, written by
+# coding-agent/sample_episodes.py --benchmark express --materialize);
+# _apply_split_unlocked maps it back to positions in the full list via the
+# episode_id == array-index identity and refuses on any mismatch.
+
+# Discrete-action magnitudes (env_express__step_discrete, coding-agent EQA
+# line 2026-08-17) — mirror env_hmeqa / the ObjectNav line so the bare
+# toolface stays comparable across board lines. No tilt actions: EXPRESS's
+# camera is level (camera_tilt_deg 0), unlike HM-EQA's native −30° pitch
+# that motivated hmeqa's 4/5.
+_FORWARD_M = 0.25
+_TURN_DEG = 30.0
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -386,6 +401,32 @@ class ExpressEnvManager:
         self._split = split
         if split == "all":
             self._split_indices = list(range(len(self._records)))
+        elif split.startswith("mip"):
+            # Derived dataset-layer subset (see _SPLITS note). Row k of the
+            # derived file = episode_index k; positions resolve through the
+            # episode_id == array-index identity, verified per record so a
+            # corpus/derived-file mismatch fails loudly instead of silently
+            # evaluating the wrong questions.
+            path = os.path.join(_DATA_ROOT, f"express-bench_{split}.json")
+            derived = _load_records(path)
+            indices: list[int] = []
+            for rec in derived:
+                try:
+                    i = int(rec.get("episode_id", -1))
+                except (TypeError, ValueError):
+                    i = -1
+                if not (0 <= i < len(self._records)) or (
+                    self._records[i].get("question") != rec.get("question")
+                ):
+                    log.error(
+                        "mip split %s: derived record episode_id=%r does not "
+                        "match the corpus — refusing the split",
+                        split, rec.get("episode_id"),
+                    )
+                    self._split_indices = []
+                    return
+                indices.append(i)
+            self._split_indices = indices
         else:
             self._split_indices = [
                 i for i, rec in enumerate(self._records) if _record_split(rec) == split
@@ -620,6 +661,62 @@ class ExpressEnvManager:
             self._set_agent_pose_unlocked(pts_habitat, self._angle)
             self._step_index += 1
             return self._current_obs_unlocked()
+
+    def step_discrete(self, action: int) -> dict[str, Any]:
+        """One discrete nav action: 1 = forward 0.25 m (navmesh-constrained
+        via ``pathfinder.try_step`` — slides along walls like habitat's stock
+        MOVE_FORWARD), 2 = turn left 30°, 3 = turn right 30°.
+
+        Added 2026-08-17 for the coding-agent EQA line, mirroring
+        env_hmeqa.step_discrete (magnitudes shared with the ObjectNav line).
+        NOT part of the EXPRESS-Bench protocol (whose native action is the
+        free-pose teleport, ``step_freepose``); no tilt actions — the
+        EXPRESS camera is level. Path length accumulates the actual moved
+        displacement so E_path stays computable on this surface. No STOP —
+        an EQA episode ends by answering, which is bridge-side, not an env
+        action.
+        """
+        with self._lock:
+            if self._simulator is None:
+                return {"error": "no active simulator — call set_episode_by_index first"}
+            if action not in (1, 2, 3):
+                return {"error": f"invalid discrete action {action} "
+                                 "(1=FORWARD 2=LEFT 3=RIGHT)"}
+            collided = False
+            if action == 1:
+                # yaw θ around +y applied to habitat's -z forward:
+                # forward = (-sin θ, 0, -cos θ)
+                fwd = np.array(
+                    [-math.sin(self._angle), 0.0, -math.cos(self._angle)],
+                    dtype=np.float64,
+                )
+                start = np.asarray(self._pts, dtype=np.float32)
+                target = (np.asarray(self._pts, dtype=np.float64) + _FORWARD_M * fwd)
+                new_pts = np.asarray(
+                    self._pathfinder.try_step(start, target.astype(np.float32)),
+                    dtype=np.float64,
+                )
+                moved = float(np.linalg.norm(
+                    new_pts - np.asarray(self._pts, dtype=np.float64)))
+                collided = moved < _FORWARD_M * 0.9
+                self._path_len += moved
+                self._pts = new_pts
+            elif action == 2:
+                self._angle = float(self._angle) + math.radians(_TURN_DEG)
+            else:
+                self._angle = float(self._angle) - math.radians(_TURN_DEG)
+            self._set_agent_pose_unlocked(
+                np.asarray(self._pts, dtype=np.float64), self._angle)
+            self._step_index += 1
+            return {
+                "step_index": int(self._step_index),
+                "collided": collided,
+                "pose_normal": _pos_habitat_to_normal(
+                    np.asarray(self._pts, dtype=np.float64)
+                ).tolist(),
+                "angle": float(self._angle),
+                "path_len": float(self._path_len),
+            }
 
     def sample_waypoint(self, radius: float = 3.0) -> dict[str, Any]:
         """Random-exploration action: navigable point near the agent + random yaw.
@@ -964,6 +1061,72 @@ class StepPoseExpressTool(BaseCanvasNode):
             "info": info,
             "step_index": result.get("step_index", 0),
             "episode_id": result.get("episode_id", ""),
+        }
+
+
+class StepDiscreteExpressTool(BaseCanvasNode):
+    node_type = "env_express__step_discrete"
+    display_name = "EXPRESS: Step (discrete)"
+    description = (
+        "One discrete nav action: 1=forward 0.25 m (navmesh-constrained), "
+        "2=turn left 30°, 3=turn right 30° (coding-agent surface; pull obs "
+        "via observe_egocentric)"
+    )
+    category = "environment"
+    icon = "Navigation"
+    ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color="cyan")
+    input_ports = [
+        PortDef("action", "ACTION",
+                "Discrete action (1=FORWARD 2=LEFT 3=RIGHT)"),
+    ]
+    output_ports = [
+        # gym-like contract, mirrors env_hmeqa__step_discrete: answering is
+        # method-side and the caller enforces its own budget, so
+        # terminated/truncated only flag env errors.
+        PortDef("reward", "ANY", "Per-step reward (scalar; 0)"),
+        PortDef("terminated", "BOOL", "MDP terminal: env-side error / bad action"),
+        PortDef("truncated", "BOOL", "Env-side error (mirrors terminated; no env step cap)"),
+        PortDef("info", "ANY",
+                "Diagnostics: {step_index, collided, pose_normal, angle, path_len}"),
+        PortDef("step_index", "ANY", "Step counter (1-based after first step)"),
+        PortDef("episode_id", "TEXT", "Episode id"),
+    ]
+
+    async def forward(self, inputs: dict, ctx: Any) -> dict:
+        raw = inputs.get("action", "")
+        try:
+            action = int(raw)
+        except (TypeError, ValueError) as e:
+            self._self_log("error", f"bad action: {e!r} raw={raw!r}")
+            return {
+                "reward": 0.0,
+                "terminated": True,
+                "truncated": True,
+                "info": {"error": str(e)},
+                "step_index": 0,
+                "episode_id": "",
+            }
+        mgr = _get_mgr()
+        result = await _run_sync(mgr.step_discrete, action)
+        if "error" in result:
+            self._self_log("error", result["error"])
+            return {
+                "reward": 0.0,
+                "terminated": True,
+                "truncated": True,
+                "info": {"error": result["error"]},
+                "step_index": 0,
+                "episode_id": "",
+            }
+        self._self_log("step_index", result.get("step_index"))
+        info = await _run_sync(mgr.current_episode)
+        return {
+            "reward": 0.0,
+            "terminated": False,
+            "truncated": False,
+            "info": result,
+            "step_index": result.get("step_index", 0),
+            "episode_id": str(info.get("episode_id", "")),
         }
 
 
@@ -1441,6 +1604,7 @@ class EnvExpressNodeSet(BaseNodeSet):
             # gym-like env interface (see docs: nodesets/env/template.html)
             ResetExpressTool(),  # env_express__reset (metadata only)
             StepPoseExpressTool(),  # env_express__step_pose
+            StepDiscreteExpressTool(),  # env_express__step_discrete (coding-agent)
             SampleWaypointExpressTool(),  # env_express__sample_waypoint (RE baseline)
             SampleFrontierExpressTool(),  # env_express__sample_frontier (FBE baseline)
             StopGateExpressTool(),  # env_express__stop_gate (per-step early-stop routing)
