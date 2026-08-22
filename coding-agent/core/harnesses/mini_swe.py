@@ -41,7 +41,11 @@ MINI_DIR = REPO_ROOT / "coding-agent" / "core" / "harnesses" / "mini"
 # OLLAMA_URL is env-overridable for hosts where 11434 is held by a root-owned
 # ollama we can neither kill nor upgrade — the adapter then serves and bills
 # every check against its own port, and _knobs routes litellm to the same base.
-SERVE_CTX = 131072
+# Pinned serving context. Default 131072 (std cells). MINI_SERVE_CTX lets a
+# run lower it on RAM-poor hosts: at 131k the 9B's KV cache spilled ~25 GB
+# into a 30 GB box and the kernel OOM-killed llama-server + the env server
+# (2026-08-22 21:29). served_context is recorded in run stats either way.
+SERVE_CTX = int(os.environ.get("MINI_SERVE_CTX", "131072"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 SERVE_LOG = REPO_ROOT / "outputs" / "beta-react-harness" / "_ollama_serve.log"
 
@@ -169,11 +173,18 @@ class MiniSweAdapter:
                 time.sleep(1)
             SERVE_LOG.parent.mkdir(parents=True, exist_ok=True)
             log = SERVE_LOG.open("a")
+            env = {**os.environ, "OLLAMA_CONTEXT_LENGTH": str(SERVE_CTX),
+                   "OLLAMA_HOST": urllib.parse.urlparse(OLLAMA_URL).netloc}
+            # A restart here inherits the WHOLE allocation's CUDA_VISIBLE_DEVICES,
+            # so ollama is free to put its 65 GB on the card the launcher reserved
+            # for the simulator — habitat's GL framebuffer then fails to allocate
+            # and the env aborts mid-run. OLLAMA_GPUS is the launcher saying which
+            # cards are the model's.
+            if os.environ.get("OLLAMA_GPUS"):
+                env["CUDA_VISIBLE_DEVICES"] = os.environ["OLLAMA_GPUS"]
             subprocess.Popen(  # noqa: S603
                 [binary, "serve"], stdout=log, stderr=subprocess.STDOUT,
-                env={**os.environ, "OLLAMA_CONTEXT_LENGTH": str(SERVE_CTX),
-                     "OLLAMA_HOST": urllib.parse.urlparse(OLLAMA_URL).netloc},
-                start_new_session=True)
+                env=env, start_new_session=True)
             for _ in range(60):
                 if _get(f"{OLLAMA_URL}/api/version", 1.0) is not None:
                     break
@@ -358,6 +369,10 @@ class MiniSweAdapter:
             hybrid=ctx.hybrid,
             imagine=ctx.imagine,
             imagine_rollouts=ctx.imagine_rollouts,
+            blocked_signal=bool(int(ctx.extra.get("blocked_signal", 0))),
+            turn_macros=bool(int(ctx.extra.get("turn_macros", 0))),
+            memo=bool(int(ctx.extra.get("memo", 0))),
+            revisit=bool(int(ctx.extra.get("revisit", 0))),
         )
         model_cls = NavToolsModel
         if ctx.imagine:

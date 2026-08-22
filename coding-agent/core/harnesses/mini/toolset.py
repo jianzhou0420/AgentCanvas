@@ -152,6 +152,51 @@ LOOK_AROUND_DESC = (
 
 OBSERVE_SCHEMA = {"properties": {}, "title": "observeArguments", "type": "object"}
 LOOK_AROUND_SCHEMA = {"properties": {}, "title": "look_aroundArguments", "type": "object"}
+STEP_DESC_BLOCKED = (
+    " Each result also reports moved_m (metres the robot actually travelled "
+    "during this call) and forward_blocked = {requested, blocked}: forward "
+    "moves that hit an obstacle and produced no movement count as blocked."
+)
+STEP_DESC_MACROS = (
+    " Larger turns are available as single actions: 4 = turn left 90 degrees, "
+    "5 = turn right 90 degrees, 6 = turn around (180 degrees); use 2/3 only for "
+    "small adjustments. Each result reports turned_deg: the net rotation this "
+    "call produced (positive = left)."
+)
+OBSERVE_DESC_EVO = (
+    " Alongside the image, the result lists your own notes (everything you "
+    "saved with remember()) and, when the current view closely matches one you "
+    "have seen before, how many steps ago that was."
+)
+REMEMBER_DESC = (
+    "Save a short fact for yourself the moment you notice it (e.g. 'bed visible "
+    "through the doorway on my right', 'hallway with blinds door is a dead end'). "
+    "Your notes are shown back to you after every step and observe, so you do "
+    "not lose what you saw. Costs no movement."
+)
+REMEMBER_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string", "description": "the fact to keep (one short sentence)"}},
+    "required": ["text"],
+}
+MEMO_MAX_NOTES = 12
+REVISIT_MIN_GAP_STEPS = 8
+REVISIT_MAX_HAMMING = 6
+
+
+def _ahash64(png: bytes) -> int:
+    """8x8 average hash of a PNG (revisit detection; no geometry, no pose)."""
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(png)).convert("L").resize((8, 8), Image.BILINEAR)
+    px = list(im.getdata())
+    mean = sum(px) / 64.0
+    bits = 0
+    for v in px:
+        bits = (bits << 1) | (1 if v > mean else 0)
+    return bits
+
+
 STEP_SCHEMA = {
     "properties": {
         "actions": {"items": {"type": "integer"}, "title": "Actions", "type": "array"}
@@ -174,9 +219,19 @@ class HabitatToolSet(NodesetToolSet):
         turn_budget: int = 0,
         pano_view_px: int = 0,
         live_dir: Path | None = None,
+        blocked_signal: bool = False,
+        turn_macros: bool = False,
+        memo: bool = False,
+        revisit: bool = False,
     ) -> None:
         super().__init__(server_url)
         self.bare = bare
+        self.blocked_signal = blocked_signal
+        self.turn_macros = turn_macros
+        self.memo = memo
+        self.revisit = revisit
+        self._notes: list[str] = []
+        self._frame_hashes: list[tuple[int, int]] = []  # (steps_taken, ahash)
         self.step_budget = step_budget
         self.turn_budget = turn_budget
         self.pano_view_px = pano_view_px
@@ -192,7 +247,8 @@ class HabitatToolSet(NodesetToolSet):
 
         self._register(
             "observe",
-            OBSERVE_DESC_BARE if bare else OBSERVE_DESC_FULL,
+            (OBSERVE_DESC_BARE if bare else OBSERVE_DESC_FULL)
+            + (OBSERVE_DESC_EVO if (memo or revisit) else ""),
             OBSERVE_SCHEMA,
             self._tool_observe,
         )
@@ -202,10 +258,14 @@ class HabitatToolSet(NodesetToolSet):
             )
         self._register(
             "step",
-            STEP_DESC_BASE + ("" if bare else STEP_DESC_STOP_NOTE),
+            STEP_DESC_BASE + ("" if bare else STEP_DESC_STOP_NOTE)
+            + (STEP_DESC_BLOCKED if blocked_signal else "")
+            + (STEP_DESC_MACROS if turn_macros else ""),
             STEP_SCHEMA,
             self._tool_step,
         )
+        if memo:
+            self._register("remember", REMEMBER_DESC, REMEMBER_SCHEMA, self._tool_remember)
 
     # ── tools ──
 
@@ -215,7 +275,11 @@ class HabitatToolSet(NodesetToolSet):
         png = base64.b64decode(outputs["rgb"])
         self._obs_count += 1
         self._live_frame(png)
+        evo = self._evo_observe_extras(png)
         if self.bare:
+            if evo:
+                return ToolResult(content=[png_part(png), text_part(json.dumps(evo))],
+                                  info={"kind": "observe", **evo})
             return ToolResult(content=[png_part(png)], info={"kind": "observe"})
         status = {"clearance_m": self._clearance_m(outputs.get("depth")), **self._budget_fields()}
         return ToolResult(
@@ -280,11 +344,18 @@ class HabitatToolSet(NodesetToolSet):
             return self._json_result(
                 {"error": f"too many actions in one call (max {MAX_ACTIONS_PER_CALL})"}
             )
-        bad = [a for a in actions if a not in (0, 1, 2, 3)]
+        valid = (0, 1, 2, 3, 4, 5, 6) if self.turn_macros else (0, 1, 2, 3)
+        bad = [a for a in actions if a not in valid]
         if bad:
             return self._json_result(
-                {"error": f"invalid actions {bad}; valid: 0=STOP 1=FORWARD 2=LEFT 3=RIGHT"}
+                {"error": f"invalid actions {bad}; valid: 0=STOP 1=FORWARD 2=LEFT 3=RIGHT"
+                          + (" 4=LEFT90 5=RIGHT90 6=TURN_AROUND" if self.turn_macros else "")}
             )
+        if self.turn_macros:
+            expanded: list[int] = []
+            for a in actions:
+                expanded.extend({4: [2] * 6, 5: [3] * 6, 6: [2] * 12}.get(a, [a]))
+            actions = expanded
 
         # STOP confirmation gate: a budget-rich first STOP is withheld so the
         # agent verifies placement before committing (near-miss rush stops are
@@ -319,13 +390,89 @@ class HabitatToolSet(NodesetToolSet):
 
     # ── ported helpers ──
 
+    @staticmethod
+    def _blocked_fields(fwd_req: int, fwd_blocked: int, moved_total: float,
+                        last_collided: bool) -> dict[str, Any]:
+        """Realized-motion facts for the step result (blocked_signal arms).
+
+        Information only — what the body actually did — no advice on what to
+        do next (harness supplies, model judges).
+        """
+        out: dict[str, Any] = {
+            "moved_m": round(moved_total, 2),
+            "forward_blocked": {"requested": fwd_req, "blocked": fwd_blocked},
+            "collided_last": last_collided,
+        }
+        if fwd_blocked:
+            out["note"] = (f"{fwd_blocked} of {fwd_req} forward moves were blocked "
+                           "by an obstacle — the robot did not advance on those.")
+        return out
+
     def _json_result(self, result: dict[str, Any]) -> ToolResult:
+        if self.memo and self._notes:
+            result = {**result, "notes": list(self._notes)}
         return ToolResult(content=[text_part(json.dumps(result))], info={"kind": "step", **result})
+
+    # ── evo organs (flag-gated; all default OFF) ──
+
+    def _tool_remember(self, text: Any = None, **_ignored: Any) -> ToolResult:
+        self._tool_calls += 1
+        t = str(text or "").strip()
+        if not t:
+            return self._json_result({"error": "remember() needs a non-empty text"})
+        self._notes.append(t[:200])
+        if len(self._notes) > MEMO_MAX_NOTES:
+            self._notes = self._notes[-MEMO_MAX_NOTES:]
+        out = {"saved": t[:200], "notes": list(self._notes)}
+        self._live_log({"remember": t[:200]})
+        return ToolResult(content=[text_part(json.dumps(out))], info={"kind": "remember", **out})
+
+    def _evo_observe_extras(self, png: bytes) -> dict[str, Any]:
+        """Notes echo + revisit hint for observe(); information only."""
+        extras: dict[str, Any] = {}
+        if self.memo and self._notes:
+            extras["notes"] = list(self._notes)
+        if self.revisit:
+            try:
+                h = _ahash64(png)
+            except Exception:  # noqa: BLE001
+                h = None
+            if h is not None:
+                best = None
+                for seen_step, hh in self._frame_hashes:
+                    gap = self.steps_taken - seen_step
+                    if gap < REVISIT_MIN_GAP_STEPS:
+                        continue
+                    dist = bin(h ^ hh).count("1")
+                    if dist <= REVISIT_MAX_HAMMING and (best is None or gap > best):
+                        best = gap
+                if best is not None:
+                    extras["seen_before"] = (f"this view closely matches one you saw about "
+                                             f"{best} steps ago")
+                self._frame_hashes.append((self.steps_taken, h))
+        return extras
 
     def _execute_actions(self, actions: list[int]) -> dict[str, Any]:
         executed = 0
+        fwd_req = fwd_blocked = 0
+        moved_total = 0.0
+        last_collided = False
+        turned_deg = 0
         for action in actions:
             outputs = self._call("env_habitat__step_discrete", {"action": action})
+            _inf = outputs.get("info") or {}
+            _mv = _inf.get("actual_translation_m")
+            if action == 1:
+                fwd_req += 1
+                if _mv is not None and float(_mv) < 0.05:
+                    fwd_blocked += 1
+            if _mv is not None:
+                moved_total += float(_mv)
+            last_collided = bool(_inf.get("collided", False))
+            if action == 2:
+                turned_deg += 15
+            elif action == 3:
+                turned_deg -= 15
             executed += 1
             self.steps_taken += 1
             terminated = bool(outputs.get("terminated"))
@@ -348,6 +495,9 @@ class HabitatToolSet(NodesetToolSet):
             "episode_over": self.episode_over,
             "end_reason": self.end_reason,
             **self._budget_fields(),
+            **(self._blocked_fields(fwd_req, fwd_blocked, moved_total, last_collided)
+               if self.blocked_signal else {}),
+            **({"turned_deg": turned_deg} if self.turn_macros else {}),
         }
         if not self.episode_over and not self.bare:
             # post-move clearance (pure read; no sim advance) — metric feedback

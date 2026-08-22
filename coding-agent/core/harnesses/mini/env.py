@@ -27,6 +27,13 @@ class HabitatEnvironmentConfig(BaseModel):
     turn_budget: int = 0
     pano_view_px: int = 0  # 0 = native render resolution, same as observe()
     live_dir: str = ""
+    # eharness-evo T1 candidate (evo9b_blocked01): surface per-call realized
+    # motion — moved_m + forward_blocked — in the step result. Default OFF
+    # keeps every std cell byte-identical.
+    blocked_signal: bool = False
+    turn_macros: bool = False   # evo: 4/5/6 = L90/R90/turn-around + turned_deg
+    memo: bool = False          # evo: remember() tool, notes echoed in results
+    revisit: bool = False       # evo: ahash revisit hint on observe()
     # waypoint action space (wp condition): a second auto_host (the predictor)
     # and its own decision-step budget replace the step()/clearance surface.
     wp: bool = False
@@ -100,6 +107,10 @@ class HabitatEnvironment:
                 turn_budget=self.config.turn_budget,
                 pano_view_px=self.config.pano_view_px,
                 live_dir=live_dir,
+                blocked_signal=self.config.blocked_signal,
+                turn_macros=self.config.turn_macros,
+                memo=self.config.memo,
+                revisit=self.config.revisit,
             )
 
     def execute(self, action: dict[str, Any], cwd: str = "") -> dict[str, Any]:
