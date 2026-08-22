@@ -86,7 +86,7 @@ class Campaign:
 
 
 # ── phases ──
-def ph_rollout(c: Campaign, dry: bool, no_run: bool) -> str:
+def ph_rollout(c: Campaign, dry: bool, no_run: bool = False, **_) -> str:
     """Make sure the current arm has a board on the campaign episodes."""
     arm = c.state["current_arm"]
     run = RUNS / arm
