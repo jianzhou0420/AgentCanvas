@@ -146,6 +146,8 @@ class Campaign:
 def ph_rollout(c: Campaign, dry: bool, **_) -> str:
     arm = c.state["current_arm"]
     want = _eps(c.manifest["episodes"])
+    if not dry:
+        _wait_idle(arm)  # another board may still be writing this run dir
     missing = sorted(set(want) - _done_indices(RUNS / arm))
     if not missing:
         c.log(note=f"{arm}: board complete ({len(want)} eps)")
@@ -369,6 +371,8 @@ def ph_gate(c: Campaign, dry: bool, **_) -> str:
     if not cand:
         return "no candidate -> skip gate"
     want = _eps(c.manifest["episodes"])
+    if not dry:
+        _wait_idle(cand)
     missing = sorted(set(want) - _done_indices(RUNS / cand))
     if missing:
         if dry:
