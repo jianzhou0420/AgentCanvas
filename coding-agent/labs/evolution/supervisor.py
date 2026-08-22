@@ -245,8 +245,9 @@ def _engineer_call(inp: dict, stage: str, outdir: Path, system: str, tools: list
 
         async def _one() -> str:
             opts = ClaudeAgentOptions(system_prompt=system, setting_sources=[],
-                                      allowed_tools=tools, permission_mode="bypassPermissions",
-                                      max_turns=max_turns, model=ENGINEER_MODEL, cwd=str(REPO))
+                                      tools=tools, allowed_tools=tools, permission_mode="bypassPermissions",
+                                      max_turns=max_turns, max_budget_usd=5.0,
+                                      model=ENGINEER_MODEL, cwd=str(REPO))
             texts: list[str] = []
             with (adir / "transcript.jsonl").open("w") as tr:
                 async with ClaudeSDKClient(options=opts) as client:
