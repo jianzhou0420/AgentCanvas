@@ -8,11 +8,11 @@
 
 <p>
   <a href="https://arxiv.org/abs/2607.26148"><img src="https://img.shields.io/badge/arXiv-2607.26148-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv"></a>
-  <a href="https://jianzhou0420.github.io/src/works/MIP/index.html"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://jianzhou0420.github.io/mip/"><img src="https://img.shields.io/badge/Project%20Page-1f6feb?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
   <a href="#citation"><img src="https://img.shields.io/badge/BibTeX-Cite-4285F4?style=for-the-badge&logo=googlescholar&logoColor=white" alt="BibTeX"></a>
 </p>
 
-<img src="https://jianzhou0420.github.io/src/works/MIP/fig1_teaser.png" alt="MIP teaser: a general-purpose coding agent drives continuous VLN through a two-tool interface" width="760">
+<img src="assets/readme/mip-teaser.png" alt="MIP teaser: a general-purpose coding agent drives continuous VLN through a two-tool interface" width="760">
 
 </div>
 
@@ -154,7 +154,7 @@ Visual input: M = monocular, P = panorama, D = depth.
 | Codex CLI | gpt-5.6 | 56 | 41.57 | 6.15 | 64 |
 | Claude SDK | fable-5 (max effort) | 78 | 65.27 | 3.84 | 83 |
 
-<img src="https://jianzhou0420.github.io/src/works/MIP/capability_axes.png" alt="Capability located across the model, harness, and interface axes" width="760">
+<img src="assets/readme/mip-capability-axes.png" alt="Capability located across the model, harness, and interface axes" width="760">
 
 ### Reasoning-effort ablation
 
