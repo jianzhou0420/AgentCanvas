@@ -19,9 +19,12 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
 
-> **Archive branch.** This branch is the frozen code state behind the paper, kept as-is
-> for reproducibility. The same code may or may not be carried on `main` going forward —
-> when in doubt, this branch is the paper's reference.
+> [!IMPORTANT]
+> **Archive branch — the official re-implementation is [jianzhou0420/MIP](https://github.com/jianzhou0420/MIP).**
+> This branch is the frozen code state behind the paper, kept as-is for reproducibility.
+> Ongoing work lives in [MIP](https://github.com/jianzhou0420/MIP): the same probe with
+> cleaner code, built on the EmbodiedScore standard library — start there. Come back here
+> when you need the exact code the paper's numbers were produced with.
 
 **The Minimal-Interface Probe (MIP).** We hand an unmodified, general-purpose coding agent — Claude Code, Codex CLI, or a ~100-line minimal agent loop — a robot in continuous Vision-and-Language Navigation, through the smallest interface that still permits the task: `observe()` returns one egocentric RGB frame, `step()` executes discrete motion actions. No map, no memory module, no waypoint predictor, no panorama, no task-specific training. Run zero-shot on R2R-CE val-unseen, this bare probe rivals industrial-scale trained policies. This repository is the complete experiment code behind the paper: the probe, the harness adapters, the frozen experiment board, and the simulator toolfaces it runs against.
 
