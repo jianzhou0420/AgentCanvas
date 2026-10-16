@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, model_validator
 
 from ...agent_loop.eval_batch import BatchEvalRunner, EvalConfig, EvalRun, EvalStatus
+from ...agent_loop.graph_run import NodesetLoadError, prepare_graph
 from ...graph_def import GraphDefinition, validate_graph_connectivity
 from ...state import ExecutionGuard, ExecutionMode, get_services
 from .eval_storage import delete_run, list_runs, load_run, save_run
@@ -193,43 +194,23 @@ async def start_eval_v2(req: StartEvalV2Request):
     use_subprocess = (
         req.via_subprocess and os.environ.get("AGENTCANVAS_EVAL_SUBPROCESS", "1") != "0"
     )
-    if use_subprocess:
-        load_result = await registry.ensure_shared_nodesets_for_graph(graph)
-    else:
-        load_result = await registry.ensure_nodesets_for_graph(graph, worker_count=req.worker_count)
-    if load_result["loaded"]:
-        log.info("Auto-loaded nodesets for eval: %s", load_result["loaded"])
-    if load_result["failed"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to load required nodesets: {load_result['failed']}",
+    try:
+        prepared = await prepare_graph(
+            registry,
+            graph,
+            validate=False,  # _load_graph_by_name already validated
+            worker_count=req.worker_count,
+            shared_only=use_subprocess,
+            on_failed="raise",
+            on_unknown="warn",
         )
+    except NodesetLoadError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load required nodesets: {e}") from e
 
-    # Whole-graph wire-type check now that nodeset proxy classes are in
-    # NODE_HANDLERS (the pre-load validate_graph_connectivity saw builtins
-    # only). Warn-only for now — surfaces nodeset env↔method shape mismatches
-    # without aborting the eval, pending a clean sweep before promotion to a
-    # hard 400 (ADR-027 staged enforcement).
-    from ...graph_def import validate_edge_wire_types
-
-    wire_errs = validate_edge_wire_types(graph)
-    if wire_errs:
-        log.warning(
-            "wire-type mismatches (post-nodeset-load, warn-only):\n  - %s",
-            "\n  - ".join(wire_errs),
-        )
-
-    # ADR-028 PB-2: resolve the env nodeset name from the graph so the
-    # worker pool can populate tagged env panel + URL overrides per worker
-    # (the StartEvalV2Request doesn't carry env_nodeset; the user only
-    # picks a graph). First env-nodeset (one with non-empty eval metadata)
-    # wins — same rule as /introspect.
-    env_nodeset = ""
-    for ns_name in registry.detect_env_nodesets_for_graph(graph):
-        metadata = await registry.get_eval_metadata_for_nodeset(ns_name)
-        if metadata:
-            env_nodeset = ns_name
-            break
+    # ADR-028 PB-2: the env nodeset name lets the worker pool populate
+    # tagged env panel + URL overrides per worker (the StartEvalV2Request
+    # doesn't carry env_nodeset; the user only picks a graph).
+    env_nodeset = prepared.env_nodeset
 
     # Validate per-episode selectors length against the resolved index
     # list before claiming the execution slot — a bad request must not
@@ -319,7 +300,7 @@ async def start_eval_v2(req: StartEvalV2Request):
         # up. JobScheduler refcounts these and auto-unloads on the last
         # job's reap. Pre-existing (canvas-Play-loaded) ones are in
         # already_loaded, not loaded, so they're never auto-unloaded.
-        shared_loaded_by_us: list[str] = list(load_result.get("loaded", []))
+        shared_loaded_by_us: list[str] = list(prepared.loaded)
 
         spec = {
             "eval": {

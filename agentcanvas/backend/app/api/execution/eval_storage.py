@@ -4,21 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
+from ...config import eval_runs_dir
+
 log = logging.getLogger("agentcanvas.eval-storage")
 
-# Resolve outputs/eval_runs/ relative to this file's location:
-# execution/eval_storage.py -> execution/ -> api/ -> app/ -> backend/ -> agentcanvas/ -> vlnworkspace/
-# AGENTCANVAS_EVAL_RUNS_DIR overrides — the same pool override main.py
-# hands to JobScheduler.create; without honoring it here, a backend
-# configured with its own run pool writes runs the /runs/{run_id}
-# endpoints can't find.
-_REPO_ROOT = Path(__file__).resolve().parents[5]
-_ENV_DIR = os.environ.get("AGENTCANVAS_EVAL_RUNS_DIR")
-EVAL_RUNS_DIR = Path(_ENV_DIR) if _ENV_DIR else _REPO_ROOT / "outputs" / "eval_runs"
+# The eval run pool. One resolver (config.eval_runs_dir) for the scheduler,
+# the runner, and these readers, so a backend configured with its own pool
+# (AGENTCANVAS_EVAL_RUNS_DIR) writes runs where /runs/{run_id} looks.
+EVAL_RUNS_DIR = eval_runs_dir()
 
 
 def get_runs_dir() -> Path:

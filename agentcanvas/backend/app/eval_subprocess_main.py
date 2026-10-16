@@ -140,12 +140,12 @@ async def _build_local_registry_for_run(spec: dict, shared_urls: dict[str, str])
     Heavy imports happen here (not at module top) so spec parsing /
     spawn validation is cheap before paying the import tax.
     """
+    from .agent_loop.graph_run import prepare_graph
     from .components.registry import WorkspaceComponentRegistry  # heavy
-    from .graph_def import GraphDefinition, validate_graph_connectivity
+    from .graph_def import GraphDefinition
     from .state import get_services
 
     graph = GraphDefinition.from_dict(spec["graph"])
-    validate_graph_connectivity(graph)
 
     registry: WorkspaceComponentRegistry = get_services().workspace_component_registry
 
@@ -160,34 +160,13 @@ async def _build_local_registry_for_run(spec: dict, shared_urls: dict[str, str])
     for name, url in shared_urls.items():
         await registry.register_remote_nodeset(name, url)
 
+    # Strict: this process exists to run exactly this graph, so a nodeset
+    # that fails to load or is unknown is fatal, not a no-op.
     worker_count = int(spec["eval"].get("worker_count", 1))
-    load_result = await registry.ensure_nodesets_for_graph(graph, worker_count=worker_count)
-    if load_result.get("failed"):
-        raise RuntimeError(f"failed to load nodesets: {load_result['failed']}")
-    if load_result.get("unknown"):
-        raise RuntimeError(f"unknown nodesets (not in workspace scan): {load_result['unknown']}")
-
-    # Whole-graph wire-type check now that nodeset proxy classes are loaded
-    # into NODE_HANDLERS (pre-load validation saw builtins only). Warn-only
-    # for now — surfaces nodeset shape mismatches without aborting the run,
-    # pending a clean sweep before promotion to a hard error (ADR-027 staged).
-    from .graph_def import validate_edge_wire_types
-
-    wire_errs = validate_edge_wire_types(graph)
-    if wire_errs:
-        log.warning(
-            "wire-type mismatches (post-nodeset-load, warn-only):\n  - %s",
-            "\n  - ".join(wire_errs),
-        )
-
-    env_nodeset = ""
-    for ns_name in registry.detect_env_nodesets_for_graph(graph):
-        metadata = await registry.get_eval_metadata_for_nodeset(ns_name)
-        if metadata:
-            env_nodeset = ns_name
-            break
-
-    return graph, env_nodeset
+    prepared = await prepare_graph(
+        registry, graph, worker_count=worker_count, on_failed="raise", on_unknown="raise"
+    )
+    return prepared.graph, prepared.env_nodeset
 
 
 async def _shutdown_local_registry() -> None:
@@ -267,14 +246,16 @@ async def _run(args: argparse.Namespace) -> int:
         created_at=spec.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
     )
 
-    # Periodic state.json writer hook: BatchEvalRunner already calls
-    # save_run on terminal exit; we add an episode-level cadence so the
-    # backend's status poll has live data. The hook is monkeypatched in
-    # rather than threaded through BatchEvalRunner to keep the runner
-    # itself unchanged in this PR.
-    _install_episode_writer(run, run_dir)
+    # Episode-boundary summary.json writer: BatchEvalRunner already calls
+    # save_run on terminal exit; the per-episode cadence gives the backend's
+    # status poll live data. ``run_dir`` is the scheduler's pool, so the
+    # runner's graph.json / episodes/ land next to this summary.json.
+    from .api.execution.eval_storage import run_to_dict
 
-    runner = BatchEvalRunner(run, graph)
+    def _write_summary(_ep) -> None:
+        atomic_write_json(run_dir / "summary.json", run_to_dict(run))
+
+    runner = BatchEvalRunner(run, graph, run_dir=run_dir, on_episode=_write_summary)
     rc = 0
     try:
         await runner.execute()
@@ -287,40 +268,6 @@ async def _run(args: argparse.Namespace) -> int:
         save_run(run)
         touch_done(run_dir)
     return rc
-
-
-class _NotifyingList(list):
-    """List subclass that fires a callback on every ``append``.
-
-    Plain ``list`` rejects attribute assignment on its slot methods, so we
-    can't monkeypatch ``run.episodes.append`` directly. Replacing the
-    list with this subclass preserves all list semantics (BatchEvalRunner
-    only uses ``append`` + indexing + ``len``) while giving us an
-    interception point for episode-boundary summary writes.
-    """
-
-    def __init__(self, on_append) -> None:
-        super().__init__()
-        self._on_append = on_append
-
-    def append(self, item) -> None:
-        super().append(item)
-        try:
-            self._on_append(item)
-        except Exception:
-            log.exception("episode-boundary callback raised; run continues")
-
-
-def _install_episode_writer(run, run_dir: Path) -> None:
-    """Replace ``run.episodes`` with a list subclass that rewrites
-    summary.json on every append. BatchEvalRunner sees the same shape.
-    """
-    from .api.execution.eval_storage import run_to_dict
-
-    def _on_append(_ep) -> None:
-        atomic_write_json(run_dir / "summary.json", run_to_dict(run))
-
-    run.episodes = _NotifyingList(_on_append)
 
 
 def main() -> int:

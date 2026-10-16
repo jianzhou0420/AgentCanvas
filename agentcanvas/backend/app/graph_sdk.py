@@ -53,33 +53,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar, overload
 
+from .agent_loop.graph_run import (
+    RunSession,
+    detect_env_nodeset,
+    harvest_outputs,
+    prepare_graph,
+)
 from .graph_def import AccessGrantDef, ContainerDef, EdgeDef, GraphDefinition, NodeDef
 
 # ── Runtime session ──────────────────────────────────────────────────────
 
 
-class DefaultSession:
-    """Minimal ``session`` satisfying ``GraphExecutor.run()`` for headless runs.
-
-    The executor only ever touches this handful of attributes/methods (writes
-    ``_status`` / ``_current_step`` / ``_metrics``, reads ``_metrics`` /
-    ``principles``, and calls ``_ws(...)``).  With no WebSocket clients
-    connected the broadcast layer is a silent no-op, so a headless run has no
-    UI side effects — the results are read back off the executor and this
-    session (see :class:`RunResult`).
-    """
-
-    def __init__(self, execution_id: str = "Graph SDK") -> None:
-        self._status: str = "idle"
-        self._current_step: int = 0
-        self._metrics: dict[str, Any] | None = None
-        self._execution_id: str = execution_id
-        self.principles: Any = None
-
-    def _ws(self, msg_type: str, data: Any = None) -> Any:
-        from .models import WSMessage
-
-        return WSMessage(type=msg_type, data=data, execution_id=self._execution_id)
+#: The headless ``session`` for in-process runs — the executor-facing
+#: contract from :mod:`app.agent_loop.graph_run`, under its historical SDK
+#: name. With no WebSocket clients connected the broadcast layer is a silent
+#: no-op, so a headless run has no UI side effects; results are read back off
+#: the executor and this session (see :class:`RunResult`).
+DefaultSession = RunSession
 
 
 # ── Port references + node handles ───────────────────────────────────────
@@ -259,18 +249,8 @@ class RunResult:
 
     @classmethod
     def _from_run(cls, executor: Any, session: Any) -> RunResult:
-        outputs: dict[str, Any] = {}
-        for inst in executor.nodes.values():
-            if inst.type != "graphOut":
-                continue
-            port_name = (inst.config or {}).get("portName") or inst.id
-            last = inst.state.get("_last_inputs") or {}
-            if len(last) == 1:
-                outputs[port_name] = next(iter(last.values()))
-            else:
-                outputs[port_name] = dict(last)
         return cls(
-            outputs=outputs,
+            outputs=harvest_outputs(executor),
             metrics=dict(getattr(session, "_metrics", None) or {}),
             executor=executor,
             session=session,
@@ -1066,7 +1046,7 @@ class Graph:
         ``registry`` to reuse a warm one (its pre-loaded nodesets are left
         alone).
         """
-        from .agent_loop.graph_executor import GraphExecutor
+        from .agent_loop.graph_run import GraphRun
         from .graph_def import _synthesize_iterin_ports
 
         _synthesize_iterin_ports(self._def)
@@ -1078,7 +1058,7 @@ class Graph:
         if record is not None and replay is not None:
             raise ValueError("record= and replay= are mutually exclusive")
 
-        sess = session or DefaultSession()
+        sess = session or RunSession("Graph SDK")
 
         # Wrap the user callback: the executor emits raw event dicts; hand the
         # SDK user a typed RunEvent. None → executor's on_event stays off.
@@ -1112,15 +1092,13 @@ class Graph:
 
                     recorder = Recorder({nd.type for nd in self._def.nodes if "__" in nd.type})
                     recorder.wrap()
-                executor = GraphExecutor(on_event=_sink)
-                await executor.run(
-                    self._def,
-                    sess,
+                graph_run = GraphRun(self._def, session=sess, on_event=_sink)
+                await graph_run.run(
                     step_delay_ms=step_delay_ms,
                     step_budget_override=step_budget_override,
                 )
                 success = True
-                return executor
+                return graph_run.executor
             finally:
                 if recorder is not None:
                     recorder.unwrap()
@@ -1174,33 +1152,15 @@ class Graph:
             s = get_settings()
             reg = WorkspaceComponentRegistry(s.workspace_dir, active_dir=s.active_workspace_dir or None)
             reg.scan_all()
-        result = await reg.ensure_nodesets_for_graph(self._def, worker_count=worker_count)
-        if result.get("failed"):
-            raise RuntimeError(
-                f"nodeset load failed: {result['failed']} "
-                f"(unknown={result.get('unknown')}, loaded={result.get('loaded')})"
-            )
-        if result.get("unknown"):
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "graph_sdk: unknown nodesets (nodes will no-op): %s", result["unknown"]
-            )
-        return reg, list(result.get("loaded", []))
-
-    def _detect_env_nodeset(self, registry: Any = None) -> str:
-        """The graph's env nodeset name (for eval episode placement)."""
-        if registry is not None and hasattr(registry, "detect_env_nodesets_for_graph"):
-            try:
-                envs = registry.detect_env_nodesets_for_graph(self._def)
-                if envs:
-                    return envs[0] if isinstance(envs, (list, tuple)) else str(envs)
-            except Exception:  # pragma: no cover - fall back to the prefix heuristic
-                pass
-        for nd in self._def.nodes:
-            if "__" in nd.type and nd.type.split("__")[0].startswith("env_"):
-                return nd.type.split("__")[0]
-        return ""
+        prepared = await prepare_graph(
+            reg,
+            self._def,
+            validate=False,  # ``run(validate=True)`` is the SDK's opt-in
+            worker_count=worker_count,
+            on_failed="raise",
+            on_unknown="warn",
+        )
+        return reg, list(prepared.loaded)
 
     # -- batch evaluation --------------------------------------------------
 
@@ -1257,7 +1217,7 @@ class Graph:
 
                 cfg = EvalConfig(
                     graph_name=self._def.name or "Graph SDK",
-                    env_nodeset=env_nodeset or self._detect_env_nodeset(reg),
+                    env_nodeset=env_nodeset or await detect_env_nodeset(reg, self._def),
                     selectors={"dataset": dataset, "split": split},
                     dataset=dataset,
                     split=split,

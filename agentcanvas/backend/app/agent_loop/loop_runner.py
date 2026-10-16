@@ -1,7 +1,9 @@
-"""LoopRunner — stateful runner for JSON-driven agent loops.
+"""LoopRunner — the canvas session: pause / stop / status over one GraphRun.
 
-Receives a GraphDefinition JSON from the frontend canvas and executes it
-via GraphExecutor. Manages pause/stop/resume lifecycle.
+Receives a GraphDefinition JSON from the frontend canvas and runs it through
+:class:`~app.agent_loop.graph_run.GraphRun`. Adds the lifecycle the canvas
+needs (pause / resume / stop, checkpoints, status) on top of the
+executor-facing :class:`~app.agent_loop.graph_run.RunSession` contract.
 """
 
 from __future__ import annotations
@@ -10,36 +12,23 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass
 from typing import Any
 
 from ..graph_def import GraphDefinition, HookDef
 from ..logging import ExecutionLogger
-from ..models import WSMessage
 from ..state import broadcast
 from .graph_executor import GraphExecutor
+from .graph_run import ExecutionPrinciples, GraphRun, RunSession
+
+__all__ = ["ExecutionPrinciples", "LoopRunner", "get_loop_runner"]
 
 log = logging.getLogger("agentcanvas.loop-runner")
 
 
-@dataclass
-class ExecutionPrinciples:
-    """Configure execution behavior for batch eval mode.
-
-    When passed to LoopRunner.run(), modifies execution behavior.
-    When None (default), no behavioral changes — canvas path is unchanged.
-    """
-
-    no_pause: bool = True  # ignore pause events in eval
-    collect_metrics: bool = True  # collect per-episode metrics from env
-    suppress_nav_events: bool = True  # suppress ALL nav_* WS events
-    source_tag: str = "eval"  # tag on all WS events for frontend routing
-
-
-class LoopRunner:
+class LoopRunner(RunSession):
     """Stateful runner for a single loop execution.
 
-    Manages pause/stop/status state and delegates execution to GraphExecutor.
+    Manages pause/stop/status state and delegates execution to GraphRun.
     Domain-agnostic — all environment and policy interaction happens through
     nodeset nodes wired on the canvas.
     """
@@ -50,10 +39,11 @@ class LoopRunner:
         env_panel_overrides: dict[str, Any] | None = None,
         server_url_overrides: dict[str, str] | None = None,
     ) -> None:
+        super().__init__()
         self._logger: Any = logger  # ExecutionLogger | None
         # Per-runner env panel overrides (ADR-028). Stored here so each
-        # episode's fresh GraphExecutor (rebuilt in run()) inherits the
-        # same routing. None or {} = global registry only.
+        # run's fresh executor inherits the same routing. None or {} =
+        # global registry only.
         self._env_panel_overrides: dict[str, Any] = env_panel_overrides or {}
         # Per-runner server URL overrides (ADR-028 PB-1.5). Maps nodeset
         # name → tagged subprocess URL so in-graph proxy nodes
@@ -61,25 +51,17 @@ class LoopRunner:
         # subprocess instead of the URL baked into their proxy class
         # closure. Empty/None = pass-through to the baked URL.
         self._server_url_overrides: dict[str, str] = server_url_overrides or {}
+        # Each run builds a fresh executor (see run()); this one answers
+        # get_checkpoints / restore_step before the first run.
         self._executor = GraphExecutor(
             logger=logger,
             env_panel_overrides=self._env_panel_overrides,
             server_url_overrides=self._server_url_overrides,
         )
-        self._status: str = "idle"
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # starts un-paused
-        self._current_step: int = 0
-        self._metrics: dict | None = None
-        self._execution_id: str | None = None
-        self.principles: ExecutionPrinciples | None = None
-
-    def _ws(self, msg_type: str, data: Any = None) -> WSMessage:
-        """Create a WSMessage tagged with execution_id and optional source."""
-        source = self.principles.source_tag if self.principles else None
-        return WSMessage(type=msg_type, data=data, execution_id=self._execution_id, source=source)
 
     async def run(
         self,
@@ -89,16 +71,14 @@ class LoopRunner:
         principles: ExecutionPrinciples | None = None,
         step_budget_override: int | None = None,
     ) -> None:
-        """Run a graph definition via GraphExecutor.
+        """Run a graph definition once.
 
         Args:
             principles: Optional eval-mode configuration. When None (default),
                         no behavioral changes — canvas path is unchanged.
             step_budget_override: Optional per-episode iteration cap that
                         overrides ``loop_def.step_budget``. Passed through to
-                        the executor; used by the eval batch resolver chain
-                        to apply env-supplied dynamic budgets per episode
-                        without mutating the shared graph object.
+                        the executor.
         """
         self._stop_event.clear()
         self._pause_event.set()
@@ -112,9 +92,7 @@ class LoopRunner:
             pause_event = asyncio.Event()
             pause_event.set()  # permanently un-paused
 
-        # Auto-create logger for canvas runs if none was injected. Eval
-        # injects a per-episode ExecutionLogger (BatchEvalRunner); canvas
-        # runs have none and self-create one here.
+        # Auto-create logger for canvas runs if none was injected.
         logger = self._logger
         _self_created_logger = False
         if logger is None and self._execution_id:
@@ -136,9 +114,8 @@ class LoopRunner:
             _self_created_logger = True
 
         # Persist graph definition alongside the log for replay — only for
-        # self-created (canvas) loggers. Eval's injected logger points at a
-        # per-episode dir; the run-level graph.json is written once by
-        # BatchEvalRunner, not duplicated into every episode dir.
+        # self-created (canvas) loggers. An injected logger points at a
+        # caller-owned dir whose run-level graph.json the caller writes.
         if _self_created_logger and logger._persist_dir:
             graph_path = os.path.join(logger._persist_dir, "graph.json")
             if not os.path.exists(graph_path):
@@ -148,22 +125,22 @@ class LoopRunner:
                 except Exception as e:
                     log.warning("Failed to save graph.json: %s", e)
 
-        # Create fresh executor for each run; carry the runner's
-        # env panel + server-URL overrides forward (ADR-028 PA-1, PB-1.5).
-        self._executor = GraphExecutor(
+        # Fresh executor for each run; carry the runner's env panel +
+        # server-URL overrides forward (ADR-028 PA-1, PB-1.5).
+        graph_run = GraphRun(
+            loop_def,
+            session=self,
             logger=logger,
             env_panel_overrides=self._env_panel_overrides,
             server_url_overrides=self._server_url_overrides,
         )
-        await self._executor.run(
-            graph=loop_def,
-            session=self,
-            execution_id=self._execution_id,
+        self._executor = graph_run.executor
+        await graph_run.run(
             step_delay_ms=step_delay_ms,
-            stop_event=self._stop_event,
-            pause_event=pause_event,
             global_hooks=global_hooks,
             step_budget_override=step_budget_override,
+            stop_event=self._stop_event,
+            pause_event=pause_event,
         )
 
     async def pause(self) -> None:

@@ -336,7 +336,7 @@ class GraphDefinition:
     # Eval-graph flag: when True (default), the graph is required to declare
     # at least one ``graphOut`` node — each ``graphOut``'s last-fire snapshot
     # (``state["_last_inputs"]``) is the source of truth for
-    # ``BatchEvalRunner._collect_metrics``. ``graphOut.config.portName``
+    # ``graph_run.harvest_metrics``. ``graphOut.config.portName``
     # becomes the metric key; the ``"metrics"`` portName is special-cased
     # to flatten a metrics-dict payload. Demo / playground graphs that
     # don't produce metrics opt out with ``eval_graph: false``.
@@ -897,7 +897,7 @@ def validate_graph_connectivity(graph: GraphDefinition, type_resolver=None) -> N
                 )
 
     # Eval graphs must declare at least one graphOut node — every graphOut's
-    # last-fire snapshot is harvested by ``BatchEvalRunner._collect_metrics``
+    # last-fire snapshot is harvested by ``graph_run.harvest_metrics``
     # and keyed by its ``config.portName``. Demo / playground graphs opt out
     # via ``eval_graph: false`` at the graph level.
     if graph.eval_graph:

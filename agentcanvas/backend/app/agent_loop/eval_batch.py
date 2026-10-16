@@ -1,7 +1,9 @@
 """Batch evaluation runner — runs a graph repeatedly across episodes.
 
-Wraps LoopRunner (same engine as canvas Play button) in an episode loop.
-Each episode gets a fresh LoopRunner instance for clean state isolation.
+Each episode is one :class:`~app.agent_loop.graph_run.GraphRun` (the same
+engine as the canvas Play button) with a fresh executor + session for clean
+state isolation. The runner owns the episode loop, env-panel cascade,
+budget resolution, persistence, and WebSocket event broadcasting.
 """
 
 from __future__ import annotations
@@ -12,16 +14,19 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
+from ..config import eval_runs_dir
 from ..graph_def import GraphDefinition
 from ..logging import ExecutionLogger
 from ..models import WSMessage
 from ..state import ExecutionGuard, broadcast
 from .env_worker_pool import EnvWorkerPool, resolve_per_step_budget
-from .loop_runner import ExecutionPrinciples, LoopRunner
+from .graph_run import ExecutionPrinciples, GraphRun, RunSession
 
 log = logging.getLogger("agentcanvas.eval-batch")
 
@@ -221,32 +226,36 @@ class EvalRun:
 
 
 class BatchEvalRunner:
-    """Runs a graph repeatedly across episodes using LoopRunner.
+    """Runs a graph repeatedly across episodes, one GraphRun per episode.
 
-    Each episode gets a fresh LoopRunner instance (same engine as canvas).
     The runner manages the episode loop, metrics collection, persistence,
     and WebSocket event broadcasting.
+
+    ``run_dir`` is the run-level artefact dir (default: the eval run pool
+    from :func:`~app.config.eval_runs_dir` / ``run_id``). ``on_episode``
+    is called with each :class:`EpisodeResult` right after it is appended
+    and the aggregates are refreshed — the subprocess runner uses it to
+    rewrite ``summary.json`` on every episode boundary.
     """
 
-    def __init__(self, run: EvalRun, graph: GraphDefinition) -> None:
+    def __init__(
+        self,
+        run: EvalRun,
+        graph: GraphDefinition,
+        *,
+        run_dir: str | os.PathLike[str] | None = None,
+        on_episode: Callable[[EpisodeResult], None] | None = None,
+    ) -> None:
         self._run = run
         self._graph = graph
         self._start_time = 0.0
+        self._on_episode = on_episode
         # Run-level artefact dir. Each episode gets its own ExecutionLogger
         # + subdir under episodes/ (see _run_one_episode) so per-episode
         # log.jsonl / assets/ never interleave across episodes or workers.
         # graph.json is the one run-level snapshot — episode dirs hold only
         # per-episode state.
-        repo_root = os.path.normpath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "..",
-                "..",
-                "..",
-                "..",
-            )
-        )
-        self._run_dir = os.path.join(repo_root, "outputs", "eval_runs", run.run_id)
+        self._run_dir = str(Path(run_dir) if run_dir is not None else eval_runs_dir() / run.run_id)
         os.makedirs(self._run_dir, exist_ok=True)
         graph_path = os.path.join(self._run_dir, "graph.json")
         try:
@@ -360,6 +369,11 @@ class BatchEvalRunner:
                             run.aggregate_metrics = self._compute_aggregate(run.episodes)
                             run.aggregate_by_task = self._compute_aggregate_by_task(run.episodes)
                             run.elapsed_sec = time.time() - self._start_time
+                            if self._on_episode is not None:
+                                try:
+                                    self._on_episode(episode)
+                                except Exception:
+                                    log.exception("on_episode callback raised; run continues")
                             await self._broadcast_episode_done(episode)
                             await self._broadcast_progress()
 
@@ -465,12 +479,14 @@ class BatchEvalRunner:
         from ..config import DEFAULT_STEP_BUDGET as _DEFAULT_STEP_BUDGET
 
         run = self._run
-        env_nodeset = run.config.env_nodeset or "env_habitat"
-        env_panel = worker.env_panel_overrides.get(env_nodeset)
-        if env_panel is None:
-            from ..components.env_panel import get_env_panel as _global_get_env_panel
+        env_nodeset = run.config.env_nodeset
+        env_panel = None
+        if env_nodeset:
+            env_panel = worker.env_panel_overrides.get(env_nodeset)
+            if env_panel is None:
+                from ..components.env_panel import get_env_panel as _global_get_env_panel
 
-            env_panel = _global_get_env_panel(env_nodeset)
+                env_panel = _global_get_env_panel(env_nodeset)
 
         # Resolve effective selectors for this episode. Per-episode
         # overrides (when provided) merge on top of run-level — same
@@ -491,14 +507,14 @@ class BatchEvalRunner:
             worker_id=worker.worker_id,
             selectors=effective_selectors,
         )
-        # Pre-bind runner so the timeout/error branches can still pull
+        # Pre-bind the run so the timeout/error branches can still harvest
         # partial metrics + step_count when the wait_for trips mid-run.
-        runner: Any = None
+        graph_run: GraphRun | None = None
 
         # Per-episode artefact dir — log.jsonl + assets/ + episode.json all
         # land here, never interleaved with sibling episodes. Created up
         # front so episode.json is written even when the episode errors
-        # before the LoopRunner (and its logger) is constructed.
+        # before the GraphRun (and its logger) is constructed.
         ep_dir = os.path.join(self._run_dir, "episodes", f"ep{actual_index:04d}")
         os.makedirs(ep_dir, exist_ok=True)
         ep_execution_id = f"{run.run_id}_ep{actual_index:04d}"
@@ -577,7 +593,7 @@ class BatchEvalRunner:
                 episode_timeout,
             )
 
-            # Create fresh LoopRunner per episode (clean state). The worker's
+            # Fresh GraphRun per episode (clean state). The worker's
             # env_panel_overrides bind env-panel lookups, and
             # server_url_overrides bind in-graph proxy node URLs, both to
             # this worker's tagged subprocess (ADR-028 PB-1, PB-1.5). Both
@@ -587,53 +603,37 @@ class BatchEvalRunner:
                 source="eval",
                 persist_dir=ep_dir,
             )
-            runner = LoopRunner(
+            graph_run = GraphRun(
+                self._graph,
+                session=RunSession(ep_execution_id, principles=principles),
                 logger=ep_logger,
                 env_panel_overrides=worker.env_panel_overrides,
                 server_url_overrides=worker.server_url_overrides,
             )
-            runner._execution_id = ep_execution_id
 
-            # Run the graph once (same as canvas Play button), wrapped in
+            # Run the graph once (same engine as canvas Play), wrapped in
             # asyncio.wait_for so a stuck episode can never block the pool.
             # The resolved budget is passed as ``step_budget_override`` so
             # parallel workers don't race to mutate ``self._graph`` itself.
-            await asyncio.wait_for(
-                runner.run(
-                    self._graph,
-                    step_delay_ms=0,
-                    principles=principles,
-                    step_budget_override=resolved_budget,
-                ),
+            outcome = await asyncio.wait_for(
+                graph_run.run(step_delay_ms=0, step_budget_override=resolved_budget),
                 timeout=episode_timeout,
             )
 
-            # Collect metrics from the executor's node state
-            metrics = self._collect_metrics(runner)
+            metrics = outcome.metrics
             episode.metrics = metrics
-            episode.step_count = runner._current_step
+            episode.step_count = outcome.step_count
             episode.elapsed_sec = time.time() - ep_start
             # Node-error conviction (2026-07-04): the executor swallows all
-            # exceptions — its error surface is ``session._status`` plus the
+            # exceptions — its error surface is the session status plus the
             # error bus — so a run that recorded node failures RETURNS
-            # normally with ``_status == "error"``. Convict the episode
-            # explicitly; before this, such episodes masqueraded as
-            # completed (status="completed", step_count=0, metrics={} —
-            # run 20260516_101057, 11/100 episodes silently dropped).
-            node_errors = getattr(getattr(runner, "_executor", None), "node_errors", None) or []
-            if getattr(runner, "_status", "") == "error":
+            # normally with status "error". Convict the episode explicitly;
+            # before this, such episodes masqueraded as completed
+            # (status="completed", step_count=0, metrics={} — run
+            # 20260516_101057, 11/100 episodes silently dropped).
+            if outcome.errored:
                 episode.status = "error"
-                if node_errors:
-                    head = "; ".join(
-                        f"{err['node_id']}@step{err['step']}: {err['error']}"
-                        for err in node_errors[:3]
-                    )
-                    episode.error = (
-                        f"{len(node_errors)} node error(s) during run: {head}"
-                        + ("; ..." if len(node_errors) > 3 else "")
-                    )
-                else:
-                    episode.error = "graph execution ended with status=error"
+                episode.error = outcome.error_summary()
             # Verdict-required: an eval graph that "completed" without any
             # graphOut snapshot produced no verdict — the loop never really
             # ran. Refuse to record that as a completed episode; it would
@@ -657,17 +657,19 @@ class BatchEvalRunner:
             episode.status = "error"
             episode.error = f"timeout after {episode_timeout:.1f}s"
             episode.elapsed_sec = time.time() - ep_start
-            if runner is not None:
-                episode.metrics = self._collect_metrics(runner)
-                episode.step_count = getattr(runner, "_current_step", 0)
+            if graph_run is not None:
+                partial = graph_run.outcome()
+                episode.metrics = partial.metrics
+                episode.step_count = partial.step_count
         except Exception as e:
             log.exception("Episode %d (worker=%d) failed", loop_index, worker.worker_id)
             episode.status = "error"
             episode.error = str(e)
             episode.elapsed_sec = time.time() - ep_start
-            if runner is not None:
-                episode.metrics = self._collect_metrics(runner)
-                episode.step_count = getattr(runner, "_current_step", 0)
+            if graph_run is not None:
+                partial = graph_run.outcome()
+                episode.metrics = partial.metrics
+                episode.step_count = partial.step_count
 
         # Per-episode self-describing record — lets one episode dir be
         # consumed (replay, debugging, architect tooling) without joining
@@ -681,76 +683,6 @@ class BatchEvalRunner:
             log.warning("Failed to write episode.json for ep %d: %s", actual_index, e)
 
         return episode
-
-    def _collect_metrics(self, runner: LoopRunner) -> dict[str, float]:
-        """Extract metrics from the graph's ``graphOut`` sinks.
-
-        The graph declares its outputs via one or more ``graphOut`` nodes;
-        each carries a ``config.portName`` that becomes the metric key. The
-        executor writes ``node.state["_last_inputs"]`` after every fire
-        (``graph_executor.py``); the terminal-iter fire is protected by
-        the iterOut settle loop, so on a successful episode the snapshot
-        reflects the terminal-step values.
-
-        Two contributions per ``graphOut``:
-
-        * ``portName == "metrics"`` — the value is treated as a metrics
-          dict (or JSON-stringified dict, since server-mode evaluate
-          nodes cross the HTTP boundary on a TEXT-typed wire) and its
-          numeric fields are flattened into the returned dict.
-        * Any other portName carrying a numeric/bool scalar — included
-          as ``metrics[portName] = float(value)`` so eval graphs can expose
-          ``success``, ``score``, etc. as first-class outputs without
-          bundling them under a ``metrics`` dict.
-        """
-        from .scope_analysis import GRAPH_SCOPE_ID
-
-        metrics: dict[str, float] = {}
-        executor = runner._executor
-        if executor is not None and hasattr(executor, "nodes"):
-            for node in executor.nodes.values():
-                if node.type != "graphOut":
-                    continue
-                # Multi-scope: only harvest graph-scope graphOuts (the
-                # eval-output sinks at the outer level). Inner-scope
-                # graphOut nodes preserved by `flatten_graph` (when the
-                # composite has its own scope) are scope-internal latches
-                # carrying per-iter cross-scope return values, NOT eval
-                # metrics; skipping them keeps the harvest faithful to
-                # the author's eval-output declaration.
-                if hasattr(executor, "_scope_of"):
-                    n_scope = executor._scope_of(node.id)
-                    if n_scope and n_scope != GRAPH_SCOPE_ID:
-                        continue
-                snapshot = node.state.get("_last_inputs") or {}
-                if not snapshot:
-                    continue
-                value = snapshot.get("value")
-                if value is None:
-                    # Permissive fallback — accept any non-None pending input
-                    for v in snapshot.values():
-                        if v is not None:
-                            value = v
-                            break
-                port_name = (node.config or {}).get("portName") or ""
-
-                if port_name == "metrics":
-                    if isinstance(value, str) and value:
-                        try:
-                            value = json.loads(value)
-                        except (json.JSONDecodeError, ValueError):
-                            value = None
-                    if isinstance(value, dict):
-                        for k, v in value.items():
-                            if isinstance(v, (int, float, bool)):
-                                metrics[k] = float(v)
-                elif port_name and isinstance(value, (int, float, bool)):
-                    metrics[port_name] = float(value)
-        if runner._metrics and isinstance(runner._metrics, dict):
-            for k, v in runner._metrics.items():
-                if isinstance(v, (int, float)):
-                    metrics[k] = float(v)
-        return metrics
 
     @staticmethod
     def _compute_aggregate(episodes: list[EpisodeResult]) -> dict[str, float]:

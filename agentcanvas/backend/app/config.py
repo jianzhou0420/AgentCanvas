@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -73,6 +74,19 @@ def get_settings() -> Settings:
     if _settings_instance is None:
         _settings_instance = Settings()
     return _settings_instance
+
+
+def eval_runs_dir() -> Path:
+    """The eval run pool: ``outputs/eval_runs/`` under the repo root.
+
+    ``AGENTCANVAS_EVAL_RUNS_DIR`` overrides it — slot backends (``/host``)
+    point this at their own pool (e.g. ``outputs/eval_runs_c``) so the
+    scheduler, the runner, and the storage readers all agree on where a
+    run's ``summary.json`` / ``episodes/`` live. The one resolver for every
+    writer and reader of run artefacts.
+    """
+    env = os.environ.get("AGENTCANVAS_EVAL_RUNS_DIR")
+    return Path(env) if env else _REPO_ROOT / "outputs" / "eval_runs"
 
 
 def resolve_executor_url() -> str:

@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ...agent_loop.graph_run import prepare_graph
 from ...agent_loop.loop_runner import get_loop_runner
 from ...graph_def import GraphDefinition, validate_graph_connectivity
 from ...state import ExecutionGuard, ExecutionMode, get_services
@@ -72,35 +73,23 @@ async def run_loop(req: RunRequest):
         ExecutionGuard.release("canvas")
         raise HTTPException(status_code=400, detail=f"Invalid graph definition: {e}") from e
 
-    # Auto-load any nodesets the graph needs but that aren't loaded (e.g. after
-    # a cold start or uvicorn --reload wiped the registry). Idempotent.
+    # Prepare the graph against the registry: auto-load any nodesets it
+    # needs but that aren't loaded (e.g. after a cold start or a uvicorn
+    # --reload wiped the registry; idempotent), wire-type check, global
+    # hooks. Canvas is lenient: a nodeset that fails to load is logged and
+    # its nodes no-op.
     registry = get_services().workspace_component_registry
     try:
-        await registry.ensure_nodesets_for_graph(graph)
+        prepared = await prepare_graph(
+            registry, graph, validate=False, on_failed="warn", on_unknown="warn"
+        )
     except Exception as e:
         ExecutionGuard.release("canvas")
         raise HTTPException(status_code=500, detail=f"Nodeset load failed: {e}") from e
 
-    # Whole-graph wire-type check, now that nodeset proxy classes are in
-    # NODE_HANDLERS (the pre-load validate_graph_connectivity only saw
-    # builtins). Warn-only for now: it surfaces nodeset env↔method shape
-    # mismatches without aborting the run, pending a clean sweep before this
-    # is promoted to a hard 400 (ADR-027 staged enforcement).
-    from ...graph_def import validate_edge_wire_types
-
-    wire_errs = validate_edge_wire_types(graph)
-    if wire_errs:
-        log.warning(
-            "wire-type mismatches (post-nodeset-load, warn-only):\n  - %s",
-            "\n  - ".join(wire_errs),
-        )
-
-    # Fetch global hooks from component registry
-    global_hooks = registry.get_global_hooks()
-
     async def _run_and_release():
         try:
-            await runner.run(graph, req.step_delay_ms, global_hooks=global_hooks)
+            await runner.run(graph, req.step_delay_ms, global_hooks=prepared.global_hooks)
         finally:
             ExecutionGuard.release("canvas")
 

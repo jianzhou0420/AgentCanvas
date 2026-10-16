@@ -109,17 +109,15 @@ async def lifespan(app: FastAPI):
     # ── JobScheduler (subprocess-path admission + queue) ──
     # Budget derivation (usable VRAM etc.) lives in JobScheduler.create so
     # all admission inputs are centralized in job_scheduler.py.
-    import os
     from pathlib import Path
+
+    from .config import eval_runs_dir as _eval_runs_dir
 
     # Slot backends (/host) point this at their own pool (e.g.
     # outputs/eval_runs_c) so the startup reconcile sweep and the queue
     # never touch the primary tree's runs — outputs/ is a shared symlink
     # across worktree slots. Default: the primary shared pool.
-    eval_runs_dir = Path(
-        os.environ.get("AGENTCANVAS_EVAL_RUNS_DIR")
-        or Path(__file__).resolve().parents[3] / "outputs" / "eval_runs"
-    )
+    eval_runs_dir = _eval_runs_dir()
     backend_url = f"http://{settings.host}:{settings.port}"
     state.job_scheduler = JobScheduler.create(eval_runs_dir, backend_url)
     state.job_scheduler.set_canvas_lock_callback(

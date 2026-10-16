@@ -3,7 +3,7 @@
 Covers the episode bookkeeping and metric plumbing that every eval run
 relies on: contiguous worker partitioning, run/episode summaries
 (completed vs error accounting), metric aggregation (global and
-per-task), and ``_collect_metrics`` — the graphOut harvest that turns
+per-task), and ``harvest_metrics`` — the graphOut harvest that turns
 node state into ``EpisodeResult.metrics`` (including the server-mode
 JSON-string path and the inner-scope skip).
 
@@ -29,6 +29,7 @@ from .eval_batch import (
     _partition_contiguous,
 )
 from .graph_executor import NodeInstance
+from .graph_run import harvest_metrics
 
 # ── worker partitioning ─────────────────────────────────────────────────
 
@@ -164,7 +165,7 @@ class _FakeExecutor:
 
 
 class _FakeRunner:
-    """Just enough LoopRunner surface for ``_collect_metrics``."""
+    """An executor + session-metrics pair, as ``harvest_metrics`` sees them."""
 
     def __init__(
         self,
@@ -186,9 +187,9 @@ def _graphout(nid: str, port_name: str, snapshot: dict) -> NodeInstance:
 
 
 def _collect(runner: _FakeRunner) -> dict[str, float]:
-    # ``_collect_metrics`` never touches self — call unbound to avoid
-    # BatchEvalRunner.__init__'s run-dir setup.
-    return BatchEvalRunner._collect_metrics(None, runner)  # type: ignore[arg-type]
+    # The harvest is a function of (executor, session metrics) — the same
+    # one GraphRun.outcome() uses for every entry point.
+    return harvest_metrics(runner._executor, runner._metrics)
 
 
 def test_collect_flattens_metrics_dict_and_scalar_ports() -> None:
