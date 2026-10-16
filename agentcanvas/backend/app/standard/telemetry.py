@@ -6,7 +6,7 @@ into whichever bucket is active and the firing's owner reads it back into
 the node's log entry. ContextVars so concurrent firings don't
 cross-contaminate.
 
-They live here — not in their producer modules (``app.llm.call``,
+They live here — not in their producer modules (``app.llm.complete``,
 ``app.server.serialization``) — so the executor can import them without
 dragging litellm / numpy into a pure-local run; the producers re-export them.
 """
@@ -16,7 +16,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any
 
-# Written by llm_complete / vlm_complete (app.llm.call).
+# Written by every completion round trip (app.llm.complete).
 _current_node_usage: ContextVar[dict | None] = ContextVar("_current_node_usage", default=None)
 
 # Written by the server-proxy round-trip codec (app.server.serialization).

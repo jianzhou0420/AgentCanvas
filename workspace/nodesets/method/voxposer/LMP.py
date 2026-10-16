@@ -3,12 +3,14 @@
 Upstream: https://github.com/huangwl18/VoxPoser  src/LMP.py
 
 Adapted for AgentCanvas:
-  * `_cached_api_call` now routes through litellm using `app.llm.call.get_llm_config()`
-    instead of calling `openai.ChatCompletion.create` directly. Cache shape is
-    preserved (key = kwargs dict containing `messages`).
+  * `_cached_api_call` now routes through AgentCanvas's LLM module
+    (`app.llm.complete_sync` on the active profile — rulebook, usage
+    accounting and strict-error policy included) instead of calling
+    `openai.ChatCompletion.create` directly. Cache shape is preserved
+    (key = kwargs dict containing `messages`).
   * DiskCache stores under `~/.cache/agentcanvas/voxposer_llm/` (per-user).
-  * Retry loop on RateLimitError/APIConnectionError dropped — litellm handles
-    retries internally via `num_retries`.
+  * Retry loop on RateLimitError/APIConnectionError dropped — the transport
+    retries twice (`Request.retries=2`).
   * Legacy completion endpoint (gpt-3.5-turbo-instruct) removed; chat-only.
 """
 
@@ -66,11 +68,10 @@ class LMP:
         return prompt, user_query
 
     def _cached_api_call(self, **kwargs):
-        """Call LLM via litellm with disk cache.
+        """Call the LLM through AgentCanvas's LLM module, with disk cache.
 
         Mirrors upstream's chat-mode prompt-to-messages rewrite, then routes
-        through AgentCanvas's `get_llm_config()` to pick api_key / base_url /
-        provider prefix from the active profile (or AGENTCANVAS_* env vars).
+        through `get_llm_config()` (the active profile) and `complete_sync`.
         Cache key is the post-rewrite kwargs (containing `messages`), matching
         upstream cache shape.
         """
@@ -106,33 +107,34 @@ class LMP:
             print('(using cache)', end=' ')
             return self._cache[kwargs]
 
-        # Lazy-import litellm + AgentCanvas LLM config — keeps module
+        # Lazy-import the AgentCanvas LLM module — keeps this file
         # importable in environments without the backend on PYTHONPATH.
-        import litellm
-        from app.llm.call import get_llm_config
+        from dataclasses import replace
+
+        from app.llm import Request, complete_sync, get_llm_config
 
         cfg = get_llm_config()
         if cfg is None:
             raise RuntimeError(
-                "VoxPoser LMP: no LLM profile or env config found. "
-                "Set AGENTCANVAS_API_KEY + AGENTCANVAS_MODEL or activate a profile."
+                "VoxPoser LMP: no LLM profile active. "
+                "Activate a profile (with its provider key set) in Settings."
             )
-        requested_model = kwargs.get('model', cfg.model)
-        litellm_model = f"{cfg.litellm_prefix}/{requested_model}"
-
-        response = litellm.completion(
-            model=litellm_model,
-            messages=kwargs['messages'],
-            max_tokens=kwargs.get('max_tokens', 512),
-            temperature=kwargs.get('temperature', 0),
-            stop=kwargs.get('stop') or None,
-            api_key=cfg.api_key or None,
-            api_base=cfg.base_url or None,
-            timeout=60.0,
-            num_retries=2,
+        # The LMP config pins its own model name (upstream default gpt-4)
+        # over the profile's; the rulebook then keys on the pinned model.
+        cfg = replace(cfg, model=kwargs.get('model', cfg.model))
+        completion = complete_sync(
+            cfg,
+            Request(
+                history=kwargs['messages'],
+                max_tokens=kwargs.get('max_tokens', 512),
+                temperature=kwargs.get('temperature', 0),
+                stop=kwargs.get('stop') or None,
+                retries=2,
+            ),
         )
-        ret = response.choices[0].message.content
-        ret = ret.replace('```', '').replace('python', '').strip()
+        if completion.text is None:
+            raise RuntimeError("VoxPoser LMP: LLM call returned no text")
+        ret = completion.text.replace('```', '').replace('python', '').strip()
         self._cache[kwargs] = ret
         return ret
 

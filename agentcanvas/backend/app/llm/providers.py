@@ -24,6 +24,30 @@ class ProviderDef:
     env_var: str  # standard env var name for the API key (e.g. "OPENAI_API_KEY")
 
 
+@dataclass
+class LLMConfig:
+    """One resolved call target: a provider's endpoint + key and the model
+    to ask for. Built by :func:`app.llm.call.get_llm_config` from a profile
+    (or inline ``provider, model``) and handed to
+    :func:`app.llm.complete.complete`."""
+
+    api_key: str
+    base_url: str
+    model: str
+    api_type: str  # "openai" | "anthropic" | "google" | "ollama"
+    litellm_prefix: str  # litellm model prefix (e.g. "openai", "gemini")
+    provider: str = ""  # PROVIDER_REGISTRY key — keys the parameter rulebook
+
+
+# Fallback mapping when no provider entry is available (env-only mode).
+API_TYPE_TO_LITELLM_PREFIX: dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "gemini",
+    "ollama": "ollama_chat",
+}
+
+
 PROVIDER_REGISTRY: dict[str, ProviderDef] = {
     # --- OpenAI protocol ---
     "openai": ProviderDef(

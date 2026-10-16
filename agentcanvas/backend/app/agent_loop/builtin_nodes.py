@@ -177,7 +177,7 @@ class LLMCallNode(BaseCanvasNode):
                 on_card=False,
             ),
             # Two-state sampling params: default None = unset = not sent —
-            # the vendor's own default applies (see call.py two-state docs).
+            # the vendor's own default applies (see app.llm.complete two-state docs).
             ConfigField(
                 "temperature",
                 "slider",
@@ -277,15 +277,7 @@ class LLMCallNode(BaseCanvasNode):
         return (cls.input_ports, cls.output_ports)
 
     async def forward(self, inputs, ctx):
-        from ..llm import (
-            finalize_params,
-            get_llm_config,
-            get_llm_config_direct,
-            llm_complete,
-            llm_complete_n,
-            vlm_complete,
-            vlm_complete_n,
-        )
+        from ..llm import Request, complete, get_llm_config, get_llm_config_direct
 
         # ── 1. Build the prompt ──
         prompt_input = _get_input(inputs, "prompt")
@@ -402,26 +394,13 @@ class LLMCallNode(BaseCanvasNode):
 
         # Two-state sampling params: unset ("" / None) is never sent — the
         # vendor's default applies. Explicit values pass the rulebook in
-        # call.py before the wire.
+        # app.llm.complete before the wire; every adjustment it makes is
+        # logged below as ``param_adjustments``.
         _temp_raw = self.config.get("temperature")
         temp = float(_temp_raw) if _temp_raw not in (None, "") else None
         _mt_raw = self.config.get("max_tokens")
         max_tokens = int(_mt_raw) if _mt_raw not in (None, "") else None
         n = max(1, int(self.config.get("n", 1) or 1))
-
-        # Rulebook preview — call.py applies the same finalize on the wire;
-        # replaying it here puts every deviation from this node's configured
-        # params into the run log (inner_log), not just the backend logger.
-        _preview_params: dict = {}
-        if temp is not None:
-            _preview_params["temperature"] = temp
-        if max_tokens is not None:
-            _preview_params["max_tokens"] = max_tokens
-        _, _adjustments = finalize_params(
-            llm_config.provider, llm_config.model, _preview_params
-        )
-        if _adjustments:
-            self._self_log("param_adjustments", _adjustments)
         image_detail = str(self.config.get("image_detail", "low") or "low")
         # data-URL MIME for image payloads. b64 strings arriving on the rgb
         # port are passed through verbatim, so a producer emitting JPEG
@@ -490,77 +469,35 @@ class LLMCallNode(BaseCanvasNode):
         if images:
             self._self_log("image_count", len(images))
             self._self_log("label_count", len(image_labels) if image_labels else 0)
-            # VLM path — vision model. In conversation mode the text
-            # history rides as prior messages; images attach to the
-            # current turn only (history stays text-only). n>1
-            # multi-sampling goes through vlm_complete_n (provider-native
-            # ``n`` with a concurrent single-sample fallback for providers
-            # that ignore it); conversation mode ignores ``n`` like the
-            # text path does.
-            vlm_prior = (
-                list(conv_history[:-1])
-                if isinstance(conv_history, list) and len(conv_history) > 1
-                else None
-            )
-            if n > 1 and mode == "single_turn":
-                responses_list = await vlm_complete_n(
-                    llm_config,
-                    rendered_prompt,
-                    images,
-                    n=n,
-                    image_labels=image_labels,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temp,
-                    detail=image_detail,
-                    stop=stop_cfg,
-                    mime=image_mime,
-                )
-                response = responses_list[0] if responses_list else None
-            else:
-                response = await vlm_complete(
-                    llm_config,
-                    rendered_prompt,
-                    images,
-                    image_labels=image_labels,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temp,
-                    detail=image_detail,
-                    prior_messages=vlm_prior,
-                    stop=stop_cfg,
-                    mime=image_mime,
-                )
-                responses_list = [response] if response else []
-        else:
-            # LLM path — text-only model
-            if mode == "single_turn":
-                messages = [{"role": "user", "content": rendered_prompt}]
-            else:
-                # conversation — guard + user-turn append already done above
-                messages = conv_history
 
-            if n > 1 and mode == "single_turn":
-                responses_list = await llm_complete_n(
-                    llm_config,
-                    messages,
-                    n=n,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temp,
-                    stop=stop_cfg,
-                )
-                response = responses_list[0] if responses_list else None
-            else:
-                response = await llm_complete(
-                    llm_config,
-                    messages,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temp,
-                    stop=stop_cfg,
-                )
-                responses_list = [response] if response else []
+        # One request either way: the rendered prompt (plus images) is the
+        # current user turn; in conversation mode the text history rides
+        # as prior turns (images attach to the current turn only, and
+        # ``n`` is ignored like it always was). Provider-native ``n`` with
+        # a concurrent single-sample fallback is the module's business.
+        history: list[dict] = []
+        if isinstance(conv_history, list) and len(conv_history) > 1:
+            history = list(conv_history[:-1])
+        completion = await complete(
+            llm_config,
+            Request(
+                prompt=rendered_prompt,
+                images=images,
+                image_labels=image_labels,
+                system_prompt=system_prompt,
+                history=history,
+                n=n if mode == "single_turn" else 1,
+                temperature=temp,
+                max_tokens=max_tokens,
+                stop=stop_cfg,
+                image_detail=image_detail,
+                image_mime=image_mime,
+            ),
+        )
+        if completion.adjustments:
+            self._self_log("param_adjustments", completion.adjustments)
+        responses_list = completion.texts
+        response = completion.text
 
         if response and mode == "conversation":
             # _has_gs already verified above — this point is only reached
@@ -569,7 +506,7 @@ class LLMCallNode(BaseCanvasNode):
             ctx.graph_state.write("messages", {"role": "assistant", "content": response})
 
         # Per-call token usage is auto-emitted by the executor's LLM-usage
-        # hook — see ``_current_node_usage`` in ``app.llm.call``.
+        # hook — see ``_current_node_usage`` in ``app.standard.telemetry``.
         self._self_log("response_length", len(response) if response else 0)
         self._self_log("response_count", len(responses_list))
 

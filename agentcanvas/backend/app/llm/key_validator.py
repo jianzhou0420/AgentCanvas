@@ -12,7 +12,7 @@ import re
 import httpx
 import litellm
 
-from .call import API_TYPE_TO_LITELLM_PREFIX
+from .providers import API_TYPE_TO_LITELLM_PREFIX
 
 log = logging.getLogger("agentcanvas.key_validator")
 
