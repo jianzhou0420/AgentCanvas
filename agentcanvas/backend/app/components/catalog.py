@@ -59,22 +59,7 @@ class NodeCatalog:
     # ── Registration ────────────────────────────────────────────────
 
     def register(self, cls: type[BaseCanvasNode]) -> None:
-        """Add (or replace) a node class under its ``node_type``.
-
-        ADR-028 PC-1: a ``batched=True`` class must name an actual input
-        port as its ``batch_dim`` — fail fast here so misconfigured nodes
-        never reach the runtime rendezvous tier.
-        """
-        if getattr(cls, "batched", False):
-            batch_dim = getattr(cls, "batch_dim", "")
-            if not batch_dim:
-                raise ValueError(f"{cls.__name__}: batched=True requires a non-empty batch_dim")
-            port_names = {p.name for p in getattr(cls, "input_ports", [])}
-            if batch_dim not in port_names:
-                raise ValueError(
-                    f"{cls.__name__}: batch_dim={batch_dim!r} must name an "
-                    f"input port, but input_ports has {sorted(port_names)}"
-                )
+        """Add (or replace) a node class under its ``node_type``."""
         self._types[cls.node_type] = cls
 
     def unregister(self, node_types: Iterable[str]) -> list[str]:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from .bases import BaseCanvasNode, ConfigField, NodeUIConfig, PortDef
 from .catalog import NodeCatalog, ports_for
 
@@ -59,19 +57,6 @@ class _Broken(BaseCanvasNode):
         return {}
 
 
-class _Batched(BaseCanvasNode):
-    node_type = "t_batched"
-    display_name = "Batched"
-    category = "tool"
-    batched = True
-    batch_dim = "items"
-    input_ports = [PortDef("items", "LIST[TEXT]", "")]
-    output_ports = []
-
-    async def forward(self, inputs, ctx):
-        return {}
-
-
 # ── Registration ───────────────────────────────────────────────────────
 
 
@@ -101,25 +86,6 @@ def test_unregister_reports_what_was_present():
     assert "t_plain" not in cat and "t_configurable" in cat
     assert cat.unregister(iter(["t_configurable"])) == ["t_configurable"]
     assert len(cat) == 0
-
-
-def test_batched_shape_is_validated_at_registration():
-    cat = NodeCatalog()
-    cat.register(_Batched)
-
-    class _NoDim(_Batched):
-        node_type = "t_nodim"
-        batch_dim = ""
-
-    class _WrongDim(_Batched):
-        node_type = "t_wrongdim"
-        batch_dim = "missing"
-
-    with pytest.raises(ValueError, match="non-empty batch_dim"):
-        cat.register(_NoDim)
-    with pytest.raises(ValueError, match="must name an input port"):
-        cat.register(_WrongDim)
-    assert cat.types() == ["t_batched"]
 
 
 # ── Ports: the one rule ────────────────────────────────────────────────

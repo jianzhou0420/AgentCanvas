@@ -36,8 +36,8 @@ Architecture — three layers:
      server_python defaults to ``$VLA_POLICY_PYTHON`` (env created by
      ``scripts/install/install_ac_vla_policy.sh``). ``parallelism="shared"``:
      one subprocess hosts one VlaPolicyManager singleton; K eval workers
-     fan in through ``BatchedInferenceServer`` on the
-     ``policy_adapter_vla__predict`` node. RT-1's recurrent ``policy_state``
+     share it, and ``policy_adapter_vla__predict`` is ``serialized`` so
+     their forwards run one at a time. RT-1's recurrent ``policy_state``
      travels on the wire via the ``policy_state_in/out`` ports +
      IterIn/IterOut feedback; Pi0/SmolVLA/DP/Droid-DP are stateless and
      leave those ports unwired.
@@ -75,8 +75,14 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef, conda_env_python
-from app.server.batched_inference import OUTPUTS_KEY, SAMPLES_KEY
+from app.components import (
+    BaseCanvasNode,
+    BaseNodeSet,
+    ConfigField,
+    NodeUIConfig,
+    PortDef,
+    conda_env_python,
+)
 from workspace.nodesets.policy.policy_adapter_vla.adapters.canonical import CanonicalInfo
 
 log = logging.getLogger("agentcanvas.policy_adapter_vla")
@@ -357,7 +363,9 @@ class VlaPolicyManager:
                 return {"error": "model_adaptor not built — run adapt_canonical_to_model first"}
             try:
                 module = _load_module("policies", policy_module)
-                from workspace.nodesets.policy.policy_adapter_vla.policies.base_policy import BasePolicy
+                from workspace.nodesets.policy.policy_adapter_vla.policies.base_policy import (
+                    BasePolicy,
+                )
 
                 cls = _find_subclass(module, BasePolicy)
                 kwargs = dict(getattr(module, "DEFAULT_KWARGS", {}))
@@ -698,13 +706,11 @@ class PredictTool(BaseCanvasNode):
     )
     category = "policy"
     icon = "Cpu"
-    # ADR-eval-002 PC-3 + this nodeset's parallelism="shared": K eval workers
-    # rendezvous at this node through BatchedInferenceServer; one TF SavedModel
-    # serves all of them. The TF policy is pinned to batch_size=1 so the
-    # K-flush is unrolled into a sequential loop inside execute() — primary
-    # win is GPU memory (one model vs N replicas), throughput is secondary.
-    batched: ClassVar[bool] = True
-    batch_dim: ClassVar[str] = "model_batch"
+    # This nodeset is parallelism="shared": one subprocess, one model, K
+    # eval workers calling predict. The TF policy is pinned to batch_size=1,
+    # so the calls run one at a time under the app's inference lock —
+    # the win is GPU memory (one model vs N replicas), not throughput.
+    serialized: ClassVar[bool] = True
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(
         color=_POLICY_COLOR,
         config_fields=[
@@ -775,48 +781,32 @@ class PredictTool(BaseCanvasNode):
         if isinstance(res, dict) and res.get("policy_module"):
             self._self_log("loaded", res)
 
-        # BatchedInferenceServer (ADR-eval-002 PC) hands us either a single
-        # call (canvas Play / worker_count=1 → no rendezvous) or a list of
-        # samples under SAMPLES_KEY (multi-worker fan-out). Promote the
-        # single-call path to a length-1 batch so the loop body is uniform.
-        raw_samples = inputs.get(SAMPLES_KEY)
-        is_batched_call = isinstance(raw_samples, list)
-        samples = raw_samples if is_batched_call else [inputs]
-
-        outputs: list[dict[str, Any]] = []
-        for sample in samples:
-            batch = sample.get("model_batch")
-            if batch is None:
-                log.error("PredictTool: model_batch input missing")
-                self._self_log("error", "model_batch input missing")
-                outputs.append({"model_output": None, "policy_state_out": None})
-                continue
-            # Inject policy_state_in into the batch so VlaPolicyManager.predict
-            # can pass it straight through to BasePolicy.predict_action without
-            # a special-case manager method. Stateless policies will never
-            # read this key.
-            ps_in = sample.get("policy_state_in")
-            if ps_in is not None:
-                if isinstance(batch, dict):
-                    batch = {**batch, "policy_state_in": ps_in}
-                else:  # exotic non-dict batch — leave alone
-                    log.warning("PredictTool: model_batch not a dict, dropping policy_state_in")
-            out = await _run_sync(_get_mgr().predict, batch)
-            if isinstance(out, dict) and "error" in out:
-                log.error("PredictTool: predict failed: %s", out["error"])
-                self._self_log("error", out["error"])
-                outputs.append({"model_output": None, "policy_state_out": None})
-                continue
-            policy_state_out = (
-                out.pop("policy_state") if isinstance(out, dict) and "policy_state" in out else None
-            )
-            if isinstance(out, dict) and "action" in out and hasattr(out["action"], "shape"):
-                self._self_log("action_shape", tuple(out["action"].shape))
-            outputs.append({"model_output": out, "policy_state_out": policy_state_out})
-
-        if is_batched_call:
-            return {OUTPUTS_KEY: outputs}
-        return outputs[0]
+        batch = inputs.get("model_batch")
+        if batch is None:
+            log.error("PredictTool: model_batch input missing")
+            self._self_log("error", "model_batch input missing")
+            return {"model_output": None, "policy_state_out": None}
+        # Inject policy_state_in into the batch so VlaPolicyManager.predict
+        # can pass it straight through to BasePolicy.predict_action without
+        # a special-case manager method. Stateless policies will never
+        # read this key.
+        ps_in = inputs.get("policy_state_in")
+        if ps_in is not None:
+            if isinstance(batch, dict):
+                batch = {**batch, "policy_state_in": ps_in}
+            else:  # exotic non-dict batch — leave alone
+                log.warning("PredictTool: model_batch not a dict, dropping policy_state_in")
+        out = await _run_sync(_get_mgr().predict, batch)
+        if isinstance(out, dict) and "error" in out:
+            log.error("PredictTool: predict failed: %s", out["error"])
+            self._self_log("error", out["error"])
+            return {"model_output": None, "policy_state_out": None}
+        policy_state_out = (
+            out.pop("policy_state") if isinstance(out, dict) and "policy_state" in out else None
+        )
+        if isinstance(out, dict) and "action" in out and hasattr(out["action"], "shape"):
+            self._self_log("action_shape", tuple(out["action"].shape))
+        return {"model_output": out, "policy_state_out": policy_state_out}
 
 
 class AdaptModelToCanonicalTool(BaseCanvasNode):
@@ -915,10 +905,9 @@ class PolicyAdapterVlaNodeSet(BaseNodeSet):
     # Singleton subprocess shared across K eval workers (ADR-eval-002 PC-3).
     # RT-1 recurrent state travels on the wire via policy_state_in/out +
     # IterIn/IterOut; Pi0/SmolVLA/DP/Droid-DP are stateless.
-    # PredictTool.batched=True triggers BatchedInferenceServer rendezvous,
-    # but the K-flush is unrolled into a sequential loop because the TF
-    # SavedModel is pinned to batch_size=1 — primary win is GPU memory (one
-    # model + one USE encoder shared) not throughput.
+    # PredictTool is ``serialized``: the TF SavedModel is pinned to
+    # batch_size=1, so the K workers' forwards run one at a time — the win
+    # is GPU memory (one model + one USE encoder shared), not throughput.
     parallelism = "shared"
     # Pi0 first call is slow (JAX→PT conversion + torch.compile) — give 60s budget.
     default_per_step_budget_sec = 60.0

@@ -1092,8 +1092,8 @@ class WorkspaceComponentRegistry(RegistryFacts):
                 nodesets are spawned as ``worker_count`` tagged subprocesses
                 for parallel eval; any existing single-instance load is
                 unloaded first. ``parallelism="shared"`` nodesets stay
-                singleton — K callers rendezvous through
-                ``BatchedInferenceServer`` at runtime instead.
+                singleton — K callers share the one subprocess (a
+                ``serialized`` node's calls run one at a time there).
 
         Returns: {"loaded": [...], "already_loaded": [...], "failed": [...], "unknown": [...]}
         """

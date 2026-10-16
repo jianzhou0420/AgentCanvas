@@ -44,7 +44,6 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from app.components import BaseCanvasNode, BaseNodeSet, ConfigField, NodeUIConfig, PortDef
-from app.server.batched_inference import OUTPUTS_KEY, SAMPLES_KEY
 from workspace.nodesets.policy.policy_adapter_vlnce.adapters.canonical import CanonicalNavInfo
 from workspace.nodesets.policy.policy_adapter_vlnce.variants import (
     DEFAULT_KEY,
@@ -568,19 +567,10 @@ class PredictTool(BaseCanvasNode):
         "VlnPolicy.forward — loads the checkpoint (lazy, singleton-cached on "
         "(policy_module, checkpoint_path)) and runs one forward pass. The "
         "predict subprocess hosts a single policy on GPU shared across K "
-        "eval workers via BatchedInferenceServer rendezvous; the K-flush is "
-        "unrolled into a sequential loop because the canonical interface "
-        "produces one model_batch per sample."
+        "eval workers; each call is one model_batch, one forward pass."
     )
     category = "policy"
     icon = "Cpu"
-    # batched=True hits a framework asyncio loop-affinity bug under
-    # worker_count>1 (BatchedInferenceServer._delayed_flush future attached
-    # to wrong event loop, see project_batched_inference_validation memory).
-    # Run sequential per-sample for now — shared GPU policy still serializes
-    # forward passes, so the throughput cost is negligible while env steps
-    # parallelize across workers.
-    batched: ClassVar[bool] = False
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig(color=_POLICY_COLOR)
     input_ports = [
         PortDef("model_batch", "ANY", "Output of policy_adapter_vlnce__adapt_canonical_to_model"),
@@ -595,54 +585,25 @@ class PredictTool(BaseCanvasNode):
     ]
 
     async def forward(self, inputs: dict, ctx: Any) -> dict:
-        # batched=True nodes always receive {SAMPLES_KEY: list}; resolve
-        # this up front so error returns can use the right shape.
-        raw_samples = inputs.get(SAMPLES_KEY)
-        is_batched_call = isinstance(raw_samples, list)
-        samples = raw_samples if is_batched_call else [inputs]
-        n_samples = len(samples)
-        log.info(
-            "PredictTool.execute: is_batched=%s n_samples=%d",
-            is_batched_call,
-            n_samples,
-        )
-
-        def _err_return(msg: str) -> dict:
-            log.error("PredictTool err: %s", msg)
-            self._self_log("error", msg)
-            sample_err = {"model_output": None, "hidden_out": None}
-            if is_batched_call:
-                return {OUTPUTS_KEY: [sample_err for _ in range(n_samples)]}
-            return sample_err
-
         # Stage 2 already loaded model+policy (variant on the chain entry,
         # adapt_canonical_to_model). If predict runs before stage 2 has run,
         # mgr.predict will return an error which we surface — there's no
         # fallback ensure_policy here.
-
-        outputs: list[dict] = []
-        for sample in samples:
-            batch = sample.get("model_batch")
-            if batch is None:
-                self._self_log("error", "model_batch input missing")
-                outputs.append({"model_output": None, "hidden_out": None})
-                continue
-            out = await _run_sync(_get_mgr().predict, batch)
-            if isinstance(out, dict) and "error" in out:
-                self._self_log("error", out["error"])
-                outputs.append({"model_output": None, "hidden_out": None})
-                continue
-            mo = out["model_output"]
-            hidden_out = {
-                "rnn_states": mo["rnn_states_out"],
-                "prev_actions": mo["prev_actions_out"],
-                "not_done_masks": mo["not_done_masks_out"],
-            }
-            outputs.append({"model_output": mo, "hidden_out": hidden_out})
-
-        if is_batched_call:
-            return {OUTPUTS_KEY: outputs}
-        return outputs[0]
+        batch = inputs.get("model_batch")
+        if batch is None:
+            self._self_log("error", "model_batch input missing")
+            return {"model_output": None, "hidden_out": None}
+        out = await _run_sync(_get_mgr().predict, batch)
+        if isinstance(out, dict) and "error" in out:
+            self._self_log("error", out["error"])
+            return {"model_output": None, "hidden_out": None}
+        mo = out["model_output"]
+        hidden_out = {
+            "rnn_states": mo["rnn_states_out"],
+            "prev_actions": mo["prev_actions_out"],
+            "not_done_masks": mo["not_done_masks_out"],
+        }
+        return {"model_output": mo, "hidden_out": hidden_out}
 
 
 class AdaptModelToCanonicalTool(BaseCanvasNode):

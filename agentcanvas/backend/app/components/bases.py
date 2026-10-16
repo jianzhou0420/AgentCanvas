@@ -225,16 +225,16 @@ class BaseCanvasNode(ABC):
     # ── UI (read by GenericBlockRenderer — no .tsx needed) ──
     ui_config: ClassVar[NodeUIConfig] = NodeUIConfig()
 
-    # ── Batched inference (ADR-028 PC-1) ──
-    # Opt-in: when True, the registry replaces this node's in-process handler
-    # with a ``BatchedClient`` keyed by ``(node.id, config_hash)``. K worker
-    # callers rendezvous in ``BatchedInferenceServer``; the underlying
-    # ``forward()`` is invoked once per flush with the per-sample inputs
-    # stacked along ``batch_dim``. Server is pure-functional — any per-call
-    # state (e.g. RNN hidden states) must live on the wire as explicit
-    # input/output ports.
-    batched: ClassVar[bool] = False
-    batch_dim: ClassVar[str] = ""  # name of the input port carrying the batch axis
+    # ── Serialized calls (server mode) ──
+    # Opt-in: when True, the hosting ``AutoServerApp`` fires this node's
+    # calls one at a time under its single inference lock — one device, one
+    # forward in flight — while K eval workers call it concurrently through
+    # a ``parallelism="shared"`` subprocess. Server is pure-functional: any
+    # per-call state (e.g. RNN hidden states) lives on the wire as explicit
+    # input/output ports. (The residue of the batched-inference rendezvous,
+    # ADR-eval-002 rule 6: its one consumer unrolled every batch
+    # sequentially, so the lock was all it provided.)
+    serialized: ClassVar[bool] = False
 
     # After-loop nodes — nodes that run once AFTER the dataflow loop
     # (run-end verdict, or a genuine post-loop reasoning stage) — are not
@@ -570,8 +570,8 @@ class BaseNodeSet(ABC):
     # None = keep the image's USER.
     server_container_user: ClassVar[str | None] = None
     # Parallelism contract (ADR-server-003). At eval worker_count > 1:
-    #   "shared"     → 1 instance, K callers may rendezvous through
-    #                  BatchedInferenceServer (stateless tools).
+    #   "shared"     → 1 instance, K callers call it concurrently
+    #                  (stateless tools; ``serialized`` nodes one at a time).
     #   "replicated" → N independent tagged subprocesses, one per worker
     #                  (stateful — env scene state, simulator handles).
     # Default "shared" keeps non-env nodesets singleton; env nodesets must

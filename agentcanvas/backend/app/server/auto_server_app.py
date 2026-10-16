@@ -19,13 +19,13 @@ Or via the CLI entry point::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
 from typing import Any
 
 from ..components.bases import BaseCanvasNode, BaseNodeSet, ui_config_to_dict
-from .batched_inference import OUTPUTS_KEY, SAMPLES_KEY, BatchedInferenceServer
 from .manifest import PortSchema
 from .server_app import ServerApp, ServerFunction
 
@@ -80,77 +80,50 @@ def _ctx_for_call(base_ctx: Any, containers: dict | None, exec_ctx: dict | None)
 
 def _make_handler(
     tool: BaseCanvasNode,
-    batched_server: BatchedInferenceServer | None = None,
+    inference_lock: Callable[[], asyncio.Lock] | None = None,
     containers: dict | None = None,
 ) -> Callable:
     """Create a server handler closure for a single node instance.
 
-    ADR-028 PC-2.5: when ``type(tool).batched`` is True, the per-call entry
-    point submits to the shared :class:`BatchedInferenceServer` (one per
-    :class:`AutoServerApp`) and awaits its slice. The actual ``tool.forward``
-    is invoked once per flush with all K samples passed under the
-    :data:`SAMPLES_KEY` marker; the node returns K outputs under
-    :data:`OUTPUTS_KEY`. Single-worker behaviour is bit-identical: the
-    queue flushes after ``flush_timeout_ms`` with batch size 1.
+    A ``serialized = True`` node (``BaseCanvasNode.serialized``) fires under
+    the app's one inference lock — ``inference_lock()`` returns it, created
+    inside the running loop on first use — so its calls from K workers run
+    one at a time on the device this subprocess owns. Every other node's
+    calls are concurrent.
     """
     ctx = _ServerContext()
     # Inject the nodeset's owned containers by-reference. ``containers`` is the
     # app's stable dict (possibly empty at closure-creation time, populated
     # later in place), so assign the reference itself — never a fresh copy.
     ctx.containers = containers if containers is not None else {}
-    is_batched = getattr(type(tool), "batched", False)
+    serialized = bool(getattr(type(tool), "serialized", False))
+    if serialized and inference_lock is None:
+        raise RuntimeError(
+            f"{type(tool).__name__}: serialized=True but no inference lock was "
+            f"provided to _make_handler"
+        )
 
-    if not is_batched:
+    async def fire(inputs: dict, config: dict, exec_ctx: dict | None) -> dict:
+        tool.config = config
+        # Cross-nodeset container-access prototype (face B): when the proxy
+        # passed ``_exec`` (granted executor-home container ids + the
+        # execution_id), build a per-call ctx whose ``containers`` overlays
+        # RemoteContainerProxy handles onto the nodeset's own containers.
+        call_ctx = _ctx_for_call(ctx, containers, exec_ctx)
+        return await tool.forward(inputs, call_ctx)
+
+    if not serialized:
 
         async def handler(inputs: dict, config: dict, exec_ctx: dict | None = None) -> dict:
-            tool.config = config
-            # Cross-nodeset container-access prototype (face B): when the proxy
-            # passed ``_exec`` (granted executor-home container ids + the
-            # execution_id), build a per-call ctx whose ``containers`` overlays
-            # RemoteContainerProxy handles onto the nodeset's own containers.
-            call_ctx = _ctx_for_call(ctx, containers, exec_ctx)
-            return await tool.forward(inputs, call_ctx)
+            return await fire(inputs, config, exec_ctx)
 
         return handler
 
-    if batched_server is None:
-        raise RuntimeError(
-            f"{type(tool).__name__}: batched=True but no BatchedInferenceServer "
-            f"was provided to _make_handler"
-        )
+    async def serialized_handler(inputs: dict, config: dict, exec_ctx: dict | None = None) -> dict:
+        async with inference_lock():
+            return await fire(inputs, config, exec_ctx)
 
-    function_name = getattr(tool, "node_type", "")
-
-    async def underlying(samples: list[dict], config: dict) -> list[dict]:
-        # One flush. The node receives all K samples under SAMPLES_KEY and
-        # is responsible for stacking, calling its model, and splitting.
-        tool.config = config
-        result = await tool.forward({SAMPLES_KEY: samples}, ctx)
-        outputs = result.get(OUTPUTS_KEY) if isinstance(result, dict) else None
-        if not isinstance(outputs, list):
-            raise ValueError(
-                f"Batched node {type(tool).__name__} must return "
-                f"{{{OUTPUTS_KEY!r}: [outputs_dict, ...]}} matching the "
-                f"input batch length; got {type(outputs).__name__}"
-            )
-        return outputs
-
-    batched_server.register(function_name, underlying)
-
-    async def handler(inputs: dict, config: dict, exec_ctx: dict | None = None) -> dict:
-        # Remote home-container grants are NOT wired through the batched
-        # rendezvous (remote containers are supported on non-batched nodes
-        # only). Fail loudly rather than silently ignore the grant — otherwise
-        # the node would just see no container under that id.
-        if exec_ctx and exec_ctx.get("grants"):
-            raise RuntimeError(
-                f"batched node {function_name!r} received cross-process container "
-                f"grants {exec_ctx.get('grants')}, which are not supported on "
-                f"batched nodes — make the node non-batched or drop the grant."
-            )
-        return await batched_server.submit(function_name, inputs, config)
-
-    return handler
+    return serialized_handler
 
 
 def _portdefs_to_schemas(portdefs: list) -> list[PortSchema]:
@@ -190,10 +163,12 @@ class AutoServerApp(ServerApp):
             self.mcp_exclusive = getattr(nodeset_cls, "parallelism", "shared") == "replicated"
         else:
             self.mcp_exclusive = bool(declared)
-        # ADR-028 PC-2.5: shared rendezvous tier for batched nodes hosted in
-        # this subprocess. Lazily registered handlers (one per batched node
-        # type) inside ``_make_handler``; queues materialise on first call.
-        self._batched_server = BatchedInferenceServer()
+        # The one inference lock for ``serialized = True`` nodes hosted in
+        # this subprocess (one device, one forward in flight). Created lazily
+        # inside the server's running loop — see ``_get_inference_lock``;
+        # the Python 3.8 envs that host some nodesets bind a Lock to the
+        # loop current at construction time.
+        self._inference_lock: asyncio.Lock | None = None
         # Nodeset-level state containers (owned by this nodeset, living in this
         # subprocess; shared by-reference by the nodeset's own nodes). Built
         # once into this stable dict — handler closures in ``get_functions``
@@ -239,8 +214,12 @@ class AutoServerApp(ServerApp):
         self._ensure_containers()
         log.info("AutoServerApp: initialized nodeset %s", self.name)
 
+    def _get_inference_lock(self) -> asyncio.Lock:
+        if self._inference_lock is None:
+            self._inference_lock = asyncio.Lock()
+        return self._inference_lock
+
     async def on_shutdown(self) -> None:
-        await self._batched_server.shutdown()
         if self._nodeset is not None:
             await self._nodeset.shutdown()
         self._containers.clear()
@@ -341,7 +320,7 @@ class AutoServerApp(ServerApp):
                     output_ports=_portdefs_to_schemas(output_ports),
                     config_schema=config_schema,
                     ui_config=ui_config,
-                    handler=_make_handler(tool, self._batched_server, self._containers),
+                    handler=_make_handler(tool, self._get_inference_lock, self._containers),
                 )
             )
 
