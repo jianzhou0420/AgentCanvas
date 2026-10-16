@@ -60,10 +60,38 @@ def test_parallelism_reads_class_then_falls_back_to_env_prefix(tmp_path: Path) -
     reg._discovered_nodesets["model_rep"] = _Rep()  # type: ignore[assignment]
     assert reg.parallelism("env_declared_shared") == "shared"  # class wins
     assert reg.parallelism("model_rep") == "replicated"
-    # import-failed on this env: env_ prefix and the known set are replicated
-    assert reg.parallelism("env_never_imported") == "replicated"
-    assert reg.parallelism("env_habitat") == "replicated"
+    # Not discovered and not declared anywhere: the base-class default, no
+    # name table and no prefix guess in the framework.
+    assert reg.parallelism("env_never_imported") == "shared"
     assert reg.parallelism("model_never_imported") == "shared"
+
+
+def test_parallelism_of_an_unimportable_nodeset_comes_from_its_source(tmp_path: Path) -> None:
+    """A nodeset whose module cannot import here (its simulator is missing)
+    still declares its contract in the file; the scan reads it off the AST."""
+    ws = tmp_path / "workspace"
+    env_dir = ws / "nodesets" / "env"
+    env_dir.mkdir(parents=True)
+    (env_dir / "env_sim_only.py").write_text(
+        "from app.components import BaseNodeSet\n"
+        "import simulator_that_is_not_installed  # noqa: F401\n\n\n"
+        "class SimOnlyNodeSet(BaseNodeSet):\n"
+        '    name = "env_sim_only"\n'
+        '    parallelism = "replicated"\n\n'
+        "    def get_tools(self):\n"
+        "        return []\n"
+    )
+    (env_dir / "env_quiet.py").write_text(
+        "import also_missing  # noqa: F401\n\n\n"
+        "class QuietNodeSet(BaseNodeSet):\n"
+        '    name = "env_quiet"\n\n'
+        "    def get_tools(self):\n"
+        "        return []\n"
+    )
+    reg = WorkspaceComponentRegistry(scan_dir=ws)
+    reg.scan_all()
+    assert reg.parallelism("env_sim_only") == "replicated"
+    assert reg.parallelism("env_quiet") == "shared"  # declared, default contract
 
 
 def test_nodeset_instance_prefers_live(tmp_path: Path) -> None:
@@ -101,7 +129,7 @@ def test_nodeset_facts_reads_class_state_and_hashes_source(tmp_path: Path) -> No
     reg._auto_servers["thing#0"] = _Srv("u")
     f2 = reg.nodeset_facts("thing")
     assert (f2.loaded, f2.hosted, f2.loaded_local) == (True, True, False)
-    # unknown nodeset: fallback parallelism, nothing else
+    # unknown nodeset: the default contract, nothing else
     g = reg.nodeset_facts("env_ghost")
-    assert (g.parallelism, g.loaded, g.source_hash) == ("replicated", False, None)
+    assert (g.parallelism, g.loaded, g.source_hash) == ("shared", False, None)
     assert reg.frozen_dir == tmp_path / "workspace"

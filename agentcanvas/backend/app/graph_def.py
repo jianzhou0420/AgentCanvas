@@ -998,3 +998,68 @@ def validate_graph_connectivity(graph: GraphDefinition, type_resolver=None) -> N
 
     if errors:
         raise ValueError("Graph connectivity validation failed:\n  - " + "\n  - ".join(errors))
+
+
+# ── Semantic comparison ──
+
+
+def _execution_config(node_type: str, cfg: dict | None) -> dict:
+    cfg = dict(cfg or {})
+    cfg.pop("_expanded", None)  # UI-only fold state
+    if node_type == "iterIn":
+        cfg.pop("ports", None)  # synthesised from initPorts + paired iterOut
+    return cfg
+
+
+def graph_signature(gd: dict) -> dict:
+    """The semantic projection of a graph dict (``GraphDefinition.to_dict``
+    or raw graph JSON): everything that affects execution, nothing UI —
+    nodes by id (type + execution config), edges as sorted 4-tuples,
+    containers, grants, step budget, eval flag. Two graphs with equal
+    signatures run the same."""
+    return {
+        "nodes": {
+            nd["id"]: {
+                "type": nd["type"],
+                "config": _execution_config(nd["type"], nd.get("config", {})),
+            }
+            for nd in gd["nodes"]
+        },
+        "edges": sorted(
+            (e["source"], e.get("sourceHandle", ""), e["target"], e.get("targetHandle", ""))
+            for e in gd["edges"]
+        ),
+        "containers": {c["id"]: c.get("states", {}) for c in gd.get("containers", [])},
+        "grants": sorted((a["node_id"], a["container_id"]) for a in gd.get("access_grants", [])),
+        "step_budget": gd.get("step_budget"),
+        "eval_graph": gd.get("eval_graph"),
+    }
+
+
+def graph_diff(built: dict, orig: dict) -> list[str]:
+    """Human-readable differences between two :func:`graph_signature`
+    projections (``built`` vs ``orig``); empty when they are equal."""
+    out: list[str] = []
+    bn, on = built["nodes"], orig["nodes"]
+    for nid in sorted(set(bn) | set(on)):
+        if nid not in bn:
+            out.append(f"node MISSING in code: {nid}")
+        elif nid not in on:
+            out.append(f"node EXTRA in code: {nid}")
+        elif bn[nid] != on[nid]:
+            if bn[nid]["type"] != on[nid]["type"]:
+                out.append(f"node {nid}: type {bn[nid]['type']} != {on[nid]['type']}")
+            else:
+                bc, oc = bn[nid]["config"], on[nid]["config"]
+                for k in sorted(set(bc) | set(oc)):
+                    if bc.get(k) != oc.get(k):
+                        out.append(f"node {nid}.config[{k!r}] differs")
+    be, oe = set(map(tuple, built["edges"])), set(map(tuple, orig["edges"]))
+    for e in sorted(oe - be):
+        out.append(f"edge MISSING in code: {e}")
+    for e in sorted(be - oe):
+        out.append(f"edge EXTRA in code: {e}")
+    for key in ("containers", "grants", "step_budget", "eval_graph"):
+        if built[key] != orig[key]:
+            out.append(f"{key} differs")
+    return out

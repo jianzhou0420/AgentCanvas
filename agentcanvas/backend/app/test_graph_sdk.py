@@ -140,9 +140,9 @@ def test_to_code_of_demo_is_valid_python():
 
 
 def _verified_mapgpt_path():
-    from .mapgpt_mp3d_sdk import VERIFIED_JSON
+    from .config import _REPO_ROOT
 
-    return VERIFIED_JSON
+    return _REPO_ROOT / "workspace" / "graphs" / "vln" / "verified" / "mapgpt_mp3d.json"
 
 
 @pytest.mark.skipif(
@@ -150,8 +150,8 @@ def _verified_mapgpt_path():
     reason="verified MapGPT-MP3D graph JSON not present",
 )
 def test_codegen_round_trip_mapgpt():
+    from .graph_def import graph_diff, graph_signature
     from .graph_sdk_codegen import graph_to_code
-    from .mapgpt_mp3d_sdk import _diff, signature
 
     gd = GraphDefinition.from_dict(json.loads(_verified_mapgpt_path().read_text()))
     src = graph_to_code(gd)
@@ -161,7 +161,7 @@ def test_codegen_round_trip_mapgpt():
     exec(src, ns)
     built = ns["build"]().to_dict()
 
-    diffs = _diff(signature(built), signature(gd.to_dict()))
+    diffs = graph_diff(graph_signature(built), graph_signature(gd.to_dict()))
     assert not diffs, f"codegen round-trip mismatch: {diffs}"
 
 

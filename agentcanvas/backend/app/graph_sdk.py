@@ -1157,8 +1157,8 @@ class Graph:
         self,
         *,
         episodes: int = 1,
-        dataset: str = "R2R",
-        split: str = "val_unseen",
+        dataset: str | None = None,
+        split: str | None = None,
         start_index: int = 0,
         episode_indices: list[int] | None = None,
         env_nodeset: str | None = None,
@@ -1178,8 +1178,10 @@ class Graph:
         episodes — but in-process, with no FastAPI / scheduler.  Auto-loads the
         graph's nodesets first (env panel + server); tears them down after.
 
-        ``episodes`` runs ``start_index .. start_index+episodes-1`` of
-        ``dataset``/``split`` (or the explicit ``episode_indices`` list).
+        ``episodes`` runs ``start_index .. start_index+episodes-1`` (or the
+        explicit ``episode_indices`` list). ``dataset`` / ``split`` are pushed
+        to the env panel only when given — the SDK has no defaults of its
+        own; an env nodeset declares what it evaluates by default.
         Returns an :class:`EvalResult` (``.metrics`` aggregate, ``.episodes``
         per-episode, ``.by_task``).
 
@@ -1207,9 +1209,11 @@ class Graph:
                 cfg = EvalConfig(
                     graph_name=self._def.name or "Graph SDK",
                     env_nodeset=env_nodeset or await detect_env_nodeset(reg, self._def),
-                    selectors={"dataset": dataset, "split": split},
-                    dataset=dataset,
-                    split=split,
+                    selectors={
+                        k: v for k, v in (("dataset", dataset), ("split", split)) if v
+                    },
+                    dataset=dataset or "",
+                    **({"split": split} if split else {}),
                     episode_count=n,
                     start_episode_index=start_index,
                     episode_indices=episode_indices,

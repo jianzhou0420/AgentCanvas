@@ -41,7 +41,6 @@ from ..components.bases import FireList
 from ..config import strict_errors_enabled
 from ..errors import get_bus
 from ..graph_def import GraphDefinition
-from ..standard.actions import ACTION_NAMES
 from ..standard.telemetry import _current_node_transport, _current_node_usage, new_usage_bucket
 from ..standard.wire_types import is_list_type
 from ..state import broadcast
@@ -1852,7 +1851,12 @@ class GraphExecutor:
         """
         import numpy as np
 
-        from ..standard.wire_types import depth_to_base64, image_to_base64
+        from ..standard.wire_types import (
+            DISCRETE_ACTION,
+            depth_to_base64,
+            image_to_base64,
+            serialize_for_display,
+        )
 
         # Gather (portName → last value) from every graphOut sink.
         merged: dict[str, Any] = {}
@@ -1897,16 +1901,12 @@ class GraphExecutor:
         elif isinstance(depth, str) and len(depth) > 100:
             broadcast_data["depth_base64"] = depth
 
-        # Action (integer for VLN-CE, string viewpoint ID for MP3D)
+        # Action — rendered by the DISCRETE_ACTION wire type's display rule
+        # (an int gets the standard action name, anything else is shown as
+        # is); the engine itself carries no action vocabulary.
         action = merged.get("action")
         if action is not None:
-            try:
-                action_int = int(action)
-                broadcast_data["action"] = action_int
-                broadcast_data["action_name"] = ACTION_NAMES.get(action_int, "")
-            except (ValueError, TypeError):
-                broadcast_data["action"] = action
-                broadcast_data["action_name"] = str(action)
+            broadcast_data.update(serialize_for_display(DISCRETE_ACTION, action))
 
         # State (pose dict with position/orientation) — accepted under
         # portName ``state`` or ``pose``.

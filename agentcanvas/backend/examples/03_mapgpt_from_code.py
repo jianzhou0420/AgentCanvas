@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import json
 
-from app.graph_def import GraphDefinition
-from app.mapgpt_mp3d_sdk import VERIFIED_JSON, _diff, build, signature
+from mapgpt_mp3d_sdk import VERIFIED_JSON, build
+
+from app.graph_def import GraphDefinition, graph_diff, graph_signature
 
 if __name__ == "__main__":
     g = build()
@@ -21,7 +22,7 @@ if __name__ == "__main__":
     orig = GraphDefinition.from_dict(json.loads(VERIFIED_JSON.read_text())).to_dict()
 
     print(f"code-built: {len(built['nodes'])} nodes, {len(built['edges'])} edges")
-    diffs = _diff(signature(built), signature(orig))
+    diffs = graph_diff(graph_signature(built), graph_signature(orig))
     if diffs:
         print("MISMATCH:", *diffs, sep="\n  - ")
         raise SystemExit(1)

@@ -12,7 +12,7 @@ PYTHONPATH=. python examples/01_pure_python.py       # or, after `pip install -e
 |---|------|-------|---------------|
 | 01 | `01_pure_python.py` | — | Build 3 tiny nodes, run `(7+5)*3=36` in-process. The "hello world". |
 | 02 | `02_authoring_sugar.py` | — | `g.loop()` / `g.hook()` / `g.composite()` sugar; serialise to canvas JSON. |
-| 03 | `03_mapgpt_from_code.py` | verified JSON | Rebuild the real MapGPT-MP3D graph in code; assert it matches the verified JSON. |
+| 03 | `03_mapgpt_from_code.py` | verified JSON | Rebuild the real MapGPT-MP3D graph in code (`mapgpt_mp3d_sdk.py` is the builder); assert it matches the verified JSON. |
 | 04 | `04_run_one_episode.py` | **env + GPU + LLM** | Run **one** MapGPT-MP3D episode in-process via `g.run(load_nodesets=True)`. |
 | 05 | `05_batch_eval.py` | **env + GPU + LLM** | Batch-eval N episodes via `g.eval(...)`; print aggregate SR/SPL. |
 | 06 | `06_reverse_codegen.py` | verified JSON | Compile a graph JSON back into a builder script (`g.to_code()`); round-trip. |

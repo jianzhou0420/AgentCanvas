@@ -33,7 +33,7 @@ import argparse
 import json
 from pathlib import Path
 
-from app.graph_def import GraphDefinition
+from app.graph_def import GraphDefinition, graph_diff, graph_signature
 from app.graph_sdk import Graph
 
 VERIFIED_JSON = (
@@ -209,62 +209,6 @@ def build() -> Graph:
     return g
 
 
-# ── faithfulness check ────────────────────────────────────────────────────
-
-
-def _clean_config(node_type: str, cfg: dict) -> dict:
-    cfg = dict(cfg or {})
-    cfg.pop("_expanded", None)  # UI-only fold state
-    if node_type == "iterIn":
-        cfg.pop("ports", None)  # synthesised from initPorts + paired iterOut
-    return cfg
-
-
-def signature(gd: dict) -> dict:
-    """Semantic projection: everything that affects execution, nothing UI."""
-    return {
-        "nodes": {
-            nd["id"]: {"type": nd["type"], "config": _clean_config(nd["type"], nd.get("config", {}))}
-            for nd in gd["nodes"]
-        },
-        "edges": sorted(
-            (e["source"], e.get("sourceHandle", ""), e["target"], e.get("targetHandle", ""))
-            for e in gd["edges"]
-        ),
-        "containers": {c["id"]: c.get("states", {}) for c in gd.get("containers", [])},
-        "grants": sorted((a["node_id"], a["container_id"]) for a in gd.get("access_grants", [])),
-        "step_budget": gd.get("step_budget"),
-        "eval_graph": gd.get("eval_graph"),
-    }
-
-
-def _diff(built: dict, orig: dict) -> list[str]:
-    out: list[str] = []
-    bn, on = built["nodes"], orig["nodes"]
-    for nid in sorted(set(bn) | set(on)):
-        if nid not in bn:
-            out.append(f"node MISSING in code: {nid}")
-        elif nid not in on:
-            out.append(f"node EXTRA in code: {nid}")
-        elif bn[nid] != on[nid]:
-            if bn[nid]["type"] != on[nid]["type"]:
-                out.append(f"node {nid}: type {bn[nid]['type']} != {on[nid]['type']}")
-            else:
-                bc, oc = bn[nid]["config"], on[nid]["config"]
-                for k in sorted(set(bc) | set(oc)):
-                    if bc.get(k) != oc.get(k):
-                        out.append(f"node {nid}.config[{k!r}] differs")
-    be, oe = set(map(tuple, built["edges"])), set(map(tuple, orig["edges"]))
-    for e in sorted(oe - be):
-        out.append(f"edge MISSING in code: {e}")
-    for e in sorted(be - oe):
-        out.append(f"edge EXTRA in code: {e}")
-    for key in ("containers", "grants", "step_budget", "eval_graph"):
-        if built[key] != orig[key]:
-            out.append(f"{key} differs")
-    return out
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--save", metavar="PATH", nargs="?", const="__default__",
@@ -280,7 +224,7 @@ def main() -> None:
 
     print(f"code-built: {len(built['nodes'])} nodes, {len(built['edges'])} edges")
     print(f"verified:   {len(orig['nodes'])} nodes, {len(orig['edges'])} edges")
-    diffs = _diff(signature(built), signature(orig))
+    diffs = graph_diff(graph_signature(built), graph_signature(orig))
     if diffs:
         print(f"\nMISMATCH ({len(diffs)}):")
         for d in diffs:

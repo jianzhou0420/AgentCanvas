@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import logging
@@ -28,9 +29,47 @@ log = logging.getLogger("agentcanvas.components")
 
 SOURCE_TAG = "workspace"
 
-# Nodesets known to be replicated even when they cannot be imported here
-# (see ``WorkspaceComponentRegistry.parallelism``).
-_KNOWN_REPLICATED = frozenset({"env_habitat", "env_mp3d", "env_hmeqa"})
+
+def _base_name(expr: Any) -> str:
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        return expr.attr
+    return ""
+
+
+def declared_nodeset_facts(source: Path) -> dict[str, str]:
+    """``{nodeset name: parallelism}`` for every ``BaseNodeSet`` subclass a
+    source file declares — read from the AST, without importing it. This
+    is how a nodeset that cannot import on this Python env (its simulator
+    is missing here) still answers the parallelism contract: the
+    declaration is in the file, not in a table in the framework."""
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return {}
+    out: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not any("NodeSet" in _base_name(b) for b in node.bases):
+            continue
+        attrs: dict[str, str] = {}
+        for stmt in node.body:
+            if isinstance(stmt, ast.Assign):
+                targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+                value = stmt.value
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                targets, value = [stmt.target.id], stmt.value
+            else:
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                for t in targets:
+                    attrs[t] = value.value
+        name = attrs.get("name")
+        if name:
+            out[name] = attrs.get("parallelism", "shared")
+    return out
 
 
 class _RemoteAutoServerShim:
@@ -98,6 +137,9 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._discovered_tool_names: dict[
             str, list[str]
         ] = {}  # name → node_types (from get_tools at discovery)
+        # Declarations read off the source of nodesets that failed to import here
+        # (name → parallelism); see ``declared_nodeset_facts``.
+        self._declared_parallelism: dict[str, str] = {}
         # Live instances for lifecycle management
         self._live_nodesets: dict[str, BaseNodeSet] = {}  # name → instance (loaded)
         # Track which node names each component registered
@@ -188,6 +230,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._policies.clear()
         self._discovered_nodesets.clear()
         self._discovered_tool_names.clear()
+        self._declared_parallelism.clear()
         self._live_nodesets.clear()
         self._nodeset_node_names.clear()
         # Stop managed servers before clearing
@@ -936,27 +979,13 @@ class WorkspaceComponentRegistry(RegistryFacts):
         return list(candidate_nodesets)
 
     async def get_eval_metadata_for_nodeset(self, name: str) -> dict:
-        """Get eval metadata for a nodeset. Returns empty dict if not an env.
-
-        Falls back to static metadata for known env nodesets that couldn't
-        be imported during scan (e.g. env_habitat on agentcanvas env).
-        """
+        """Get eval metadata for a nodeset. Empty when it is not an env, or
+        when it is not discovered here (metadata is computed by the nodeset
+        at runtime; the framework keeps no table of it)."""
         ns = self._live_nodesets.get(name) or self._discovered_nodesets.get(name)
         if ns is not None:
             return await ns.get_eval_metadata()
-
-        # Static fallback for known env nodesets that failed to import
-        _KNOWN_ENV_METADATA: dict[str, dict] = {
-            "env_habitat": {
-                "env_name": "habitat_vlnce",
-                "splits": ["val_unseen", "val_seen", "train"],
-                "episode_counts": {},
-                "metrics": ["spl", "success", "ndtw", "sdtw", "path_length", "distance_to_goal"],
-                "supports_set_episode": False,
-                "step_budget": 500,
-            },
-        }
-        return _KNOWN_ENV_METADATA.get(name, {})
+        return {}
 
     def is_nodeset_loaded(self, name: str) -> bool:
         """Check if a nodeset is currently loaded (local, single-instance
@@ -967,11 +996,11 @@ class WorkspaceComponentRegistry(RegistryFacts):
         """``"replicated"`` or ``"shared"`` for a nodeset by name (ADR-server-003).
 
         Reads ``BaseNodeSet.parallelism`` on the discovered class. A nodeset
-        that failed to import on this Python env (e.g. ``env_habitat`` on
-        the ``agentcanvas`` env without habitat-sim) still needs the right
-        answer so eval fan-out works: every ``env_*`` nodeset in the
-        workspace is replicated (stateful simulators), so the ``env_``
-        prefix is the fallback, plus the historical known set.
+        that failed to import on this Python env (its simulator is missing
+        here) answers from the declaration the scan read off its source
+        (``declared_nodeset_facts``), so eval fan-out still works. A name
+        the workspace does not declare at all gets the base-class default,
+        with a warning — the framework keeps no table of nodeset names.
         """
         return self._get_parallelism(ns_name)
 
@@ -979,8 +1008,14 @@ class WorkspaceComponentRegistry(RegistryFacts):
         ns = self._live_nodesets.get(ns_name) or self._discovered_nodesets.get(ns_name)
         if ns is not None:
             return getattr(type(ns), "parallelism", "shared")
-        if ns_name.startswith("env_") or ns_name in _KNOWN_REPLICATED:
-            return "replicated"
+        declared = self._declared_parallelism.get(ns_name)
+        if declared is not None:
+            return declared
+        log.warning(
+            "parallelism(%r): nodeset not discovered and not declared in the workspace; "
+            "assuming the default 'shared'",
+            ns_name,
+        )
         return "shared"
 
     def _check_container_ownership(
@@ -1402,6 +1437,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
                 lambda pf=py_file: self._import_module(subdir, pf),
                 base_cls,
                 instances,
+                source=py_file,
             )
 
         # 2. Scan subdirectories — packages (__init__.py) or buckets
@@ -1416,6 +1452,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
                     lambda c=child: self._import_package(subdir, c),
                     base_cls,
                     instances,
+                    source=child / "__init__.py",
                 )
             else:
                 # Bucket mode — scan nested .py files as standalone modules,
@@ -1432,6 +1469,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
                         lambda pf=py_file, nsd=nested: self._import_module(nsd, pf),
                         base_cls,
                         instances,
+                        source=py_file,
                     )
                 for pkg_dir in sorted(child.iterdir()):
                     if not pkg_dir.is_dir() or pkg_dir.name.startswith("_"):
@@ -1444,14 +1482,25 @@ class WorkspaceComponentRegistry(RegistryFacts):
                         lambda p=pkg_dir, nsd=nested: self._import_package(nsd, p),
                         base_cls,
                         instances,
+                        source=pkg_dir / "__init__.py",
                     )
 
         return instances
 
     def _load_from(
-        self, subdir: str, label: str, importer, base_cls: type, instances: list
+        self,
+        subdir: str,
+        label: str,
+        importer,
+        base_cls: type,
+        instances: list,
+        source: Path | None = None,
     ) -> None:
-        """Import a module/package and collect base_cls subclass instances."""
+        """Import a module/package and collect base_cls subclass instances.
+
+        When the import fails (the module needs a simulator this Python env
+        lacks), the nodeset declarations are still read off ``source``
+        without importing — see ``declared_nodeset_facts``."""
         try:
             mod = importer()
             if mod is None:
@@ -1475,6 +1524,8 @@ class WorkspaceComponentRegistry(RegistryFacts):
                 )
         except Exception:
             log.exception("Failed to load component from %s/%s", subdir, label)
+            if source is not None:
+                self._declared_parallelism.update(declared_nodeset_facts(source))
 
     # ── Helper: register env panel (BaseEnvPanel) instance for a nodeset ──
 
