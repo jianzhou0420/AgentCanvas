@@ -442,9 +442,7 @@ class BatchEvalRunner:
         if not episode_id:
             return
         try:
-            import httpx
-
-            from ..server._loopback_proxy import loopback_httpx_kwargs
+            from ..server.client import AutoHostClient
             from ..state import get_services
 
             registry = get_services().workspace_component_registry
@@ -458,16 +456,10 @@ class BatchEvalRunner:
                 url = None
             if url:
                 urls.append(url)
-        if not urls:
-            return
-        try:
-            async with httpx.AsyncClient(timeout=5.0, **loopback_httpx_kwargs()) as client:
-                for url in urls:
-                    # route absent / nodeset local → ignore
-                    with contextlib.suppress(Exception):
-                        await client.post(f"{url}/containers/evict", json={"key": episode_id})
-        except Exception:
-            pass
+        for url in urls:
+            # route absent / nodeset local → ignore
+            with contextlib.suppress(Exception):
+                await AutoHostClient(url, timeout=5.0).evict(episode_id)
 
     async def _run_one_episode(
         self,

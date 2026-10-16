@@ -25,7 +25,7 @@ from ..errors import get_bus
 from ..graph_def import GraphDefinition
 from ..standard.actions import ACTION_NAMES
 from ..standard.node_io import get_required_inputs
-from ..standard.telemetry import _current_node_transport, _current_node_usage
+from ..standard.telemetry import _current_node_transport, _current_node_usage, new_usage_bucket
 from ..standard.wire_types import is_list_type
 from ..state import broadcast
 
@@ -1275,15 +1275,7 @@ class GraphExecutor:
         # for ALL node firings (cheap), so any future node that calls
         # the LLM helpers automatically gets accounting without code
         # changes.
-        usage_bucket: dict = {
-            "calls": 0,
-            "model": "",
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "cached_tokens": 0,
-            "usd_cost": 0.0,
-        }
+        usage_bucket: dict = new_usage_bucket()
         transport_bucket: dict = {
             "calls": 0,
             "rtt_ms": 0.0,

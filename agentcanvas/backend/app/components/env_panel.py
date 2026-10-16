@@ -191,37 +191,22 @@ class RemoteEnvPanelProxy(BaseEnvPanel):
             "nodeset_name": self.name,
         }
 
-    async def _get(self, path: str) -> Any:
-        import httpx
+    def _client(self) -> Any:
+        from ..server.client import AutoHostClient
 
-        from ..server._loopback_proxy import loopback_httpx_kwargs
-
-        async with httpx.AsyncClient(timeout=60.0, **loopback_httpx_kwargs()) as client:
-            r = await client.get(self._server_url + path)
-            r.raise_for_status()
-            return r.json()
-
-    async def _post(self, path: str, body: dict) -> Any:
-        import httpx
-
-        from ..server._loopback_proxy import loopback_httpx_kwargs
-
-        async with httpx.AsyncClient(timeout=60.0, **loopback_httpx_kwargs()) as client:
-            r = await client.post(self._server_url + path, json=body)
-            r.raise_for_status()
-            return r.json()
+        return AutoHostClient(self._server_url, timeout=60.0)
 
     async def on_load(self) -> dict[str, Any]:
-        return await self._get("/env-panel/state")
+        return await self._client().panel_state()
 
     async def on_field_change(self, name: str, value: Any) -> dict[str, Any]:
-        return await self._post(f"/env-panel/field/{name}", {"value": value})
+        return await self._client().panel_field(name, value)
 
     async def on_action(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
-        return await self._post(f"/env-panel/action/{name}", {"params": params})
+        return await self._client().panel_action(name, params)
 
     async def get_options(self, field: str) -> list[dict[str, Any]]:
-        return await self._get(f"/env-panel/options/{field}")
+        return await self._client().panel_options(field)
 
 
 # ── Registry ──

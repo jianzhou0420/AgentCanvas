@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 
-import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -22,8 +21,9 @@ router = APIRouter()
 # Errors the interactive endpoints turn into a clean 409 (recoverable — the UI
 # shows the message and the user retries / restarts the session) rather than an
 # opaque 500: bad state / bad input (RuntimeError, ValueError) and a dropped or
-# failed call to the env auto_host (requests.RequestException).
-_HANDLED = (RuntimeError, ValueError, requests.exceptions.RequestException)
+# failed call to the env auto_host (AutoHostClient's CallError /
+# ServerUnreachable, both RuntimeError subclasses).
+_HANDLED = (RuntimeError, ValueError)
 
 
 class StartServerRequest(BaseModel):

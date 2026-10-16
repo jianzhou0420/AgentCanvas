@@ -8,8 +8,8 @@ Four classes serve different roles:
   any BaseNodeSet by introspecting node ports (ADR-009).
 - :class:`BaseServer` — framework-side: launches, monitors, and communicates
   with an external server process.
-- :class:`ServerNodeSet` — combines BaseNodeSet + BaseServer: a loadable
-  group of canvas-node tools backed by an external server.
+- :class:`AutoHostClient` — framework-side: the one client of a hosted
+  nodeset (``/call``, env panel, health, containers).
 
 All re-exports are lazy (PEP 562): importing a submodule such as
 ``app.server.serialization`` must not drag FastAPI in — a pip-installed
@@ -24,11 +24,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .auto_server_app import AutoServerApp
     from .base_server import BaseServer
+    from .client import AutoHostClient
     from .manifest import FunctionSchema, PortSchema, ServerManifest
-    from .nodeset import ServerNodeSet
     from .server_app import ServerApp, ServerFunction
 
 __all__ = [
+    "AutoHostClient",
     "AutoServerApp",
     "BaseServer",
     "FunctionSchema",
@@ -36,10 +37,10 @@ __all__ = [
     "ServerApp",
     "ServerFunction",
     "ServerManifest",
-    "ServerNodeSet",
 ]
 
 _EXPORTS = {
+    "AutoHostClient": ".client",
     "AutoServerApp": ".auto_server_app",
     "BaseServer": ".base_server",
     "FunctionSchema": ".manifest",
@@ -47,7 +48,6 @@ _EXPORTS = {
     "ServerApp": ".server_app",
     "ServerFunction": ".server_app",
     "ServerManifest": ".manifest",
-    "ServerNodeSet": ".nodeset",
 }
 
 

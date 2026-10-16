@@ -10,9 +10,10 @@ can consume with zero per-tool hand-coding.
 The schema synthesis (wire_type → JSON type, ``optional`` → ``required``,
 config_fields → properties) is lifted from the verified 2026-07-20 generic
 bridge spike (``coding-agent/bridges/nodeset_mcp.py``, deleted at 68a2f0b).
-Unlike the spike this is in-process: ``call_tool`` invokes the registered
-handler directly — same arity contract and same JSON-regime serialization
-as the ``/call`` route, no HTTP self-call.
+Unlike the spike this is in-process: ``call_tool`` is an adapter over the
+same server-side ``invoke`` the ``/call`` route uses (JSON regime), so the
+two faces cannot drift — no HTTP self-call, no second decode → fire →
+encode.
 
 This module imports the ``mcp`` SDK (py3.10+) at top level. On the pinned
 py3.8 server hosts (ac-vlnce) the import fails; ``server_app`` guards the
@@ -28,7 +29,6 @@ the /mcp face is absent.
 
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 from typing import Any, Awaitable, Callable
@@ -37,8 +37,7 @@ import mcp.types as types
 from mcp.server.lowlevel import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-from . import event_push
-from .serialization import deserialize_value, serialize_value
+from .invoke import InvokeError, NoHandler, UnknownFunction, invoke
 
 log = logging.getLogger(__name__)
 
@@ -226,12 +225,6 @@ def select_functions(manifest: dict, allowlist: Any) -> list:
             if f.get("name") in wanted or f.get("name", "").split("__")[-1] in wanted]
 
 
-def _structured_error(exc: Exception) -> dict:
-    """A handler failure → a structured dict the model can read, instead of
-    an opaque isError traceback."""
-    return {"error": str(exc), "type": type(exc).__name__}
-
-
 # ── wiring: ServerApp → MCP Server → ASGI ──
 
 
@@ -259,53 +252,25 @@ def build_mcp_server(server_app: Any, allowlist: Any = None) -> Server:
         if fn is None:  # unreachable — MCP only dispatches registered tools
             return [types.TextContent(type="text",
                                       text=json.dumps({"error": f"unknown tool {name}"}))]
-        sf = server_app._functions.get(name)
-        if sf is None or sf.handler is None:
+        raw_inputs, config = split_args(fn, arguments or {})
+        try:
+            inv = await invoke(server_app, name, raw_inputs, config, None, json_regime=True)
+        except (UnknownFunction, NoHandler):
             return [types.TextContent(type="text",
                                       text=json.dumps({"error": f"no handler for {name}"}))]
-
-        raw_inputs, config = split_args(fn, arguments or {})
-        port_map = server_app._port_maps[name]
-        inputs: dict = {}
-        for port_name, wire_type in port_map["inputs"].items():
-            if port_name in raw_inputs:
-                inputs[port_name] = deserialize_value(raw_inputs[port_name], wire_type)
-
-        # Same arity contract as /call: 3-arg (auto-generated) handlers take
-        # an exec_ctx — always None here, MCP calls carry no container grants.
-        try:
-            nparams = len(inspect.signature(sf.handler).parameters)
-        except (ValueError, TypeError):
-            nparams = 2
-
-        try:
-            if nparams >= 3:
-                result = await sf.handler(inputs, config, None)
-            else:
-                result = await sf.handler(inputs, config)
-        except Exception as e:
+        except InvokeError as e:
+            # A structured dict the model can read, not an opaque isError traceback.
             log.exception("MCP call_tool %s failed", name)
             return [types.TextContent(type="text",
-                                      text=json.dumps(_structured_error(e)))]
-        finally:
-            # Same call-granularity event drain as /call, so server-node logs
-            # buffered during the call still reach the executor bridge.
-            event_push.flush()
+                                      text=json.dumps({"error": str(e), "type": e.error_type}))]
 
         # Dynamic Fire-List handover is a graph-engine protocol — it has no
         # meaning for an MCP client, which cannot dispatch child fires.
-        from ..components.bases import FireList as _FireList
-
-        if isinstance(result, _FireList):
+        if inv.firelist is not None:
             return [types.TextContent(type="text", text=json.dumps(
                 {"error": f"{name} returned a FireList — graph-engine only, "
                           f"not callable over MCP"}))]
-
-        outputs: dict = {}
-        for port_name, wire_type in port_map["outputs"].items():
-            if port_name in result:
-                outputs[port_name] = serialize_value(result[port_name], wire_type)
-        return outputs_to_content(fn, outputs)
+        return outputs_to_content(fn, inv.outputs)
 
     return server
 
@@ -381,13 +346,24 @@ def build_streamable_asgi(
     rebinding protection stays off. Bind to 127.0.0.1 when only local MCP
     clients should reach the process."""
     mcp_server = build_mcp_server(server_app, allowlist)
-    manager = StreamableHTTPSessionManager(
-        app=mcp_server,
-        event_store=None,
-        json_response=True,
-        stateless=not exclusive,
-        session_idle_timeout=EXCLUSIVE_IDLE_TIMEOUT_S if exclusive else None,
-    )
+    manager_kwargs: dict = {
+        "app": mcp_server,
+        "event_store": None,
+        "json_response": True,
+        "stateless": not exclusive,
+    }
+    try:
+        manager = StreamableHTTPSessionManager(
+            **manager_kwargs,
+            session_idle_timeout=EXCLUSIVE_IDLE_TIMEOUT_S if exclusive else None,
+        )
+    except TypeError:
+        # mcp SDK without session_idle_timeout (< 1.27): exclusive sessions
+        # are still gated, but a crashed client's lock is released only by
+        # its DELETE.
+        if exclusive:
+            log.warning("mcp SDK lacks session_idle_timeout — exclusive idle reaping disabled")
+        manager = StreamableHTTPSessionManager(**manager_kwargs)
     name = getattr(server_app, "name", "nodeset")
 
     async def asgi(scope: dict, receive: Any, send: Any) -> None:

@@ -38,8 +38,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import requests
-
 log = logging.getLogger("agentcanvas.human")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -205,11 +203,7 @@ class HumanRunner:
 
     def _health(self, url: str) -> bool:
         """True iff the auto_host answers GET /health 200 (never raises)."""
-        try:
-            resp = requests.get(f"{url}/health", timeout=self._HEALTH_TIMEOUT)
-            return resp.status_code == 200
-        except requests.exceptions.RequestException:
-            return False
+        return self._client(url).health_sync(timeout=self._HEALTH_TIMEOUT)
 
     def _mark_env_dead(self) -> None:
         """Fold a vanished auto_host into a recoverable error state (caller
@@ -222,32 +216,36 @@ class HumanRunner:
 
     # ── env HTTP helpers (driver-side; identical surface to run_episodes.py) ──
     #
-    # A dropped connection means the auto_host vanished (see _DEAD_MSG) — it is
-    # re-raised as a clean RuntimeError so the API returns a readable 409 rather
-    # than a raw urllib3 ``Max retries exceeded`` 500. A non-2xx status is a real
-    # env-side error and surfaces as-is via raise_for_status().
+    # One AutoHostClient per call (JSON regime: the driver reads base64 PNG
+    # frames). A dropped connection means the auto_host vanished (see
+    # _DEAD_MSG) — it is re-raised as a clean RuntimeError so the API returns
+    # a readable 409 rather than a raw transport 500. A non-2xx status is a
+    # real env-side error and surfaces as a CallError.
 
-    def _req(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+    @staticmethod
+    def _client(url: str) -> Any:
+        from ..server.client import AutoHostClient
+
+        return AutoHostClient(url, timeout=600, json_only=True)
+
+    def _alive(self, fn: Any) -> Any:
+        from ..server.client import ServerUnreachable
+
         try:
-            resp = requests.request(method, url, timeout=600, **kwargs)
-        except requests.exceptions.RequestException as exc:
+            return fn()
+        except ServerUnreachable as exc:
             raise RuntimeError(self._DEAD_MSG) from exc
-        resp.raise_for_status()
-        return resp
 
     def _panel_field(self, url: str, name: str, value: Any) -> None:
-        self._req("POST", f"{url}/env-panel/field/{name}", json={"value": value})
+        self._alive(lambda: self._client(url).panel_field_sync(name, value))
 
     def _panel_action(self, url: str, name: str) -> None:
-        self._req("POST", f"{url}/env-panel/action/{name}", json={"params": {}})
+        self._alive(lambda: self._client(url).panel_action_sync(name, {}))
 
     def _call(
         self, url: str, fn: str, inputs: dict[str, Any], config: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"inputs": inputs}
-        if config:
-            body["config"] = config
-        return self._req("POST", f"{url}/call/{fn}", json=body).json()["outputs"]
+        return self._alive(lambda: self._client(url).call_sync(fn, inputs, config).outputs)
 
     def _observe(self, url: str) -> tuple[str | None, list | None]:
         """Pull the current egocentric RGB (base64 PNG) + agent position."""

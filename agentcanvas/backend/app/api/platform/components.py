@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from ...components import nodeset_source
+from ...components.bases import ui_config_to_dict
 from ...services.nodeset_watcher import roots_for
 from ...state import ExecutionGuard, ExecutionMode, get_services
 
@@ -19,30 +19,7 @@ router = APIRouter()
 
 def _serialize_ui_config(cls: type) -> dict:
     """Serialize a node class's ui_config to JSON-safe dict."""
-    ui = getattr(cls, "ui_config", None)
-    if ui is None:
-        return {
-            "color": "",
-            "layout": "block",
-            "width": "",
-            "min_height": "",
-            "rounding": "",
-            "min_width": "",
-            "max_width": "",
-            "config_fields": [],
-            "display_fields": [],
-        }
-    return {
-        "color": ui.color,
-        "layout": ui.layout,
-        "width": ui.width,
-        "min_height": ui.min_height,
-        "rounding": ui.rounding,
-        "min_width": ui.min_width,
-        "max_width": ui.max_width,
-        "config_fields": [asdict(f) for f in ui.config_fields],
-        "display_fields": [asdict(f) for f in ui.display_fields],
-    }
+    return ui_config_to_dict(getattr(cls, "ui_config", None))
 
 
 def _build_profile_options() -> list[dict]:

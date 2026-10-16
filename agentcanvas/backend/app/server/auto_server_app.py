@@ -22,41 +22,14 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any
 
-from ..components.bases import BaseCanvasNode, BaseNodeSet
+from ..components.bases import BaseCanvasNode, BaseNodeSet, ui_config_to_dict
 from .batched_inference import OUTPUTS_KEY, SAMPLES_KEY, BatchedInferenceServer
 from .manifest import PortSchema
 from .server_app import ServerApp, ServerFunction
 
 log = logging.getLogger(__name__)
-
-
-def _serialize_node_ui_config(tool: BaseCanvasNode) -> dict:
-    """Serialize a node's NodeUIConfig to the snake_case dict shape that
-    ``/api/components/node-schemas`` produces for local-mode nodes — so the
-    canvas frontend renders proxy nodes' config_fields/display_fields
-    identically to local nodes.
-
-    Mirrors ``_serialize_ui_config`` in ``app/api/platform/components.py``.
-    Inlined here so the server subprocess doesn't need to import the
-    FastAPI router layer.
-    """
-    ui = getattr(tool, "ui_config", None)
-    if ui is None:
-        return {}
-    return {
-        "color": getattr(ui, "color", ""),
-        "layout": getattr(ui, "layout", "block"),
-        "width": getattr(ui, "width", ""),
-        "min_height": getattr(ui, "min_height", ""),
-        "rounding": getattr(ui, "rounding", ""),
-        "min_width": getattr(ui, "min_width", ""),
-        "max_width": getattr(ui, "max_width", ""),
-        "config_fields": [asdict(f) for f in getattr(ui, "config_fields", [])],
-        "display_fields": [asdict(f) for f in getattr(ui, "display_fields", [])],
-    }
 
 
 class _ServerContext:
@@ -358,7 +331,7 @@ class AutoServerApp(ServerApp):
             input_ports = getattr(tool, "input_ports", [])
             output_ports = getattr(tool, "output_ports", [])
             config_schema = getattr(tool, "config_schema", {})
-            ui_config = _serialize_node_ui_config(tool)
+            ui_config = ui_config_to_dict(getattr(tool, "ui_config", None))
 
             functions.append(
                 ServerFunction(

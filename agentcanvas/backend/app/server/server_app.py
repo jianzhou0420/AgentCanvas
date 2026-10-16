@@ -34,9 +34,9 @@ from typing import Any, Optional
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
-from . import event_push, serialization
+from . import serialization
+from .invoke import InvokeError, NoHandler, UnknownFunction, invoke
 from .manifest import FunctionSchema, PortSchema, ServerManifest
-from .serialization import deserialize_value, serialize_value
 
 log = logging.getLogger(__name__)
 
@@ -241,9 +241,6 @@ class ServerApp(ABC):
                 body = json.loads(raw)
 
             def _respond(obj: dict):
-                # Drain events buffered during this call (Move 3) so server-node
-                # logs reach the canvas at call granularity.
-                event_push.flush()
                 # msgpack request → msgpack response; JSON request → JSON
                 # response. The client knows which it sent and decodes to match.
                 if use_msgpack:
@@ -253,101 +250,35 @@ class ServerApp(ABC):
                     )
                 return JSONResponse(obj)
 
-            fn = server._functions.get(function_name)
-            if fn is None:
-                raise HTTPException(404, f"Unknown function: {function_name}")
-            if fn.handler is None:
-                raise HTTPException(501, f"No handler for: {function_name}")
-
-            raw_inputs = body.get("inputs", body)
-            port_map = server._port_maps[function_name]
-            inputs: dict[str, Any] = {}
-            for port_name, wire_type in port_map["inputs"].items():
-                if port_name in raw_inputs:
-                    # msgpack inputs are already native (decoded on unpack);
-                    # only JSON needs per-port wire-type deserialization.
-                    val = raw_inputs[port_name]
-                    inputs[port_name] = val if use_msgpack else deserialize_value(val, wire_type)
-
-            config = body.get("config", {})
-
-            # Cross-nodeset container-access prototype (face B): ``_exec`` carries
-            # granted executor-home container ids + execution_id. Pass it only to
-            # handlers that accept a third arg (auto-generated handlers do);
-            # legacy 2-arg handlers (manual ServerFunction) are called unchanged.
-            # Arity is inspected (not try/except) so an internal TypeError in the
-            # handler is never mistaken for a signature mismatch + double-called.
-            exec_ctx = body.get("_exec")
-            import inspect
-
+            # One server-side invoke (decode → fire → encode) shared with the
+            # MCP projection; this route only owns the HTTP envelope.
             try:
-                _nparams = len(inspect.signature(fn.handler).parameters)
-            except (ValueError, TypeError):
-                _nparams = 2
-
-            try:
-                if _nparams >= 3:
-                    result = await fn.handler(inputs, config, exec_ctx)
-                else:
-                    result = await fn.handler(inputs, config)
-            except Exception as e:
-                log.exception("Handler %s failed", function_name)
-                # First-class the error (Move 3, #54): push it to the executor so
-                # it surfaces on the canvas instead of being demoted to a
-                # swallowed {"error": ...} value by the proxy.
-                import traceback as _tb
-
-                _exid = exec_ctx.get("execution_id") if isinstance(exec_ctx, dict) else None
-                event_push.emit_event(
-                    "error",
-                    str(e),
-                    code="SUBPROC_NODE_FAIL",
-                    node_id=function_name,
-                    nodeset=getattr(server, "name", None),
-                    execution_id=_exid,
-                    details={"function": function_name, "traceback": _tb.format_exc()},
+                inv = await invoke(
+                    server,
+                    function_name,
+                    body.get("inputs", body),
+                    body.get("config", {}),
+                    body.get("_exec"),
+                    json_regime=not use_msgpack,
                 )
-                event_push.flush()
+            except UnknownFunction:
+                raise HTTPException(404, f"Unknown function: {function_name}") from None
+            except NoHandler:
+                raise HTTPException(501, f"No handler for: {function_name}") from None
+            except InvokeError as e:
                 raise HTTPException(500, str(e)) from e
 
-            # C.5 Dynamic Fire-List handover: server-side DynamicFireListNode
-            # subclasses return a ``FireList`` object instead of a port-output
-            # dict. Serialize to a JSON-safe envelope; the framework-side
-            # proxy reconstructs a FireList from this shape and the engine
-            # then dispatches each child via ``_fire_dynamic_children``.
-            # FireSpec fields are all primitive / dict-of-primitive so a
-            # shallow dataclass-to-dict conversion suffices.
-            from ..components.bases import FireList as _FireList
-
-            if isinstance(result, _FireList):
-                return _respond(
-                    {
-                        "__firelist__": {
-                            "specs": [
-                                {
-                                    "node_type": s.node_type,
-                                    "inputs": s.inputs,
-                                    "config": s.config,
-                                    "label": s.label,
-                                    "capture_outputs": s.capture_outputs,
-                                }
-                                for s in result.specs
-                            ],
-                            "spawner_outputs": result.spawner_outputs,
-                            "aggregator": result.aggregator,
-                        }
-                    }
-                )
-
-            outputs: dict[str, Any] = {}
-            for port_name, wire_type in port_map["outputs"].items():
-                if port_name in result:
-                    # msgpack outputs stay native (the codec encodes binary
-                    # types on pack); only JSON needs per-port serialization.
-                    val = result[port_name]
-                    outputs[port_name] = val if use_msgpack else serialize_value(val, wire_type)
-
-            response: dict[str, Any] = {"outputs": outputs}
+            # C.5 Dynamic Fire-List handover: a hosted spawner's FireList
+            # crosses as its envelope; the proxy rebuilds the FireList.
+            response: dict[str, Any] = (
+                dict(inv.firelist) if inv.firelist is not None else {"outputs": inv.outputs}
+            )
+            # The node's own log entries + LLM usage ride back so the proxy
+            # firing logs them like a local node's.
+            if inv.log:
+                response["log"] = inv.log
+            if inv.usage:
+                response["usage"] = inv.usage
             # Piggyback read-only owned-container previews for display (no new
             # channel). Empty for nodesets that own no containers.
             previews = server.get_container_previews()

@@ -61,33 +61,28 @@ def _local_container(execution_id: str, container_id: str):
     return c
 
 
-def _broker_url(container_id: str, op: str) -> str:
-    """URL of the sub-home subprocess endpoint for ``container_id``, or 404."""
+def _home_url(container_id: str) -> str:
+    """Base URL of the sub-home subprocess for ``container_id``, or 404."""
     try:
         url = get_services().workspace_component_registry.get_container_home_url(container_id)
     except Exception:
         url = None
     if not url:
         raise HTTPException(404, f"no home for container {container_id!r}")
-    return "{}/containers/{}/{}".format(url.rstrip("/"), container_id, op)
+    return url
 
 
 async def _forward(container_id: str, op: str, payload: dict) -> dict:
-    import httpx
+    from ...server.client import AutoHostClient, CallError
 
-    from ...server._loopback_proxy import loopback_httpx_kwargs
-
-    url = _broker_url(container_id, op)
-    # Async client: these endpoints run in the executor's event loop; a blocking
-    # httpx.Client here would stall every other in-flight call while brokering.
-    async with httpx.AsyncClient(timeout=30.0, **loopback_httpx_kwargs()) as client:
-        resp = await client.post(
-            url,
-            content=serialization.pack_body(payload),
-            headers={"Content-Type": serialization.MSGPACK_CONTENT_TYPE},
+    # Async: these endpoints run in the executor's event loop; a blocking
+    # client here would stall every other in-flight call while brokering.
+    try:
+        return await AutoHostClient(_home_url(container_id), timeout=30.0).container_op(
+            container_id, op, payload
         )
-        resp.raise_for_status()
-        return serialization.unpack_body(resp.content)
+    except CallError as e:
+        raise HTTPException(e.status or 502, str(e)) from e
 
 
 @router.post("/containers/{execution_id}/{container_id}/read")

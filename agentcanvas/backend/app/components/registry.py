@@ -1538,16 +1538,9 @@ class WorkspaceComponentRegistry(RegistryFacts):
         (killing it would break sibling run subprocesses sharing the
         same singleton).
         """
-        import httpx
+        from ..server.client import AutoHostClient
 
-        from ..server._loopback_proxy import loopback_httpx_kwargs
-        from ..server.manifest import ServerManifest
-
-        with httpx.Client(timeout=15.0, **loopback_httpx_kwargs()) as client:
-            resp = client.get(f"{url.rstrip('/')}/manifest")
-            resp.raise_for_status()
-            manifest = ServerManifest.from_dict(resp.json())
-
+        manifest = AutoHostClient(url, timeout=15.0).manifest_sync()
         node_types = self._register_proxy_nodes(url, manifest)
 
         self._auto_servers[name] = _RemoteAutoServerShim(name=name, url=url)
@@ -1582,15 +1575,10 @@ class WorkspaceComponentRegistry(RegistryFacts):
         live, so the caller can roll back the spawn.
         """
         try:
-            import httpx
-
-            from ..server._loopback_proxy import loopback_httpx_kwargs
+            from ..server.client import AutoHostClient
             from .env_panel import RemoteEnvPanelProxy, register_env_panel
 
-            with httpx.Client(timeout=10.0, **loopback_httpx_kwargs()) as client:
-                resp = client.get("{}/env-panel/info".format(server_url.rstrip("/")))
-                resp.raise_for_status()
-                info = resp.json()
+            info = AutoHostClient(server_url, timeout=10.0).panel_info_sync()
             proxy = RemoteEnvPanelProxy(server_url, info)
             if tag is not None:
                 proxy.name = server_key(nodeset_name, tag)

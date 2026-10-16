@@ -14,11 +14,12 @@ from __future__ import annotations
 import os
 import sys
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from ..graph_def import ContainerDef, GraphDefinition
+from ..standard.telemetry import _current_node_log
 
 # ── Port Definition ──
 
@@ -122,6 +123,45 @@ class NodeUIConfig:
     display_fields: list[DisplayField] = field(default_factory=list)
 
 
+def ui_config_to_dict(ui: NodeUIConfig | None) -> dict:
+    """The JSON-safe, snake_case shape of a ``NodeUIConfig`` — what
+    ``/api/components/node-schemas`` serves for local nodes and what a
+    server manifest carries for hosted ones. ``None`` serializes as the
+    default config so both readers see one shape."""
+    if ui is None:
+        ui = NodeUIConfig()
+    return {
+        "color": ui.color,
+        "layout": ui.layout,
+        "width": ui.width,
+        "min_height": ui.min_height,
+        "rounding": ui.rounding,
+        "min_width": ui.min_width,
+        "max_width": ui.max_width,
+        "config_fields": [asdict(f) for f in ui.config_fields],
+        "display_fields": [asdict(f) for f in ui.display_fields],
+    }
+
+
+def ui_config_from_dict(d: dict | None) -> NodeUIConfig:
+    """Inverse of :func:`ui_config_to_dict`. Empty / missing → defaults.
+    Real dataclass instances come back so local and proxy nodes serialize
+    through the same ``asdict`` path."""
+    if not d:
+        return NodeUIConfig()
+    return NodeUIConfig(
+        color=d.get("color", ""),
+        layout=d.get("layout", "block"),
+        width=d.get("width", ""),
+        min_width=d.get("min_width", ""),
+        max_width=d.get("max_width", ""),
+        min_height=d.get("min_height", ""),
+        rounding=d.get("rounding", ""),
+        config_fields=[ConfigField(**cf) for cf in d.get("config_fields") or []],
+        display_fields=[DisplayField(**df) for df in d.get("display_fields") or []],
+    )
+
+
 # ── Canvas Nodes (BASE — must come first, other classes inherit) ──
 
 
@@ -219,7 +259,8 @@ class BaseCanvasNode(ABC):
         API responses, token counts).  The executor collects these entries via
         :meth:`log` after ``forward()`` returns.
         """
-        self._log_buffer.append({"key": key, "value": value})
+        buffer = _current_node_log.get()
+        (self._log_buffer if buffer is None else buffer).append({"key": key, "value": value})
 
     def log(self) -> list[dict]:
         """Return voluntary log entries from the last ``forward()`` call.
@@ -335,6 +376,47 @@ class FireList:
     #   collapse children's results without a second HTTP round-trip to the
     #   spawner. Local DynamicFireListNode subclasses can keep their
     #   ``aggregate()`` method and leave this empty.
+
+
+def firelist_to_dict(fl: FireList) -> dict:
+    """The JSON-safe envelope a hosted spawner's ``FireList`` crosses the
+    process boundary in: ``{"__firelist__": {...}}``. FireSpec fields are
+    all primitive / dict-of-primitive, so a shallow conversion suffices."""
+    return {
+        "__firelist__": {
+            "specs": [
+                {
+                    "node_type": s.node_type,
+                    "inputs": s.inputs,
+                    "config": s.config,
+                    "label": s.label,
+                    "capture_outputs": s.capture_outputs,
+                }
+                for s in fl.specs
+            ],
+            "spawner_outputs": fl.spawner_outputs,
+            "aggregator": fl.aggregator,
+        }
+    }
+
+
+def firelist_from_dict(d: dict) -> FireList:
+    """Inverse of :func:`firelist_to_dict` (accepts the envelope or its body)."""
+    fl = d.get("__firelist__", d)
+    return FireList(
+        specs=[
+            FireSpec(
+                node_type=s.get("node_type", ""),
+                inputs=s.get("inputs", {}) or {},
+                config=s.get("config", {}) or {},
+                label=s.get("label", "") or "",
+                capture_outputs=s.get("capture_outputs"),
+            )
+            for s in fl.get("specs", [])
+        ],
+        spawner_outputs=fl.get("spawner_outputs", {}) or {},
+        aggregator=fl.get("aggregator", {}) or {},
+    )
 
 
 class DynamicFireListNode(BaseCanvasNode):
