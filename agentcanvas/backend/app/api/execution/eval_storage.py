@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from ...config import eval_runs_dir
+from ...services.run_state_io import RunSummary, episode_to_dict
+
+__all__ = ["delete_run", "episode_to_dict", "list_runs", "load_run", "run_to_dict", "save_run"]
 
 log = logging.getLogger("agentcanvas.eval-storage")
 
@@ -28,68 +31,9 @@ def _summary_path(run_id: str) -> Path:
     return EVAL_RUNS_DIR / run_id / "summary.json"
 
 
-def episode_to_dict(ep: Any) -> dict:
-    """Serialize one EpisodeResult to a JSON-safe dict.
-
-    Single source of truth for episode shape — used both for the
-    per-episode ``episodes/ep{idx}/episode.json`` (written by
-    BatchEvalRunner) and inline inside :func:`run_to_dict`'s
-    ``episodes`` list.
-    """
-    return {
-        "episode_index": ep.episode_index,
-        "episode_id": ep.episode_id,
-        "scene_id": ep.scene_id,
-        "instruction": ep.instruction,
-        "metrics": ep.metrics,
-        "step_count": ep.step_count,
-        "elapsed_sec": ep.elapsed_sec,
-        "status": ep.status,
-        "error": ep.error,
-        # Effective selectors actually pushed for this episode (run-level
-        # merged with the per-episode override). Lets offline tooling
-        # re-group results by task without re-merging config.episode_selectors.
-        "selectors": dict(ep.selectors),
-        "worker_id": ep.worker_id,
-    }
-
-
 def run_to_dict(run: Any) -> dict:
-    """Serialize an EvalRun to a JSON-safe dict (excludes non-serializable fields)."""
-    config_dict = {
-        "graph_name": run.config.graph_name,
-        "env_nodeset": run.config.env_nodeset,
-        # Generic cascade — the canonical "what was actually pushed
-        # through the env panel" record. Legacy ``split`` is also
-        # serialized below so old viewers / replay tooling keep working.
-        "selectors": dict(run.config.selectors),
-        # Per-episode selector overrides, parallel to episode order.
-        # ``None`` for runs that didn't use the cross-task path.
-        "episode_selectors": (
-            [dict(s) for s in run.config.episode_selectors]
-            if run.config.episode_selectors is not None
-            else None
-        ),
-        "split": run.config.split,
-        "episode_count": run.config.episode_count,
-        "step_budget": run.config.step_budget,
-    }
-
-    episodes_list = [episode_to_dict(ep) for ep in run.episodes]
-
-    return {
-        "run_id": run.run_id,
-        "config": config_dict,
-        "status": run.status.value,
-        "episodes": episodes_list,
-        "aggregate_metrics": run.aggregate_metrics,
-        "aggregate_by_task": dict(run.aggregate_by_task),
-        "total_episodes": run.total_episodes,
-        "created_at": run.created_at,
-        "finished_at": run.finished_at,
-        "elapsed_sec": run.elapsed_sec,
-        "error": run.error,
-    }
+    """Serialize an EvalRun to its ``summary.json`` dict (``RunSummary``)."""
+    return RunSummary.from_run(run).to_dict()
 
 
 # Backward-compat alias for the previous private name.
@@ -97,13 +41,10 @@ _run_to_dict = run_to_dict
 
 
 def save_run(run: Any) -> None:
-    """Serialize an EvalRun to outputs/eval_runs/{run_id}/summary.json."""
+    """Write an EvalRun's summary.json — atomically (ADR-eval-003 rule 3)."""
     get_runs_dir()
-    path = _summary_path(run.run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = run_to_dict(run)
-    path.write_text(json.dumps(data, indent=2))
-    log.info("Saved eval run %s to %s", run.run_id, path)
+    RunSummary.from_run(run).write(EVAL_RUNS_DIR / run.run_id)
+    log.info("Saved eval run %s to %s", run.run_id, _summary_path(run.run_id))
 
 
 def load_run(run_id: str) -> dict | None:

@@ -18,9 +18,9 @@ Spawn is ``setsid`` so each job becomes its own process group; cancel
 sends SIGTERM to the pgid (kills the run subprocess + any env worker
 descendants in one shot).
 
-Persistence: spec.json + shared_urls.json + summary.json + _DONE under
-``outputs/eval_runs/{run_id}/``. The scheduler holds no in-memory truth
-that disk doesn't already have. On a parent backend restart, completed
+Persistence: ``JobSpec`` / ``RunSummary`` (``run_state_io``) + shared_urls.json
++ _DONE under ``outputs/eval_runs/{run_id}/``. The scheduler holds no
+in-memory truth that disk doesn't already have. On a parent backend restart, completed
 runs survive; running AND queued jobs are marked ``aborted`` by
 ``reconcile_aborted_runs`` (M1 — no queue durability yet).
 """
@@ -35,20 +35,21 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .resource_stats import RESOURCES, Charge, ResourceStatsTracker
 from .run_state_io import (
-    atomic_write_json,
-    initial_running_summary,
+    JobSpec,
+    RunSummary,
     is_done,
     mark_aborted,
     read_shared_urls,
     read_summary,
+    touch_done,
     write_shared_urls,
-    write_spec,
 )
 
 log = logging.getLogger("agentcanvas.scheduler")
@@ -65,7 +66,7 @@ _TERMINAL_STATUSES = {"succeeded", "completed", "failed", "error", "cancelled", 
 @dataclass
 class _QueuedJob:
     run_id: str
-    spec: dict
+    spec: JobSpec
     submitted_at: float
     marginal_vram_mb: int
     exclusive_gpu: bool
@@ -231,26 +232,29 @@ class JobScheduler:
             n += 1
         return run_id
 
-    def submit(self, spec: dict) -> str:
-        """Validate spec, create run dir + spec.json + shared_urls.json,
-        enqueue. Returns ``run_id``. Does not spawn — admission happens
+    def submit(
+        self,
+        spec: JobSpec,
+        *,
+        shared_urls: dict[str, str] | None = None,
+        shared_loaded_by_us: Iterable[str] = (),
+    ) -> str:
+        """Validate the spec, create the run dir (spec.json + shared_urls.json
+        + a ``pending`` summary.json), enqueue. Returns ``run_id`` (stamped
+        onto the spec when it was empty). Does not spawn — admission happens
         on the next tick.
 
-        ``spec`` shape (see plan) ::
-
-            {
-              "run_id": "..." (optional; auto-generated if absent),
-              "created_at": "...",
-              "eval": {EvalConfig fields},
-              "scheduling": {marginal_vram_mb, exclusive_gpu, priority, ...},
-              "graph": {...}
-            }
+        ``shared_urls`` is the parent's table of the shared singletons this
+        job will call (nodeset → auto_host URL); it is written next to the
+        spec and refcounted. ``shared_loaded_by_us`` names the subset the
+        caller freshly loaded for this job (vs. canvas-Play-loaded ones) —
+        only those are eligible for auto-unload once no remaining job
+        references them.
         """
         # P3 feasibility check: a declaration that exceeds the physical
         # ceiling can NEVER admit — reject loudly instead of the silent
         # forever-pending it used to produce.
-        sched_req = spec.get("scheduling") or {}
-        declared = int(sched_req.get("marginal_vram_mb", 0) or 0)
+        declared = spec.scheduling.marginal_vram_mb
         ceiling = max(self._usable_vram_mb, self._total_vram_mb)
         if declared > ceiling:
             raise ValueError(
@@ -258,22 +262,15 @@ class JobScheduler:
                 f"({ceiling} MB) — the job could never be admitted"
             )
 
-        run_id = spec.get("run_id") or self._fresh_run_id()
-        spec["run_id"] = run_id
-        spec.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
+        spec.run_id = spec.run_id or self._fresh_run_id()
+        spec.created_at = spec.created_at or time.strftime("%Y-%m-%dT%H:%M:%S")
+        run_id = spec.run_id
 
         run_dir = self._runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        write_spec(run_dir, spec)
+        spec.write(run_dir)
 
-        # Backend computed shared URLs at submit time (caller of submit
-        # populates spec["_shared_urls"]); pop it before persisting spec.
-        shared_urls = spec.pop("_shared_urls", {}) or {}
-        # eval/start also tags the spec with which shared singletons IT
-        # freshly loaded into the parent registry (vs. ones canvas-Play
-        # had already loaded). Only the freshly-loaded subset is eligible
-        # for auto-unload on refcount-zero; canvas-Play singletons stay.
-        shared_loaded_by_us = spec.pop("_shared_loaded_by_us", []) or []
+        shared_urls = dict(shared_urls or {})
         write_shared_urls(run_dir, shared_urls)
 
         # Bump consumer refcount for every shared singleton this job
@@ -286,31 +283,24 @@ class JobScheduler:
 
         # Initial summary so /runs/{id} immediately returns something
         # sensible even before admission.
-        atomic_write_json(
-            run_dir / "summary.json",
-            {
-                **initial_running_summary(run_id, spec.get("eval", {}), spec["created_at"]),
-                "status": "pending",
-            },
-        )
+        RunSummary.initial(spec, status="pending").write(run_dir)
 
-        sched = spec.get("scheduling") or {}
         self._queue.append(
             _QueuedJob(
                 run_id=run_id,
                 spec=spec,
                 submitted_at=time.time(),
-                marginal_vram_mb=int(sched.get("marginal_vram_mb", 0) or 0),
-                exclusive_gpu=bool(sched.get("exclusive_gpu", False)),
-                priority=sched.get("priority", "normal"),
+                marginal_vram_mb=spec.scheduling.marginal_vram_mb,
+                exclusive_gpu=spec.scheduling.exclusive_gpu,
+                priority=spec.scheduling.priority,
                 shared_nodesets=tuple(shared_urls.keys()),
             )
         )
         log.info(
             "submit: run_id=%s marginal_vram=%d MB exclusive=%s queue=%d",
             run_id,
-            int(sched.get("marginal_vram_mb", 0) or 0),
-            bool(sched.get("exclusive_gpu", False)),
+            spec.scheduling.marginal_vram_mb,
+            spec.scheduling.exclusive_gpu,
             len(self._queue),
         )
         return run_id
@@ -323,11 +313,7 @@ class JobScheduler:
             if q.run_id == run_id:
                 self._queue.remove(q)
                 run_dir = self._runs_dir / run_id
-                summary = read_summary(run_dir) or {}
-                summary["status"] = "cancelled"
-                summary["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                atomic_write_json(run_dir / "summary.json", summary)
-                (run_dir / "_DONE").write_text(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+                self._finish_on_disk(run_dir, q.spec, "cancelled")
                 # Release shared-singleton refcount; running-job cancels
                 # flow through _reap which handles the same decrement.
                 # _release_shared_refs is fire-and-forget here because
@@ -458,15 +444,21 @@ class JobScheduler:
     def _charge(self, q: _QueuedJob, *, measured: bool) -> Charge:
         """The job's admission charge from the one ladder (see
         ``ResourceStatsTracker.charge``)."""
-        eval_cfg = q.spec.get("eval") or {}
-        node_types = [n.get("type", "") for n in (q.spec.get("graph") or {}).get("nodes") or []]
         return self._resource_stats.charge(
-            eval_cfg.get("graph_name") or "",
-            node_types,
-            eval_cfg.get("worker_count") or 1,
+            q.spec.eval.graph_name,
+            q.spec.node_types,
+            q.spec.eval.worker_count or 1,
             q.marginal_vram_mb,
             measured=measured,
         )
+
+    @staticmethod
+    def _finish_on_disk(run_dir: Path, spec: JobSpec, status: str, error: str | None = None) -> None:
+        """A job that ends on the parent's side (queued cancel, spawn
+        failure): finish its summary and mark the run dir done."""
+        summary = RunSummary.read(run_dir) or RunSummary.initial(spec, status="pending")
+        summary.finish(status, error).write(run_dir)
+        touch_done(run_dir)
 
     async def _admit(self) -> None:
         if self._canvas_lock_held():
@@ -534,13 +526,9 @@ class JobScheduler:
                             "admit: failed to clean up ephemerals for %s",
                             q.run_id,
                         )
-                run_dir = self._runs_dir / q.run_id
-                summary = read_summary(run_dir) or {}
-                summary["status"] = "error"
-                summary["error"] = "spawn failed; see backend log"
-                summary["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                atomic_write_json(run_dir / "summary.json", summary)
-                (run_dir / "_DONE").write_text(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+                self._finish_on_disk(
+                    self._runs_dir / q.run_id, q.spec, "error", "spawn failed; see backend log"
+                )
                 # Release shared-singleton refcount: the job went queue
                 # → error without ever entering _running, so _reap won't
                 # see it; deferred unload happens on the next tick.
@@ -560,7 +548,7 @@ class JobScheduler:
         run — all of a run's ephemerals share the same tag so
         ``unload_nodeset_ephemeral(tag)`` cleans them up in one call.
         """
-        active_ws = q.spec.get("active_workspace_dir")
+        active_ws = q.spec.active_workspace_dir
         if not active_ws:
             return None
         if self._registry is None:
@@ -655,9 +643,8 @@ class JobScheduler:
         # Per-run active-workspace overlay: propagate to subprocess env so
         # its fresh Settings() picks up active_workspace_dir at construction,
         # which flows into WorkspaceComponentRegistry via state.py. None = no overlay.
-        active_ws = q.spec.get("active_workspace_dir")
-        if active_ws:
-            env["ACTIVE_WORKSPACE_DIR"] = active_ws
+        if q.spec.active_workspace_dir:
+            env["ACTIVE_WORKSPACE_DIR"] = q.spec.active_workspace_dir
 
         # Files outlive this function — they're held open by Popen for
         # the subprocess's lifetime. Closed in _reap when the child exits.
@@ -698,12 +685,11 @@ class JobScheduler:
             ephem_tag=ephem_tag,
             shared_nodesets=q.shared_nodesets,
         )
-        eval_cfg = q.spec.get("eval") or {}
-        node_types = [n.get("type", "") for n in (q.spec.get("graph") or {}).get("nodes") or []]
+        node_types = q.spec.node_types
         self._resource_stats.note_job_started(
             q.run_id,
-            graph_name=eval_cfg.get("graph_name") or "",
-            worker_count=eval_cfg.get("worker_count") or 1,
+            graph_name=q.spec.eval.graph_name,
+            worker_count=q.spec.eval.worker_count or 1,
             # Union of the server-backed singletons (shared_urls keys) and
             # the graph-derived shared set — the latter also catches LOCAL
             # in-process shared nodesets (e.g. env_adapter), which have no
@@ -737,13 +723,13 @@ class JobScheduler:
                         fh.close()
             run_dir = self._runs_dir / run_id
             if is_done(run_dir):
-                summary = read_summary(run_dir) or {}
-                final_status = summary.get("status", "completed")
+                summary = RunSummary.read(run_dir)
+                final_status = summary.status if summary is not None else "completed"
                 log.info("reap: %s rc=%d final=%s", run_id, rc, final_status)
             else:
                 # PID gone but no _DONE — aborted (Q1).
                 mark_aborted(run_dir, reason=f"subprocess exited rc={rc} without _DONE")
-                (run_dir / "_DONE").write_text(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+                touch_done(run_dir)
                 log.warning("reap: %s rc=%d aborted (no _DONE)", run_id, rc)
             # TODO #60: release the ephemeral auto_host children spawned
             # for this run. Cancel (queued) goes through cancel() and
@@ -860,11 +846,11 @@ def reconcile_aborted_runs(eval_runs_dir: Path) -> int:
             continue
         if (sub / "_DONE").exists():
             continue
-        summary = read_summary(sub)
+        summary = RunSummary.read(sub)
         if summary is None:
             continue
-        if summary.get("status") in {"running", "pending"}:
+        if summary.status in {"running", "pending"}:
             mark_aborted(sub, reason="parent backend restart")
-            (sub / "_DONE").write_text(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+            touch_done(sub)
             fixed += 1
     return fixed

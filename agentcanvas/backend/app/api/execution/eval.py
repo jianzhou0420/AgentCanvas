@@ -16,6 +16,7 @@ from pydantic import BaseModel, model_validator
 from ...agent_loop.eval_batch import BatchEvalRunner, EvalConfig, EvalRun, EvalStatus
 from ...agent_loop.graph_run import NodesetLoadError, prepare_graph
 from ...graph_def import GraphDefinition, nodeset_names, validate_graph_connectivity
+from ...services.run_state_io import JobSpec, RunSummary, Scheduling
 from ...state import ExecutionGuard, ExecutionMode, get_services
 from .eval_storage import delete_run, list_runs, load_run, save_run
 
@@ -268,6 +269,23 @@ async def start_eval_v2(req: StartEvalV2Request):
     for k, v in (req.selectors or {}).items():
         selectors[k] = v
 
+    # One EvalConfig for both paths — the subprocess reads it back from the
+    # spec, the in-process runner takes it directly.
+    config = EvalConfig(
+        graph_name=req.graph_name,
+        env_nodeset=env_nodeset,
+        selectors=selectors,
+        dataset=req.dataset,
+        split=req.split,
+        episode_count=effective_episode_count,
+        step_budget=req.step_budget,
+        start_episode_index=req.start_episode_index,
+        worker_count=req.worker_count,
+        per_step_budget_sec=req.per_step_budget_sec,
+        episode_indices=req.episode_indices,
+        episode_selectors=req.episode_selectors,
+    )
+
     # ── Subprocess scheduler path ──
     if use_subprocess:
         scheduler = get_services().job_scheduler
@@ -299,40 +317,27 @@ async def start_eval_v2(req: StartEvalV2Request):
         # already_loaded, not loaded, so they're never auto-unloaded.
         shared_loaded_by_us: list[str] = list(prepared.loaded)
 
-        spec = {
-            "eval": {
-                "graph_name": req.graph_name,
-                "selectors": selectors,
-                "dataset": req.dataset,
-                "split": req.split,
-                "episode_count": effective_episode_count,
-                "step_budget": req.step_budget,
-                "start_episode_index": req.start_episode_index,
-                "worker_count": req.worker_count,
-                "per_step_budget_sec": req.per_step_budget_sec,
-                "episode_indices": req.episode_indices,
-                "episode_selectors": req.episode_selectors,
-            },
-            "scheduling": {
-                "marginal_vram_mb": req.marginal_vram_mb,
-                "exclusive_gpu": req.exclusive_gpu,
-                "priority": req.priority,
-            },
-            "graph": graph.to_dict(),
-            "_shared_urls": shared_urls,
-            # Shared singletons THIS request freshly loaded (subset of
-            # _shared_urls keys). JobScheduler marks these eligible for
-            # auto-unload once no remaining queued/running job references
-            # them. Pre-existing (canvas-Play-loaded) singletons are NOT
-            # in this list, so they're never auto-unloaded.
-            "_shared_loaded_by_us": shared_loaded_by_us,
+        spec = JobSpec(
+            eval=config,
+            graph=graph.to_dict(),
+            scheduling=Scheduling(
+                marginal_vram_mb=req.marginal_vram_mb,
+                exclusive_gpu=req.exclusive_gpu,
+                priority=req.priority,
+            ),
             # Active-workspace overlay path, threaded through to the
             # eval subprocess via ACTIVE_WORKSPACE_DIR env var in
             # JobScheduler._spawn(). None = run against frozen workspace.
-            "active_workspace_dir": req.active_workspace_dir,
-        }
+            active_workspace_dir=req.active_workspace_dir,
+        )
         try:
-            run_id = scheduler.submit(spec)
+            # ``shared_loaded_by_us``: the singletons THIS request freshly
+            # loaded (subset of shared_urls keys) — JobScheduler auto-unloads
+            # them once no remaining job references them; pre-existing
+            # (canvas-Play-loaded) singletons are never auto-unloaded.
+            run_id = scheduler.submit(
+                spec, shared_urls=shared_urls, shared_loaded_by_us=shared_loaded_by_us
+            )
         except ValueError as exc:
             # P3 feasibility rejection (e.g. declaration exceeds the
             # machine's physical ceiling) — a client error, not a 500.
@@ -349,20 +354,6 @@ async def start_eval_v2(req: StartEvalV2Request):
             detail=f"Canvas is busy (mode={current['mode']}, holder={current['holder']})",
         )
 
-    config = EvalConfig(
-        graph_name=req.graph_name,
-        env_nodeset=env_nodeset,
-        selectors=selectors,
-        dataset=req.dataset,
-        split=req.split,
-        episode_count=effective_episode_count,
-        step_budget=req.step_budget,
-        start_episode_index=req.start_episode_index,
-        worker_count=req.worker_count,
-        per_step_budget_sec=req.per_step_budget_sec,
-        episode_indices=req.episode_indices,
-        episode_selectors=req.episode_selectors,
-    )
     run = EvalRun(
         run_id=run_id,
         config=config,
@@ -396,40 +387,15 @@ async def stop_eval_v2():
 
 
 def _summary_from_disk(data: dict) -> dict:
-    """Map a persisted run dict (``eval_storage.run_to_dict`` shape) onto the
-    ``EvalRun.to_summary()`` shape the eval page consumes.
+    """The eval page's progress view of a persisted ``summary.json``
+    (``RunSummary.page_summary`` — the ``EvalRun.to_summary()`` shape).
 
     Lets ``/status`` and ``/episodes`` serve the default *subprocess* path,
     which runs under the JobScheduler and never populates the in-process
     ``_current_run``. The subprocess rewrites ``summary.json`` on every episode
-    boundary (``eval_subprocess_main._install_episode_writer``), so this is live
-    incremental progress, not just the final result.
+    boundary, so this is live incremental progress, not just the final result.
     """
-    config = data.get("config", {}) or {}
-    episodes = data.get("episodes", []) or []
-    completed_count = sum(
-        1 for ep in episodes if ep.get("status") in ("completed", "error")
-    )
-    error_count = sum(1 for ep in episodes if ep.get("status") == "error")
-    return {
-        "run_id": data.get("run_id"),
-        "graph_name": config.get("graph_name", ""),
-        "env_nodeset": config.get("env_nodeset", ""),
-        "status": data.get("status", "running"),
-        "selectors": config.get("selectors", {}),
-        "dataset": "",
-        "split": config.get("split", ""),
-        "episode_count": config.get("episode_count", -1),
-        "total_episodes": data.get("total_episodes", 0),
-        "completed_count": completed_count,
-        "error_count": error_count,
-        "elapsed_sec": round(data.get("elapsed_sec", 0.0) or 0.0, 1),
-        "aggregate_metrics": data.get("aggregate_metrics", {}),
-        "aggregate_by_task": data.get("aggregate_by_task", {}),
-        "error": data.get("error"),
-        "created_at": data.get("created_at"),
-        "finished_at": data.get("finished_at"),
-    }
+    return RunSummary.from_dict(data).page_summary()
 
 
 def _scheduler_current_run() -> tuple[str, str] | None:

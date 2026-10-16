@@ -19,25 +19,22 @@ from unittest.mock import patch
 
 import pytest
 
+from ..agent_loop.eval_config import EvalConfig
 from ..components.facts import NodesetFacts, RegistryFacts
 from .job_scheduler import JobScheduler, _RunningJob
 from .resource_stats import Charge
-from .run_state_io import atomic_write_json, is_done, read_summary, touch_done
+from .run_state_io import JobSpec, RunSummary, Scheduling, is_done, read_summary, touch_done
 
 
 def _spec(
     run_id: str | None = None, marginal_vram_mb: int = 0, exclusive_gpu: bool = False
-) -> dict:
-    return {
-        "run_id": run_id,
-        "eval": {"graph_name": "g", "episode_count": 1, "worker_count": 1},
-        "scheduling": {
-            "marginal_vram_mb": marginal_vram_mb,
-            "exclusive_gpu": exclusive_gpu,
-            "priority": "normal",
-        },
-        "graph": {"nodes": [], "edges": []},
-    }
+) -> JobSpec:
+    return JobSpec(
+        eval=EvalConfig(graph_name="g", episode_count=1, worker_count=1),
+        graph={"nodes": [], "edges": []},
+        scheduling=Scheduling(marginal_vram_mb=marginal_vram_mb, exclusive_gpu=exclusive_gpu),
+        run_id=run_id or "",
+    )
 
 
 def test_submit_writes_files(tmp_path: Path) -> None:
@@ -339,19 +336,16 @@ def test_reconcile_aborted_runs(tmp_path: Path) -> None:
     to 'aborted'.
     """
     from .job_scheduler import reconcile_aborted_runs
-    from .run_state_io import initial_running_summary
 
     # Run A: was running, no _DONE → should be aborted.
     a = tmp_path / "a"
     a.mkdir()
-    atomic_write_json(a / "summary.json", initial_running_summary("a", {}, "t"))
+    RunSummary.initial(_spec(run_id="a")).write(a)
 
     # Run B: completed cleanly with _DONE → must NOT be touched.
     b = tmp_path / "b"
     b.mkdir()
-    bsum = initial_running_summary("b", {}, "t")
-    bsum["status"] = "completed"
-    atomic_write_json(b / "summary.json", bsum)
+    RunSummary.initial(_spec(run_id="b"), status="completed").write(b)
     touch_done(b)
 
     fixed = reconcile_aborted_runs(tmp_path)
@@ -450,9 +444,8 @@ def test_admit_spawns_ephemeral_on_overlay_diff(tmp_path: Path) -> None:
     sched.set_workspace_component_registry(reg)
 
     spec = _spec(marginal_vram_mb=0)
-    spec["active_workspace_dir"] = str(overlay_dir)
-    spec["_shared_urls"] = {"vlm": "http://localhost:10000"}
-    run_id = sched.submit(spec)
+    spec.active_workspace_dir = str(overlay_dir)
+    run_id = sched.submit(spec, shared_urls={"vlm": "http://localhost:10000"})
 
     # Sanity: shared_urls.json was written with frozen URL.
     pre = read_shared_urls(tmp_path / "runs" / run_id)
@@ -509,9 +502,8 @@ def test_admit_skips_ephemeral_on_byte_identical_overlay(tmp_path: Path) -> None
     sched.set_workspace_component_registry(reg)
 
     spec = _spec(marginal_vram_mb=0)
-    spec["active_workspace_dir"] = str(overlay_dir)
-    spec["_shared_urls"] = {"vlm": "http://localhost:10000"}
-    run_id = sched.submit(spec)
+    spec.active_workspace_dir = str(overlay_dir)
+    run_id = sched.submit(spec, shared_urls={"vlm": "http://localhost:10000"})
 
     with patch.object(sched, "_spawn") as spawn:
         spawn.side_effect = lambda q, ephem_tag=None, **kw: sched._running.setdefault(
@@ -544,9 +536,13 @@ def test_reap_releases_ephemerals(tmp_path: Path) -> None:
     # subprocess exit + _DONE so _reap finalizes it.
     run_id = sched.submit(_spec(marginal_vram_mb=0))
     run_dir = tmp_path / run_id
-    summary = read_summary(run_dir) or {}
-    summary["status"] = "completed"
-    atomic_write_json(run_dir / "summary.json", summary)
+    summary = RunSummary.read(run_dir)
+
+    assert summary is not None
+
+    summary.status = "completed"
+
+    summary.write(run_dir)
     touch_done(run_dir)
 
     sched._running[run_id] = _RunningJob(
@@ -570,9 +566,13 @@ def test_reap_skips_release_when_no_ephem_tag(tmp_path: Path) -> None:
 
     run_id = sched.submit(_spec(marginal_vram_mb=0))
     run_dir = tmp_path / run_id
-    summary = read_summary(run_dir) or {}
-    summary["status"] = "completed"
-    atomic_write_json(run_dir / "summary.json", summary)
+    summary = RunSummary.read(run_dir)
+
+    assert summary is not None
+
+    summary.status = "completed"
+
+    summary.write(run_dir)
     touch_done(run_dir)
     sched._running[run_id] = _RunningJob(
         run_id=run_id,
@@ -594,8 +594,7 @@ def test_admit_no_overlay_skips_ephemeral(tmp_path: Path) -> None:
 
     spec = _spec(marginal_vram_mb=0)
     # active_workspace_dir omitted entirely.
-    spec["_shared_urls"] = {"vlm": "http://localhost:10000"}
-    sched.submit(spec)
+    sched.submit(spec, shared_urls={"vlm": "http://localhost:10000"})
 
     with patch.object(sched, "_spawn") as spawn:
         spawn.side_effect = lambda q, ephem_tag=None, **kw: sched._running.setdefault(
@@ -633,9 +632,13 @@ def _stub_running(run_id: str, *, exited: bool, shared_nodesets: tuple[str, ...]
 
 
 def _mark_done(run_dir: Path, status: str = "completed") -> None:
-    summary = read_summary(run_dir) or {}
-    summary["status"] = status
-    atomic_write_json(run_dir / "summary.json", summary)
+    summary = RunSummary.read(run_dir)
+
+    assert summary is not None
+
+    summary.status = status
+
+    summary.write(run_dir)
     touch_done(run_dir)
 
 
@@ -646,9 +649,7 @@ def test_auto_unload_shared_singleton_on_last_job_reap(tmp_path: Path) -> None:
     sched.set_workspace_component_registry(reg)
 
     spec = _spec(marginal_vram_mb=0)
-    spec["_shared_urls"] = {"vlm": "http://localhost:9001"}
-    spec["_shared_loaded_by_us"] = ["vlm"]
-    run_id = sched.submit(spec)
+    run_id = sched.submit(spec, shared_urls={"vlm": "http://localhost:9001"}, shared_loaded_by_us=["vlm"])
 
     # Simulate admission: move into _running with shared_nodesets set.
     q = sched._queue.pop(0)
@@ -673,15 +674,11 @@ def test_auto_unload_holds_when_second_job_still_uses_it(tmp_path: Path) -> None
 
     # Job A: freshly loaded VLM.
     specA = _spec(run_id="A", marginal_vram_mb=0)
-    specA["_shared_urls"] = {"vlm": "http://localhost:9001"}
-    specA["_shared_loaded_by_us"] = ["vlm"]
-    sched.submit(specA)
+    sched.submit(specA, shared_urls={"vlm": "http://localhost:9001"}, shared_loaded_by_us=["vlm"])
 
     # Job B: VLM was already loaded by A; B only consumes.
     specB = _spec(run_id="B", marginal_vram_mb=0)
-    specB["_shared_urls"] = {"vlm": "http://localhost:9001"}
-    specB["_shared_loaded_by_us"] = []  # not freshly loaded
-    sched.submit(specB)
+    sched.submit(specB, shared_urls={"vlm": "http://localhost:9001"}, shared_loaded_by_us=[])
 
     # Both admitted into _running.
     for q in list(sched._queue):
@@ -719,9 +716,7 @@ def test_canvas_loaded_shared_stays_after_job_reap(tmp_path: Path) -> None:
     sched.set_workspace_component_registry(reg)
 
     spec = _spec(marginal_vram_mb=0)
-    spec["_shared_urls"] = {"vlm": "http://localhost:9001"}
-    spec["_shared_loaded_by_us"] = []  # canvas-Play loaded it
-    run_id = sched.submit(spec)
+    run_id = sched.submit(spec, shared_urls={"vlm": "http://localhost:9001"}, shared_loaded_by_us=[])
 
     q = sched._queue.pop(0)
     sched._running[run_id] = _stub_running(run_id, exited=False, shared_nodesets=q.shared_nodesets)
@@ -743,9 +738,7 @@ def test_cancel_queued_releases_shared_refcount(tmp_path: Path) -> None:
     sched.set_workspace_component_registry(reg)
 
     spec = _spec(marginal_vram_mb=0)
-    spec["_shared_urls"] = {"vlm": "http://localhost:9001"}
-    spec["_shared_loaded_by_us"] = ["vlm"]
-    run_id = sched.submit(spec)
+    run_id = sched.submit(spec, shared_urls={"vlm": "http://localhost:9001"}, shared_loaded_by_us=["vlm"])
 
     assert sched.cancel(run_id) == "cancelled"
     asyncio.run(sched._drain_pending_unloads())

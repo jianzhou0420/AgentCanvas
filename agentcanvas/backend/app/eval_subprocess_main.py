@@ -45,14 +45,7 @@ from pathlib import Path
 
 import httpx
 
-from .services.run_state_io import (
-    atomic_write_json,
-    initial_running_summary,
-    read_shared_urls,
-    read_spec,
-    read_summary,
-    touch_done,
-)
+from .services.run_state_io import JobSpec, RunSummary, read_shared_urls, touch_done
 
 log = logging.getLogger("agentcanvas.eval-runner")
 
@@ -99,16 +92,9 @@ def _apply_vram_cap() -> None:
         log.warning("vram cap requested (%d MB) but could not be applied", cap_mb)
 
 
-def _write_initial_summary(run_dir: Path, spec: dict) -> None:
+def _write_initial_summary(run_dir: Path, spec: JobSpec) -> None:
     """Mark status='running' the moment the subprocess is up."""
-    atomic_write_json(
-        run_dir / "summary.json",
-        initial_running_summary(
-            run_id=spec["run_id"],
-            eval_block=spec.get("eval", {}),
-            created_at=spec.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
-        ),
-    )
+    RunSummary.initial(spec).write(run_dir)
 
 
 async def _fetch_shared_url_overrides(backend_url: str, names: list[str]) -> dict[str, str]:
@@ -130,7 +116,7 @@ async def _fetch_shared_url_overrides(backend_url: str, names: list[str]) -> dic
     return snap["urls"]
 
 
-async def _build_local_registry_for_run(spec: dict, shared_urls: dict[str, str]) -> tuple:
+async def _build_local_registry_for_run(spec: JobSpec, shared_urls: dict[str, str]) -> tuple:
     """Build a WorkspaceComponentRegistry inside this subprocess.
 
     Returns ``(graph, env_nodeset_name)`` — graph is GraphDefinition,
@@ -145,7 +131,7 @@ async def _build_local_registry_for_run(spec: dict, shared_urls: dict[str, str])
     from .graph_def import GraphDefinition
     from .state import get_services
 
-    graph = GraphDefinition.from_dict(spec["graph"])
+    graph = GraphDefinition.from_dict(spec.graph)
 
     registry: WorkspaceComponentRegistry = get_services().workspace_component_registry
 
@@ -162,7 +148,7 @@ async def _build_local_registry_for_run(spec: dict, shared_urls: dict[str, str])
 
     # Strict: this process exists to run exactly this graph, so a nodeset
     # that fails to load or is unknown is fatal, not a no-op.
-    worker_count = int(spec["eval"].get("worker_count", 1))
+    worker_count = int(spec.eval.worker_count or 1)
     prepared = await prepare_graph(
         registry, graph, worker_count=worker_count, on_failed="raise", on_unknown="raise"
     )
@@ -195,10 +181,11 @@ async def _run(args: argparse.Namespace) -> int:
         sys.stderr.write(f"missing spec: {spec_path}\n")
         return 2
 
-    spec = read_spec(run_dir)
+    spec = JobSpec.read(run_dir)
     if spec is None:
         sys.stderr.write(f"missing spec: {spec_path}\n")
         return 2
+    spec.created_at = spec.created_at or time.strftime("%Y-%m-%dT%H:%M:%S")
     _write_initial_summary(run_dir, spec)
     shared_urls = read_shared_urls(run_dir)
 
@@ -206,54 +193,33 @@ async def _run(args: argparse.Namespace) -> int:
         graph, env_nodeset = await _build_local_registry_for_run(spec, shared_urls)
     except Exception:
         err = traceback.format_exc()
-        summary = read_summary(run_dir) or {}
-        summary["status"] = "error"
-        summary["error"] = err
-        summary["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        atomic_write_json(run_dir / "summary.json", summary)
+        summary = RunSummary.read(run_dir) or RunSummary.initial(spec)
+        summary.finish("error", err).write(run_dir)
         await _shutdown_local_registry()
         touch_done(run_dir)
         return 1
 
-    # Build EvalRun + EvalConfig from spec, run BatchEvalRunner.
-    from .agent_loop.eval_batch import (
-        BatchEvalRunner,
-        EvalConfig,
-        EvalRun,
-        EvalStatus,
-    )
-    from .api.execution.eval_storage import save_run
+    # Build the EvalRun from the spec's EvalConfig, run BatchEvalRunner.
+    # The parent recorded the env nodeset it detected; an older spec
+    # without one takes what prepare_graph found here.
+    from dataclasses import replace
 
-    eval_block = spec["eval"]
-    config = EvalConfig(
-        graph_name=eval_block["graph_name"],
-        env_nodeset=env_nodeset,
-        selectors=eval_block.get("selectors", {}),
-        dataset=eval_block.get("dataset", ""),
-        split=eval_block.get("split", "val_unseen"),
-        episode_count=eval_block.get("episode_count", -1),
-        start_episode_index=eval_block.get("start_episode_index", 0),
-        worker_count=eval_block.get("worker_count", 1),
-        per_step_budget_sec=eval_block.get("per_step_budget_sec"),
-        step_budget=eval_block.get("step_budget"),
-        episode_indices=eval_block.get("episode_indices"),
-        episode_selectors=eval_block.get("episode_selectors"),
-    )
+    from .agent_loop.eval_batch import BatchEvalRunner, EvalRun, EvalStatus
+
+    config = replace(spec.eval, env_nodeset=spec.eval.env_nodeset or env_nodeset)
     run = EvalRun(
-        run_id=spec["run_id"],
+        run_id=spec.run_id,
         config=config,
         status=EvalStatus.pending,
-        created_at=spec.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
+        created_at=spec.created_at,
     )
 
-    # Episode-boundary summary.json writer: BatchEvalRunner already calls
-    # save_run on terminal exit; the per-episode cadence gives the backend's
-    # status poll live data. ``run_dir`` is the scheduler's pool, so the
-    # runner's graph.json / episodes/ land next to this summary.json.
-    from .api.execution.eval_storage import run_to_dict
-
-    def _write_summary(_ep) -> None:
-        atomic_write_json(run_dir / "summary.json", run_to_dict(run))
+    # Episode-boundary summary.json writer: the per-episode cadence gives
+    # the backend's status poll live data; the same snapshot is the final
+    # write. ``run_dir`` is the scheduler's pool, so the runner's
+    # graph.json / episodes/ land next to this summary.json.
+    def _write_summary(_ep=None) -> None:
+        RunSummary.from_run(run).write(run_dir)
 
     runner = BatchEvalRunner(run, graph, run_dir=run_dir, on_episode=_write_summary)
     rc = 0
@@ -265,7 +231,7 @@ async def _run(args: argparse.Namespace) -> int:
         rc = 1
     finally:
         await _shutdown_local_registry()
-        save_run(run)
+        _write_summary()
         touch_done(run_dir)
     return rc
 
