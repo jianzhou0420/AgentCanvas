@@ -1,6 +1,6 @@
 /** NodeSet Manager page — two-column layout: Resources | Active.
  *
- * Left column (Resources): all discovered nodesets and servers, grouped by
+ * Left column (Resources): all discovered nodesets, grouped by
  *   role category (env / method / model / policy / common / other) into
  *   collapsible sections. Unloaded items get a "Load" / "Start" button.
  *
@@ -13,7 +13,7 @@
  * the backend on each NodeSetInfo (see .claude/standard/nodeset-layout.md).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   RefreshCw,
   Loader2,
@@ -23,12 +23,8 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { api } from "../api";
-import type { ServerStatus } from "../api";
 import type { NodeSetInfo } from "../types";
 import NodeSetCard from "./manager/NodeSetCard";
-import ServerCard from "./manager/ServerCard";
-
-const SERVER_POLL_MS = 5000;
 
 const noop = async () => {};
 
@@ -133,10 +129,8 @@ function CategoryGroup({
 
 export default function NodeSetManager() {
   const [nodesets, setNodesets] = useState<NodeSetInfo[]>([]);
-  const [servers, setServers] = useState<ServerStatus[]>([]);
   const [rescanning, setRescanning] = useState(false);
   const [query, setQuery] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
 
   // ── Fetch helpers ──
 
@@ -148,27 +142,11 @@ export default function NodeSetManager() {
     }
   }, []);
 
-  const fetchServers = useCallback(async () => {
-    try {
-      setServers(await api.listServers());
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const fetchAll = useCallback(async () => {
-    await Promise.all([fetchNodesets(), fetchServers()]);
-  }, [fetchNodesets, fetchServers]);
-
-  // ── Initial load + server polling ──
+  // ── Initial load ──
 
   useEffect(() => {
-    fetchAll();
-    pollRef.current = setInterval(fetchServers, SERVER_POLL_MS);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [fetchAll, fetchServers]);
+    fetchNodesets();
+  }, [fetchNodesets]);
 
   // ── Rescan ──
 
@@ -176,7 +154,7 @@ export default function NodeSetManager() {
     setRescanning(true);
     try {
       await api.reloadComponents();
-      await fetchAll();
+      await fetchNodesets();
     } finally {
       setRescanning(false);
     }
@@ -192,23 +170,6 @@ export default function NodeSetManager() {
   const handleUnloadNodeset = (name: string) => async () => {
     await api.unloadNodeset(name);
     await fetchNodesets();
-  };
-
-  // ── Server actions ──
-
-  const handleStartServer = (name: string) => async () => {
-    await api.startServer(name);
-    await fetchServers();
-  };
-
-  const handleStopServer = (name: string) => async () => {
-    await api.stopServer(name);
-    await fetchServers();
-  };
-
-  const handleRestartServer = (name: string) => async () => {
-    await api.restartServer(name);
-    await fetchServers();
   };
 
   // ── Derived, query-filtered lists ──
@@ -228,21 +189,8 @@ export default function NodeSetManager() {
     [visibleNodesets],
   );
 
-  const serverMatches = (srv: ServerStatus) => {
-    if (!q) return true;
-    const s = q.toLowerCase();
-    return (
-      srv.name.toLowerCase().includes(s) ||
-      (srv.description ?? "").toLowerCase().includes(s)
-    );
-  };
-  const visibleServers = servers.filter(serverMatches);
-  const activeServers = visibleServers.filter(
-    (srv) => srv.connected || srv.status === "starting",
-  );
-
-  const hasResources = resourceGroups.length > 0 || visibleServers.length > 0;
-  const hasActive = activeGroups.length > 0 || activeServers.length > 0;
+  const hasResources = resourceGroups.length > 0;
+  const hasActive = activeGroups.length > 0;
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-950">
@@ -322,24 +270,6 @@ export default function NodeSetManager() {
               </CategoryGroup>
             ))}
 
-            {visibleServers.length > 0 && (
-              <CategoryGroup
-                label="Servers"
-                count={visibleServers.length}
-                forceOpen={!!q}
-              >
-                {visibleServers.map((srv) => (
-                  <ServerCard
-                    key={srv.name}
-                    variant="resource"
-                    server={srv}
-                    onStart={handleStartServer(srv.name)}
-                    onStop={noop}
-                    onRestart={noop}
-                  />
-                ))}
-              </CategoryGroup>
-            )}
           </div>
         </div>
 
@@ -385,25 +315,6 @@ export default function NodeSetManager() {
                     ))}
                   </CategoryGroup>
                 ))}
-
-                {activeServers.length > 0 && (
-                  <CategoryGroup
-                    label="Servers"
-                    count={activeServers.length}
-                    forceOpen={!!q}
-                  >
-                    {activeServers.map((srv) => (
-                      <ServerCard
-                        key={srv.name}
-                        variant="active"
-                        server={srv}
-                        onStart={noop}
-                        onStop={handleStopServer(srv.name)}
-                        onRestart={handleRestartServer(srv.name)}
-                      />
-                    ))}
-                  </CategoryGroup>
-                )}
               </>
             )}
           </div>

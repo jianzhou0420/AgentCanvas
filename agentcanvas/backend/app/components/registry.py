@@ -123,8 +123,8 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._frozen_dir = Path(scan_dir)
         self._active_dir = Path(active_dir) if active_dir else None
         # `_scan_dir` is an alias toggled during scan_all() — kept so
-        # existing internal callers (_scan_subdir, _load_global_hooks,
-        # _scan_and_register_servers) stay unchanged.
+        # existing internal callers (_scan_subdir, _load_global_hooks)
+        # stay unchanged.
         self._scan_dir = self._frozen_dir
         self._scan_cycle = 0
         # Deployment: the one place that picks a launch vehicle and builds
@@ -150,9 +150,6 @@ class WorkspaceComponentRegistry(RegistryFacts):
         # linger in the live registry until a full backend restart.
         self._standalone_node_types: set[str] = set()
         # Server mode
-        self._servers: dict[str, dict] = {}  # server_name → status dict
-        self._server_instances: dict[str, Any] = {}  # server_name → BaseServer instance
-        self._server_node_types: dict[str, list[str]] = {}  # server_name → [node_type, ...]
         # Auto-hosted servers (nodesets deployed in server mode via AutoServerApp)
         self._auto_servers: dict[str, Any] = {}  # nodeset_name → BaseServer
         # Cross-nodeset container-access prototype: owned container id → owner
@@ -190,10 +187,9 @@ class WorkspaceComponentRegistry(RegistryFacts):
         n_nodesets = self._scan_and_register_nodesets()
         n_policies = self._scan_and_register_policies()
         n_nodes = self._scan_and_register_nodes()
-        n_servers = self._scan_and_register_servers()
 
         # Pass 2 — active workspace overlay (if configured + exists)
-        active_counts = {"nodesets": 0, "policies": 0, "nodes": 0, "servers": 0}
+        active_counts = {"nodesets": 0, "policies": 0, "nodes": 0}
         if self._active_dir is not None and self._active_dir.is_dir():
             log.info(
                 "Active workspace overlay: %s — running second scan pass",
@@ -203,7 +199,6 @@ class WorkspaceComponentRegistry(RegistryFacts):
             active_counts["nodesets"] = self._scan_and_register_nodesets()
             active_counts["policies"] = self._scan_and_register_policies()
             active_counts["nodes"] = self._scan_and_register_nodes()
-            active_counts["servers"] = self._scan_and_register_servers()
             # Reset alias to frozen so non-scan code paths read frozen by default.
             self._scan_dir = self._frozen_dir
 
@@ -214,7 +209,6 @@ class WorkspaceComponentRegistry(RegistryFacts):
             "nodesets": n_nodesets + active_counts["nodesets"],
             "policies": n_policies + active_counts["policies"],
             "nodes": n_nodes + active_counts["nodes"],
-            "servers": n_servers + active_counts["servers"],
         }
         if self._active_dir is not None and self._active_dir.is_dir():
             counts["active_overlay"] = active_counts  # type: ignore[assignment]
@@ -233,16 +227,6 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._declared_parallelism.clear()
         self._live_nodesets.clear()
         self._nodeset_node_names.clear()
-        # Stop managed servers before clearing
-        for server in self._server_instances.values():
-            if server.connected:
-                try:
-                    server.stop()
-                except Exception:
-                    log.exception("Failed to stop server %s", server.name)
-        self._servers.clear()
-        self._server_instances.clear()
-        self._server_node_types.clear()
         # Stop auto-hosted servers
         for server in self._auto_servers.values():
             try:
@@ -543,7 +527,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
 
         Each subprocess serves the nodeset in server mode.  Proxy
         canvas nodes are generated from the manifest and registered in
-        the node catalog — identical to YAML-based servers.
+        the node catalog — identical to any other hosted nodeset.
 
         At ``worker_count > 1`` (ADR-028 PB-1), spawn N independent
         subprocesses on N free ports and register N tagged
@@ -1831,137 +1815,3 @@ class WorkspaceComponentRegistry(RegistryFacts):
             log.info("    → registered node type: %s", inst.node_type)
         return len(instances)
 
-    # ── Server mode ──
-
-    def _scan_and_register_servers(self) -> int:
-        """Scan servers/ for YAML configs, optionally start managed servers,
-        fetch manifests, and generate proxy nodes."""
-        from ..agent_loop.builtin_nodes import CATALOG
-
-        servers_dir = self._scan_dir / "servers"
-        if not servers_dir.is_dir():
-            return 0
-
-        total_nodes = 0
-        for yaml_file in sorted(servers_dir.glob("*.yaml")):
-            if yaml_file.name.startswith("_"):
-                continue
-            try:
-                total_nodes += self._load_server(yaml_file, CATALOG.register)
-            except Exception:
-                log.exception("Failed to load server config: %s", yaml_file.name)
-        return total_nodes
-
-    def _load_server(self, yaml_file: Path, register_fn: Any) -> int:
-        """Load a single server YAML, optionally start it, fetch manifest,
-        register proxy nodes."""
-        import yaml
-
-        with open(yaml_file) as f:
-            config = yaml.safe_load(f) or {}
-
-        url = config.get("url", "")
-        enabled = config.get("enabled", True)
-        managed = config.get("managed", False)
-
-        if not url:
-            log.warning("Server config %s has no 'url' — skipping", yaml_file.name)
-            return 0
-
-        # Always create BaseServer instance (even if disabled) so
-        # start_server() can find it later when the user clicks Start.
-        from ..server.base_server import BaseServer
-
-        server = BaseServer(
-            name=yaml_file.stem,
-            url=url,
-            command=config.get("command", ""),
-            port=config.get("port", 9000),
-            host=config.get("host", "localhost"),
-            description=config.get("description", ""),
-            startup_timeout=config.get("startup_timeout", 30),
-            auto_restart=config.get("auto_restart", False),
-            working_dir=config.get("working_dir", ""),
-        )
-        self._server_instances[yaml_file.stem] = server
-
-        if not enabled:
-            log.info("Server %s disabled — available for manual start", yaml_file.stem)
-            self._servers[yaml_file.stem] = server.get_status()
-            self._servers[yaml_file.stem]["nodes"] = []
-            return 0
-
-        # Start managed server
-        if managed and server.command:
-            try:
-                server.start()
-            except RuntimeError as e:
-                log.warning("Failed to start managed server %s: %s", yaml_file.stem, e)
-                self._servers[yaml_file.stem] = server.get_status()
-                self._servers[yaml_file.stem]["nodes"] = []
-                return 0
-
-        # Fetch manifest (server must be running at this point)
-        manifest = server.fetch_manifest()
-        if manifest is None:
-            log.warning("Server unreachable: %s (%s) — skipping", yaml_file.stem, url)
-            self._servers[yaml_file.stem] = server.get_status()
-            self._servers[yaml_file.stem]["nodes"] = []
-            return 0
-
-        # Generate and register proxy nodes
-        node_types = self._register_proxy_nodes(url, manifest, register_fn=register_fn)
-        for nt in node_types:
-            log.info("    → server node: %s", nt)
-
-        status = server.get_status()
-        status["nodes"] = node_types
-        status["version"] = manifest.version
-        self._servers[yaml_file.stem] = status
-        self._server_node_types[yaml_file.stem] = node_types
-        log.info("Loaded server '%s' from %s: %d functions", manifest.name, url, len(node_types))
-        return len(node_types)
-
-    def start_server(self, name: str) -> dict:
-        """Start a managed server by name. Returns status dict."""
-        server = self._server_instances.get(name)
-        if server is None:
-            return {"error": f"Unknown server: {name}"}
-        try:
-            server.start()
-        except RuntimeError as e:
-            return {"error": str(e)}
-
-        # Re-fetch manifest and register nodes if newly connected
-        if server.connected:
-            manifest = server.fetch_manifest()
-            if manifest:
-                node_types = self._register_proxy_nodes(server.url, manifest)
-                self._server_node_types[name] = node_types
-                status = server.get_status()
-                status["nodes"] = node_types
-                status["version"] = manifest.version
-                self._servers[name] = status
-                return status
-
-        return server.get_status()
-
-    def stop_server(self, name: str) -> dict:
-        """Stop a managed server by name. Returns status dict."""
-        server = self._server_instances.get(name)
-        if server is None:
-            return {"error": f"Unknown server: {name}"}
-        server.stop()
-        status = server.get_status()
-        status["nodes"] = []
-        self._servers[name] = status
-        return status
-
-    def list_servers(self) -> list[dict]:
-        """List all registered server-mode nodesets with live status."""
-        result = []
-        for name, server in self._server_instances.items():
-            status = server.get_status()
-            status["nodes"] = self._server_node_types.get(name, [])
-            result.append(status)
-        return result

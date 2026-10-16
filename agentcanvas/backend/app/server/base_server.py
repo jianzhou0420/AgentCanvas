@@ -1,23 +1,13 @@
-"""BaseServer — process launcher, monitor, and HTTP client for server-mode nodesets.
+"""BaseServer — process launcher, monitor, and HTTP client for a hosted nodeset.
 
 This is the **framework-side** class. AgentCanvas uses it to start, stop,
-monitor, and communicate with external server processes.
-
-Each subclass defines server-specific properties (command, port, env vars).
-The framework instantiates these from YAML configs in ``workspace/servers/``.
-
-Usage::
-
-    class HabitatServer(BaseServer):
-        name = "habitat"
-        command = "conda run -n ac-vlnce python -m app.server.examples.habitat_server"
-        port = 9100
-
-    server = HabitatServer()
-    server.start()       # spawns subprocess, waits for /health
-    server.connected     # True
-    server.pid           # 12345
-    server.stop()        # kills process
+monitor, and communicate with the external server process that hosts a
+nodeset — an ``auto_host`` subprocess or a container. Instances are built
+by ``components.launcher.Launcher`` (the one place that picks the launch
+vehicle) when a nodeset is loaded in server mode; the registry keeps them
+in ``_auto_servers``. There is no other way a server comes to exist: a
+nodeset declares how it is hosted (``server_python`` / ``server_image``),
+and the launcher builds the server from that declaration.
 """
 
 from __future__ import annotations

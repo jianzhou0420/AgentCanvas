@@ -305,19 +305,6 @@ export const api = {
   navRunStatus: () =>
     fetchJ<Record<string, unknown>>(`${API_BASE}/api/navigate/run/status`),
 
-  // Server mode
-  listServers: () =>
-    fetchJ<ServerStatus[]>(`${API_BASE}/api/components/servers`),
-  startServer: (name: string) =>
-    postJ<ServerStatus>(`${API_BASE}/api/components/servers/${name}/start`, {}),
-  stopServer: (name: string) =>
-    postJ<ServerStatus>(`${API_BASE}/api/components/servers/${name}/stop`, {}),
-  restartServer: (name: string) =>
-    postJ<ServerStatus>(
-      `${API_BASE}/api/components/servers/${name}/restart`,
-      {},
-    ),
-
   // Component management (NodeSet Manager page)
   listComponents: () =>
     fetchJ<Record<string, string[]>>(`${API_BASE}/api/components/`),
@@ -439,9 +426,11 @@ export const api = {
       message: typeof detail === "string" ? detail : `HTTP ${res.status}`,
     };
   },
-  loadNodeset: (name: string) =>
+  // mode "server" (re)loads the nodeset as an auto-hosted subprocess — the
+  // way to restart a server-mode nodeset after its source changed.
+  loadNodeset: (name: string, mode: "local" | "server" = "local") =>
     postJ<{ ok: boolean; tools: string[] }>(
-      `${API_BASE}/api/components/nodesets/${name}/load`,
+      `${API_BASE}/api/components/nodesets/${name}/load?mode=${mode}`,
       {},
     ),
   unloadNodeset: (name: string) =>
@@ -563,14 +552,3 @@ export const api = {
     ),
 };
 
-export interface ServerStatus {
-  name: string;
-  description: string;
-  url: string;
-  status: "stopped" | "starting" | "connected" | "unreachable" | "error";
-  pid: number | null;
-  connected: boolean;
-  error: string | null;
-  auto_restart: boolean;
-  nodes?: string[];
-}

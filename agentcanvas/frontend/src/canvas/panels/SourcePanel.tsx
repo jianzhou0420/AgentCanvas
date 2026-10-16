@@ -136,7 +136,7 @@ function ScopedEditor({ nodeType }: { nodeType: string }) {
   const restartServerNow = useCallback(async () => {
     setRestarting(true);
     try {
-      await api.restartServer(nodesetName);
+      await api.loadNodeset(nodesetName, "server");
       setStale(false);
       setSaveState("reloaded");
     } catch {

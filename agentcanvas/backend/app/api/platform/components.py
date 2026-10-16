@@ -83,48 +83,6 @@ async def reload_components():
     return {"ok": True, "components": counts}
 
 
-# ── Server mode ──
-
-
-@router.get("/servers")
-async def list_servers():
-    """List all registered server-mode nodesets with live status."""
-    return get_services().workspace_component_registry.list_servers()
-
-
-@router.post("/servers/{name}/start")
-async def start_server(name: str):
-    """Start a managed server-mode nodeset by name."""
-    import asyncio
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        get_services().workspace_component_registry.start_server,
-        name,
-    )
-
-
-@router.post("/servers/{name}/stop")
-async def stop_server(name: str):
-    """Stop a managed server-mode nodeset by name."""
-    return get_services().workspace_component_registry.stop_server(name)
-
-
-@router.post("/servers/{name}/restart")
-async def restart_server(name: str):
-    """Restart a managed server-mode nodeset by name."""
-    import asyncio
-
-    registry = get_services().workspace_component_registry
-    registry.stop_server(name)
-    return await asyncio.get_running_loop().run_in_executor(
-        None,
-        registry.start_server,
-        name,
-    )
-
-
 # ── NodeSet management ──
 
 
