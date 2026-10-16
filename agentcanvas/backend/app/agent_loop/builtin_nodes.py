@@ -1,10 +1,10 @@
-"""Built-in node catalog — framework-owned ``BaseCanvasNode`` subclasses.
+"""Built-in nodes — framework-owned ``BaseCanvasNode`` subclasses.
 
-Handlers here ship with the framework and are registered into
-``NODE_HANDLERS`` at import time. Workspace nodes are added later by
-``WorkspaceComponentRegistry`` via :func:`register_node`. The actual execution
-engine lives in ``graph_executor.py``; this file only defines the
-handler classes.
+Handlers here ship with the framework and seed the process-wide
+:data:`CATALOG` (a :class:`app.components.catalog.NodeCatalog`) at import
+time. Workspace nodes are added later by ``WorkspaceComponentRegistry``
+via :func:`register_node`. The actual execution engine lives in
+``graph_executor.py``; this file only defines the handler classes.
 
 The ``ctx`` argument passed to ``forward(inputs, ctx)`` is a
 ``_NodeStateProxy`` (see ``graph_executor.py``) — an attribute-bag
@@ -52,6 +52,7 @@ import re
 from typing import Any
 
 from ..components.bases import BaseCanvasNode, ConfigField, DisplayField, NodeUIConfig, PortDef
+from ..components.catalog import NodeCatalog
 from ..state import broadcast
 
 log = logging.getLogger("agentcanvas.builtin-nodes")
@@ -1648,25 +1649,12 @@ _BUILTIN_NODES: list[type[BaseCanvasNode]] = [
     PointCloudViewerSink,
 ]
 
-NODE_HANDLERS: dict[str, type[BaseCanvasNode]] = {cls.node_type: cls for cls in _BUILTIN_NODES}
+# The process-wide node catalog: builtins at import, workspace nodes and
+# hosted-nodeset proxies added by WorkspaceComponentRegistry. The executor,
+# the validators, the SDK and the API all read this one instance.
+CATALOG = NodeCatalog(_BUILTIN_NODES)
 
 
 def register_node(cls: type[BaseCanvasNode]) -> None:
-    """Register a custom node type (called by WorkspaceComponentRegistry).
-
-    ADR-028 PC-1: validate batched-opt-in shape at scan time. If
-    ``batched=True``, the class must declare a ``batch_dim`` that names an
-    actual input port — fail fast here so misconfigured nodes never reach
-    the runtime rendezvous tier.
-    """
-    if getattr(cls, "batched", False):
-        batch_dim = getattr(cls, "batch_dim", "")
-        if not batch_dim:
-            raise ValueError(f"{cls.__name__}: batched=True requires a non-empty batch_dim")
-        port_names = {p.name for p in getattr(cls, "input_ports", [])}
-        if batch_dim not in port_names:
-            raise ValueError(
-                f"{cls.__name__}: batch_dim={batch_dim!r} must name an "
-                f"input port, but input_ports has {sorted(port_names)}"
-            )
-    NODE_HANDLERS[cls.node_type] = cls
+    """Register a node type in the process-wide :data:`CATALOG`."""
+    CATALOG.register(cls)

@@ -79,8 +79,8 @@ class WorkspaceComponentRegistry(RegistryFacts):
     ) -> None:
         # frozen workspace = read-only faithful baseline
         # active workspace = optional overlay loaded after frozen; same-name
-        # entries override frozen via register_node()'s last-write-wins on
-        # NODE_HANDLERS and last-key-wins on _discovered_nodesets.
+        # entries override frozen via the catalog's last-write-wins on
+        # register() and last-key-wins on _discovered_nodesets.
         self._frozen_dir = Path(scan_dir)
         self._active_dir = Path(active_dir) if active_dir else None
         # `_scan_dir` is an alias toggled during scan_all() — kept so
@@ -104,7 +104,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._nodeset_node_names: dict[str, list[str]] = {}
         # Standalone node types registered from workspace/nodes/ + workspace/policies/
         # (always-on, registered at scan time). Tracked so unregister_all() can
-        # evict them from NODE_HANDLERS — otherwise deleted standalone nodes
+        # evict them from the catalog — otherwise deleted standalone nodes
         # linger in the live registry until a full backend restart.
         self._standalone_node_types: set[str] = set()
         # Server mode
@@ -136,7 +136,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
 
         Two passes: frozen workspace first, then optional active overlay.
         Active scan registrations override frozen for same-named entries
-        because register_node() and _discovered_nodesets[name] both
+        because CATALOG.register() and _discovered_nodesets[name] both
         last-write-wins. hooks.json uses explicit active-first override
         (see _load_global_hooks).
         """
@@ -211,17 +211,14 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._auto_server_containers.clear()
         self._replay_parsers.clear()
         self._global_hooks.clear()
-        # Evict standalone node/policy types from the global handler registry.
-        # These are registered at scan time (not load time), so without this a
-        # node deleted from disk lingers in NODE_HANDLERS until backend restart.
+        # Evict standalone node/policy types from the node catalog. These are
+        # registered at scan time (not load time), so without this a node
+        # deleted from disk lingers in the catalog until backend restart.
         if self._standalone_node_types:
-            from ..agent_loop.builtin_nodes import NODE_HANDLERS
-            from ..standard.node_io import invalidate_cache
+            from ..agent_loop.builtin_nodes import CATALOG
 
-            for nt in self._standalone_node_types:
-                NODE_HANDLERS.pop(nt, None)
+            CATALOG.unregister(self._standalone_node_types)
             self._standalone_node_types.clear()
-            invalidate_cache()
 
     async def initialize_all(self) -> None:
         """Call ``initialize()`` on all live nodesets.
@@ -482,18 +479,14 @@ class WorkspaceComponentRegistry(RegistryFacts):
         self._unregister_env_panel_for(ns)
         await ns.shutdown()
         node_names = self._nodeset_node_names.pop(name, [])
-        # Deregister from canvas node registry (BaseCanvasNode entries)
-        from ..agent_loop.builtin_nodes import NODE_HANDLERS
-        from ..standard.node_io import invalidate_cache
+        # Deregister from the node catalog (BaseCanvasNode entries), by the
+        # names recorded at load and by the tools' own node_type.
+        from ..agent_loop.builtin_nodes import CATALOG
 
-        for nt in node_names:
-            NODE_HANDLERS.pop(nt, None)
-        # Also remove by node_type for canvas nodes
-        for tool in ns.get_tools():
-            nt = getattr(tool, "node_type", None)
-            if nt:
-                NODE_HANDLERS.pop(nt, None)
-        invalidate_cache()
+        CATALOG.unregister(node_names)
+        CATALOG.unregister(
+            nt for nt in (getattr(tool, "node_type", None) for tool in ns.get_tools()) if nt
+        )
         del self._live_nodesets[name]
         log.info("Unloaded nodeset: %s (%d nodes removed)", name, len(node_names))
         return {"name": name, "tools_removed": node_names}
@@ -507,7 +500,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
 
         Each subprocess serves the nodeset in server mode.  Proxy
         canvas nodes are generated from the manifest and registered in
-        NODE_HANDLERS — identical to YAML-based servers.
+        the node catalog — identical to YAML-based servers.
 
         At ``worker_count > 1`` (ADR-028 PB-1), spawn N independent
         subprocesses on N free ports and register N tagged
@@ -517,7 +510,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
         closure; per-worker URL routing for in-graph proxy calls is
         added in PB-1.5 via ``ctx._executor.get_server_url(...)``.
         """
-        from ..agent_loop.builtin_nodes import NODE_HANDLERS
+        from ..agent_loop.builtin_nodes import CATALOG
         from ..server.base_server import BaseServer
         from .env_panel import unregister_env_panel
 
@@ -602,8 +595,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
                             name,
                             tag,
                         )
-            for nt in node_types:
-                NODE_HANDLERS.pop(nt, None)
+            CATALOG.unregister(node_types)
             raise
 
         self._auto_server_node_types[name] = node_types
@@ -631,8 +623,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
         """Stop all auto-hosted subprocesses for a nodeset (single-instance
         or PB-1 multi-worker tagged copies) and deregister proxy nodes /
         env panels."""
-        from ..agent_loop.builtin_nodes import NODE_HANDLERS
-        from ..standard.node_io import invalidate_cache
+        from ..agent_loop.builtin_nodes import CATALOG
         from .env_panel import unregister_env_panel
 
         # Stop the untagged single-worker env panel (if loaded that way)
@@ -660,10 +651,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
 
         node_types = self._auto_server_node_types.pop(name, [])
         self._auto_server_containers.pop(name, None)
-        for nt in node_types:
-            NODE_HANDLERS.pop(nt, None)
-        if node_types:
-            invalidate_cache()
+        CATALOG.unregister(node_types)
 
         self._live_nodesets.pop(name, None)
 
@@ -792,19 +780,16 @@ class WorkspaceComponentRegistry(RegistryFacts):
     def _register_proxy_nodes(self, url: str, manifest: Any, register_fn: Any = None) -> list[str]:
         """Generate proxy node classes from a server manifest and register
         them. Returns the registered node types. One place for the
-        manifest → NODE_HANDLERS step every hosted path takes."""
-        from ..agent_loop.builtin_nodes import register_node
+        manifest → catalog step every hosted path takes."""
+        from ..agent_loop.builtin_nodes import CATALOG
         from ..server.proxy import generate_proxy_nodes
-        from ..standard.node_io import invalidate_cache
 
-        register = register_fn or register_node
+        register = register_fn or CATALOG.register
         proxy_classes = generate_proxy_nodes(url, manifest)
         node_types: list[str] = []
         for cls in proxy_classes:
             register(cls)
             node_types.append(cls.node_type)
-        if proxy_classes:
-            invalidate_cache()
         return node_types
 
     def _tagged_server_keys_for(self, name: str) -> list[str]:
@@ -1616,15 +1601,11 @@ class WorkspaceComponentRegistry(RegistryFacts):
 
     def _register_tool_instances(self, tools: list) -> int:
         """Register instances as canvas nodes for graph execution."""
-        from ..agent_loop.builtin_nodes import register_node
-        from ..standard.node_io import invalidate_cache
+        from ..agent_loop.builtin_nodes import CATALOG
 
         for inst in tools:
             if hasattr(type(inst), "node_type"):
-                register_node(type(inst))
-
-        if tools:
-            invalidate_cache()
+                CATALOG.register(type(inst))
         return len(tools)
 
     # ── Category-specific bridge logic ──
@@ -1769,8 +1750,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
         ``policy_id``, ``name``, ``checkpoint``, ``config_path`` attributes.
         """
         from ..agent_loop import PolicyEntry
-        from ..agent_loop.builtin_nodes import register_node
-        from ..standard.node_io import invalidate_cache
+        from ..agent_loop.builtin_nodes import CATALOG
 
         instances = self._scan_subdir("policies", BaseCanvasNode)
         for inst in instances:
@@ -1785,25 +1765,19 @@ class WorkspaceComponentRegistry(RegistryFacts):
             )
             self._policies[entry.id] = entry
             if hasattr(type(inst), "node_type"):
-                register_node(type(inst))
+                CATALOG.register(type(inst))
                 self._standalone_node_types.add(inst.node_type)
-        if instances:
-            invalidate_cache()
         return len(instances)
 
     def _scan_and_register_nodes(self) -> int:
-        """Scan nodes/ for BaseCanvasNode subclasses.  Inject into NODE_HANDLERS."""
-        from ..agent_loop.builtin_nodes import register_node
-        from ..standard.node_io import invalidate_cache
+        """Scan nodes/ for BaseCanvasNode subclasses and register them."""
+        from ..agent_loop.builtin_nodes import CATALOG
 
         instances = self._scan_subdir("nodes", BaseCanvasNode)
         for inst in instances:
-            register_node(type(inst))
+            CATALOG.register(type(inst))
             self._standalone_node_types.add(inst.node_type)
             log.info("    → registered node type: %s", inst.node_type)
-        # Invalidate cached schemas so new nodes appear
-        if instances:
-            invalidate_cache()
         return len(instances)
 
     # ── Server mode ──
@@ -1811,8 +1785,7 @@ class WorkspaceComponentRegistry(RegistryFacts):
     def _scan_and_register_servers(self) -> int:
         """Scan servers/ for YAML configs, optionally start managed servers,
         fetch manifests, and generate proxy nodes."""
-        from ..agent_loop.builtin_nodes import register_node
-        from ..standard.node_io import invalidate_cache
+        from ..agent_loop.builtin_nodes import CATALOG
 
         servers_dir = self._scan_dir / "servers"
         if not servers_dir.is_dir():
@@ -1823,12 +1796,9 @@ class WorkspaceComponentRegistry(RegistryFacts):
             if yaml_file.name.startswith("_"):
                 continue
             try:
-                total_nodes += self._load_server(yaml_file, register_node)
+                total_nodes += self._load_server(yaml_file, CATALOG.register)
             except Exception:
                 log.exception("Failed to load server config: %s", yaml_file.name)
-
-        if total_nodes > 0:
-            invalidate_cache()
         return total_nodes
 
     def _load_server(self, yaml_file: Path, register_fn: Any) -> int:

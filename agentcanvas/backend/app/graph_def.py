@@ -2,7 +2,7 @@
 
 A graph is pure JSON-serializable data: node references + wires + config.
 No Python objects, no live state.  The executor creates live instances at
-runtime by looking up handlers in NODE_HANDLERS[node.type].
+runtime by looking up handlers in the node catalog by ``node.type``.
 
 Mirrors the frontend ``types.ts``: GraphDefinition / NodeDef / EdgeDef.
 
@@ -248,7 +248,7 @@ class NodeDef:
 
     The *type* field references a registered ``node_type`` (e.g. ``"envStep"``).
     The executor resolves it to a handler at runtime via
-    ``NODE_HANDLERS[type]``.
+    the node catalog by ``type``.
 
     If *subgraph* is set this is a **composite node** containing a nested
     ``GraphDefinition``.
@@ -618,13 +618,12 @@ def validate_edge_wire_type(source_type: str | None, target_type: str | None) ->
 # eval run, not discovered mid-run.
 #
 # A port type resolves to ``None`` ("unresolved") when its node type is not in
-# ``NODE_HANDLERS`` or the handle is unknown; ``validate_edge_wire_type`` treats
-# ``None`` as allowed, so coverage degrades safely. ``NODE_HANDLERS`` holds the
+# the node catalog or the handle is unknown; ``validate_edge_wire_type`` treats
+# ``None`` as allowed, so coverage degrades safely. The catalog holds the
 # builtins unconditionally and each nodeset's proxy classes once that nodeset is
-# loaded (``register_node`` → ``NODE_HANDLERS[node_type] = cls``). So the SAME
-# resolver covers nodeset env↔method edges too — but only after the nodeset is
-# loaded. Run the check after ``ensure_nodesets_for_graph`` for whole-graph
-# coverage; before load it sees builtins only.
+# loaded. So the SAME resolver covers nodeset env↔method edges too — but only
+# after the nodeset is loaded. Run the check after ``ensure_nodesets_for_graph``
+# for whole-graph coverage; before load it sees builtins only.
 
 
 def _resolve_port_type(node: NodeDef, handle: str, direction: str) -> str | None:
@@ -632,11 +631,11 @@ def _resolve_port_type(node: NodeDef, handle: str, direction: str) -> str | None
 
     ``direction`` is ``"in"`` (consumer/target) or ``"out"`` (producer/source).
     Resolves builtin / iterIn / iterOut nodes always, and nodeset nodes once
-    their nodeset is loaded (proxy class registered in ``NODE_HANDLERS``).
+    their nodeset is loaded (proxy class registered in the node catalog).
     Returns ``None`` for not-yet-loaded nodeset nodes and unknown handles —
     ``None`` means "unresolved → allowed".
     """
-    from .agent_loop.builtin_nodes import NODE_HANDLERS
+    from .agent_loop.builtin_nodes import CATALOG
 
     cfg_ports = (node.config or {}).get("ports") or []
     if node.type in ("iterIn", "iterOut"):
@@ -652,23 +651,7 @@ def _resolve_port_type(node: NodeDef, handle: str, direction: str) -> str | None
             return "ANY"
         return None
 
-    cls = NODE_HANDLERS.get(node.type)
-    if cls is None:
-        return None
-    resolver = getattr(cls, "_resolve_ports", None)
-    if callable(resolver):
-        try:
-            ins, outs = resolver(node.config or {})
-        except Exception:
-            ins = list(getattr(cls, "input_ports", []))
-            outs = list(getattr(cls, "output_ports", []))
-    else:
-        ins = list(getattr(cls, "input_ports", []))
-        outs = list(getattr(cls, "output_ports", []))
-    for p in ins if direction == "in" else outs:
-        if getattr(p, "name", None) == handle:
-            return getattr(p, "wire_type", None)
-    return None
+    return CATALOG.wire_type(node.type, handle, direction, node.config)
 
 
 def wire_type_report(graph: GraphDefinition, type_resolver=None) -> dict:
@@ -679,7 +662,7 @@ def wire_type_report(graph: GraphDefinition, type_resolver=None) -> dict:
 
     ``type_resolver(node, handle, direction) -> str | None`` resolves a port's
     wire type; defaults to ``_resolve_port_type`` (builtins + iterIn/iterOut
-    always; nodeset nodes once their nodeset is loaded into ``NODE_HANDLERS``).
+    always; nodeset nodes once their nodeset is loaded into the node catalog).
     An edge with an unresolved end is counted as ``skipped`` (not an error) —
     coverage degrades safely.
 
@@ -755,11 +738,11 @@ def nodeset_names(graph: GraphDefinition) -> set[str]:
 def validate_graph_connectivity(graph: GraphDefinition, type_resolver=None) -> None:
     """Raise ``ValueError`` if any required input port lacks an incoming edge.
 
-    Required-port detection mirrors the executor's runtime helper
-    (``GraphExecutor._get_required_ports_for_node``): for each node, ask
-    its handler class for the per-instance port schema via ``_resolve_ports``
-    when available, otherwise fall back to the class-level ``input_ports``.
-    A port is required iff ``getattr(p, "optional", True)`` is False.
+    Required-port detection is the node catalog's one rule
+    (``CATALOG.required_inputs``), the same answer the executor's runtime
+    readiness check gets: the per-instance port schema via
+    ``_resolve_ports(config)`` when the class has one, otherwise the
+    class-level ``input_ports``; a port is required iff ``optional`` is False.
 
     Catches a class of author errors at load time — required-but-unwired ports
     that would otherwise silently never satisfy and leave the node parked
@@ -770,27 +753,14 @@ def validate_graph_connectivity(graph: GraphDefinition, type_resolver=None) -> N
         incoming.setdefault(e.target, set()).add(e.targetHandle or "")
 
     # Local import to avoid a circular dependency at module import time.
-    from .agent_loop.builtin_nodes import NODE_HANDLERS
+    from .agent_loop.builtin_nodes import CATALOG
 
     errors: list[str] = []
     for node in graph.nodes:
-        cls = NODE_HANDLERS.get(node.type)
-        if cls is None:
+        if node.type not in CATALOG:
             # Nodeset / unknown type — runtime will surface unresolved handlers.
             continue
-        resolver = getattr(cls, "_resolve_ports", None)
-        instance_inputs: list = []
-        if callable(resolver):
-            try:
-                instance_inputs, _ = resolver(node.config or {})
-            except Exception:
-                instance_inputs = []
-        if instance_inputs:
-            required = {p.name for p in instance_inputs if not getattr(p, "optional", True)}
-        else:
-            required = {
-                p.name for p in getattr(cls, "input_ports", []) if not getattr(p, "optional", True)
-            }
+        required = CATALOG.required_inputs(node.type, node.config)
         wired = incoming.get(node.id, set())
         missing = sorted(required - wired)
         if missing:

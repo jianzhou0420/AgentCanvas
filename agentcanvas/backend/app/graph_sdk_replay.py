@@ -15,7 +15,7 @@ port interfaces: it fails loudly when a port or interface drifts away from the
 recording (the drift a hand-rerun would otherwise have to catch).
 
 Driven via :meth:`app.graph_sdk.Graph.run` ``record=`` / ``replay=``. Both
-mutate the global ``NODE_HANDLERS`` for the duration of one run and restore it
+mutate the process-wide node catalog for the duration of one run and restore it
 afterwards; they are for a single in-process run at a time, not concurrent use.
 """
 
@@ -83,21 +83,22 @@ def _synthesize_manifests(node_types: set[str]) -> dict:
     with the cassette lookup — so this reads exactly what
     :func:`app.server.proxy.create_proxy_node` bakes onto each class.
     """
-    from .agent_loop.builtin_nodes import NODE_HANDLERS
+    from .agent_loop.builtin_nodes import CATALOG
     from .server.manifest import FunctionSchema, ServerManifest
 
     by_ns: dict[str, list] = defaultdict(list)
     for nt in node_types:
-        cls = NODE_HANDLERS.get(nt)
+        cls = CATALOG.get(nt)
         if cls is None or "__" not in nt:
             continue
+        ports = CATALOG.ports_of(nt)
         ns = nt.split("__", 1)[0]
         by_ns[ns].append(
             FunctionSchema(
                 name=nt,
                 description=getattr(cls, "description", "") or "",
-                input_ports=[_portschema(p) for p in getattr(cls, "input_ports", [])],
-                output_ports=[_portschema(p) for p in getattr(cls, "output_ports", [])],
+                input_ports=[_portschema(p) for p in ports.inputs],
+                output_ports=[_portschema(p) for p in ports.outputs],
                 config_schema=getattr(cls, "config_schema", {}) or {},
             )
         )
@@ -118,10 +119,10 @@ class Recorder:
         self._originals: dict[str, Any] = {}
 
     def wrap(self) -> None:
-        from .agent_loop.builtin_nodes import NODE_HANDLERS
+        from .agent_loop.builtin_nodes import CATALOG
 
         for nt in self._targets:
-            cls = NODE_HANDLERS.get(nt)
+            cls = CATALOG.get(nt)
             if cls is None:
                 continue
             orig = cls.forward
@@ -139,10 +140,10 @@ class Recorder:
         return forward
 
     def unwrap(self) -> None:
-        from .agent_loop.builtin_nodes import NODE_HANDLERS
+        from .agent_loop.builtin_nodes import CATALOG
 
         for nt, orig in self._originals.items():
-            cls = NODE_HANDLERS.get(nt)
+            cls = CATALOG.get(nt)
             if cls is not None:
                 cls.forward = orig
         self._originals.clear()
@@ -167,11 +168,11 @@ class Player:
         for c in cassette.get("calls", []):
             self.queues[c["node_type"]].append(c["result"])
         self._manifests: dict = cassette.get("manifests", {})
-        self._registered: list[str] = []  # node types we added to NODE_HANDLERS
+        self._registered: list[str] = []  # node types we added to the catalog
         self._overridden: dict[str, Any] = {}  # node type -> original forward
 
     def install(self) -> None:
-        from .agent_loop.builtin_nodes import NODE_HANDLERS, register_node
+        from .agent_loop.builtin_nodes import CATALOG
         from .server.manifest import ServerManifest
         from .server.proxy import generate_proxy_nodes
 
@@ -181,12 +182,12 @@ class Player:
         for mdict in self._manifests.values():
             manifest = ServerManifest.from_dict(mdict)
             for cls in generate_proxy_nodes("http://replay.invalid", manifest):
-                if cls.node_type in needed and cls.node_type not in NODE_HANDLERS:
-                    register_node(cls)
+                if cls.node_type in needed and cls.node_type not in CATALOG:
+                    CATALOG.register(cls)
                     self._registered.append(cls.node_type)
         # Override forward on every replayed node type (rebuilt or pre-existing).
         for nt in needed:
-            cls = NODE_HANDLERS.get(nt)
+            cls = CATALOG.get(nt)
             if cls is None:
                 continue
             if nt not in self._registered:
@@ -214,13 +215,12 @@ class Player:
         return {nt: len(q) for nt, q in self.queues.items() if q}
 
     def uninstall(self) -> None:
-        from .agent_loop.builtin_nodes import NODE_HANDLERS
+        from .agent_loop.builtin_nodes import CATALOG
 
         for nt, orig in self._overridden.items():
-            cls = NODE_HANDLERS.get(nt)
+            cls = CATALOG.get(nt)
             if cls is not None:
                 cls.forward = orig
-        for nt in self._registered:
-            NODE_HANDLERS.pop(nt, None)
+        CATALOG.unregister(self._registered)
         self._overridden.clear()
         self._registered.clear()

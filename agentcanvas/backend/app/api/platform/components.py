@@ -7,7 +7,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from ...components import nodeset_source
-from ...components.bases import ui_config_to_dict
 from ...services.nodeset_watcher import roots_for
 from ...state import ExecutionGuard, ExecutionMode, get_services
 
@@ -15,11 +14,6 @@ router = APIRouter()
 
 
 # ── Node schema helpers (moved from navigate_api.py) ──
-
-
-def _serialize_ui_config(cls: type) -> dict:
-    """Serialize a node class's ui_config to JSON-safe dict."""
-    return ui_config_to_dict(getattr(cls, "ui_config", None))
 
 
 def _build_profile_options() -> list[dict]:
@@ -242,9 +236,9 @@ async def get_nodeset_source(name: str, file: str | None = None, node_type: str 
 
     class_name = None
     if node_type and "__" in node_type:
-        from ...agent_loop.builtin_nodes import NODE_HANDLERS
+        from ...agent_loop.builtin_nodes import CATALOG
 
-        cls = NODE_HANDLERS.get(node_type)
+        cls = CATALOG.get(node_type)
         class_name = cls.__name__ if cls is not None else None
 
     return {
@@ -424,47 +418,8 @@ async def put_nodeset_source(name: str, req: dict):
 @router.get("/node-schemas")
 async def list_node_schemas():
     """List all available node types (built-in + nodeset) with port metadata and ui_config."""
-    from ...agent_loop.builtin_nodes import NODE_HANDLERS
+    from ...agent_loop.builtin_nodes import CATALOG
 
-    seen: set[str] = set()
-    result = []
-    for _node_type, cls in NODE_HANDLERS.items():
-        canon = cls.node_type
-        if canon in seen:
-            continue
-        seen.add(canon)
-        result.append(
-            {
-                "type": canon,
-                "display_name": cls.display_name,
-                "description": getattr(cls, "description", ""),
-                "category": cls.category,
-                "icon": getattr(cls, "icon", ""),
-                "kind": getattr(cls, "kind", "block"),
-                "ports_mode": getattr(cls, "ports_mode", "mirror"),
-                "config_schema": getattr(cls, "config_schema", {}),
-                "default_config": getattr(cls, "default_config", {}),
-                "ui_config": _serialize_ui_config(cls),
-                "input_ports": [
-                    {
-                        "name": p.name,
-                        "wire_type": p.wire_type,
-                        "description": p.description,
-                        "optional": p.optional,
-                    }
-                    for p in cls.input_ports
-                ],
-                "output_ports": [
-                    {
-                        "name": p.name,
-                        "wire_type": p.wire_type,
-                        "description": p.description,
-                        "optional": p.optional,
-                    }
-                    for p in cls.output_ports
-                ],
-            }
-        )
-
+    result = CATALOG.schemas()
     _inject_dynamic_options(result)
     return result

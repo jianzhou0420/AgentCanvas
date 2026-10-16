@@ -24,13 +24,10 @@ from ..components.bases import FireList
 from ..errors import get_bus
 from ..graph_def import GraphDefinition
 from ..standard.actions import ACTION_NAMES
-from ..standard.node_io import get_required_inputs
 from ..standard.telemetry import _current_node_transport, _current_node_usage, new_usage_bucket
 from ..standard.wire_types import is_list_type
 from ..state import broadcast
-
-# Import node handlers from builtin_nodes (built-in node classes + registry)
-from .builtin_nodes import NODE_HANDLERS
+from .builtin_nodes import CATALOG
 from .hooks import HookRunner, extract_node_hooks, merge_hooks, safe_serialize
 from .scope_analysis import GRAPH_SCOPE_ID, ScopeForest, analyze_scopes
 
@@ -1131,17 +1128,8 @@ class GraphExecutor:
         """True when the node's handler legitimately declares an ``error``
         output port (e.g. env_libero tools, navgpt navigate) — for those,
         an ``error`` key in the result is data, not a failure report."""
-        node_cls = NODE_HANDLERS.get(node.type)
-        if node_cls is None:
-            return False
-        resolver = getattr(node_cls, "_resolve_ports", None)
-        if callable(resolver):
-            try:
-                _ins, outs = resolver(node.config or {})
-                return any(getattr(p, "name", None) == "error" for p in outs)
-            except Exception:
-                return True  # can't resolve — don't misconvict the node
-        return any(getattr(p, "name", None) == "error" for p in getattr(node_cls, "output_ports", []))
+        ports = CATALOG.ports_of(node.type, node.config)
+        return ports is not None and ports.wire_type("error", "out") is not None
 
     async def _fire_node(self, node: NodeInstance, session: Any) -> dict:
         """Execute a node's handler with its pending inputs and persistent state."""
@@ -1150,7 +1138,7 @@ class GraphExecutor:
         _t_ready_map = getattr(self, "_t_ready", None)
         t_ready = _t_ready_map.pop(node.id, None) if _t_ready_map is not None else None
         queue_wait_ms = (time.perf_counter() - t_ready) * 1000 if t_ready is not None else None
-        node_cls = NODE_HANDLERS.get(node.type)
+        node_cls = CATALOG.get(node.type)
         if node_cls is None:
             log.warning("No handler for node type: %s (id=%s)", node.type, node.id)
             return {}
@@ -1399,22 +1387,13 @@ class GraphExecutor:
             if post_result.action == "modify" and post_result.modified_data and not exec_error:
                 result = post_result.modified_data
 
-        # Build port wire type mapping for log enrichment.  Honours
-        # configurable-port overrides (_resolve_ports) so LIST[T] shows up
-        # in the log panel even when the default schema is a scalar T.
+        # Build port wire type mapping for log enrichment — instance ports,
+        # so LIST[T] shows up in the log panel even when the default schema
+        # is a scalar T.
         _port_wt: dict[str, str] = {}
-        if node_cls is not None:
-            _resolver = getattr(node_cls, "_resolve_ports", None)
-            if callable(_resolver):
-                try:
-                    _in_ports, _out_ports = _resolver(node.config)
-                except Exception:
-                    _in_ports = list(getattr(node_cls, "input_ports", []))
-                    _out_ports = list(getattr(node_cls, "output_ports", []))
-            else:
-                _in_ports = list(getattr(node_cls, "input_ports", []))
-                _out_ports = list(getattr(node_cls, "output_ports", []))
-            for p in list(_in_ports) + list(_out_ports):
+        _ports = CATALOG.ports_of(node.type, node.config)
+        if _ports is not None:
+            for p in _ports.inputs + _ports.outputs:
                 if hasattr(p, "name") and hasattr(p, "wire_type"):
                     _port_wt[p.name] = p.wire_type
 
@@ -1576,52 +1555,18 @@ class GraphExecutor:
         return results
 
     def _get_required_ports_for_node(self, node: NodeInstance) -> set[str]:
-        """Resolve the set of required input ports for a specific node instance.
-
-        Combines class-level declarations (``get_required_inputs``) with
-        instance-resolved ports from ``_resolve_ports(config)``, so dynamic
-        nodes like ``llmCall`` or ``iterIn`` can mark a config-declared port
-        ``required: true`` and the graph executor will respect it in both
-        entry discovery and readiness checks.
-        """
-        required: set[str] = set(get_required_inputs(node.type))
-        node_cls = NODE_HANDLERS.get(node.type)
-        if node_cls is None:
-            return required
-        resolver = getattr(node_cls, "_resolve_ports", None)
-        if callable(resolver):
-            try:
-                input_ports, _ = resolver(node.config)
-            except Exception:
-                input_ports = []
-            for p in input_ports:
-                if not getattr(p, "optional", True):
-                    name = getattr(p, "name", "")
-                    if name:
-                        required.add(name)
-        return required
+        """The required input ports of a specific node instance — the
+        catalog's one rule (instance ports via ``_resolve_ports(config)``,
+        else the class-level lists), so dynamic nodes like ``llmCall`` or
+        ``iterIn`` can mark a config-declared port ``required: true`` and
+        the executor respects it in both entry discovery and readiness
+        checks."""
+        return CATALOG.required_inputs(node.type, node.config)
 
     def _get_input_port_wire_type(self, node: NodeInstance, port_name: str) -> str | None:
-        """Resolve the wire type of a consumer port on a live NodeInstance.
-
-        Honours configurable-port nodes (``_resolve_ports``) so instance-level
-        ``config.ports`` overrides are picked up (ADR-024).
-        """
-        node_cls = NODE_HANDLERS.get(node.type)
-        if node_cls is None:
-            return None
-        resolver = getattr(node_cls, "_resolve_ports", None)
-        if callable(resolver):
-            try:
-                input_ports, _ = resolver(node.config)
-            except Exception:
-                input_ports = list(getattr(node_cls, "input_ports", []))
-        else:
-            input_ports = list(getattr(node_cls, "input_ports", []))
-        for p in input_ports:
-            if getattr(p, "name", None) == port_name:
-                return getattr(p, "wire_type", None)
-        return None
+        """Wire type of a consumer port on a live NodeInstance — instance
+        ports, so ``config.ports`` overrides are picked up (ADR-024)."""
+        return CATALOG.wire_type(node.type, port_name, "in", node.config)
 
     def _write_iterin_slot(self, iterin_node: NodeInstance, name: str, value: Any) -> None:
         """Unified write path for iterIn port slots.

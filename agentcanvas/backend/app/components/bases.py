@@ -314,7 +314,7 @@ class BaseCanvasNode(ABC):
 # A spawner node's ``forward()`` returns a ``FireList`` instead of the usual
 # ``{port_name: value}`` dict. The GraphExecutor recognises the sentinel
 # type, suppresses normal edge-propagation, and fires each ``FireSpec`` in
-# order against the live ``NODE_HANDLERS`` registry. After children complete,
+# order against the live node catalog. After children complete,
 # the spawner's :meth:`DynamicFireListNode.aggregate` collapses their results
 # into the spawner's declared output ports, which then flow on normal wires.
 #
@@ -330,7 +330,7 @@ class BaseCanvasNode(ABC):
 class FireSpec:
     """One dynamic child firing requested by a spawner node's ``forward()``."""
 
-    node_type: str  # resolved via NODE_HANDLERS at fire time
+    node_type: str  # resolved via the node catalog at fire time
     inputs: dict[str, Any] = field(default_factory=dict)  # → child's pending_inputs
     config: dict[str, Any] = field(default_factory=dict)
     label: str = ""  # human label for log / trace

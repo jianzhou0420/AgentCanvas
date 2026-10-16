@@ -378,21 +378,6 @@ class GraphValidationError(ValueError):
     """
 
 
-def _node_ports(cls: Any, config: dict) -> tuple[list, list]:
-    """Resolve a handler's (input_ports, output_ports) for a given config —
-    honouring a dynamic ``_resolve_ports(config)`` classmethod when present
-    (graphIn/graphOut/iterIn/…), else the class-level port lists. Falls back
-    to the class lists if the resolver raises."""
-    resolver = getattr(cls, "_resolve_ports", None)
-    if callable(resolver):
-        try:
-            ins, outs = resolver(config or {})
-            return list(ins), list(outs)
-        except Exception:
-            pass
-    return list(getattr(cls, "input_ports", [])), list(getattr(cls, "output_ports", []))
-
-
 # ── Introspection: the node catalog ───────────────────────────────────────
 #
 # "What node types exist, and what are their ports?" — answered from a one-off
@@ -422,12 +407,12 @@ def _build_catalog(refresh: bool = False) -> tuple:
     global _CATALOG
     if _CATALOG is not None and not refresh:
         return _CATALOG
-    from .agent_loop.builtin_nodes import NODE_HANDLERS
+    from .agent_loop.builtin_nodes import CATALOG
     from .components.registry import WorkspaceComponentRegistry
     from .config import get_settings
 
     # Builtins (+ any node registered in-process) first; nodeset scan overlays.
-    index: dict[str, tuple] = {nt: (None, cls) for nt, cls in NODE_HANDLERS.items()}
+    index: dict[str, tuple] = {nt: (None, cls) for nt, cls in CATALOG.items()}
     ns_by_type: dict[str, Any] = {}
 
     s = get_settings()
@@ -510,8 +495,10 @@ def describe(node_type: str, *, refresh: bool = False) -> dict:
         raise KeyError(
             f"unknown node type {node_type!r}" + (f"; did you mean {hint}?" if hint else "")
         )
+    from .components.catalog import ports_for
+
     nsname, cls = index[node_type]
-    ins, outs = _node_ports(cls, {})
+    ports = ports_for(cls)
     ns = ns_by_type.get(node_type)
     server_python = getattr(type(ns), "server_python", None) if ns is not None else None
     ui = getattr(cls, "ui_config", None)
@@ -524,8 +511,8 @@ def describe(node_type: str, *, refresh: bool = False) -> dict:
         "kind": getattr(cls, "kind", "block"),
         "category": getattr(cls, "category", ""),
         "description": getattr(cls, "description", "") or getattr(cls, "display_name", ""),
-        "inputs": [_port_dict(p) for p in ins],
-        "outputs": [_port_dict(p) for p in outs],
+        "inputs": [_port_dict(p) for p in ports.inputs],
+        "outputs": [_port_dict(p) for p in ports.outputs],
         "config": [
             {
                 "name": getattr(f, "name", ""),
@@ -919,10 +906,10 @@ class Graph:
         """
         import difflib
 
-        from .agent_loop.builtin_nodes import NODE_HANDLERS
+        from .agent_loop.builtin_nodes import CATALOG
 
         errors: list[str] = []
-        known = sorted(NODE_HANDLERS)
+        known = sorted(CATALOG.types())
         nodes_by_id = {n.id: n for n in self._def.nodes}
         _generated = {"iterIn", "iterOut"}  # ports synthesised by loop(), not user-typed
 
@@ -933,8 +920,8 @@ class Graph:
         ins_of: dict[str, list] = {}
         outs_of: dict[str, list] = {}
         for n in self._def.nodes:
-            cls = NODE_HANDLERS.get(n.type)
-            if cls is None:
+            ports = CATALOG.ports_of(n.type, n.config)
+            if ports is None:
                 if getattr(n, "subgraph", None):
                     continue  # composite — its internals are validated when flattened
                 hint = difflib.get_close_matches(n.type, known, n=1)
@@ -943,7 +930,7 @@ class Graph:
                 continue
             if n.type in _generated:
                 continue
-            ins_of[n.id], outs_of[n.id] = _node_ports(cls, n.config or {})
+            ins_of[n.id], outs_of[n.id] = ports.inputs, ports.outputs
 
         for e in self._def.edges:
             src = nodes_by_id.get(e.source)
@@ -1035,7 +1022,7 @@ class Graph:
 
         ``load_nodesets`` controls whether the workspace registry is scanned
         and the graph's nodesets auto-loaded before the run (mutating the
-        global ``NODE_HANDLERS`` the executor reads):
+        process-wide node catalog the executor reads):
 
         * ``"auto"`` (default) — load iff the graph has any nodeset node type
           (a ``type`` containing ``"__"``).  Pure-Python / builtin graphs run

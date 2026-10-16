@@ -178,15 +178,15 @@ def compute_height_from_node_cls(node_cls: type) -> int:
 
 
 def build_height_map() -> dict[str, int]:
-    """Build a node_type → height map from the live NODE_HANDLERS registry.
+    """Build a node_type → height map from the live node catalog.
 
-    Returns an empty dict if the registry is not importable (e.g. CLI mode).
+    Returns an empty dict if the catalog is not importable (e.g. CLI mode).
     """
     try:
-        from app.agent_loop.builtin_nodes import NODE_HANDLERS
+        from app.agent_loop.builtin_nodes import CATALOG
     except Exception:
         return {}
-    return {ntype: compute_height_from_node_cls(cls) for ntype, cls in NODE_HANDLERS.items()}
+    return {ntype: compute_height_from_node_cls(cls) for ntype, cls in CATALOG.items()}
 
 
 def _node_height(node_type: str, overrides: dict[str, int] | None = None) -> int:

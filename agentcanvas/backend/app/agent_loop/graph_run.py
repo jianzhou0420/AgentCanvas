@@ -183,7 +183,7 @@ async def prepare_graph(
         log.warning("%s (continuing; their nodes will no-op)", msg)
 
     # Whole-graph wire-type check, now that nodeset proxy classes are in
-    # NODE_HANDLERS (the pre-load validate_graph_connectivity only saw
+    # the node catalog (the pre-load validate_graph_connectivity only saw
     # builtins). Warn-only: it surfaces nodeset env↔method shape mismatches
     # without aborting the run, pending a clean sweep before this is
     # promoted to a hard error (ADR-027 staged enforcement).

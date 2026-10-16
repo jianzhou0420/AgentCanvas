@@ -1,8 +1,8 @@
-"""Regression test: reload must evict deleted standalone nodes from NODE_HANDLERS.
+"""Regression test: reload must evict deleted standalone nodes from the catalog.
 
 Bug (fixed): ``workspace/nodes/`` + ``workspace/policies/`` nodes register into
-the global ``NODE_HANDLERS`` at *scan* time, but ``unregister_all()`` never
-popped them — so a node deleted from disk lingered in the live registry (and in
+the process-wide node catalog at *scan* time, but ``unregister_all()`` never
+popped them — so a node deleted from disk lingered in the live catalog (and in
 ``GET /node-schemas`` / the sidebar) until a full backend restart. ``scan_all``
 calls ``unregister_all`` first, so a rescan must now drop the stale entry.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..agent_loop.builtin_nodes import NODE_HANDLERS
+from ..agent_loop.builtin_nodes import CATALOG
 from .registry import WorkspaceComponentRegistry
 
 _NODE_SRC = """
@@ -41,16 +41,16 @@ def test_reload_evicts_deleted_standalone_node(tmp_path: Path) -> None:
 
     # First scan: standalone node registered into the global registry + tracked.
     reg.scan_all()
-    assert "tmp_throwaway_node" in NODE_HANDLERS
+    assert "tmp_throwaway_node" in CATALOG
     assert "tmp_throwaway_node" in reg._standalone_node_types
-    assert "llmCall" in NODE_HANDLERS  # built-in baseline present
+    assert "llmCall" in CATALOG  # built-in baseline present
 
     # Delete from disk, rescan — the stale entry must be gone.
     node_file.unlink()
     reg.scan_all()
-    assert "tmp_throwaway_node" not in NODE_HANDLERS, (
-        "deleted standalone node lingered in NODE_HANDLERS after reload"
+    assert "tmp_throwaway_node" not in CATALOG, (
+        "deleted standalone node lingered in CATALOG after reload"
     )
     assert "tmp_throwaway_node" not in reg._standalone_node_types
     # Built-ins must survive the eviction (only standalone types are popped).
-    assert "llmCall" in NODE_HANDLERS
+    assert "llmCall" in CATALOG

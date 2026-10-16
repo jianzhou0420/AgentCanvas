@@ -317,11 +317,11 @@ def test_nodesets_env_metadata_without_spawn():
 
 def test_add_accepts_real_node_class():
     import app.graph_sdk_demo  # noqa: F401 — registers demo_*
-    from app.agent_loop.builtin_nodes import NODE_HANDLERS
+    from app.agent_loop.builtin_nodes import CATALOG
 
     from .graph_sdk import Graph, NodeProxy
 
-    cls = NODE_HANDLERS["demo_add"]
+    cls = CATALOG.get("demo_add")
     g = Graph(name="t")
     h = g.add(cls)  # pass the class, not the "demo_add" string
     assert h.type == "demo_add"
@@ -512,7 +512,7 @@ def _echo_graph():
 def test_record_replay_round_trip(tmp_path):
     from pathlib import Path
 
-    from app.agent_loop.builtin_nodes import NODE_HANDLERS
+    from app.agent_loop.builtin_nodes import CATALOG
 
     _register_fake_server_node()
     cassette = tmp_path / "echo.mpk"
@@ -525,13 +525,13 @@ def test_record_replay_round_trip(tmp_path):
 
     # Simulate "the server is gone": drop the node type entirely. Replay must
     # rebuild the proxy class from the cassette's manifest and serve offline.
-    NODE_HANDLERS.pop("fake__echo", None)
-    assert "fake__echo" not in NODE_HANDLERS
+    CATALOG.unregister(["fake__echo"])
+    assert "fake__echo" not in CATALOG
 
     rep = _echo_graph().run(replay=cassette)
     assert rep["v"] == 7  # recorded output flowed through, no server touched
-    # Player unregisters the class it rebuilt → global registry left clean.
-    assert "fake__echo" not in NODE_HANDLERS
+    # Player unregisters the class it rebuilt → the catalog is left clean.
+    assert "fake__echo" not in CATALOG
 
 
 def test_replay_exhausted_on_extra_call(tmp_path):
