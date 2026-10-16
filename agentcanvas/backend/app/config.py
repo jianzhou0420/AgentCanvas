@@ -76,6 +76,15 @@ def get_settings() -> Settings:
     return _settings_instance
 
 
+def strict_errors_enabled() -> bool:
+    """``AGENTCANVAS_STRICT_ERRORS=1`` at backend launch makes failures
+    raise instead of degrading: an LLM call raises instead of returning a
+    fallback, and a node exception crashes the run instead of becoming an
+    ``{"error": ...}`` result. Read fresh on every call so env-worker
+    subprocesses inherit the launch-time setting without caching."""
+    return os.environ.get("AGENTCANVAS_STRICT_ERRORS", "").lower() in ("1", "true", "yes", "on")
+
+
 def eval_runs_dir() -> Path:
     """The eval run pool: ``outputs/eval_runs/`` under the repo root.
 

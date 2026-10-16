@@ -35,6 +35,7 @@ from ..graph_def import (
     validate_edge_wire_types,
     validate_graph_connectivity,
 )
+from .pivots import graphout_last
 from .scope_analysis import GRAPH_SCOPE_ID
 
 if TYPE_CHECKING:
@@ -245,7 +246,7 @@ def harvest_outputs(executor: Any) -> dict[str, Any]:
     outputs: dict[str, Any] = {}
     for node in _graph_scope_graphouts(executor):
         port_name = (node.config or {}).get("portName") or node.id
-        last = node.state.get("_last_inputs") or {}
+        last = graphout_last(node)
         if not last:
             continue
         if len(last) == 1:
@@ -273,7 +274,7 @@ def harvest_metrics(
     """
     metrics: dict[str, float] = {}
     for node in _graph_scope_graphouts(executor):
-        snapshot = node.state.get("_last_inputs") or {}
+        snapshot = graphout_last(node)
         if not snapshot:
             continue
         value = snapshot.get("value")

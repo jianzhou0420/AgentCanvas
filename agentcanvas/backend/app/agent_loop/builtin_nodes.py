@@ -954,7 +954,8 @@ class IterInNode(BaseCanvasNode):
 
     Each entry in ``config.ports`` is ``{name, wire_type, persist}`` and
     produces exactly one output handle named ``<name>`` (no prefix). The
-    runtime maintains one slot per port in ``NodeInstance.port_slots``:
+    runtime keeps one slot per port in ``NodeInstance.carry`` (a
+    ``pivots.LoopCarry``, which owns the persist rule below):
 
       - Writers are auto-detected by name match. Ports authored in
         ``config.initPorts`` are the node's left/input side — canvas

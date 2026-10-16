@@ -8,6 +8,24 @@ Key concepts:
 - Entry nodes: fire at startup with no required inputs
 - StopExecution: abort signal a node may raise to stop the run
 - Step counter: increments when iterOut fires (once per iteration)
+
+``GraphExecutor.run`` is a scheduling loop (pop → guard → fire → pivot or
+deliver) over three internal seams, each written once and called at fixed
+points:
+
+- ``_fire`` — the one error policy. Every fire site (main loop, boundary
+  settle drain, after-loop pass) goes through it, so a node failure is put
+  on the bus, recorded for the end-of-run conviction and starves its
+  consumers the same way wherever it happens.
+- ``_deliver`` — the one delivery rule: route a fired node's outputs along
+  its edges, enqueue the consumers that are ready. The final side, the
+  after-loop pass and the graphOut latch flush are the same call.
+- ``pivots`` (``agent_loop/pivots.py``) — iterIn slot / persist / handoff,
+  iterOut decide / final, graphOut latch / snapshot. The loop calls them
+  through ``_iter_boundary`` and ``_after_fire``; it holds no pivot state.
+
+There is one executor instance per run (ADR-executor-003); the seams are
+methods and helpers of it, not a second engine.
 """
 
 from __future__ import annotations
@@ -15,12 +33,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..components.bases import FireList
+from ..config import strict_errors_enabled
 from ..errors import get_bus
 from ..graph_def import GraphDefinition
 from ..standard.actions import ACTION_NAMES
@@ -29,9 +47,23 @@ from ..standard.wire_types import is_list_type
 from ..state import broadcast
 from .builtin_nodes import CATALOG
 from .hooks import HookRunner, extract_node_hooks, merge_hooks, safe_serialize
+from .pivots import (
+    LoopCarry,
+    final_payload,
+    graphout_last,
+    graphout_latch,
+    graphout_latched,
+    graphout_snapshot,
+    iterout_port_names,
+    stop_requested,
+)
 from .scope_analysis import GRAPH_SCOPE_ID, ScopeForest, analyze_scopes
 
 log = logging.getLogger("agentcanvas.graph-executor")
+
+# ``_deliver``: an edge whose source handle is absent from the payload
+# routes nothing (distinct from routing ``None``).
+_NOT_ROUTED = object()
 
 # C.5 Dynamic Fire-List: spawner.execute() may return a FireList; the engine
 # fires each spec sequentially through ``_fire_dynamic_children``. Children
@@ -120,14 +152,13 @@ class NodeInstance:
     label: str = ""
     state: dict = field(default_factory=dict)  # persistent across firings
     pending_inputs: dict = field(default_factory=dict)  # port → value, cleared after firing
-    # iterIn only: one slot per declared port. Writers (run-start init
-    # edges, iterOut at iter boundary) all land here via
-    # ``_write_iterin_slot``. At iterIn fire time the slots become the
-    # ``fire_inputs`` dict; after the fire, slots for ports with
-    # ``persist=False`` are cleared; persist=True slots keep their value
-    # until the next write. Replaces the old ``init_port_cache`` +
-    # ``pending_inputs`` split.
-    port_slots: dict = field(default_factory=dict)
+    # iterIn only — the loop-carried slots and their persist rule
+    # (``pivots.LoopCarry``); built from ``config.ports`` on construction.
+    carry: LoopCarry | None = None
+
+    def __post_init__(self) -> None:
+        if self.type == "iterIn" and self.carry is None:
+            self.carry = LoopCarry(self.config)
 
 
 class NodeErrorAggregate(RuntimeError):
@@ -137,35 +168,11 @@ class NodeErrorAggregate(RuntimeError):
     a server-mode proxy) starves its downstream but does not stop the
     dataflow loop — without this, the run would finish indistinguishable
     from a clean completion (the ``status="completed"``/``step_count=0``
-    eval pathology). The executor records every node error and convicts
-    the run here, AFTER the verdict stage, so final-side metrics are
-    still collected on the error path.
+    eval pathology). ``_fire`` records every node error — in the main
+    loop, the boundary settle drain and the after-loop pass alike — and
+    the run is convicted here, AFTER the verdict stage, so final-side
+    metrics are still collected on the error path.
     """
-
-
-# ── iterIn helpers ──
-
-
-def _iterin_port_names(iterin_node: NodeInstance) -> set[str]:
-    """Return the set of port names declared in an iterIn node's config.
-
-    Reads the unified ``ports`` list introduced by the per-port persist
-    refactor. Legacy configs with ``init_ports`` / ``loop_ports`` must be
-    rejected at graph load by the validator (version gate), not silently
-    accepted here.
-    """
-    ports_cfg = iterin_node.config.get("ports") or []
-    return {p["name"] for p in ports_cfg if isinstance(p, dict) and "name" in p}
-
-
-def _iterin_persist_map(iterin_node: NodeInstance) -> dict[str, bool]:
-    """Map each iterIn port name to its persist flag (default True)."""
-    ports_cfg = iterin_node.config.get("ports") or []
-    return {
-        p["name"]: bool(p.get("persist", True))
-        for p in ports_cfg
-        if isinstance(p, dict) and "name" in p
-    }
 
 
 # ── Stop Signal ──
@@ -320,9 +327,12 @@ class GraphExecutor:
 
         Structure (the ``# ───`` banners below mark the phases):
         pre-loop (BUILD steps 1-7, then ENTRY DISCOVERY) → in-loop (the
-        firing loop; the iterOut boundary closes each iteration in four
-        phases: record → settle → decide → hand off) → after-loop (the
-        verdict stage) → finalise. Narrated walkthrough with diagrams:
+        scheduling loop; the iterOut boundary — ``_iter_boundary`` — closes
+        each iteration in four phases: record → settle → decide → hand off)
+        → after-loop (the verdict stage) → finalise. The loop fires through
+        ``_fire`` (the one error policy) and delivers through
+        ``_after_fire`` / ``_deliver`` (the one delivery rule). Narrated
+        walkthrough with diagrams:
         docs/pages/developer-guide/design-docs/graph-executor.html (Part I).
         """
 
@@ -519,7 +529,12 @@ class GraphExecutor:
         max_firings = self.step_budget * len(self.nodes) * 3
         total_firings = 0
 
-        # ─── in-loop · the firing loop — pop, guard, fire, route ───
+        # ─── in-loop · the scheduling loop — pop, guard, fire, pivot or deliver ───
+        # The loop only schedules. The work happens in three seams called
+        # at fixed points: ``_fire`` (the one error policy),
+        # ``_iter_boundary`` (the iterOut pivot: record → settle → decide →
+        # hand off) and ``_after_fire`` → ``_deliver`` (the one delivery
+        # rule).
         try:
             while ready_queue and total_firings < max_firings:
                 # Pause/stop check
@@ -619,380 +634,28 @@ class GraphExecutor:
                         {"step": _next_step, "scope_id": node.id},
                     )
 
-                # Fire the node
-                _error_from_exception = False
+                # Fire the node. A failed fire yields an ``{"error": ...}``
+                # result (or raises under strict errors); StopExecution is
+                # the node-side halt and ends the run here.
                 try:
-                    result = await self._fire_node(node, session)
+                    result = await self._fire(node, session)
                 except StopExecution as e:
                     log.info(
                         "StopExecution from %s: %s at step %d", node.id, e.reason, self.step_counter
                     )
                     self.terminated = True
                     break
-                except Exception as e:
-                    origin = self._flatten_map.trace(node.id) if self._flatten_map else node.id
-                    # Surface to user via Report tab; result still gets {"error": ...}
-                    # so downstream nodes can react to the failure.
-                    get_bus().from_exception(
-                        e,
-                        source="node",
-                        code="NODE_EXEC_FAIL",
-                        scope={
-                            "node_id": node.id,
-                            "node_type": node.type,
-                            "origin": origin,
-                            "step": self.step_counter,
-                            "execution_id": getattr(session, "_execution_id", None),
-                        },
-                        title=f"Node {node.id} ({node.type}) failed",
-                    )
-                    # Strict mode (AGENTCANVAS_STRICT_ERRORS=1): re-raise after
-                    # bus emit so the outer execution loop fails fast instead of
-                    # quietly continuing with result={"error": ...}. Designed for
-                    # smoke / eval runs where any node failure should be visible.
-                    if os.environ.get("AGENTCANVAS_STRICT_ERRORS", "").lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    ):
-                        raise
-                    result = {"error": str(e)}
-                    _error_from_exception = True
-
-                # Error-shaped result — the node reported failure by returning
-                # {"error": ...} instead of its declared ports (server-mode
-                # proxies surface HTTP failures this way; the exception path
-                # above converts to the same shape). Routing would silently
-                # drop it: downstream starves and the run drains away as if
-                # completed. Record it for the end-of-run conviction, and put
-                # returned errors on the bus (the exception path already
-                # emitted NODE_EXEC_FAIL). Nodes that legitimately declare an
-                # ``error`` output port (e.g. env_libero tools) are exempt.
-                if (
-                    isinstance(result, dict)
-                    and "error" in result
-                    and not self._declares_error_output(node)
-                ):
-                    self.node_errors.append(
-                        {
-                            "node_id": node.id,
-                            "node_type": node.type,
-                            "step": self.step_counter,
-                            "error": str(result["error"]),
-                        }
-                    )
-                    if not _error_from_exception:
-                        get_bus().emit(
-                            severity="error",
-                            source="node",
-                            code="NODE_RESULT_ERROR",
-                            title=f"Node {node.id} ({node.type}) returned an error result",
-                            message=str(result["error"]),
-                            scope={
-                                "node_id": node.id,
-                                "node_type": node.type,
-                                "step": self.step_counter,
-                                "execution_id": getattr(session, "_execution_id", None),
-                            },
-                        )
 
                 total_firings += 1
 
-                # ── iterOut boundary — fires once per iteration; four phases:
-                # record → settle → decide → hand off ──
+                # ── iterOut boundary — the pivot closes this iteration ──
                 if node.type == "iterOut":
-                    # Resolve which scope this iterOut belongs to. The scope
-                    # is keyed by the paired iterIn's id (== scope_id).
-                    _io_scope_id = node.config.get("pairedWith", "") or self._outermost_scope_id
-                    _io_scope = self.scope_state.get(_io_scope_id)
-                    _is_root_scope = _io_scope_id == self._outermost_scope_id
-
-                    # ── boundary phase 1/4 · record — counters, checkpoint, log, nav_step ──
-                    # Advance per-scope counter. For backward compat,
-                    # self.step_counter mirrors the OUTERMOST scope's counter
-                    # (single-scope graphs unchanged).
-                    if _io_scope is not None:
-                        _io_scope.step_counter += 1
-                        _scope_step = _io_scope.step_counter
-                    else:
-                        _scope_step = self.step_counter + 1
-                    if _is_root_scope:
-                        self.step_counter += 1
-                        session._current_step = self.step_counter
-
-                    _parent_scope_id = _io_scope.parent_scope_id if _io_scope is not None else None
-                    log.info(
-                        "Iter: scope=%s step=%d (parent=%s, root=%s)",
-                        _io_scope_id,
-                        _scope_step,
-                        _parent_scope_id,
-                        _is_root_scope,
-                    )
-
-                    self.broadcast_signal(
-                        "step_end",
-                        {"step": _scope_step, "scope_id": _io_scope_id},
-                    )
-
-                    # Checkpoint all containers AFTER iter boundary
-                    # Semantics: snapshot = state ready for step N+1 to begin
-                    # Only checkpoint on root-scope iterations (single-scope
-                    # graphs unchanged; nested inner scopes don't checkpoint)
-                    if self.containers and _is_root_scope:
-                        self._checkpoints[self.step_counter] = {
-                            cid: c.checkpoint() for cid, c in self.containers.items()
-                        }
-                        if len(self._checkpoints) > self.max_checkpoints:
-                            oldest = min(self._checkpoints)
-                            del self._checkpoints[oldest]
-
-                    # Flush execution log entries to JSONL at iteration boundary
-                    if self._logger:
-                        self._logger.flush()
-
-                    # Broadcast consolidated nav_step from all output viewer data
-                    # Only on root-scope iter (matches pre-refactor: one
-                    # nav_step per outer iteration).
-                    if _is_root_scope:
-                        await self._broadcast_step(session)
-
-                    # Edges FROM iterOut are final-side only (``final_*``
-                    # handles) — they emit once at scope termination via
-                    # ``_emit_final_side``, never per-iteration, so iterOut's
-                    # own outputs are NOT propagated to adjacency here.
-
-                    # ── boundary phase 2/4 · settle — drain this iter's leftover sinks ──
-                    # Settle BEFORE the stop check, so in-loop viewer /
-                    # telemetry sinks scheduled in this iter's wave still
-                    # emit on the terminal step.
-                    # iterIn is excluded — it advances to next iter and is
-                    # correctly fired only via the pairedWith handoff after
-                    # the stop check.
-                    # Multi-scope: settle drain restricted to nodes belonging
-                    # to the same scope as the just-fired iterOut. Outer-scope
-                    # / peer-scope nodes are not drained by inner iter_out.
-                    _max_settle = 64  # safety cap against pathological queues
-                    _settle_n = 0
-                    while ready_queue and _settle_n < _max_settle:
-                        # Skip iterIn — next iter, handled by the pairedWith
-                        # handoff after the stop check.
-                        _next_idx = None
-                        for _i, _nid in enumerate(ready_queue):
-                            _n = self.nodes.get(_nid)
-                            if _n is None or _n.type == "iterIn":
-                                continue
-                            # Multi-scope: only drain nodes in the same scope
-                            # as the iterOut that triggered this settle pass.
-                            # Single-scope graphs: every body node is in the
-                            # outermost scope, so this matches today's behaviour.
-                            # Exception — ROOT boundaries also drain graph-scope
-                            # nodes: dead-end sinks are never on a path to any
-                            # iterOut, so scope analysis leaves them in the
-                            # graph scope; without this they miss the terminal
-                            # step entirely (the run exits with them still
-                            # queued). Mid-loop this only fires them earlier
-                            # than the main loop would have. Inner boundaries
-                            # keep the strict filter — the run continues and
-                            # the main loop drains them.
-                            _n_scope = self._scope_of(_nid)
-                            if (
-                                _io_scope is not None
-                                and _n_scope != _io_scope_id
-                                and not (_is_root_scope and _n_scope == GRAPH_SCOPE_ID)
-                            ):
-                                continue
-                            _next_idx = _i
-                            break
-                        if _next_idx is None:
-                            break  # nothing to settle in this scope
-                        _nid = ready_queue.pop(_next_idx)
-                        _n = self.nodes[_nid]
-                        try:
-                            _r = await self._fire_node(_n, session)
-                        except Exception:
-                            log.exception("settle: error firing %s", _nid)
-                            _n.pending_inputs = {}
-                            _settle_n += 1
-                            continue
-                        _n.pending_inputs = {}
-                        # Multi-scope: graphOut nodes inside a non-graph
-                        # scope BUFFER value into state["latched_value"]
-                        # instead of propagating outward. Mirrors the same
-                        # suppression in the standard propagation block;
-                        # without it, every inner iter would prematurely
-                        # propagate graphOut to outer downstream.
-                        if _n.type == "graphOut" and self._scope_of(_nid) != GRAPH_SCOPE_ID:
-                            if isinstance(_r, dict):
-                                _n.state["latched_value"] = _r.get("value")
-                            _settle_n += 1
-                            continue
-                        # Mirror the propagation block below (not extracted
-                        # to keep main-loop changes minimal).
-                        if isinstance(_r, dict):
-                            for _edge in self.adjacency.get(_nid, []):
-                                _tgt_id = _edge.get("target", "")
-                                if not _tgt_id:
-                                    continue
-                                _tgt = self.nodes.get(_tgt_id)
-                                if _tgt is None:
-                                    continue
-                                _sh = _edge.get("sourceHandle", "default")
-                                _th = _edge.get("targetHandle", _sh)
-                                if _sh in _r:
-                                    self._route_value_to_port(_tgt, _th, _r[_sh])
-                                elif _sh == "default":
-                                    self._route_value_to_port(_tgt, _th, _r)
-                                if self._is_ready(_tgt):
-                                    self._enqueue(ready_queue, _tgt_id)
-                        _settle_n += 1
-
-                    # ── boundary phase 3/4 · decide — stop input, then budget check ──
-                    # Read the just-fired iterOut's own ``stop`` input. The
-                    # stop signal is structurally bound to its scope (it sits
-                    # on the scope's own iterOut), and this check runs exactly
-                    # once per iteration, after the settle drain and before
-                    # the handoff. Unwired stop = budget-only loop.
-                    # Termination (stop or budget) emits the terminal
-                    # iteration's values exactly once on the final_* handles.
-                    _stop = isinstance(result, dict) and bool(result.get("stop"))
-                    if _stop:
-                        log.info(
-                            "Stop: iterOut %s stop=True at scope=%s step=%d",
-                            node_id,
-                            _io_scope_id or "(graph)",
-                            _scope_step,
-                        )
-                        if _io_scope is not None:
-                            _io_scope.terminated = True
-                        # Final side: emit the terminal iteration's values
-                        # exactly once on the final_* handles.
-                        self._emit_final_side(
-                            node,
-                            result,
-                            _io_scope_id,
-                            ready_queue=None if _is_root_scope else ready_queue,
-                        )
-                        if _is_root_scope:
-                            self.terminated = True
-                            break
-
-                    # Per-scope step_budget exhaust check.
-                    _scope_budget = (
-                        _io_scope.step_budget if _io_scope is not None else self.step_budget
-                    )
-                    if _scope_step >= _scope_budget:
-                        log.info(
-                            "Step budget (%d) exhausted for scope=%s",
-                            _scope_budget,
-                            _io_scope_id or "(graph)",
-                        )
-                        if _io_scope is not None:
-                            _io_scope.terminated = True
-                        self._emit_final_side(
-                            node,
-                            result if isinstance(result, dict) else {},
-                            _io_scope_id,
-                            ready_queue=None if _is_root_scope else ready_queue,
-                        )
-                        if _is_root_scope:
-                            self.terminated = True
-                            break
-                        # Inner-scope budget exhaust: don't break root loop;
-                        # propagate inner graphOut latches and let outer continue
-                        self._propagate_graphout_latches(_io_scope, ready_queue)
-                        # Skip the iterIn re-queue below (scope is done)
-                        continue
-
-                    if step_delay_ms > 0 and _is_root_scope:
-                        await asyncio.sleep(step_delay_ms / 1000)
-
-                    # If this scope was just stopped (inner-scope stop above,
-                    # without breaking the root loop), propagate graphOut
-                    # latch + skip the iterIn re-queue.
-                    if _io_scope is not None and _io_scope.terminated:
-                        self._propagate_graphout_latches(_io_scope, ready_queue)
-                        continue
-
-                    # ── boundary phase 4/4 · hand off — carry → paired iterIn, next iteration ──
-                    # iterIn slots are prefixed with "iterout_" for
-                    # iterOut writes (always-prefix synthesis). Each iterOut
-                    # output key ``X`` maps to iterIn slot ``iterout_<X>``.
-                    # ``stop`` is not loop-carried; final_* handles never fire here.
-                    paired_id = node.config.get("pairedWith", "")
-                    paired = self.nodes.get(paired_id) if paired_id else None
-                    if paired and paired.type == "iterIn":
-                        slot_names = _iterin_port_names(paired)
-                        for key, val in result.items():
-                            slot_key = f"iterout_{key}"
-                            if slot_key in slot_names:
-                                self._write_iterin_slot(paired, slot_key, val)
-                        self._enqueue(ready_queue, paired.id)
-
-                    # Standard propagation (line ~750 below) is skipped for
-                    # iterOut — adjacency was already propagated above (before
-                    # the settle drain) so latch buffers see the final iter
-                    # value. Clear pending_inputs and continue.
-                    node.pending_inputs = {}
+                    if await self._iter_boundary(node, result, ready_queue, session, step_delay_ms):
+                        break
                     continue
 
-                # ── ordinary path — consume · special cases · route · enqueue ──
-                # Clear fired node's inputs (consumed)
-                node.pending_inputs = {}
-
-                # iterIn: after fire, clear slots for ports with persist=False
-                # so they don't re-emit next iteration. persist=True slots
-                # stay populated until the next write by a matching writer
-                # (run-start init edge, or iterOut at iter boundary).
-                # Ordering — fire → clear → re-enqueue — persist=False
-                # semantics: emit once on the step of the write, then gone.
-                if node.type == "iterIn":
-                    persist_map = _iterin_persist_map(node)
-                    for slot_name, keep in persist_map.items():
-                        if not keep:
-                            node.port_slots.pop(slot_name, None)
-
-                # Multi-scope: graphOut nodes inside a non-graph scope BUFFER
-                # their value into ``state["latched_value"]`` instead of
-                # propagating out immediately. ``_propagate_graphout_latches``
-                # flushes the latch to outer-scope downstream when the
-                # owning scope terminates. graphOuts in the graph scope (eval
-                # graph metric harvest) propagate normally as before.
-                if node.type == "graphOut":
-                    _po_scope = self._scope_of(node_id)
-                    if _po_scope != GRAPH_SCOPE_ID and isinstance(result, dict):
-                        node.state["latched_value"] = result.get("value")
-                        if total_firings <= 5:
-                            log.info(
-                                "After %s: queue=%s",
-                                node.label or node.id,
-                                [self.nodes[nid].label or nid for nid in ready_queue],
-                            )
-                        continue  # skip standard propagation block below
-
-                # Propagate outputs to downstream nodes
-                for edge in self.adjacency.get(node_id, []):
-                    target_id = edge.get("target", "")
-                    target = self.nodes.get(target_id)
-                    if target is None:
-                        continue
-
-                    src_handle = edge.get("sourceHandle", "default")
-                    tgt_handle = edge.get("targetHandle", src_handle)
-
-                    # Route specific port value — the _route_value_to_port
-                    # helper applies LIST[T] coercion (ADR-027) so scalar
-                    # producers feeding a LIST[T] consumer are auto-wrapped
-                    # and fan-in concatenates in edge declaration order.
-                    if isinstance(result, dict) and src_handle in result:
-                        self._route_value_to_port(target, tgt_handle, result[src_handle])
-                    elif isinstance(result, dict) and src_handle == "default":
-                        self._route_value_to_port(target, tgt_handle, result)
-
-                    # Check if target is now ready to fire
-                    is_ready = self._is_ready(target)
-                    if is_ready:
-                        self._enqueue(ready_queue, target_id)
+                # ── ordinary path — consume · pivot cases · deliver ──
+                self._after_fire(node, result, ready_queue)
 
                 if total_firings <= 5:
                     log.info(
@@ -1112,13 +775,340 @@ class GraphExecutor:
             if self._logger:
                 self._logger.flush()
 
+    # ── The seams — written once, called by the scheduling loop at fixed points ──
+
+    async def _fire(self, node: NodeInstance, session: Any) -> dict:
+        """Fire one node under the one error policy.
+
+        Every fire site — the main loop, the boundary's settle drain, the
+        after-loop pass — goes through here, so a node failure means the
+        same thing wherever it happens: it is put on the error bus (the
+        Report tab), recorded in ``node_errors`` for the end-of-run
+        conviction (``NodeErrorAggregate``), and the fire yields an
+        ``{"error": ...}`` result — which routes to no declared port, so
+        downstream starves rather than consuming garbage. Under
+        ``AGENTCANVAS_STRICT_ERRORS`` an exception is re-raised after the
+        bus emit instead, so smoke / eval runs fail fast. A node that
+        legitimately declares an ``error`` output port (env_libero tools,
+        navgpt navigate) is exempt: its ``error`` key is data.
+        ``StopExecution`` is not an error and passes through to the caller.
+        """
+        from_exception = False
+        try:
+            result = await self._fire_node(node, session)
+        except StopExecution:
+            raise
+        except Exception as e:
+            self._report_node_error(node, session, exc=e)
+            if strict_errors_enabled():
+                raise
+            result = {"error": str(e)}
+            from_exception = True
+        if isinstance(result, dict) and "error" in result and not self._declares_error_output(node):
+            if not from_exception:
+                self._report_node_error(node, session, message=str(result["error"]))
+            self.node_errors.append(
+                {
+                    "node_id": node.id,
+                    "node_type": node.type,
+                    "step": self.step_counter,
+                    "error": str(result["error"]),
+                }
+            )
+        return result
+
+    def _report_node_error(
+        self, node: NodeInstance, session: Any, *, exc: Exception | None = None, message: str = ""
+    ) -> None:
+        """Put one node failure on the error bus: the exception itself
+        (``NODE_EXEC_FAIL``) or the message of a returned error result
+        (``NODE_RESULT_ERROR``)."""
+        scope = {
+            "node_id": node.id,
+            "node_type": node.type,
+            "origin": self._flatten_map.trace(node.id) if self._flatten_map else node.id,
+            "step": self.step_counter,
+            "execution_id": getattr(session, "_execution_id", None),
+        }
+        if exc is not None:
+            get_bus().from_exception(
+                exc,
+                source="node",
+                code="NODE_EXEC_FAIL",
+                scope=scope,
+                title=f"Node {node.id} ({node.type}) failed",
+            )
+            return
+        get_bus().emit(
+            severity="error",
+            source="node",
+            code="NODE_RESULT_ERROR",
+            title=f"Node {node.id} ({node.type}) returned an error result",
+            message=message,
+            scope=scope,
+        )
+
+    def _deliver(
+        self, src_id: str, payload: dict, queue: list[str], *, terminal: bool = False
+    ) -> None:
+        """Route one fired node's outputs along its outgoing edges and
+        enqueue the consumers that are ready — the one delivery rule.
+
+        For every edge out of ``src_id`` the value is
+        ``payload[sourceHandle]`` — the whole payload when the handle is
+        ``"default"``, nothing when the handle is absent (so an
+        error-shaped result routes nowhere). The write goes through
+        ``_route_value_to_port`` (LIST[T] coercion, the iterIn slot
+        write). A target that is ready afterwards is enqueued;
+        ``_enqueue`` dedupes and stamps the ready-time.
+
+        ``terminal`` marks the after-loop band (the final side, the
+        after-loop pass): a ``graphOut`` reached there is routed-to and
+        recorded — graph scope: the harvest snapshot; inner scope: the
+        latch — but never fired. In-loop a graphOut fires like any node.
+        """
+        for edge in self.adjacency.get(src_id, []):
+            target = self.nodes.get(edge.get("target", ""))
+            if target is None:
+                continue
+            src_handle = edge.get("sourceHandle", "default")
+            tgt_handle = edge.get("targetHandle", src_handle)
+            if src_handle in payload:
+                value = payload[src_handle]
+            elif src_handle == "default":
+                value = payload
+            else:
+                value = _NOT_ROUTED
+            if value is not _NOT_ROUTED:
+                self._route_value_to_port(target, tgt_handle, value)
+            if terminal and target.type == "graphOut":
+                if value is _NOT_ROUTED:
+                    continue
+                if self._scope_of(target.id) == GRAPH_SCOPE_ID:
+                    if target.pending_inputs:
+                        graphout_snapshot(target)
+                else:
+                    graphout_latch(target, value)
+                continue
+            if self._is_ready(target):
+                self._enqueue(queue, target.id)
+
+    def _after_fire(self, node: NodeInstance, result: Any, queue: list[str]) -> None:
+        """A body node has fired in-loop: consume its inputs, apply the
+        pivot cases, deliver. An iterIn clears its ``persist=False`` slots;
+        an inner-scope graphOut latches its value instead of delivering
+        (``_propagate_graphout_latches`` flushes the latch when the scope
+        terminates); everything else is delivered along its edges."""
+        node.pending_inputs = {}
+        if node.carry is not None:
+            node.carry.after_fire()
+        if node.type == "graphOut" and self._scope_of(node.id) != GRAPH_SCOPE_ID:
+            if isinstance(result, dict):
+                graphout_latch(node, result.get("value"))
+            return
+        self._deliver(node.id, result if isinstance(result, dict) else {}, queue)
+
+    async def _iter_boundary(
+        self,
+        node: NodeInstance,
+        result: Any,
+        ready_queue: list[str],
+        session: Any,
+        step_delay_ms: int,
+    ) -> bool:
+        """The iterOut boundary — closes one iteration of its scope in four
+        phases: record → settle → decide → hand off. Returns ``True`` when
+        the root scope terminated (stop input, budget exhaust, or a
+        StopExecution during the settle drain) and the scheduling loop must
+        halt. An inner scope's termination flushes its graphOut latches and
+        lets the outer loop continue.
+
+        Edges FROM the iterOut are final-side only (``final_*`` handles):
+        they emit once at scope termination via ``_emit_final_side``, never
+        per iteration, so the iterOut's own result is never delivered here.
+        """
+        # The scope is keyed by the paired iterIn's id (== scope_id).
+        io_scope_id = node.config.get("pairedWith", "") or self._outermost_scope_id
+        io_scope = self.scope_state.get(io_scope_id)
+        is_root = io_scope_id == self._outermost_scope_id
+
+        # ── phase 1/4 · record — counters, checkpoint, log, nav_step ──
+        # Advance the per-scope counter. For backward compat,
+        # self.step_counter mirrors the OUTERMOST scope's counter
+        # (single-scope graphs unchanged).
+        if io_scope is not None:
+            io_scope.step_counter += 1
+            scope_step = io_scope.step_counter
+        else:
+            scope_step = self.step_counter + 1
+        if is_root:
+            self.step_counter += 1
+            session._current_step = self.step_counter
+
+        log.info(
+            "Iter: scope=%s step=%d (parent=%s, root=%s)",
+            io_scope_id,
+            scope_step,
+            io_scope.parent_scope_id if io_scope is not None else None,
+            is_root,
+        )
+        self.broadcast_signal("step_end", {"step": scope_step, "scope_id": io_scope_id})
+
+        # Checkpoint all containers AFTER the iter boundary — the snapshot
+        # is the state step N+1 begins from. Root-scope iterations only
+        # (nested inner scopes don't checkpoint).
+        if self.containers and is_root:
+            self._checkpoints[self.step_counter] = {
+                cid: c.checkpoint() for cid, c in self.containers.items()
+            }
+            if len(self._checkpoints) > self.max_checkpoints:
+                del self._checkpoints[min(self._checkpoints)]
+
+        # Flush execution log entries to JSONL at the iteration boundary.
+        if self._logger:
+            self._logger.flush()
+
+        # One consolidated nav_step per root iteration, from every
+        # graphOut's harvest snapshot.
+        if is_root:
+            await self._broadcast_step(session)
+
+        # ── phase 2/4 · settle — drain this iter's leftover sinks ──
+        if await self._settle_drain(io_scope_id, io_scope, is_root, ready_queue, session):
+            return True
+
+        # ── phase 3/4 · decide — stop input, then budget check ──
+        # The stop signal is structurally bound to its scope (it sits on
+        # the scope's own iterOut) and is read exactly once per iteration,
+        # after the settle drain and before the handoff. Unwired stop =
+        # budget-only loop. Termination (stop or budget) emits the terminal
+        # iteration's values exactly once on the final_* handles.
+        if stop_requested(result):
+            log.info(
+                "Stop: iterOut %s stop=True at scope=%s step=%d",
+                node.id,
+                io_scope_id or "(graph)",
+                scope_step,
+            )
+            if io_scope is not None:
+                io_scope.terminated = True
+            self._emit_final_side(
+                node, result, io_scope_id, ready_queue=None if is_root else ready_queue
+            )
+            if is_root:
+                self.terminated = True
+                return True
+
+        scope_budget = io_scope.step_budget if io_scope is not None else self.step_budget
+        if scope_step >= scope_budget:
+            log.info(
+                "Step budget (%d) exhausted for scope=%s", scope_budget, io_scope_id or "(graph)"
+            )
+            if io_scope is not None:
+                io_scope.terminated = True
+            self._emit_final_side(
+                node,
+                result if isinstance(result, dict) else {},
+                io_scope_id,
+                ready_queue=None if is_root else ready_queue,
+            )
+            if is_root:
+                self.terminated = True
+                return True
+            # Inner-scope budget exhaust: flush the inner graphOut latches
+            # and let the outer loop continue; no handoff — the scope is done.
+            self._propagate_graphout_latches(io_scope, ready_queue)
+            return False
+
+        if step_delay_ms > 0 and is_root:
+            await asyncio.sleep(step_delay_ms / 1000)
+
+        # An inner scope stopped above without halting the root loop: flush
+        # its graphOut latches and skip the handoff.
+        if io_scope is not None and io_scope.terminated:
+            self._propagate_graphout_latches(io_scope, ready_queue)
+            return False
+
+        # ── phase 4/4 · hand off — carry → paired iterIn, next iteration ──
+        # The fired bundle lands in the paired iterIn's ``iterout_<x>``
+        # slots (``stop`` is not loop-carried; final_* handles never fire
+        # here) and the iterIn is queued for the next iteration.
+        paired_id = node.config.get("pairedWith", "")
+        paired = self.nodes.get(paired_id) if paired_id else None
+        if paired is not None and paired.carry is not None:
+            paired.carry.handoff(result if isinstance(result, dict) else {})
+            self._enqueue(ready_queue, paired.id)
+        node.pending_inputs = {}
+        return False
+
+    async def _settle_drain(
+        self,
+        io_scope_id: str,
+        io_scope: _ScopeState | None,
+        is_root: bool,
+        ready_queue: list[str],
+        session: Any,
+    ) -> bool:
+        """Boundary phase 2/4: fire the just-closed iteration's leftover
+        sinks (viewer / telemetry nodes queued behind the iterOut) BEFORE
+        the stop check, so they still emit on the terminal step.
+
+        Restricted to nodes of the iterOut's own scope — outer / peer-scope
+        nodes are not drained by an inner boundary — with one exception: a
+        ROOT boundary also drains graph-scope nodes. Dead-end sinks are
+        never on a path to any iterOut, so scope analysis leaves them in
+        the graph scope; without this they would miss the terminal step
+        entirely (mid-loop it merely fires them earlier than the main loop
+        would). iterIn is never drained — it advances to the next iteration
+        and is fired only via the handoff after the stop check.
+
+        Bounded by ``max_settle`` fires. Returns ``True`` when a drained
+        node raised ``StopExecution`` — the run halts exactly as it does
+        for a StopExecution in the main loop.
+        """
+        max_settle = 64  # safety cap against pathological queues
+        settled = 0
+        while ready_queue and settled < max_settle:
+            next_idx = None
+            for i, nid in enumerate(ready_queue):
+                cand = self.nodes.get(nid)
+                if cand is None or cand.type == "iterIn":
+                    continue
+                cand_scope = self._scope_of(nid)
+                if (
+                    io_scope is not None
+                    and cand_scope != io_scope_id
+                    and not (is_root and cand_scope == GRAPH_SCOPE_ID)
+                ):
+                    continue
+                next_idx = i
+                break
+            if next_idx is None:
+                return False  # nothing to settle in this scope
+            nid = ready_queue.pop(next_idx)
+            cand = self.nodes[nid]
+            try:
+                r = await self._fire(cand, session)
+            except StopExecution as e:
+                log.info(
+                    "StopExecution from %s during settle: %s at step %d",
+                    nid,
+                    e.reason,
+                    self.step_counter,
+                )
+                self.terminated = True
+                return True
+            self._after_fire(cand, r, ready_queue)
+            settled += 1
+        return False
+
     def _enqueue(self, ready_queue: list[str], node_id: str) -> None:
         """Append ``node_id`` to the ready queue if absent, stamping its
         ready-time so ``_fire_node`` can derive ``queue_wait_ms`` (time spent
         waiting in the queue before firing). Stamps only on a real enqueue
         transition; a node already queued keeps its original ready-time.
-        Terminal-band enqueues (final side / latch flush) bypass this helper,
-        so those firings simply report ``queue_wait_ms=None``."""
+        Every enqueue — in-loop, final side, after-loop, latch flush — goes
+        through here."""
         if node_id in ready_queue:
             return
         ready_queue.append(node_id)
@@ -1240,12 +1230,10 @@ class GraphExecutor:
             if pre_result.action == "modify" and pre_result.modified_data:
                 node.pending_inputs.update(pre_result.modified_data)
 
-        # iterIn: fire_inputs = port_slots (one slot per port, keyed by
-        # unprefixed port name). Writers (run-start init edges, iterOut)
-        # have all landed here via ``_write_iterin_slot``.
-        # After the fire, persist=False slots are cleared; persist=True
-        # slots are left in place until next write.
-        fire_inputs = dict(node.port_slots) if node.type == "iterIn" else node.pending_inputs
+        # iterIn fires with its loop-carried slots (``pivots.LoopCarry``):
+        # the writers (run-start init edges, the iterOut handoff) have all
+        # landed there; ``_after_fire`` applies the persist rule afterwards.
+        fire_inputs = node.carry.fire_inputs() if node.carry is not None else node.pending_inputs
 
         await self._emit(
             "node_start",
@@ -1469,15 +1457,14 @@ class GraphExecutor:
         if isinstance(result, dict) and result.get("done") and result.get("metrics"):
             session._metrics = result["metrics"]
 
-        # graphOut: snapshot pending_inputs into ``state["_last_inputs"]``.
-        # This is the canonical run-output channel — read by both
-        # ``_broadcast_step`` (for the nav_step WS event) and
-        # ``BatchEvalRunner._collect_metrics`` (for ``aggregate_by_task``).
-        # When a graph runs at top level, every graphOut fires and is
-        # snapshotted; when used as a composite, ``flatten_graph`` rewires
-        # graphOut nodes through to the parent so this branch becomes inert.
+        # graphOut: record the harvest snapshot — the canonical run-output
+        # channel, read by ``_broadcast_step`` (the nav_step WS event) and
+        # ``graph_run`` (outputs / metrics harvest). When a graph runs at
+        # top level, every graphOut fires and is snapshotted; when used as
+        # a composite, ``flatten_graph`` rewires graphOut nodes through to
+        # the parent so this branch becomes inert.
         if node.type == "graphOut":
-            node.state["_last_inputs"] = dict(node.pending_inputs)
+            graphout_snapshot(node)
 
         return result
 
@@ -1568,21 +1555,6 @@ class GraphExecutor:
         ports, so ``config.ports`` overrides are picked up (ADR-024)."""
         return CATALOG.wire_type(node.type, port_name, "in", node.config)
 
-    def _write_iterin_slot(self, iterin_node: NodeInstance, name: str, value: Any) -> None:
-        """Unified write path for iterIn port slots.
-
-        Both writer sites use this: the iterOut→iterIn iter-boundary
-        transfer, and canvas edges targeting iterIn's init side (run-start
-        init edges). Last write wins; writes never race because the writers
-        fire at disjoint times.
-
-        LIST[T] fan-in concatenation (the scalar → list append logic in
-        ``_route_value_to_port``) is deliberately NOT applied here:
-        persist=True on a LIST[T] port means "carry the last written list",
-        not "accumulate across iterations".
-        """
-        iterin_node.port_slots[name] = value
-
     def _route_value_to_port(self, target: NodeInstance, tgt_handle: str, value: Any) -> None:
         """Assign ``value`` to ``target.pending_inputs[tgt_handle]`` with
         LIST[T] coercion and fan-in concatenation (ADR-027).
@@ -1597,13 +1569,12 @@ class GraphExecutor:
           adjacency iteration is stable.
 
         iterIn special-case: the port surface is one unified ``ports`` list;
-        ``tgt_handle`` is the port name directly (no prefix). Writes go to
-        ``port_slots[name]`` via ``_write_iterin_slot`` with overwrite
-        semantics — LIST[T] fan-in is suppressed so persist=True ports don't
-        accumulate unbounded.
+        ``tgt_handle`` is the port name directly (no prefix). The write is
+        a ``LoopCarry`` slot write — overwrite semantics, LIST[T] fan-in
+        suppressed so persist=True ports don't accumulate unbounded.
         """
-        if target.type == "iterIn":
-            self._write_iterin_slot(target, tgt_handle, value)
+        if target.carry is not None:
+            target.carry.write(tgt_handle, value)
             return
         declared = self._get_input_port_wire_type(target, tgt_handle)
         if declared and is_list_type(declared):
@@ -1645,8 +1616,10 @@ class GraphExecutor:
         the outer loop keeps running and consumes them) or collected into
         ``self._final_ready`` (root scope — drained by ``_after_loop_pass``).
 
-        Graph-scope ``graphOut`` targets are routed-to and snapshotted into
-        ``state["_last_inputs"]`` (the harvest channel) but never fired.
+        Delivery is terminal (``_deliver(terminal=True)``): a graph-scope
+        ``graphOut`` target is snapshotted (the harvest channel), an
+        inner-scope one is latched for ``_propagate_graphout_latches``;
+        neither is fired.
 
         Exactly-once per scope: guarded by ``self._final_emitted``.
         """
@@ -1654,35 +1627,9 @@ class GraphExecutor:
             return
         self._final_emitted.add(scope_id)
 
-        payload: dict[str, Any] = {
-            f"final_{k}": v for k, v in (values or {}).items() if k != "stop"
-        }
-        payload["final_stop"] = True
-
+        payload = final_payload(values)
         sink = self._final_ready if ready_queue is None else ready_queue
-        for edge in self.adjacency.get(iter_out.id, []):
-            src_handle = edge.get("sourceHandle", "")
-            if src_handle not in payload:
-                continue
-            target_id = edge.get("target", "")
-            target = self.nodes.get(target_id)
-            if target is None:
-                continue
-            tgt_handle = edge.get("targetHandle", src_handle)
-            self._route_value_to_port(target, tgt_handle, payload[src_handle])
-            if target.type == "graphOut":
-                if self._scope_of(target_id) == GRAPH_SCOPE_ID:
-                    # Eval-output sink: snapshot the harvest channel.
-                    if target.pending_inputs:
-                        target.state["_last_inputs"] = dict(target.pending_inputs)
-                else:
-                    # Composite return bridge (inner-scope graphOut): write
-                    # the latch; ``_propagate_graphout_latches`` flushes it
-                    # to outer-scope consumers right after this emission.
-                    target.state["latched_value"] = payload[src_handle]
-                continue
-            if self._is_ready(target) and target_id not in sink:
-                sink.append(target_id)
+        self._deliver(iter_out.id, payload, sink, terminal=True)
         log.info(
             "Final side: iterOut %s emitted %d handle(s) for scope=%s",
             iter_out.id,
@@ -1706,11 +1653,9 @@ class GraphExecutor:
         iter_in = self.nodes.get(root_id)
         if iter_out is None or iter_in is None:
             return
-        values: dict[str, Any] = {}
-        for port in iter_out.config.get("ports") or []:
-            name = port.get("name") if isinstance(port, dict) else None
-            if name:
-                values[name] = iter_in.port_slots.get(f"iterout_{name}")
+        if iter_in.carry is None:
+            return
+        values = iter_in.carry.last_carried(iterout_port_names(iter_out.config))
         self._emit_final_side(iter_out, values, root_id, ready_queue=None)
 
     async def _after_loop_pass(self, session: Any) -> None:
@@ -1728,13 +1673,14 @@ class GraphExecutor:
         loop-body node — or any ``iterIn`` / ``iterOut`` — is meaningless
         and barred.
 
-        graphOut targets are routed-to and re-snapshotted into
-        ``_last_inputs`` (the harvest channel ``_collect_metrics`` reads)
-        but not themselves fired — inner-scope graphOuts are skipped
-        entirely, their latch flush being scope-bound.
+        Delivery is terminal: a graph-scope graphOut target is routed-to
+        and re-snapshotted (the harvest channel ``graph_run`` reads) but
+        not fired.
 
-        Tolerant of execution errors: a node that raises (e.g. env already
-        torn down on the exception path) is logged and skipped.
+        Fires through ``_fire`` — the one error policy: a node that fails
+        here (e.g. the env already torn down on the exception path) is put
+        on the bus and recorded like any other failure, and its
+        error-shaped result starves its consumers.
         """
         seeds = list(self._final_ready)
         if not seeds:
@@ -1770,47 +1716,16 @@ class GraphExecutor:
             try:
                 # Fire via the standard path so logging / hooks / state
                 # containers behave exactly as for an in-loop fire.
-                result = await self._fire_node(node, session)
-            except Exception as e:
-                log.warning(
-                    "post-loop fire of %s (%s) raised — skipping: %s",
-                    node_id,
-                    node.type,
-                    e,
-                )
-                node.pending_inputs = {}
-                fired.add(node_id)
-                continue
+                result = await self._fire(node, session)
+            except StopExecution as e:
+                # The loop is already over — nothing to stop.
+                log.info("StopExecution from %s after the loop — ignored: %s", node_id, e.reason)
+                result = {}
             fired.add(node_id)
             node.pending_inputs = {}
-            if not isinstance(result, dict):
-                continue
-            for edge in self.adjacency.get(node_id, []):
-                target_id = edge.get("target", "")
-                target = self.nodes.get(target_id)
-                if target is None:
-                    continue
-                # Inner-scope graphOut: scope-bound latch flush — leave alone.
-                if target.type == "graphOut" and self._scope_of(target_id) != GRAPH_SCOPE_ID:
-                    continue
-                src_handle = edge.get("sourceHandle", "default")
-                tgt_handle = edge.get("targetHandle", src_handle)
-                if src_handle in result:
-                    self._route_value_to_port(target, tgt_handle, result[src_handle])
-                elif src_handle == "default":
-                    self._route_value_to_port(target, tgt_handle, result)
-                if target.type == "graphOut":
-                    # Graph-scope graphOut: re-snapshot the harvest channel.
-                    # Not fired — the snapshot IS the harvest.
-                    if target.pending_inputs:
-                        target.state["_last_inputs"] = dict(target.pending_inputs)
-                    continue
-                if (
-                    target_id not in fired
-                    and target_id not in ready_queue
-                    and self._is_ready(target)
-                ):
-                    ready_queue.append(target_id)
+            self._deliver(
+                node_id, result if isinstance(result, dict) else {}, ready_queue, terminal=True
+            )
 
     def _propagate_graphout_latches(
         self,
@@ -1820,17 +1735,17 @@ class GraphExecutor:
         """When an inner scope terminates, propagate its graphOut nodes'
         latched values to outer-scope downstream nodes.
 
-        graphOut nodes inside an inner scope buffer their incoming value in
-        ``state["latched_value"]`` (set in the propagation block when the
-        scope is non-graph) instead of immediately propagating outward.
+        graphOut nodes inside an inner scope latch their incoming value
+        (``pivots.graphout_latch``, from ``_after_fire`` when the scope is
+        non-graph) instead of immediately delivering outward.
         On scope termination we walk those graphOut nodes, route their
         latched value through outgoing edges, and queue any downstream
         target that becomes ready. This gives graphOut "function return
         value" semantics: outer sees the FINAL value, not every iteration's.
 
         For root-scope or graph-scope graphOuts (e.g. eval_graph metric
-        harvest), values were already propagated normally in the standard
-        propagation block — this method is a no-op for those.
+        harvest), values were already delivered in-loop — this method is a
+        no-op for those. graphOut's one output handle is ``value``.
         """
         if scope.scope_id == GRAPH_SCOPE_ID:
             return
@@ -1838,19 +1753,11 @@ class GraphExecutor:
             pnode = self.nodes.get(pout_id)
             if pnode is None:
                 continue
-            latched = pnode.state.get("latched_value")
+            latched = graphout_latched(pnode)
             if latched is None:
                 # No value was ever buffered (no inner-iter wrote to graphOut)
                 continue
-            for edge in self.adjacency.get(pout_id, []):
-                tgt_id = edge.get("target", "")
-                tgt = self.nodes.get(tgt_id)
-                if tgt is None:
-                    continue
-                tgt_handle = edge.get("targetHandle", "value")
-                self._route_value_to_port(tgt, tgt_handle, latched)
-                if self._is_ready(tgt) and tgt_id not in ready_queue:
-                    ready_queue.append(tgt_id)
+            self._deliver(pout_id, {"value": latched}, ready_queue)
 
     def _is_ready(self, node: NodeInstance) -> bool:
         """Check if a node is ready to fire.
@@ -1861,16 +1768,11 @@ class GraphExecutor:
         Required ports are resolved per-instance so configurable-port nodes
         (``_resolve_ports``) can mark instance ports ``required=True``.
 
-        iterIn special-case: readiness is driven by ``port_slots`` (the
-        unified slot dict) — not ``pending_inputs``. Required ports on
-        iterIn check against ``port_slots``; the all-optional branch fires
-        iterIn whenever any slot is populated.
+        iterIn special-case: readiness is driven by its loop-carried slots
+        (``LoopCarry.ready``) — not ``pending_inputs``.
         """
-        if node.type == "iterIn":
-            required = self._get_required_ports_for_node(node)
-            if required:
-                return all(port_name in node.port_slots for port_name in required)
-            return len(node.port_slots) > 0
+        if node.carry is not None:
+            return node.carry.ready(self._get_required_ports_for_node(node))
         # iterOut special-case: a bare ``stop`` signal does not constitute
         # an iteration. The boundary fires only once at least one loop-carry
         # value has arrived — otherwise an early stop producer (e.g. an
@@ -1957,7 +1859,7 @@ class GraphExecutor:
         for n in self.nodes.values():
             if n.type != "graphOut":
                 continue
-            last = n.state.get("_last_inputs")
+            last = graphout_last(n)
             if not last:
                 continue
             port_name = (n.config or {}).get("portName") or ""

@@ -24,13 +24,13 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import os
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import litellm
 
+from ..config import strict_errors_enabled
 from ..standard.telemetry import _current_node_usage
 from .providers import LLMConfig
 from .rulebook import finalize_params
@@ -42,19 +42,6 @@ litellm.suppress_debug_info = True
 litellm.telemetry = False
 litellm.turn_off_message_logging = True
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-
-
-def strict_errors_enabled() -> bool:
-    """Read fresh on every call so env-worker subprocesses inherit the
-    backend's launch-time setting without caching. Set
-    ``AGENTCANVAS_STRICT_ERRORS=1`` at backend launch to make API failures
-    raise instead of returning a fallback (``None`` / ``[]``)."""
-    return os.environ.get("AGENTCANVAS_STRICT_ERRORS", "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
