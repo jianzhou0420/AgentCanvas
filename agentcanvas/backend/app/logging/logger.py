@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from .models import ExecutionSummary, NodeLogEntry
+from .store import ASSETS_DIR, LOG_FILE
 
 log = logging.getLogger("agentcanvas.exec-log")
 
@@ -93,7 +94,7 @@ def save_asset(
     if not isinstance(value, np.ndarray):
         return None
 
-    assets_dir = os.path.join(persist_dir, "assets")
+    assets_dir = os.path.join(persist_dir, ASSETS_DIR)
     os.makedirs(assets_dir, exist_ok=True)
 
     safe_label = _sanitize_filename(node_label)
@@ -124,7 +125,7 @@ def save_asset(
 
     return {
         "__type": "asset",
-        "path": f"assets/{fname}",
+        "path": f"{ASSETS_DIR}/{fname}",
         "wire_type": wire_type,
         "shape": shape,
         "dtype": dtype,
@@ -275,7 +276,7 @@ class ExecutionLogger:
         if persist_dir:
             try:
                 os.makedirs(persist_dir, exist_ok=True)
-                self._jsonl_path = os.path.join(persist_dir, "log.jsonl")
+                self._jsonl_path = os.path.join(persist_dir, LOG_FILE)
             except OSError as e:
                 log.warning("Cannot create log dir %s: %s", persist_dir, e)
 

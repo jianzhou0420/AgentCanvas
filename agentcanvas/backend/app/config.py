@@ -98,6 +98,13 @@ def eval_runs_dir() -> Path:
     return Path(env) if env else _REPO_ROOT / "outputs" / "eval_runs"
 
 
+def canvas_runs_dir() -> Path:
+    """The canvas run pool: ``outputs/runs/`` under the repo root — one dir per
+    canvas Play execution (``log.jsonl`` + ``assets/`` + ``graph.json``). The
+    one resolver for the writer (LoopRunner) and the readers (LogStore)."""
+    return _REPO_ROOT / "outputs" / "runs"
+
+
 def resolve_executor_url() -> str:
     """The base URL a subprocess uses to reach the executor's /api/internal.
 

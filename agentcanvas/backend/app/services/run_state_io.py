@@ -337,6 +337,29 @@ def read_summary(run_dir: Path) -> dict | None:
     return summary.to_dict() if summary is not None else None
 
 
+def list_run_summaries(eval_runs_dir: Path) -> list[dict]:
+    """Every run under the pool as a lightweight summary row, newest run id
+    first: the on-disk dict without its ``episodes`` list, plus
+    ``episode_count_saved`` and a top-level ``graph_name``."""
+    if not eval_runs_dir.is_dir():
+        return []
+    rows: list[dict] = []
+    for sub in sorted(eval_runs_dir.iterdir(), reverse=True):
+        if not sub.is_dir():
+            continue
+        data = _read_json(sub / "summary.json")
+        if data is None:
+            continue
+        row = {k: v for k, v in data.items() if k != "episodes"}
+        row["episode_count_saved"] = len(data.get("episodes") or [])
+        # Subprocess-path summaries carry graph_name only inside config;
+        # promote it so list consumers (RunHistory rows) see a name.
+        if not row.get("graph_name"):
+            row["graph_name"] = (data.get("config") or {}).get("graph_name", "")
+        rows.append(row)
+    return rows
+
+
 def mark_aborted(run_dir: Path, reason: str = "in-flight loss on backend restart") -> None:
     """Promote a stale ``running`` / ``pending`` summary to ``aborted`` when the
     PID is gone but ``_DONE`` was never written. Idempotent.

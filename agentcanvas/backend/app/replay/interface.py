@@ -7,10 +7,9 @@ importable from the main FastAPI process — i.e. it must not import the
 env's underlying simulator (MatterSim, habitat-sim, etc.). It only reads
 one episode's log.jsonl, which is plain JSON.
 
-Each eval episode owns a self-contained dir
-``outputs/eval_runs/{run_id}/episodes/ep{idx:04d}/`` holding ``log.jsonl``
-+ ``assets/``; the parser is handed that episode's ``log.jsonl`` path
-directly — no run-level splitting, no boundary detection.
+Each eval episode owns a self-contained dir (``LogStore.episode_dir``)
+holding ``log.jsonl`` + ``assets/``; the parser is handed that episode's
+``log.jsonl`` path directly — no run-level splitting, no boundary detection.
 
 The dataclasses defined here are the contract the frontend consumes.
 ``frame_url`` is a path relative to the episode's assets directory; the
@@ -20,7 +19,6 @@ where ``execution_id`` is ``{run_id}_ep{idx:04d}``.
 
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -150,17 +148,9 @@ class GenericReplayParser(BaseReplayParser):
     @staticmethod
     def _read_entries(episode_log_path: Path) -> list[dict[str, Any]]:
         """Read every JSON entry from one episode's ``log.jsonl``."""
-        entries: list[dict[str, Any]] = []
-        with episode_log_path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    entries.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-        return entries
+        from ..logging.store import LogStore
+
+        return LogStore.read_entries(episode_log_path)
 
     def parse(self, episode_log_path: Path) -> ReplayEpisode:
         if not episode_log_path.exists():

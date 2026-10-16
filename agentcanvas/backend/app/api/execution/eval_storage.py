@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...config import eval_runs_dir
-from ...services.run_state_io import RunSummary, episode_to_dict
+from ...services.run_state_io import RunSummary, episode_to_dict, list_run_summaries
 
 __all__ = ["delete_run", "episode_to_dict", "list_runs", "load_run", "run_to_dict", "save_run"]
 
@@ -62,27 +62,7 @@ def load_run(run_id: str) -> dict | None:
 
 def list_runs() -> list[dict]:
     """List all runs as lightweight summaries (excludes episodes list)."""
-    runs_dir = get_runs_dir()
-    results: list[dict] = []
-    for sub in sorted(runs_dir.iterdir(), reverse=True) if runs_dir.exists() else []:
-        if not sub.is_dir():
-            continue
-        path = sub / "summary.json"
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text())
-            # Return summary without full episodes list
-            summary = {k: v for k, v in data.items() if k != "episodes"}
-            summary["episode_count_saved"] = len(data.get("episodes", []))
-            # Subprocess-path summaries carry graph_name only inside config;
-            # promote it so list consumers (RunHistory rows) see a name.
-            if not summary.get("graph_name"):
-                summary["graph_name"] = (data.get("config") or {}).get("graph_name", "")
-            results.append(summary)
-        except Exception as exc:
-            log.warning("Failed to read eval run %s: %s", path, exc)
-    return results
+    return list_run_summaries(get_runs_dir())
 
 
 def delete_run(run_id: str) -> bool:

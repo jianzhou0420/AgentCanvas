@@ -16,6 +16,7 @@ from typing import Any
 
 from ..graph_def import GraphDefinition, HookDef
 from ..logging import ExecutionLogger
+from ..logging.store import GRAPH_FILE, LogStore
 from ..state import broadcast
 from .graph_executor import GraphExecutor
 from .graph_run import ExecutionPrinciples, GraphRun, RunSession
@@ -96,20 +97,10 @@ class LoopRunner(RunSession):
         logger = self._logger
         _self_created_logger = False
         if logger is None and self._execution_id:
-            repo_root = os.path.normpath(
-                os.path.join(
-                    os.path.dirname(__file__),
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                )
-            )
-            persist_dir = os.path.join(repo_root, "outputs", "runs", self._execution_id)
             logger = ExecutionLogger(
                 execution_id=self._execution_id,
                 source="canvas",
-                persist_dir=persist_dir,
+                persist_dir=str(LogStore.default().canvas_run_dir(self._execution_id)),
             )
             _self_created_logger = True
 
@@ -117,7 +108,7 @@ class LoopRunner(RunSession):
         # self-created (canvas) loggers. An injected logger points at a
         # caller-owned dir whose run-level graph.json the caller writes.
         if _self_created_logger and logger._persist_dir:
-            graph_path = os.path.join(logger._persist_dir, "graph.json")
+            graph_path = os.path.join(logger._persist_dir, GRAPH_FILE)
             if not os.path.exists(graph_path):
                 try:
                     with open(graph_path, "w") as f:

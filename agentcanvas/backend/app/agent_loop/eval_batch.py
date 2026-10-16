@@ -24,6 +24,7 @@ from ..components.fleet import Fleet
 from ..config import eval_runs_dir
 from ..graph_def import GraphDefinition, nodeset_names
 from ..logging import ExecutionLogger
+from ..logging.store import GRAPH_FILE, LogStore
 from ..models import WSMessage
 from ..state import ExecutionGuard, broadcast
 from .eval_config import EvalConfig
@@ -233,7 +234,7 @@ class BatchEvalRunner:
         # per-episode state.
         self._run_dir = str(Path(run_dir) if run_dir is not None else eval_runs_dir() / run.run_id)
         os.makedirs(self._run_dir, exist_ok=True)
-        graph_path = os.path.join(self._run_dir, "graph.json")
+        graph_path = os.path.join(self._run_dir, GRAPH_FILE)
         try:
             with open(graph_path, "w") as f:
                 json.dump(graph.to_dict(), f)
@@ -473,9 +474,9 @@ class BatchEvalRunner:
         # land here, never interleaved with sibling episodes. Created up
         # front so episode.json is written even when the episode errors
         # before the GraphRun (and its logger) is constructed.
-        ep_dir = os.path.join(self._run_dir, "episodes", f"ep{actual_index:04d}")
+        ep_dir = str(LogStore.episode_subdir(self._run_dir, actual_index))
         os.makedirs(ep_dir, exist_ok=True)
-        ep_execution_id = f"{run.run_id}_ep{actual_index:04d}"
+        ep_execution_id = LogStore.episode_execution_id(run.run_id, actual_index)
 
         env_step_budget: int | None = None
 

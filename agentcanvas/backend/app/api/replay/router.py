@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from app.api.execution import eval_storage
 from app.api.execution.logs import _sanitize_id
+from app.logging.store import LOG_FILE, LogStore
 from app.replay.interface import BaseReplayParser
 from app.state import get_services
 
@@ -66,9 +67,7 @@ def _resolve_run_and_parser(run_id: str) -> tuple[dict, str, BaseReplayParser]:
 
 def _resolve_episode_log_path(run_id: str, episode_index: int) -> Path:
     """Locate one episode's ``log.jsonl`` under its self-contained dir."""
-    log_path = (
-        eval_storage.EVAL_RUNS_DIR / run_id / "episodes" / f"ep{episode_index:04d}" / "log.jsonl"
-    )
+    log_path = LogStore.default().episode_dir(run_id, episode_index) / LOG_FILE
     if not log_path.is_file():
         raise HTTPException(
             status_code=404,
@@ -94,11 +93,11 @@ async def list_episodes(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {safe_id} not found")
 
-    episodes_dir = eval_storage.EVAL_RUNS_DIR / safe_id / "episodes"
+    store = LogStore.default()
     episodes: list[dict[str, Any]] = []
     for stored in run.get("episodes") or []:
         idx = stored.get("episode_index", len(episodes))
-        ep_log = episodes_dir / f"ep{idx:04d}" / "log.jsonl"
+        ep_log = store.episode_dir(safe_id, idx) / LOG_FILE
         episodes.append(
             {
                 "episode_index": idx,
@@ -159,7 +158,7 @@ async def get_episode(run_id: str, episode_index: int) -> dict[str, Any]:
     payload["run_id"] = safe_id
     # Composite id the frontend uses to fetch frame assets via
     # /api/logs/{execution_id}/assets/{filename}.
-    payload["execution_id"] = f"{safe_id}_ep{episode_index:04d}"
+    payload["execution_id"] = LogStore.episode_execution_id(safe_id, episode_index)
     return payload
 
 
