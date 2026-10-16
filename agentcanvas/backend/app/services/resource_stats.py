@@ -11,7 +11,7 @@ Attribution (per JobScheduler tick; VRAM from ResourceSampler's latest
 in-memory sample, RAM from one /proc walk — no extra nvidia-smi calls):
 
 - **shared nodeset server**: PID (or an ancestor) matches a ``BaseServer``
-  in the parent registry's ``_auto_servers``.
+  in the parent registry (``server_pids()``).
 - **running job**: PID's PPID-chain reaches a running job's subprocess
   PID. PPID walk, not pgid match — replicated auto_host children setsid
   into their own process groups (base_server.py) but keep their parent
@@ -622,15 +622,10 @@ def _latest_sample() -> dict[str, Any] | None:
 
 def _shared_server_pids(registry: Any | None) -> dict[int, str]:
     """PID → nodeset name for auto_host servers owned by THIS process's
-    registry. Tagged keys (``name#k``) collapse to the plain nodeset name."""
+    registry (tagged copies collapse to the plain nodeset name)."""
     if registry is None:
         return {}
-    out: dict[int, str] = {}
-    for store_key, server in getattr(registry, "_auto_servers", {}).items():
-        pid = getattr(server, "_pid", None)
-        if pid:
-            out[int(pid)] = store_key.split("#")[0]
-    return out
+    return dict(registry.server_pids())
 
 
 def _proc_table() -> dict[int, tuple[int, int]]:

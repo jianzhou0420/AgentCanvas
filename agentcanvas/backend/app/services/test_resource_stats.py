@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from ..components.launcher import split_server_key
 from .resource_stats import (
     RAM_FLOOR_MB,
     SAFETY_MARGIN_MB,
@@ -43,6 +44,13 @@ class _FakeRegistry:
 
     def get_server_url(self, name: str) -> str | None:
         return f"http://x:1/{name}" if name in self._auto_servers else None
+
+    def server_pids(self) -> dict[int, str]:
+        return {
+            srv._pid: split_server_key(key)[0]
+            for key, srv in self._auto_servers.items()
+            if srv._pid
+        }
 
 
 def _sample(
@@ -397,9 +405,7 @@ def test_estimate_full_coverage_and_max_workers(tmp_path: Path) -> None:
         "mem_total_mb": 32768,
     }
     with patch("app.services.resource_stats._latest_sample", return_value=free_sample):
-        result = tracker.estimate(
-            "g", 2, [{"name": "ns", "loaded": False, "source_hash": "h1"}]
-        )
+        result = tracker.estimate("g", 2, [{"name": "ns", "loaded": False, "source_hash": "h1"}])
     vram = result["resources"]["vram"]
     # tree scaled 1000x2 + singleton 2000 + margin
     assert vram["estimate_mb"] == 2000 + 2000 + SAFETY_MARGIN_MB["vram"]

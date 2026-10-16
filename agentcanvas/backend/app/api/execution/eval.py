@@ -15,7 +15,7 @@ from pydantic import BaseModel, model_validator
 
 from ...agent_loop.eval_batch import BatchEvalRunner, EvalConfig, EvalRun, EvalStatus
 from ...agent_loop.graph_run import NodesetLoadError, prepare_graph
-from ...graph_def import GraphDefinition, validate_graph_connectivity
+from ...graph_def import GraphDefinition, nodeset_names, validate_graph_connectivity
 from ...state import ExecutionGuard, ExecutionMode, get_services
 from .eval_storage import delete_run, list_runs, load_run, save_run
 
@@ -281,15 +281,12 @@ async def start_eval_v2(req: StartEvalV2Request):
         # ``ctx._executor.get_server_url(...)`` from inside method-side
         # nodes rather than as canvas-visible nodes.
         shared_urls: dict[str, str] = {}
-        needed: set[str] = set()
-        for node in graph.nodes:
-            if "__" in node.type:
-                needed.add(node.type.split("__")[0])
-        for ns_name, _ns in registry._live_nodesets.items():
-            if registry._get_parallelism(ns_name) == "shared":
+        needed = set(nodeset_names(graph))
+        for ns_name in registry.loaded_nodeset_names():
+            if registry.parallelism(ns_name) == "shared":
                 needed.add(ns_name)
         for ns_name in needed:
-            if registry._get_parallelism(ns_name) != "shared":
+            if registry.parallelism(ns_name) != "shared":
                 continue
             url = registry.get_server_url(ns_name)
             if url:

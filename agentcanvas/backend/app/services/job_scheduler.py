@@ -413,7 +413,7 @@ class JobScheduler:
             if self._registry is None:
                 break
             try:
-                if self._registry._get_parallelism(ns) != "shared":
+                if self._registry.parallelism(ns) != "shared":
                     continue
                 ns_obj = getattr(self._registry, "_discovered_nodesets", {}).get(ns)
                 shared_infos.append(
@@ -789,7 +789,7 @@ class JobScheduler:
             if self._registry is None:
                 break
             try:
-                if self._registry._get_parallelism(ns) == "shared":
+                if self._registry.parallelism(ns) == "shared":
                     out.add(ns)
             except Exception:
                 continue

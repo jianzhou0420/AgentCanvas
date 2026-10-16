@@ -449,7 +449,9 @@ def _build_catalog(refresh: bool = False) -> tuple:
 
 
 def _is_server_ns(ns: Any) -> bool:
-    return ns is not None and getattr(type(ns), "server_python", None) is not None
+    from .components.launcher import requires_server
+
+    return ns is not None and requires_server(type(ns))
 
 
 def catalog(
@@ -546,7 +548,7 @@ def nodesets(*, refresh: bool = False) -> list[dict]:
         out.append(
             {
                 "name": name,
-                "server": sp is not None,
+                "server": _is_server_ns(inst),
                 "env": _env_name_from_python(sp),
                 "node_types": sorted(nt for nt, (nn, _) in index.items() if nn == name),
             }

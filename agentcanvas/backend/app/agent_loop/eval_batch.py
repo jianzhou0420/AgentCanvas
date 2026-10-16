@@ -20,12 +20,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ..components.fleet import Fleet
 from ..config import eval_runs_dir
-from ..graph_def import GraphDefinition
+from ..graph_def import GraphDefinition, nodeset_names
 from ..logging import ExecutionLogger
 from ..models import WSMessage
 from ..state import ExecutionGuard, broadcast
-from .env_worker_pool import EnvWorkerPool, resolve_per_step_budget
 from .graph_run import ExecutionPrinciples, GraphRun, RunSession
 
 log = logging.getLogger("agentcanvas.eval-batch")
@@ -36,7 +36,7 @@ def _partition_contiguous(total: int, worker_count: int) -> list[list[int]]:
 
     Used to pin episode chunks to specific worker subprocesses so each
     worker sees a bounded number of task switches (SAPIEN crash mitigation
-    for cross-task sweeps; see EnvWorkerPool.acquire_specific). First
+    for cross-task sweeps; see Fleet.worker). First
     ``total % worker_count`` workers get one extra item, matching numpy's
     ``array_split`` distribution. At ``worker_count >= total`` trailing
     workers get empty chunks and exit immediately.
@@ -51,6 +51,35 @@ def _partition_contiguous(total: int, worker_count: int) -> list[list[int]]:
         chunks.append(list(range(cursor, cursor + size)))
         cursor += size
     return chunks
+
+
+def resolve_per_step_budget(
+    env_nodeset_name: str | None,
+    override: float | None,
+) -> float:
+    """Resolve the per-step wall-clock budget for the eval timeout.
+
+    Precedence (ADR-028 rule 3):
+      1. Explicit ``EvalConfig.per_step_budget_sec`` (user override).
+      2. The env nodeset's ``default_per_step_budget_sec`` ClassVar.
+      3. ``BaseNodeSet.default_per_step_budget_sec`` framework default.
+    """
+    if override is not None and override > 0:
+        return float(override)
+    # Lazy imports keep this module free of circular deps with state/registry.
+    from ..components.bases import BaseNodeSet
+
+    if env_nodeset_name:
+        try:
+            from ..state import get_services
+
+            registry = get_services().workspace_component_registry
+            ns = registry.nodeset_instance(env_nodeset_name)
+            if ns is not None:
+                return float(type(ns).default_per_step_budget_sec)
+        except Exception as e:  # pragma: no cover — defensive
+            log.debug("Falling back to BaseNodeSet default; lookup failed: %s", e)
+    return float(BaseNodeSet.default_per_step_budget_sec)
 
 
 # ── Data types ──
@@ -310,16 +339,13 @@ class BatchEvalRunner:
             )
 
             # ADR-028 PB-2: drive episodes through N concurrent worker
-            # coroutines. Each worker pulls indices off a shared queue,
-            # leases a pool worker (which carries its tagged env panel +
-            # server-url overrides), runs one episode, and aggregates
-            # under a lock. At worker_count=1 the queue + gather collapse
-            # into a single coroutine doing one episode at a time —
-            # behaviour-equivalent to the prior sequential loop.
-            async with EnvWorkerPool(
-                worker_count=run.config.worker_count,
-                env_nodeset=run.config.env_nodeset or None,
-            ) as pool:
+            # coroutines. Worker k owns the Fleet's handle k (its tagged
+            # env panel + server-url overrides for every replicated
+            # nodeset), runs its episodes, and aggregates under a lock. At
+            # worker_count=1 the gather collapses into a single coroutine
+            # doing one episode at a time — behaviour-equivalent to the
+            # prior sequential loop.
+            async with Fleet(self._graph, run.config.worker_count) as fleet:
                 # Task-contiguous dispatch: split the index list into N
                 # contiguous chunks, one per worker, and pin each chunk
                 # to its worker's tagged subprocess. With cross-task
@@ -349,14 +375,13 @@ class BatchEvalRunner:
                         except asyncio.QueueEmpty:
                             break
 
-                        async with pool.acquire_specific(worker_id) as worker:
-                            episode = await self._run_one_episode(
-                                i,
-                                episode_indices[i],
-                                worker,
-                                principles,
-                                per_step_budget,
-                            )
+                        episode = await self._run_one_episode(
+                            i,
+                            episode_indices[i],
+                            fleet.worker(worker_id),
+                            principles,
+                            per_step_budget,
+                        )
 
                         # Episode fully complete → drop its partition from any
                         # nodeset-owned keyed container (worker-safe: only this
@@ -425,14 +450,8 @@ class BatchEvalRunner:
             registry = get_services().workspace_component_registry
         except Exception:
             return
-        # Nodesets used by this graph = node-type prefix before "__".
-        names = {
-            node.type.split("__", 1)[0]
-            for node in self._graph.nodes
-            if "__" in (getattr(node, "type", "") or "")
-        }
         urls = []
-        for name in names:
+        for name in nodeset_names(self._graph):
             try:
                 url = registry.get_server_url(name)
             except Exception:

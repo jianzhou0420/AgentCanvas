@@ -736,6 +736,15 @@ def validate_edge_wire_types(graph: GraphDefinition, type_resolver=None) -> list
 # ---------------------------------------------------------------------------
 
 
+def nodeset_names(graph: GraphDefinition) -> set[str]:
+    """The nodesets a graph's node types belong to.
+
+    Convention: a node type ``"<nodeset>__<node>"`` (double underscore)
+    belongs to nodeset ``<nodeset>``; builtin types carry no ``__``.
+    """
+    return {node.type.split("__", 1)[0] for node in graph.nodes if "__" in (node.type or "")}
+
+
 def validate_graph_connectivity(graph: GraphDefinition, type_resolver=None) -> None:
     """Raise ``ValueError`` if any required input port lacks an incoming edge.
 

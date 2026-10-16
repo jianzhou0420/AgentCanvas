@@ -28,16 +28,8 @@ class SnapshotResponse(BaseModel):
 @router.post("/snapshot", response_model=SnapshotResponse)
 def snapshot(req: SnapshotRequest) -> SnapshotResponse:
     registry = get_services().workspace_component_registry
-    requested = set(req.names) if req.names else None
-
-    urls: dict[str, str] = {}
-    for name, server in registry._auto_servers.items():
-        bare_name = name.split("#")[0]
-        if requested is not None and bare_name not in requested:
-            continue
-        url = getattr(server, "url", None)
-        if url:
-            # When tagged, prefer the bare-name entry if it exists; else
-            # take the first tag we encounter.
-            urls.setdefault(bare_name, url)
+    urls = registry.server_urls()
+    if req.names:
+        requested = set(req.names)
+        urls = {name: url for name, url in urls.items() if name in requested}
     return SnapshotResponse(urls=urls)

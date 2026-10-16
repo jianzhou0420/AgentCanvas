@@ -1,5 +1,5 @@
-"""Unit tests for the registry's container-mode server assembly
-(``_build_container_server``): host→mount path translation, server_mounts
+"""Unit tests for the launcher's container-mode server assembly
+(``build_container_server``): host→mount path translation, server_mounts
 resolution, and the loopback executor-URL rewrite. No docker involved.
 """
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from app.components.registry import WorkspaceComponentRegistry
+from app.components.launcher import build_container_server
 from app.server.container_server import WORKSPACE_MOUNT
 
 
@@ -24,8 +24,7 @@ class _ContainerNodeSetCls:
 def _build(tmp_path: Path, nodeset_cls: type, source_arg: list[str]):
     root = tmp_path
     (root / "workspace").mkdir(exist_ok=True)
-    reg = WorkspaceComponentRegistry(scan_dir=root / "workspace")
-    return reg._build_container_server(
+    return build_container_server(
         nodeset_cls=nodeset_cls,
         server_label="auto_testns",
         image=nodeset_cls.server_image,

@@ -5,20 +5,30 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import logging
-import os
-import socket
 import sys
 from pathlib import Path
 from typing import Any
 
 from ..agent_loop.hooks import load_hooks_file
-from ..graph_def import GraphDefinition, HookDef
+from ..graph_def import GraphDefinition, HookDef, nodeset_names
 from ..replay.interface import BaseReplayParser, GenericReplayParser
 from .bases import BaseCanvasNode, BaseNodeSet
+from .launcher import (
+    Launcher,
+    find_free_port,
+    requires_server,
+    server_key,
+    split_server_key,
+    vehicle_for,
+)
 
 log = logging.getLogger("agentcanvas.components")
 
 SOURCE_TAG = "workspace"
+
+# Nodesets known to be replicated even when they cannot be imported here
+# (see ``WorkspaceComponentRegistry.parallelism``).
+_KNOWN_REPLICATED = frozenset({"env_habitat", "env_mp3d", "env_hmeqa"})
 
 
 class _RemoteAutoServerShim:
@@ -70,6 +80,9 @@ class WorkspaceComponentRegistry:
         # _scan_and_register_servers) stay unchanged.
         self._scan_dir = self._frozen_dir
         self._scan_cycle = 0
+        # Deployment: the one place that picks a launch vehicle and builds
+        # the server object for a hosted nodeset (native or container).
+        self._launcher = Launcher(self._frozen_dir.parent.resolve())
         # Local bookkeeping
         self._policies: dict[str, Any] = {}  # policy_id → PolicyEntry
         # Discovered nodeset instances (persistent across load/unload)
@@ -410,22 +423,17 @@ class WorkspaceComponentRegistry:
         ):
             await self.unload_nodeset(name)
 
-        # Auto-route to server mode if nodeset needs a different Python (ADR-020)
-        # or a container image (Container Launch — image wins over python).
-        # Note: server-mode proxy nodes get srv_ prefix (TODO #33 to unify).
-        sp = getattr(type(ns), "server_python", None)
-        image = getattr(type(ns), "server_image", None)
-        if mode == "local" and image:
-            log.info("Auto-routing %s to server mode (server_image=%s)", name, image)
-            mode = "server"
-        elif mode == "local" and sp and sp != sys.executable:
-            log.info("Auto-routing %s to server mode (server_python=%s)", name, sp)
-            mode = "server"
-        if worker_count > 1 and mode != "server":
-            log.info("Auto-routing %s to server mode (worker_count=%d)", name, worker_count)
-            mode = "server"
-
-        if mode == "server":
+        # One vehicle rule (launcher.vehicle_for): a container image or a
+        # different Python (ADR-020) means server mode, as does a fan-out.
+        vehicle = vehicle_for(type(ns), mode=mode, worker_count=worker_count)
+        if vehicle != "local":
+            if mode == "local":
+                log.info(
+                    "Auto-routing %s to server mode (vehicle=%s, worker_count=%d)",
+                    name,
+                    vehicle,
+                    worker_count,
+                )
             return await self._load_nodeset_as_server(name, ns, worker_count=worker_count)
 
         # Local mode (default): initialize first, then register tools.
@@ -499,129 +507,29 @@ class WorkspaceComponentRegistry:
         closure; per-worker URL routing for in-graph proxy calls is
         added in PB-1.5 via ``ctx._executor.get_server_url(...)``.
         """
-        from ..agent_loop.builtin_nodes import NODE_HANDLERS, register_node
+        from ..agent_loop.builtin_nodes import NODE_HANDLERS
         from ..server.base_server import BaseServer
-        from ..server.proxy import generate_proxy_nodes
-        from ..standard.node_io import invalidate_cache
         from .env_panel import unregister_env_panel
 
         nodeset_cls = type(ns)
-        # Use _source_file stored during discovery (ADR-020). Dynamically-loaded
-        # modules aren't in sys.modules, so inspect.getfile() fails on their classes.
-        source_file = getattr(ns, "_source_file", None)
-        if source_file is None:
-            mod = sys.modules.get(nodeset_cls.__module__)
-            source_file = getattr(mod, "__file__", None) or inspect.getfile(nodeset_cls)
-        class_name = nodeset_cls.__name__
-        python = getattr(nodeset_cls, "server_python", None) or sys.executable
-        server_image = getattr(nodeset_cls, "server_image", None)
-
-        # Build PYTHONPATH: backend dir + workspace root
-        workspace_root = str(self._scan_dir.parent.resolve())
-        backend_dir = str(Path(workspace_root) / "agentcanvas" / "backend")
-        pythonpath = f"{backend_dir}:{workspace_root}"
-
+        source_file = self._source_file_of(ns)
+        has_env_panel = getattr(nodeset_cls, "env_panel", None) is not None
         # Allocate all ports up front to minimise the bind-race window
         # (socket.bind(('', 0)) between concurrent eval starts could collide).
-        ports = [self._find_free_port() for _ in range(worker_count)]
-        has_env_panel = getattr(nodeset_cls, "env_panel", None) is not None
+        ports = [find_free_port() for _ in range(worker_count)]
         node_types: list[str] = []
         # Bookkeeping for rollback if a later worker's startup or env panel
         # registration fails. Each tuple: (tag-or-None, store_key, server).
         started: list[tuple[int | None, str, BaseServer]] = []
 
-        # Package-mode nodesets (folder with __init__.py) need to be re-imported
-        # via dotted module name in the subprocess so relative/absolute imports
-        # inside the package resolve. Single-file nodesets keep using --file.
-        #
-        # The import root is the parent of the `nodesets/` dir containing the
-        # source — works uniformly for frozen `workspace/nodesets/...` and for
-        # any overlay (active_workspace/nodesets/...). Computing `rel` against
-        # the repo root instead breaks on overlays whose path contains
-        # hyphenated method dirs (e.g. `adas-subagent`) or hidden dirs (e.g.
-        # `.staging`), producing invalid dotted module names.
-        source_arg = ["--file", str(source_file)]
-        if Path(source_file).name == "__init__.py":
-            src_path = Path(source_file)
-            import_root: Path | None = None
-            for parent in src_path.parents:
-                if parent.name == "nodesets":
-                    import_root = parent.parent
-                    break
-            if import_root is not None:
-                try:
-                    rel = src_path.parent.relative_to(import_root)
-                    dotted = rel.as_posix().replace("/", ".")
-                    # Validate every component is a legal Python identifier;
-                    # else fall back to --file.
-                    if all(comp.isidentifier() for comp in dotted.split(".")):
-                        source_arg = ["--module", dotted]
-                        # Prepend import_root to PYTHONPATH so the dotted name
-                        # resolves to THIS source (not a frozen-workspace twin
-                        # of the same dotted name).
-                        pythonpath = f"{import_root}:{pythonpath}"
-                except ValueError:
-                    # source_file is not under any `nodesets/` — keep --file.
-                    pass
-
         try:
             for k in range(worker_count):
                 tag = k if worker_count > 1 else None
                 port = ports[k]
-                server_label = f"auto_{name}#{k}" if tag is not None else f"auto_{name}"
-                # Pull optional server-side env vars from the nodeset class
-                # (e.g. LD_PRELOAD for the hmeqa NVIDIA-driver-570 shim).
-                # PYTHONPATH used to be a shell-command prefix; it now rides
-                # the env dict so the spawn needs no shell.
-                ns_server_env = getattr(nodeset_cls, "server_env", None) or {}
-                # Cross-nodeset container-access (face B) + reverse log/error
-                # push: the executor callback base URL a subprocess uses to reach
-                # /api/internal. An explicit env override wins; otherwise resolve
-                # from Settings (host/port) rather than the old hardcoded
-                # localhost:8000 dev default.
-                from ..config import resolve_executor_url
-
-                executor_url = os.environ.get("AGENTCANVAS_EXECUTOR_URL") or resolve_executor_url()
-                if server_image is not None:
-                    server = self._build_container_server(
-                        nodeset_cls=nodeset_cls,
-                        server_label=server_label,
-                        image=server_image,
-                        port=port,
-                        source_arg=source_arg,
-                        class_name=class_name,
-                        pythonpath=pythonpath,
-                        workspace_root=workspace_root,
-                        executor_url=executor_url,
-                        ns_server_env=ns_server_env,
-                    )
-                else:
-                    # argv list (no shell): keeps auto_host a DIRECT child of
-                    # this process, so its PR_SET_PDEATHSIG watches us
-                    # one-hop. A /bin/sh wrapper here would break that chain
-                    # — see BaseServer.start().
-                    command = [
-                        python,
-                        "-m",
-                        "app.server.auto_host",
-                        *source_arg,
-                        "--class",
-                        class_name,
-                        "--port",
-                        str(port),
-                    ]
-                    server = BaseServer(
-                        name=server_label,
-                        command=command,
-                        port=port,
-                        startup_timeout=getattr(nodeset_cls, "startup_timeout", 1800),
-                        working_dir=backend_dir,
-                        env={
-                            "PYTHONPATH": pythonpath,
-                            "AGENTCANVAS_EXECUTOR_URL": executor_url,
-                            **ns_server_env,
-                        },
-                    )
+                store_key = server_key(name, tag)
+                server = self._launcher.build(
+                    nodeset_cls, source_file=source_file, label=f"auto_{store_key}", port=port
+                )
                 server.start()
 
                 manifest = server.fetch_manifest()
@@ -635,17 +543,12 @@ class WorkspaceComponentRegistry:
                 if k == 0:
                     # All N subprocesses serve the same manifest; generate
                     # proxy classes once. Each proxy bakes worker 0's URL
-                    # into its closure — PB-1.5 swaps per-worker URLs at
+                    # into its closure — the Fleet swaps per-worker URLs at
                     # call time via ctx._executor.get_server_url(...).
-                    proxy_classes = generate_proxy_nodes(server.url, manifest)
-                    for cls in proxy_classes:
-                        register_node(cls)
-                        node_types.append(cls.node_type)
-                        log.info("    → auto-server node: %s", cls.node_type)
-                    if proxy_classes:
-                        invalidate_cache()
+                    node_types = self._register_proxy_nodes(server.url, manifest)
+                    for nt in node_types:
+                        log.info("    → auto-server node: %s", nt)
 
-                store_key = f"{name}#{k}" if tag is not None else name
                 self._auto_servers[store_key] = server
                 # Record which owned containers this nodeset homes (faces A/C):
                 # cid → base nodeset name, resolved to a URL via get_server_url.
@@ -682,7 +585,7 @@ class WorkspaceComponentRegistry:
                 self._auto_servers.pop(store_key, None)
                 if tag is not None:
                     try:
-                        unregister_env_panel(f"{name}#{tag}")
+                        unregister_env_panel(server_key(name, tag))
                     except Exception:
                         log.exception(
                             "Rollback: failed to unregister env panel %s#%d",
@@ -713,107 +616,6 @@ class WorkspaceComponentRegistry:
             "worker_count": worker_count,
             "ports": ports,
         }
-
-    def _build_container_server(
-        self,
-        *,
-        nodeset_cls: type,
-        server_label: str,
-        image: str,
-        port: int,
-        source_arg: list[str],
-        class_name: str,
-        pythonpath: str,
-        workspace_root: str,
-        executor_url: str,
-        ns_server_env: dict[str, str],
-    ):
-        """Assemble a ContainerServer for a ``server_image`` nodeset.
-
-        The container runs the stock auto_host from the read-only repo mount,
-        so every host path riding the command line or PYTHONPATH is rewritten
-        under WORKSPACE_MOUNT. Sources outside the repo root can't be
-        translated — that's a hard error, not a silent wrong path.
-        """
-        from ..server.container_server import WORKSPACE_MOUNT, ContainerServer
-
-        root = str(Path(workspace_root).resolve())
-
-        def _translate(path: str) -> str:
-            resolved = str(Path(path).resolve()) if path.startswith("/") else path
-            if resolved.startswith(root):
-                return WORKSPACE_MOUNT + resolved[len(root) :]
-            raise RuntimeError(
-                f"Container-mode nodeset {server_label}: source path {path} "
-                f"is outside the repo root {root} and cannot be mounted."
-            )
-
-        inner_source_arg = [
-            _translate(a) if a.startswith("/") else a for a in source_arg
-        ]
-        inner_pythonpath = ":".join(
-            _translate(p) if p.startswith("/") else p for p in pythonpath.split(":")
-        )
-        inner_command = [
-            getattr(nodeset_cls, "server_container_python", "python3"),
-            "-m",
-            "app.server.auto_host",
-            *inner_source_arg,
-            "--class",
-            class_name,
-            "--port",
-            str(port),
-        ]
-
-        mounts = [f"{root}:{WORKSPACE_MOUNT}:ro"]
-        for host_path, container_spec in (
-            getattr(nodeset_cls, "server_mounts", None) or {}
-        ).items():
-            hp = Path(os.path.expandvars(os.path.expanduser(host_path)))
-            if not hp.is_absolute():
-                hp = Path(root) / hp
-            if hp.exists():
-                mounts.append(f"{hp.resolve()}:{container_spec}")
-            elif not container_spec.endswith(":ro"):
-                # A read-write mount is an output drop — create it rather
-                # than skip it (a skipped rw mount silently strands the
-                # container's writes inside the container filesystem).
-                hp.mkdir(parents=True, exist_ok=True)
-                mounts.append(f"{hp.resolve()}:{container_spec}")
-                log.info(
-                    "%s: created missing rw server_mounts dir %s",
-                    server_label,
-                    hp,
-                )
-            else:
-                log.warning(
-                    "%s: server_mounts host path %s missing — skipped (the "
-                    "capability needing it will error at call time)",
-                    server_label,
-                    hp,
-                )
-
-        # Loopback executor URLs are unreachable from inside the container;
-        # host.docker.internal is mapped via --add-host=host-gateway.
-        container_executor_url = executor_url.replace(
-            "127.0.0.1", "host.docker.internal"
-        ).replace("localhost", "host.docker.internal")
-
-        return ContainerServer(
-            name=server_label,
-            image=image,
-            inner_command=inner_command,
-            gpu=getattr(nodeset_cls, "server_image_gpu", False),
-            user=getattr(nodeset_cls, "server_container_user", None),
-            mounts=mounts,
-            container_env={
-                "PYTHONPATH": inner_pythonpath,
-                "AGENTCANVAS_EXECUTOR_URL": container_executor_url,
-                **ns_server_env,
-            },
-            port=port,
-            startup_timeout=getattr(nodeset_cls, "startup_timeout", 1800),
-        )
 
     def _unload_auto_server_nodeset(self, name: str) -> dict:
         """Stop all auto-hosted subprocesses for a nodeset (single-instance
@@ -895,8 +697,6 @@ class WorkspaceComponentRegistry:
         Returns:
             The new child's HTTP URL.
         """
-        from ..server.base_server import BaseServer
-
         ns = self._discovered_nodesets.get(name)
         if ns is None:
             # Discovered map may be cold if no graph has referenced this nodeset
@@ -910,63 +710,16 @@ class WorkspaceComponentRegistry:
         if ns is None:
             raise ValueError(f"Unknown nodeset: {name}")
 
-        nodeset_cls = type(ns)
-        class_name = nodeset_cls.__name__
-        python = getattr(nodeset_cls, "server_python", None) or sys.executable
-
-        workspace_root = str(self._scan_dir.parent.resolve())
-        backend_dir = str(Path(workspace_root) / "agentcanvas" / "backend")
-        pythonpath = f"{backend_dir}:{workspace_root}"
-
-        src = Path(source_path)
-        source_arg = ["--file", str(src)]
-        if src.name == "__init__.py":
-            # Package mode: pass --module so relative/absolute intra-package
-            # imports inside the overlay resolve. The overlay's package root
-            # must be on PYTHONPATH; the overlay's `nodesets/` parent gets
-            # added below so dotted-module resolution lands in the overlay,
-            # not the frozen copy.
-            overlay_workspace_root: Path | None = None
-            for parent in src.parents:
-                if parent.name == "nodesets":
-                    overlay_workspace_root = parent.parent
-                    break
-            if overlay_workspace_root is not None:
-                try:
-                    rel = src.parent.relative_to(overlay_workspace_root)
-                    dotted = rel.as_posix().replace("/", ".")
-                    source_arg = ["--module", dotted]
-                    # Prepend overlay root so the overlay's package wins over
-                    # any frozen-workspace package of the same dotted name.
-                    pythonpath = f"{overlay_workspace_root}:{pythonpath}"
-                except ValueError:
-                    pass  # Keep --file fallback
-
-        store_key = f"{name}#{tag}"
+        store_key = server_key(name, tag)
         if store_key in self._auto_servers:
             # Idempotent: same tag already spawned — return existing URL.
             return self._auto_servers[store_key].url
 
-        port = self._find_free_port()
-        command = [
-            python,
-            "-m",
-            "app.server.auto_host",
-            *source_arg,
-            "--class",
-            class_name,
-            "--port",
-            str(port),
-        ]
-        server_label = f"auto_{name}#{tag}"
-        ns_server_env = getattr(nodeset_cls, "server_env", None) or {}
-        server = BaseServer(
-            name=server_label,
-            command=command,
-            port=port,
-            startup_timeout=getattr(nodeset_cls, "startup_timeout", 1800),
-            working_dir=backend_dir,
-            env={"PYTHONPATH": pythonpath, **ns_server_env},
+        # Same launcher as the regular load, so the overlay copy rides the
+        # same vehicle (container image included) with the same env.
+        port = find_free_port()
+        server = self._launcher.build(
+            type(ns), source_file=source_path, label=f"auto_{store_key}", port=port
         )
         server.start()
         manifest = server.fetch_manifest()
@@ -983,7 +736,7 @@ class WorkspaceComponentRegistry:
             name,
             tag,
             port,
-            src,
+            source_path,
         )
         return server.url
 
@@ -1012,11 +765,37 @@ class WorkspaceComponentRegistry:
     # ── Internals ──
 
     @staticmethod
-    def _find_free_port() -> int:
-        """Find an available TCP port."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            return s.getsockname()[1]
+    def _source_file_of(ns: BaseNodeSet) -> str:
+        """The file a discovered nodeset was imported from.
+
+        ``_source_file`` is stamped at discovery (ADR-020); dynamically-loaded
+        modules aren't in ``sys.modules``, so ``inspect.getfile()`` on their
+        classes fails and is only the fallback.
+        """
+        source_file = getattr(ns, "_source_file", None)
+        if source_file is None:
+            nodeset_cls = type(ns)
+            mod = sys.modules.get(nodeset_cls.__module__)
+            source_file = getattr(mod, "__file__", None) or inspect.getfile(nodeset_cls)
+        return str(source_file)
+
+    def _register_proxy_nodes(self, url: str, manifest: Any, register_fn: Any = None) -> list[str]:
+        """Generate proxy node classes from a server manifest and register
+        them. Returns the registered node types. One place for the
+        manifest → NODE_HANDLERS step every hosted path takes."""
+        from ..agent_loop.builtin_nodes import register_node
+        from ..server.proxy import generate_proxy_nodes
+        from ..standard.node_io import invalidate_cache
+
+        register = register_fn or register_node
+        proxy_classes = generate_proxy_nodes(url, manifest)
+        node_types: list[str] = []
+        for cls in proxy_classes:
+            register(cls)
+            node_types.append(cls.node_type)
+        if proxy_classes:
+            invalidate_cache()
+        return node_types
 
     def _tagged_server_keys_for(self, name: str) -> list[str]:
         """Return all ``_auto_servers`` keys for a nodeset (tagged or untagged).
@@ -1036,9 +815,42 @@ class WorkspaceComponentRegistry:
         so each worker's ``LoopRunner`` can route in-graph proxy node calls
         to its own env subprocess (PB-1.5).
         """
-        key = f"{name}#{tag}" if tag is not None else name
-        server = self._auto_servers.get(key)
+        server = self._auto_servers.get(server_key(name, tag))
         return server.url if server is not None else None
+
+    def server_urls(self) -> dict[str, str]:
+        """``{nodeset: url}`` for every hosted nodeset this registry holds.
+
+        A tagged fan-out collapses to its bare name: the untagged entry
+        wins when present, else the first tag encountered.
+        """
+        urls: dict[str, str] = {}
+        for key, server in self._auto_servers.items():
+            bare, _tag = split_server_key(key)
+            url = getattr(server, "url", None)
+            if url:
+                urls.setdefault(bare, url)
+        return urls
+
+    def server_pids(self) -> dict[int, str]:
+        """PID → nodeset name for the auto_host servers this registry owns
+        (tagged copies collapse to the plain nodeset name)."""
+        out: dict[int, str] = {}
+        for key, server in self._auto_servers.items():
+            pid = getattr(server, "_pid", None)
+            if pid:
+                out[int(pid)] = split_server_key(key)[0]
+        return out
+
+    def loaded_nodeset_names(self) -> list[str]:
+        """Names of every loaded nodeset (local, hosted, or remote-attached)."""
+        names = set(self._live_nodesets)
+        names.update(split_server_key(k)[0] for k in self._auto_servers)
+        return sorted(names)
+
+    def nodeset_instance(self, name: str) -> BaseNodeSet | None:
+        """The nodeset instance by name — loaded if it is, else discovered."""
+        return self._live_nodesets.get(name) or self._discovered_nodesets.get(name)
 
     def get_container_home_url(self, container_id: str) -> str | None:
         """URL of the server subprocess that homes ``container_id`` (cross-nodeset
@@ -1116,20 +928,25 @@ class WorkspaceComponentRegistry:
         server, or any PB-1 tagged multi-worker copy)."""
         return name in self._live_nodesets or bool(self._tagged_server_keys_for(name))
 
-    def _get_parallelism(self, ns_name: str) -> str:
-        """Return ``"replicated"`` or ``"shared"`` for a nodeset by name.
+    def parallelism(self, ns_name: str) -> str:
+        """``"replicated"`` or ``"shared"`` for a nodeset by name (ADR-server-003).
 
-        Reads ``BaseNodeSet.parallelism`` ClassVar on the discovered class.
-        Falls back to a static set for env nodesets that fail to import on
-        the current Python env (e.g. ``env_habitat`` on the ``agentcanvas``
-        env without habitat-sim) — those still need ``"replicated"`` so
-        eval fan-out works.
+        Reads ``BaseNodeSet.parallelism`` on the discovered class. A nodeset
+        that failed to import on this Python env (e.g. ``env_habitat`` on
+        the ``agentcanvas`` env without habitat-sim) still needs the right
+        answer so eval fan-out works: every ``env_*`` nodeset in the
+        workspace is replicated (stateful simulators), so the ``env_``
+        prefix is the fallback, plus the historical known set.
         """
+        return self._get_parallelism(ns_name)
+
+    def _get_parallelism(self, ns_name: str) -> str:
         ns = self._live_nodesets.get(ns_name) or self._discovered_nodesets.get(ns_name)
         if ns is not None:
             return getattr(type(ns), "parallelism", "shared")
-        _KNOWN_REPLICATED = {"env_habitat", "env_mp3d", "env_hmeqa"}
-        return "replicated" if ns_name in _KNOWN_REPLICATED else "shared"
+        if ns_name.startswith("env_") or ns_name in _KNOWN_REPLICATED:
+            return "replicated"
+        return "shared"
 
     def _check_container_ownership(
         self, name: str, container_ids: list, worker_count: int
@@ -1200,10 +1017,7 @@ class WorkspaceComponentRegistry:
         Returns the same shape as :meth:`ensure_nodesets_for_graph`:
         ``{"loaded": [...], "already_loaded": [...], "failed": [...], "unknown": [...]}``.
         """
-        needed: set[str] = set()
-        for node in graph.nodes:
-            if "__" in node.type:
-                needed.add(node.type.split("__")[0])
+        needed = nodeset_names(graph)
 
         result: dict[str, list[str]] = {
             "loaded": [],
@@ -1248,10 +1062,7 @@ class WorkspaceComponentRegistry:
 
         Returns: {"loaded": [...], "already_loaded": [...], "failed": [...], "unknown": [...]}
         """
-        needed: set[str] = set()
-        for node in graph.nodes:
-            if "__" in node.type:
-                needed.add(node.type.split("__")[0])
+        needed = nodeset_names(graph)
 
         result: dict[str, list[str]] = {
             "loaded": [],
@@ -1344,16 +1155,13 @@ class WorkspaceComponentRegistry:
                 )
             else:
                 tools = self._discovered_tool_names.get(name, [])
-            # Check if this nodeset requires server mode (different Python env)
-            sp = getattr(type(ns), "server_python", None)
-            requires_server = bool(sp and sp != sys.executable)
             result.append(
                 {
                     "name": name,
                     "description": ns.description,
                     "loaded": loaded,
                     "mode": mode,
-                    "requires_server": requires_server,
+                    "requires_server": requires_server(type(ns)),
                     "category": self._nodeset_category(
                         getattr(ns, "_source_file", None)
                     ),
@@ -1380,12 +1188,11 @@ class WorkspaceComponentRegistry:
         source_file = getattr(ns, "_source_file", None)
         if not source_file:
             return None
-        sp = getattr(type(ns), "server_python", None)
         return {
             "name": name,
             "source_file": Path(source_file),
             "mode": self.nodeset_mode(name),
-            "requires_server": bool(sp and sp != sys.executable),
+            "requires_server": requires_server(type(ns)),
             "loaded": self.is_nodeset_loaded(name),
         }
 
@@ -1683,24 +1490,15 @@ class WorkspaceComponentRegistry:
         """
         import httpx
 
-        from ..agent_loop.builtin_nodes import register_node
         from ..server._loopback_proxy import loopback_httpx_kwargs
         from ..server.manifest import ServerManifest
-        from ..server.proxy import generate_proxy_nodes
-        from ..standard.node_io import invalidate_cache
 
         with httpx.Client(timeout=15.0, **loopback_httpx_kwargs()) as client:
             resp = client.get(f"{url.rstrip('/')}/manifest")
             resp.raise_for_status()
             manifest = ServerManifest.from_dict(resp.json())
 
-        proxy_classes = generate_proxy_nodes(url, manifest)
-        node_types: list[str] = []
-        for cls in proxy_classes:
-            register_node(cls)
-            node_types.append(cls.node_type)
-        if proxy_classes:
-            invalidate_cache()
+        node_types = self._register_proxy_nodes(url, manifest)
 
         self._auto_servers[name] = _RemoteAutoServerShim(name=name, url=url)
         self._auto_server_node_types[name] = node_types
@@ -1745,7 +1543,7 @@ class WorkspaceComponentRegistry:
                 info = resp.json()
             proxy = RemoteEnvPanelProxy(server_url, info)
             if tag is not None:
-                proxy.name = f"{nodeset_name}#{tag}"
+                proxy.name = server_key(nodeset_name, tag)
             register_env_panel(proxy)
             log.info(
                 "Registered RemoteEnvPanelProxy for %s -> %s",
@@ -2053,22 +1851,17 @@ class WorkspaceComponentRegistry:
             return 0
 
         # Generate and register proxy nodes
-        from ..server.proxy import generate_proxy_nodes
-
-        proxy_classes = generate_proxy_nodes(url, manifest)
-        node_types = []
-        for cls in proxy_classes:
-            register_fn(cls)
-            node_types.append(cls.node_type)
-            log.info("    → server node: %s", cls.node_type)
+        node_types = self._register_proxy_nodes(url, manifest, register_fn=register_fn)
+        for nt in node_types:
+            log.info("    → server node: %s", nt)
 
         status = server.get_status()
         status["nodes"] = node_types
         status["version"] = manifest.version
         self._servers[yaml_file.stem] = status
         self._server_node_types[yaml_file.stem] = node_types
-        log.info("Loaded server '%s' from %s: %d functions", manifest.name, url, len(proxy_classes))
-        return len(proxy_classes)
+        log.info("Loaded server '%s' from %s: %d functions", manifest.name, url, len(node_types))
+        return len(node_types)
 
     def start_server(self, name: str) -> dict:
         """Start a managed server by name. Returns status dict."""
@@ -2082,19 +1875,9 @@ class WorkspaceComponentRegistry:
 
         # Re-fetch manifest and register nodes if newly connected
         if server.connected:
-            from ..agent_loop.builtin_nodes import register_node
-            from ..standard.node_io import invalidate_cache
-
             manifest = server.fetch_manifest()
             if manifest:
-                from ..server.proxy import generate_proxy_nodes
-
-                proxy_classes = generate_proxy_nodes(server.url, manifest)
-                node_types = []
-                for cls in proxy_classes:
-                    register_node(cls)
-                    node_types.append(cls.node_type)
-                invalidate_cache()
+                node_types = self._register_proxy_nodes(server.url, manifest)
                 self._server_node_types[name] = node_types
                 status = server.get_status()
                 status["nodes"] = node_types
