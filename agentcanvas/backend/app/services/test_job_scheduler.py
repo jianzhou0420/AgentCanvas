@@ -19,7 +19,9 @@ from unittest.mock import patch
 
 import pytest
 
+from ..components.facts import NodesetFacts, RegistryFacts
 from .job_scheduler import JobScheduler, _RunningJob
+from .resource_stats import Charge
 from .run_state_io import atomic_write_json, is_done, read_summary, touch_done
 
 
@@ -133,14 +135,14 @@ def test_admit_measured_gate(tmp_path: Path) -> None:
     sched.submit(_spec(run_id="j1", marginal_vram_mb=0))
     with (
         patch.object(sched._resource_stats, "measured_free_mb", return_value=4000),
-        patch.object(sched, "_resolve_estimate", return_value=({"vram": 4500}, "calibrated")),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({"vram": 4500}, "calibrated")),
         patch.object(sched, "_spawn") as spawn,
     ):
         asyncio.run(sched._admit())
         spawn.assert_not_called()  # 4500 > 4000 free
     with (
         patch.object(sched._resource_stats, "measured_free_mb", return_value=6000),
-        patch.object(sched, "_resolve_estimate", return_value=({"vram": 4500}, "calibrated")),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({"vram": 4500}, "calibrated")),
         patch.object(sched, "_spawn") as spawn,
     ):
         asyncio.run(sched._admit())
@@ -158,10 +160,7 @@ def test_admit_gates_each_resource(tmp_path: Path) -> None:
         patch.object(
             sched._resource_stats, "measured_free_mb", side_effect=lambda r="vram": free[r]
         ),
-        patch.object(
-            sched,
-            "_resolve_estimate",
-            return_value=({"vram": 4000, "ram": 3000}, "calibrated"),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({"vram": 4000, "ram": 3000}, "calibrated"),
         ),
         patch.object(sched, "_spawn") as spawn,
     ):
@@ -182,10 +181,7 @@ def test_admit_skips_unmeasurable_resource(tmp_path: Path) -> None:
         patch.object(
             sched._resource_stats, "measured_free_mb", side_effect=lambda r="vram": free[r]
         ),
-        patch.object(
-            sched,
-            "_resolve_estimate",
-            return_value=({"vram": 99999, "ram": 3000}, "calibrated"),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({"vram": 99999, "ram": 3000}, "calibrated"),
         ),
         patch.object(sched, "_spawn") as spawn,
     ):
@@ -207,7 +203,7 @@ def test_admit_reservation_decay(tmp_path: Path) -> None:
             "snapshot",
             return_value={"resources": {"vram": {"jobs_mb": {"r1": 1000}}}},
         ),
-        patch.object(sched, "_resolve_estimate", return_value=({"vram": 3000}, "calibrated")),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({"vram": 3000}, "calibrated")),
         patch.object(sched, "_spawn") as spawn,
     ):
         asyncio.run(sched._admit())
@@ -220,7 +216,7 @@ def test_admit_reservation_decay(tmp_path: Path) -> None:
             "snapshot",
             return_value={"resources": {"vram": {"jobs_mb": {"r1": 5000}}}},
         ),
-        patch.object(sched, "_resolve_estimate", return_value=({"vram": 3000}, "calibrated")),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({"vram": 3000}, "calibrated")),
         patch.object(sched, "_spawn") as spawn,
     ):
         asyncio.run(sched._admit())
@@ -234,7 +230,7 @@ def test_admit_cold_start_only_alone(tmp_path: Path) -> None:
     sched.submit(_spec(run_id="cold", marginal_vram_mb=0))
     with (
         patch.object(sched._resource_stats, "measured_free_mb", return_value=20000),
-        patch.object(sched, "_resolve_estimate", return_value=(None, "unknown")),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({}, "cold-start")),
         patch.object(sched, "_spawn") as spawn,
     ):
         asyncio.run(sched._admit())
@@ -242,7 +238,7 @@ def test_admit_cold_start_only_alone(tmp_path: Path) -> None:
     sched._running.clear()
     with (
         patch.object(sched._resource_stats, "measured_free_mb", return_value=20000),
-        patch.object(sched, "_resolve_estimate", return_value=(None, "unknown")),
+        patch.object(sched._resource_stats, "charge", return_value=Charge({}, "cold-start")),
         patch.object(sched, "_spawn") as spawn,
     ):
         asyncio.run(sched._admit())
@@ -368,7 +364,7 @@ def test_reconcile_aborted_runs(tmp_path: Path) -> None:
 # ── TODO #60: ephemeral spawn at admit time ──
 
 
-class _FakeRegistry:
+class _FakeRegistry(RegistryFacts):
     """Stand-in for WorkspaceComponentRegistry, capturing ephemeral spawn calls."""
 
     def __init__(self) -> None:
@@ -397,6 +393,23 @@ class _FakeRegistry:
     async def unload_nodeset(self, name: str) -> dict:
         self.unload_nodeset_calls.append(name)
         return {"name": name, "tools_removed": []}
+
+    # RegistryFacts — the read-only view the resource tracker prices with.
+
+    @property
+    def frozen_dir(self):
+        return self._frozen_dir
+
+    def nodeset_facts(self, name: str) -> NodesetFacts:
+        ns = self._discovered_nodesets.get(name)
+        return NodesetFacts(
+            name=name,
+            parallelism="shared",
+            source_file=getattr(ns, "_source_file", None) if ns is not None else None,
+        )
+
+    def server_pids(self) -> dict[int, str]:
+        return {}
 
 
 def _fake_ns(source_file: str):

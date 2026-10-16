@@ -19,6 +19,7 @@ last updated: 2026-03-31 01:00
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -736,13 +737,19 @@ def validate_edge_wire_types(graph: GraphDefinition, type_resolver=None) -> list
 # ---------------------------------------------------------------------------
 
 
-def nodeset_names(graph: GraphDefinition) -> set[str]:
-    """The nodesets a graph's node types belong to.
+def nodeset_names_from_types(node_types: Iterable[str]) -> set[str]:
+    """The nodesets a list of node types belongs to.
 
     Convention: a node type ``"<nodeset>__<node>"`` (double underscore)
     belongs to nodeset ``<nodeset>``; builtin types carry no ``__``.
     """
-    return {node.type.split("__", 1)[0] for node in graph.nodes if "__" in (node.type or "")}
+    return {t.split("__", 1)[0] for t in node_types if "__" in (t or "")}
+
+
+def nodeset_names(graph: GraphDefinition) -> set[str]:
+    """The nodesets a graph's node types belong to (see
+    :func:`nodeset_names_from_types`)."""
+    return nodeset_names_from_types(node.type for node in graph.nodes)
 
 
 def validate_graph_connectivity(graph: GraphDefinition, type_resolver=None) -> None:

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from ..components.facts import NodesetFacts, RegistryFacts
 from ..components.launcher import split_server_key
 from .resource_stats import (
     RAM_FLOOR_MB,
@@ -33,17 +34,40 @@ class _FakeNodeset:
         self._source_file = source_file
 
 
-class _FakeRegistry:
-    def __init__(self, servers: dict[str, int], local_loaded: set[str] | None = None) -> None:
+class _FakeRegistry(RegistryFacts):
+    """The read-only facts the tracker prices and attributes with."""
+
+    def __init__(
+        self,
+        servers: dict[str, int],
+        local_loaded: set[str] | None = None,
+        parallelism: dict[str, str] | None = None,
+        hints: dict[str, dict[str, int]] | None = None,
+        source_hash: str = "h",
+    ) -> None:
         self._auto_servers = {k: _FakeServer(pid) for k, pid in servers.items()}
         self._discovered_nodesets: dict[str, _FakeNodeset] = {}
         self._local_loaded = local_loaded or set()
+        self._parallelism = parallelism or {}
+        self._hints = hints or {}
+        self._source_hash = source_hash
 
-    def is_nodeset_loaded(self, name: str) -> bool:
-        return name in self._local_loaded or name in self._auto_servers
+    @property
+    def frozen_dir(self) -> Path:
+        return Path("/nonexistent/workspace")
 
-    def get_server_url(self, name: str) -> str | None:
-        return f"http://x:1/{name}" if name in self._auto_servers else None
+    def nodeset_facts(self, name: str) -> NodesetFacts:
+        hosted = any(split_server_key(k)[0] == name for k in self._auto_servers)
+        h = self._hints.get(name, {})
+        return NodesetFacts(
+            name=name,
+            parallelism=self._parallelism.get(name, "shared"),
+            loaded=name in self._local_loaded or hosted,
+            hosted=hosted,
+            source_hash=self._source_hash,
+            expected_vram_mb=h.get("vram"),
+            expected_ram_mb=h.get("ram"),
+        )
 
     def server_pids(self) -> dict[int, str]:
         return {
@@ -104,8 +128,8 @@ def test_shared_server_pids_collapses_tags() -> None:
 
 def test_observe_attributes_and_sediments(tmp_path: Path) -> None:
     calib = tmp_path / "resource_calibration.json"
-    tracker = ResourceStatsTracker(calib)
-    registry = _FakeRegistry({"model_ram": 113})
+    registry = _FakeRegistry({"model_ram": 113}, source_hash="hash1")
+    tracker = ResourceStatsTracker(calib, facts=registry)
 
     tracker.note_job_started(
         "run_a", graph_name="smartway_ce", worker_count=4, shared_nodesets=("model_ram",)
@@ -126,7 +150,7 @@ def test_observe_attributes_and_sediments(tmp_path: Path) -> None:
         patch("app.services.resource_stats._latest_sample", return_value=sample),
         patch("app.services.resource_stats._proc_table", return_value=table),
     ):
-        tracker.observe(jobs={"run_a": 300}, registry=registry)
+        tracker.observe(jobs={"run_a": 300})
 
     snap = tracker.snapshot()
     vram = snap["resources"]["vram"]
@@ -138,8 +162,7 @@ def test_observe_attributes_and_sediments(tmp_path: Path) -> None:
     assert ram["jobs_mb"] == {"run_a": 1200 + 800}  # worker + job root RSS
     assert ram["external_mb"] == 9000 - 4000 - 2000
 
-    with patch("app.services.resource_stats._source_hash", return_value="hash1"):
-        tracker.note_job_finished("run_a", registry)
+    tracker.note_job_finished("run_a")
 
     data = json.loads(calib.read_text())
     ns = data["nodesets"]["model_ram"]
@@ -162,8 +185,8 @@ def test_observe_keeps_peak_not_last(tmp_path: Path) -> None:
             patch("app.services.resource_stats._latest_sample", return_value=sample),
             patch("app.services.resource_stats._proc_table", return_value=table),
         ):
-            tracker.observe(jobs={"r": 300}, registry=None)
-    tracker.note_job_finished("r", None)
+            tracker.observe(jobs={"r": 300})
+    tracker.note_job_finished("r")
     data = json.loads((tmp_path / "c.json").read_text())
     entry = data["graphs"]["g"]["by_worker_count"]["1"]
     assert entry["vram"]["tree_peak_mb_max"] == 5000
@@ -173,13 +196,13 @@ def test_observe_keeps_peak_not_last(tmp_path: Path) -> None:
 def test_observe_without_sampler_is_noop(tmp_path: Path) -> None:
     tracker = ResourceStatsTracker(tmp_path / "c.json")
     with patch("app.services.resource_stats._latest_sample", return_value=None):
-        tracker.observe(jobs={}, registry=None)  # must not raise
+        tracker.observe(jobs={})  # must not raise
     assert tracker.snapshot() == {}
 
 
 def test_finish_unknown_run_is_noop(tmp_path: Path) -> None:
     tracker = ResourceStatsTracker(tmp_path / "c.json")
-    tracker.note_job_finished("never-started", None)  # must not raise
+    tracker.note_job_finished("never-started")  # must not raise
     assert not (tmp_path / "c.json").exists()
 
 
@@ -188,17 +211,16 @@ def test_zero_vram_resident_server_is_calibrated_at_zero(tmp_path: Path) -> None
     # must sediment a 0 VRAM observation — "measured 0" ≠ "never observed"
     # — while its RAM side records the real RSS.
     calib = tmp_path / "c.json"
-    tracker = ResourceStatsTracker(calib)
     registry = _FakeRegistry({"env_adapter": 77})
+    tracker = ResourceStatsTracker(calib, facts=registry)
     tracker.note_job_started("r", graph_name="g", worker_count=1, shared_nodesets=("env_adapter",))
     table = {300: (1, 100), 77: (1, 900)}
     with (
         patch("app.services.resource_stats._latest_sample", return_value=_sample([], 0)),
         patch("app.services.resource_stats._proc_table", return_value=table),
     ):
-        tracker.observe(jobs={"r": 300}, registry=registry)
-    with patch("app.services.resource_stats._source_hash", return_value="h"):
-        tracker.note_job_finished("r", registry)
+        tracker.observe(jobs={"r": 300})
+    tracker.note_job_finished("r")
     data = json.loads(calib.read_text())
     assert data["nodesets"]["env_adapter"]["vram"]["peak_mb_max"] == 0
     assert data["nodesets"]["env_adapter"]["ram"]["peak_mb_max"] == 900
@@ -210,16 +232,15 @@ def test_local_inprocess_shared_nodeset_calibrates_at_zero(tmp_path: Path) -> No
     # server PID). Must sediment 0 on every resource so it never blocks
     # estimate coverage.
     calib = tmp_path / "c.json"
-    tracker = ResourceStatsTracker(calib)
     registry = _FakeRegistry({}, local_loaded={"env_adapter"})
+    tracker = ResourceStatsTracker(calib, facts=registry)
     tracker.note_job_started("r", graph_name="g", worker_count=1, shared_nodesets=("env_adapter",))
     with (
         patch("app.services.resource_stats._latest_sample", return_value=_sample([], 0)),
         patch("app.services.resource_stats._proc_table", return_value={300: (1, 50)}),
     ):
-        tracker.observe(jobs={"r": 300}, registry=registry)
-    with patch("app.services.resource_stats._source_hash", return_value="h"):
-        tracker.note_job_finished("r", registry)
+        tracker.observe(jobs={"r": 300})
+    tracker.note_job_finished("r")
     data = json.loads(calib.read_text())
     assert data["nodesets"]["env_adapter"]["vram"]["peak_mb_max"] == 0
     assert data["nodesets"]["env_adapter"]["ram"]["peak_mb_max"] == 0
@@ -231,8 +252,8 @@ def test_no_samples_window_sediments_nothing(tmp_path: Path) -> None:
     tracker = ResourceStatsTracker(calib)
     tracker.note_job_started("r", graph_name="g", worker_count=1, shared_nodesets=())
     with patch("app.services.resource_stats._latest_sample", return_value=None):
-        tracker.observe(jobs={"r": 300}, registry=None)
-    tracker.note_job_finished("r", None)
+        tracker.observe(jobs={"r": 300})
+    tracker.note_job_finished("r")
     assert not calib.exists()
 
 
@@ -460,3 +481,133 @@ def test_estimate_partial_coverage_is_null_per_resource(tmp_path: Path) -> None:
     assert ram["estimate_mb"] is None
     assert ram["uncalibrated"] == ["graph-tree", "never_seen"]
     assert result["max_workers"] is None
+
+
+# ── the charge ladder (one place for "what does (graph, wc) cost") ──
+
+
+def _calibrated_tracker(tmp_path: Path, facts: RegistryFacts | None) -> ResourceStatsTracker:
+    tracker = ResourceStatsTracker(tmp_path / "c.json", facts=facts)
+    tracker._store.update_graph("g", worker_count=1, tree_peaks={"vram": 1000, "ram": 2000})
+    return tracker
+
+
+def test_charge_legacy_without_sampler_is_the_declaration(tmp_path: Path) -> None:
+    tracker = _calibrated_tracker(tmp_path, None)
+    charge = tracker.charge("g", [], 1, declared_vram_mb=3000, measured=False)
+    assert (charge.per_resource, charge.basis) == ({"vram": 3000}, "legacy")
+
+
+def test_charge_calibrated_wins_over_declaration(tmp_path: Path) -> None:
+    facts = _FakeRegistry({})
+    tracker = _calibrated_tracker(tmp_path, facts)
+    with patch("app.services.resource_stats._latest_sample", return_value=None):
+        charge = tracker.charge("g", ["inc"], 2, declared_vram_mb=3000)
+    assert charge.basis == "calibrated"
+    assert charge.per_resource == {
+        "vram": 2000 + SAFETY_MARGIN_MB["vram"],
+        "ram": 4000 + SAFETY_MARGIN_MB["ram"],
+    }
+    assert charge.estimate["resources"]["vram"]["breakdown"]["tree"]["basis"] == "scaled"
+
+
+def test_charge_falls_to_declared_then_cold_start(tmp_path: Path) -> None:
+    facts = _FakeRegistry({})  # no calibration at all
+    tracker = ResourceStatsTracker(tmp_path / "c.json", facts=facts)
+    with patch("app.services.resource_stats._latest_sample", return_value=None):
+        declared = tracker.charge("g", ["inc"], 1, declared_vram_mb=2500)
+        cold = tracker.charge("g", ["inc"], 1, declared_vram_mb=0)
+    assert (declared.per_resource, declared.basis) == ({"vram": 2500}, "declared")
+    assert cold.per_resource == {} and cold.basis == "cold-start" and cold.cold_start
+
+
+def test_charge_prices_replicated_presets_per_copy(tmp_path: Path) -> None:
+    # No graph calibration; the graph's replicated nodeset carries presets
+    # → the tree is priced at N copies and the basis says so.
+    facts = _FakeRegistry(
+        {},
+        parallelism={"model_slam": "replicated"},
+        hints={"model_slam": {"vram": 4000, "ram": 1500}},
+    )
+    tracker = ResourceStatsTracker(tmp_path / "c.json", facts=facts)
+    with patch("app.services.resource_stats._latest_sample", return_value=None):
+        charge = tracker.charge("g", ["model_slam__track"], 3, declared_vram_mb=0)
+    assert charge.basis == "hint"
+    assert charge.per_resource == {
+        "vram": 3 * 4000 + SAFETY_MARGIN_MB["vram"],
+        "ram": 3 * 1500 + SAFETY_MARGIN_MB["ram"],
+    }
+    tree = charge.estimate["resources"]["vram"]["breakdown"]["tree"]
+    assert tree == {"mb": 12000, "basis": "hint"}
+
+
+def test_charge_replicated_without_preset_stays_uncalibrated(tmp_path: Path) -> None:
+    facts = _FakeRegistry({}, parallelism={"env_sim": "replicated"})
+    tracker = ResourceStatsTracker(tmp_path / "c.json", facts=facts)
+    with patch("app.services.resource_stats._latest_sample", return_value=None):
+        charge = tracker.charge("g", ["env_sim__step"], 2, declared_vram_mb=0)
+    assert charge.cold_start
+    assert charge.estimate["resources"]["vram"]["uncalibrated"] == ["graph-tree"]
+
+
+def test_charge_shared_singletons_still_priced_from_calibration(tmp_path: Path) -> None:
+    facts = _FakeRegistry({}, parallelism={"vlm": "shared"}, source_hash="h1")
+    tracker = _calibrated_tracker(tmp_path, facts)
+    tracker._store.update_nodeset(
+        "vlm", peaks={"vram": 6000, "ram": 800}, workers=1, source_hash="h1"
+    )
+    with patch("app.services.resource_stats._latest_sample", return_value=None):
+        charge = tracker.charge("g", ["vlm__describe"], 1, declared_vram_mb=0)
+    assert charge.basis == "calibrated"
+    assert charge.per_resource["vram"] == 1000 + 6000 + SAFETY_MARGIN_MB["vram"]
+
+
+def test_shared_nodesets_of_uses_facts(tmp_path: Path) -> None:
+    facts = _FakeRegistry({}, parallelism={"vlm": "shared", "env_sim": "replicated"})
+    tracker = ResourceStatsTracker(tmp_path / "c.json", facts=facts)
+    assert tracker.shared_nodesets_of(["vlm__a", "env_sim__b", "inc"]) == {"vlm"}
+    assert ResourceStatsTracker(tmp_path / "d.json").shared_nodesets_of(["vlm__a"]) == set()
+
+
+# ── graph calibration is gated on graph content, like nodeset entries ──
+
+
+def _observe_once(tracker: ResourceStatsTracker, run_id: str, gpu_mb: int) -> None:
+    sample = _sample([{"pid": 500, "mem_mb": gpu_mb}], used_total=gpu_mb)
+    table = {500: (300, 100), 300: (1, 0)}
+    with (
+        patch("app.services.resource_stats._latest_sample", return_value=sample),
+        patch("app.services.resource_stats._proc_table", return_value=table),
+    ):
+        tracker.observe(jobs={run_id: 300})
+
+
+def test_graph_peaks_retire_when_graph_content_changes(tmp_path: Path) -> None:
+    # Replicated nodesets are priced by the graph tree alone, so the tree
+    # calibration is the only component here.
+    facts = _FakeRegistry({}, parallelism={"a": "replicated", "b": "replicated"}, source_hash="h1")
+    tracker = ResourceStatsTracker(tmp_path / "c.json", facts=facts)
+    tracker.note_job_started("r1", "g", 1, (), node_types=["a__x"])
+    _observe_once(tracker, "r1", 9000)
+    tracker.note_job_finished("r1")
+    with patch("app.services.resource_stats._latest_sample", return_value=None):
+        same = tracker.charge("g", ["a__x"], 1)
+        other = tracker.charge("g", ["a__x", "b__y"], 1)  # same name, different graph
+    assert same.basis == "calibrated"
+    assert other.cold_start  # the old peak does not price the new content
+
+    # A new observation under the new content replaces the entry outright.
+    tracker.note_job_started("r2", "g", 1, (), node_types=["a__x", "b__y"])
+    _observe_once(tracker, "r2", 300)
+    tracker.note_job_finished("r2")
+    data = json.loads((tmp_path / "c.json").read_text())
+    assert data["graphs"]["g"]["by_worker_count"]["1"]["vram"]["tree_peak_mb_max"] == 300
+    assert data["graphs"]["g"]["graph_hash"] == tracker._graph_hash(["a__x", "b__y"])
+
+
+def test_graph_hash_tracks_nodeset_source(tmp_path: Path) -> None:
+    t1 = ResourceStatsTracker(tmp_path / "a.json", facts=_FakeRegistry({}, source_hash="h1"))
+    t2 = ResourceStatsTracker(tmp_path / "b.json", facts=_FakeRegistry({}, source_hash="h2"))
+    assert t1._graph_hash(["a__x"]) != t2._graph_hash(["a__x"])  # overlay edit → new key
+    assert t1._graph_hash(["a__x", "a__y"]) == t1._graph_hash(["a__y", "a__x"])  # order-free
+    assert t1._graph_hash(None) is None

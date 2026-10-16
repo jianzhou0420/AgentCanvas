@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from ..agent_loop.hooks import load_hooks_file
 from ..graph_def import GraphDefinition, HookDef, nodeset_names
 from ..replay.interface import BaseReplayParser, GenericReplayParser
 from .bases import BaseCanvasNode, BaseNodeSet
+from .facts import NodesetFacts, RegistryFacts
 from .launcher import (
     Launcher,
     find_free_port,
@@ -52,7 +54,13 @@ class _RemoteAutoServerShim:
         return None
 
 
-class WorkspaceComponentRegistry:
+# Source-tree hashing walks the nodeset's files — fine on demand, too heavy
+# for the scheduler's 1s admission tick. 30s staleness is harmless: the hash
+# only changes on code edits, and sediment-time writes recompute anyway.
+_HASH_CACHE_TTL_SEC = 30.0
+
+
+class WorkspaceComponentRegistry(RegistryFacts):
     """Discovers class-based components under a scan directory.
 
     Directory layout::
@@ -118,6 +126,8 @@ class WorkspaceComponentRegistry:
         self._replay_parsers: dict[str, BaseReplayParser] = {}
         # Global hooks (loaded from workspace/hooks.json)
         self._global_hooks: list[HookDef] = []
+        # nodeset name → (monotonic time, source hash) for nodeset_facts()
+        self._hash_cache: dict[str, tuple[float, str | None]] = {}
 
     # ── Public API ──
 
@@ -851,6 +861,46 @@ class WorkspaceComponentRegistry:
     def nodeset_instance(self, name: str) -> BaseNodeSet | None:
         """The nodeset instance by name — loaded if it is, else discovered."""
         return self._live_nodesets.get(name) or self._discovered_nodesets.get(name)
+
+    # ── RegistryFacts (read-only view for admission + attribution) ──
+
+    @property
+    def frozen_dir(self) -> Path:
+        return self._frozen_dir
+
+    def nodeset_facts(self, name: str) -> NodesetFacts:
+        ns = self.nodeset_instance(name)
+        cls = type(ns) if ns is not None else None
+        source_file = getattr(ns, "_source_file", None) if ns is not None else None
+        return NodesetFacts(
+            name=name,
+            parallelism=self.parallelism(name),
+            loaded=self.is_nodeset_loaded(name),
+            hosted=bool(self._tagged_server_keys_for(name)),
+            source_file=str(source_file) if source_file else None,
+            source_hash=self._source_hash_cached(name, source_file),
+            expected_vram_mb=getattr(cls, "expected_vram_mb", None),
+            expected_ram_mb=getattr(cls, "expected_ram_mb", None),
+        )
+
+    def _source_hash_cached(self, name: str, source_file: Any) -> str | None:
+        """Content hash of the nodeset's source tree (calibration
+        invalidation key), TTL-cached. None when there is no source."""
+        if not source_file:
+            return None
+        cached = self._hash_cache.get(name)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _HASH_CACHE_TTL_SEC:
+            return cached[1]
+        value: str | None
+        try:
+            from .content_hash import hash_nodeset_tree
+
+            value = hash_nodeset_tree(source_file)
+        except Exception:
+            value = None
+        self._hash_cache[name] = (now, value)
+        return value
 
     def get_container_home_url(self, container_id: str) -> str | None:
         """URL of the server subprocess that homes ``container_id`` (cross-nodeset

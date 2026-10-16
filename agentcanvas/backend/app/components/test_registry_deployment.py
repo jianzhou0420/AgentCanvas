@@ -75,3 +75,33 @@ def test_nodeset_instance_prefers_live(tmp_path: Path) -> None:
     reg._live_nodesets["x"] = live
     assert reg.nodeset_instance("x") is live
     assert reg.nodeset_instance("nope") is None
+
+
+def test_nodeset_facts_reads_class_state_and_hashes_source(tmp_path: Path) -> None:
+    reg = _registry(tmp_path)
+    src = tmp_path / "workspace" / "nodesets" / "model" / "thing.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("class Thing: pass\n")
+
+    class _NS:
+        parallelism = "replicated"
+        expected_vram_mb = 4000
+        expected_ram_mb = None
+        _source_file = str(src)
+
+    reg._discovered_nodesets["thing"] = _NS()  # type: ignore[assignment]
+    f = reg.nodeset_facts("thing")
+    assert (f.parallelism, f.loaded, f.hosted) == ("replicated", False, False)
+    assert f.hints == {"vram": 4000, "ram": None}
+    assert f.source_file == str(src) and f.source_hash is not None
+    # cached: editing within the TTL keeps the hash; a hosted copy flips the flags
+    h0 = f.source_hash
+    src.write_text("class Thing: pass  # edited\n")
+    assert reg.nodeset_facts("thing").source_hash == h0
+    reg._auto_servers["thing#0"] = _Srv("u")
+    f2 = reg.nodeset_facts("thing")
+    assert (f2.loaded, f2.hosted, f2.loaded_local) == (True, True, False)
+    # unknown nodeset: fallback parallelism, nothing else
+    g = reg.nodeset_facts("env_ghost")
+    assert (g.parallelism, g.loaded, g.source_hash) == ("replicated", False, None)
+    assert reg.frozen_dir == tmp_path / "workspace"

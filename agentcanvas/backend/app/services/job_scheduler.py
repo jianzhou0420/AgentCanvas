@@ -8,9 +8,11 @@ FastAPI lifespan loop:
   - reap finished Popen children, set terminal status (``succeeded`` if
     ``_DONE`` exists, else ``aborted``), sediment resource calibration
   - admit queued jobs through the measured resource gate, one inequality
-    per measurable resource: calibrated estimate (declared / cold-start
-    fallback) vs sampler-measured free minus standing reservations — see
-    ``_admit``; canvas lock + exclusive boolean gates unchanged
+    per measurable resource: the job's charge (ResourceStatsTracker.charge
+    — calibrated estimate / declared / cold-start, or the legacy ledger
+    without a sampler) vs sampler-measured free minus standing
+    reservations — see ``_admit``; canvas lock + exclusive boolean gates
+    unchanged
 
 Spawn is ``setsid`` so each job becomes its own process group; cancel
 sends SIGTERM to the pgid (kills the run subprocess + any env worker
@@ -37,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .resource_stats import RESOURCES, ResourceStatsTracker, _source_hash
+from .resource_stats import RESOURCES, Charge, ResourceStatsTracker
 from .run_state_io import (
     atomic_write_json,
     initial_running_summary,
@@ -205,10 +207,12 @@ class JobScheduler:
         self._canvas_lock_held = fn
 
     def set_workspace_component_registry(self, registry: Any) -> None:
-        """Wire the WorkspaceComponentRegistry handle used for TODO #60 ephemeral
-        spawn. Called from main.py lifespan after the registry scan.
+        """Wire the WorkspaceComponentRegistry handle: the read-only facts
+        the resource tracker prices with, plus the ephemeral / unload
+        actions. Called from main.py lifespan after the registry scan.
         """
         self._registry = registry
+        self._resource_stats.set_facts(registry)
 
     # ── Public API ──
 
@@ -397,53 +401,17 @@ class JobScheduler:
             "attribution": self._resource_stats.snapshot(),
         }
 
-    def estimate_run(
-        self, graph_name: str, node_types: list[str], worker_count: int
-    ) -> dict:
+    def estimate_run(self, graph_name: str, node_types: list[str], worker_count: int) -> dict:
         """Advisory per-resource estimate for running ``graph_name`` at
-        ``worker_count``.
-
-        Resolves the graph's shared singletons (parallelism + loaded state
-        + source hash) from the registry, then defers to the calibration-
-        backed estimator. Read-only: loads nothing, reserves nothing.
-        """
-        needed = sorted({t.split("__")[0] for t in node_types if "__" in t})
-        shared_infos: list[dict] = []
-        for ns in needed:
-            if self._registry is None:
-                break
-            try:
-                if self._registry.parallelism(ns) != "shared":
-                    continue
-                ns_obj = getattr(self._registry, "_discovered_nodesets", {}).get(ns)
-                shared_infos.append(
-                    {
-                        "name": ns,
-                        "loaded": self._registry.is_nodeset_loaded(ns),
-                        "source_hash": _source_hash(self._registry, ns),
-                        # Author presets (BaseNodeSet.expected_vram_mb /
-                        # expected_ram_mb) — estimator fallback when
-                        # measurement is absent.
-                        "hints": {
-                            "vram": getattr(ns_obj, "expected_vram_mb", None),
-                            "ram": getattr(ns_obj, "expected_ram_mb", None),
-                        },
-                    }
-                )
-            except Exception:
-                # Unknown/broken nodeset → surface as uncalibrated, not a 500.
-                shared_infos.append({"name": ns, "loaded": False, "source_hash": None})
-        return self._resource_stats.estimate(graph_name, worker_count, shared_infos)
+        ``worker_count``. Read-only: loads nothing, reserves nothing."""
+        return self._resource_stats.estimate(graph_name, worker_count, node_types=node_types)
 
     # ── Tick loop (called every ~1s from lifespan) ──
 
     async def tick(self) -> None:
         # Observe before reaping so a finishing job's last sample still lands
         # in its window. Reads the sampler's in-memory ring — non-blocking.
-        self._resource_stats.observe(
-            jobs={rid: r.proc.pid for rid, r in self._running.items()},
-            registry=self._registry,
-        )
+        self._resource_stats.observe(jobs={rid: r.proc.pid for rid, r in self._running.items()})
         await self._reap()
         await self._admit()
         await self._drain_pending_unloads()
@@ -487,39 +455,18 @@ class JobScheduler:
             )
         return out
 
-    def _resolve_estimate(self, q: _QueuedJob) -> tuple[dict[str, int] | None, str]:
-        """Admission charges for a queued job, per resource, in preference
-        order: calibrated estimate (full coverage on EVERY resource, margin
-        included, current loaded state) → declared marginal_vram_mb (VRAM
-        only; RAM was never declared, so it stays ungated on this rung) →
-        None (nothing to go on)."""
+    def _charge(self, q: _QueuedJob, *, measured: bool) -> Charge:
+        """The job's admission charge from the one ladder (see
+        ``ResourceStatsTracker.charge``)."""
         eval_cfg = q.spec.get("eval") or {}
-        node_types = [
-            n.get("type", "") for n in (q.spec.get("graph") or {}).get("nodes") or []
-        ]
-        try:
-            result = self.estimate_run(
-                eval_cfg.get("graph_name") or "",
-                node_types,
-                eval_cfg.get("worker_count") or 1,
-            )
-            resources = result.get("resources") or {}
-            if resources and all(
-                r["estimate_mb"] is not None for r in resources.values()
-            ):
-                # "hint" when any component priced by an author preset
-                # (expected_vram_mb / expected_ram_mb), not a measurement.
-                basis = (
-                    "hint"
-                    if any(r.get("used_hint") for r in resources.values())
-                    else "calibrated"
-                )
-                return {res: int(r["estimate_mb"]) for res, r in resources.items()}, basis
-        except Exception:
-            log.exception("estimate failed for %s — falling back to declaration", q.run_id)
-        if q.marginal_vram_mb > 0:
-            return {"vram": q.marginal_vram_mb}, "declared"
-        return None, "unknown"
+        node_types = [n.get("type", "") for n in (q.spec.get("graph") or {}).get("nodes") or []]
+        return self._resource_stats.charge(
+            eval_cfg.get("graph_name") or "",
+            node_types,
+            eval_cfg.get("worker_count") or 1,
+            q.marginal_vram_mb,
+            measured=measured,
+        )
 
     async def _admit(self) -> None:
         if self._canvas_lock_held():
@@ -543,15 +490,15 @@ class JobScheduler:
                 continue
             if self._running and any(r.exclusive_gpu for r in self._running.values()):
                 continue
+            charge = self._charge(q, measured=measured_mode)
+            charges, basis = charge.per_resource, charge.basis
             if measured_mode:
-                charges, basis = self._resolve_estimate(q)
-                if charges is None:
+                if charge.cold_start:
                     # No calibration and no declaration: cold-start
                     # discipline — admit only on an otherwise-idle
                     # scheduler; the first run doubles as calibration.
                     if self._running:
                         continue
-                    charges, basis = {}, "cold-start"
                 elif any(
                     free[res] is not None and mb > free[res] - pending.get(res, 0)
                     for res, mb in charges.items()
@@ -559,9 +506,8 @@ class JobScheduler:
                     continue
             else:
                 legacy_free = self._usable_vram_mb - self._reserved_mb()
-                if q.marginal_vram_mb > legacy_free:
+                if charges.get("vram", 0) > legacy_free:
                     continue
-                charges, basis = {"vram": q.marginal_vram_mb}, "legacy"
             ephem_tag: str | None = None
             try:
                 # TODO #60: when an active_workspace overlay redefines a
@@ -643,14 +589,11 @@ class JobScheduler:
         # Passing the repo root yielded a "workspace/" segment in the
         # relative path, so the overlay candidate never existed and TODO #60
         # silently no-op'd for every shared nodeset.
-        ws_root = self._registry._frozen_dir
+        ws_root = self._registry.frozen_dir
         rewritten: dict[str, str] = {}
         tag = f"ephem-{q.run_id}"
         for ns_name, _frozen_url in shared_urls.items():
-            ns = self._registry._discovered_nodesets.get(ns_name)
-            if ns is None:
-                continue
-            frozen_source = getattr(ns, "_source_file", None)
+            frozen_source = self._registry.nodeset_facts(ns_name).source_file
             if not frozen_source:
                 continue
             try:
@@ -756,6 +699,7 @@ class JobScheduler:
             shared_nodesets=q.shared_nodesets,
         )
         eval_cfg = q.spec.get("eval") or {}
+        node_types = [n.get("type", "") for n in (q.spec.get("graph") or {}).get("nodes") or []]
         self._resource_stats.note_job_started(
             q.run_id,
             graph_name=eval_cfg.get("graph_name") or "",
@@ -766,8 +710,9 @@ class JobScheduler:
             # server URL and would otherwise never enter the observation
             # window (and so never calibrate).
             shared_nodesets=tuple(
-                sorted(set(q.shared_nodesets) | self._graph_shared_nodesets(q.spec))
+                sorted(set(q.shared_nodesets) | self._resource_stats.shared_nodesets_of(node_types))
             ),
+            node_types=node_types,
         )
         log.info(
             "admit→spawn: run_id=%s pid=%d pgid=%d charges=%s MB (%s, declared=%d)",
@@ -778,22 +723,6 @@ class JobScheduler:
             admit_basis,
             q.marginal_vram_mb,
         )
-
-    def _graph_shared_nodesets(self, spec: dict) -> set[str]:
-        """Shared nodesets needed by the spec's graph — same derivation as
-        ``estimate_run`` (``__``-prefix scan + parallelism filter)."""
-        nodes = (spec.get("graph") or {}).get("nodes") or []
-        needed = {n.get("type", "").split("__")[0] for n in nodes if "__" in n.get("type", "")}
-        out: set[str] = set()
-        for ns in sorted(needed):
-            if self._registry is None:
-                break
-            try:
-                if self._registry.parallelism(ns) == "shared":
-                    out.add(ns)
-            except Exception:
-                continue
-        return out
 
     async def _reap(self) -> None:
         finished: list[str] = []
@@ -841,7 +770,7 @@ class JobScheduler:
             # _drain_pending_unloads on this same tick.
             self._release_shared_refs(r.shared_nodesets)
             # Sediment this job's resource observation window into calibration.
-            self._resource_stats.note_job_finished(run_id, self._registry)
+            self._resource_stats.note_job_finished(run_id)
             finished.append(run_id)
         for run_id in finished:
             del self._running[run_id]
