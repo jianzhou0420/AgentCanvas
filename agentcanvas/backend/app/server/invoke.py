@@ -18,13 +18,12 @@ from __future__ import annotations
 
 import inspect
 import logging
-import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..components.bases import FireList, firelist_to_dict
+from ..errors import get_bus
 from ..standard.telemetry import _current_node_log, _current_node_usage, new_usage_bucket
-from . import event_push
 from .serialization import deserialize_value, serialize_value
 
 log = logging.getLogger("agentcanvas.server-invoke")
@@ -116,17 +115,20 @@ async def invoke(
             result = await fn.handler(inputs, config)
     except Exception as e:
         log.exception("Handler %s failed", function_name)
-        # First-class the error (Move 3, #54): push it to the executor so it
-        # surfaces on the canvas with node / execution scope.
+        # First-class the error (Move 3, #54): the process's sink carries it
+        # to the parent with node / execution scope, so it surfaces on the
+        # canvas like a local-node failure.
         execution_id = exec_ctx.get("execution_id") if isinstance(exec_ctx, dict) else None
-        event_push.emit_event(
-            "error",
-            str(e),
+        get_bus().from_exception(
+            e,
+            source="node",
             code="SUBPROC_NODE_FAIL",
-            node_id=function_name,
-            nodeset=getattr(server_app, "name", None),
-            execution_id=execution_id,
-            details={"function": function_name, "traceback": traceback.format_exc()},
+            scope={
+                "node_id": function_name,
+                "nodeset": getattr(server_app, "name", None),
+                "execution_id": execution_id,
+            },
+            title=f"Node {function_name} failed in {getattr(server_app, 'name', 'server')}",
         )
         raise InvokeError(str(e), type(e).__name__) from e
     finally:
@@ -134,7 +136,7 @@ async def invoke(
         _current_node_log.reset(log_token)
         # Drain events buffered during this call so server-node logs reach
         # the canvas at call granularity.
-        event_push.flush()
+        get_bus().flush()
 
     usage_out = usage if usage["calls"] > 0 else None
     if usage_out is not None:

@@ -1,21 +1,28 @@
-"""Unified error reporting bus.
+"""Error / log events: one envelope, one sink interface, two adapters.
 
-Single in-process publisher that all backend subsystems use to surface
-events to the user. Replaces ad-hoc ``log.exception`` swallowing across
-the executor, API routes, plugin lifecycle, and eval runner.
+Every subsystem that surfaces an event to the user — the executor, API
+routes, the plugin lifecycle, the eval runner, a server-mode nodeset's
+handler, a ``logging`` record — publishes an :class:`ErrorEnvelope` to the
+process's :class:`EventSink` (``get_bus()``). Which sink that is depends on
+the process:
 
-Architecture
-------------
-- ``ErrorEnvelope``  — schema every event conforms to (mirrored in
-  ``frontend/src/errors.ts``).
-- ``ErrorBus``       — singleton with a bounded ring buffer (last 200)
-  and an async broadcast queue. Sync ``publish()`` is thread-safe and
-  loop-agnostic; async subscribers drain the queue.
-- ``LogBridgeHandler`` — ``logging.Handler`` subclass that converts
-  records (INFO+) into envelopes so the frontend "Report" tab acts as a
-  full developer console without touching every log site.
-- ``from_exception``  — convenience that pulls traceback + title from an
-  ``Exception`` instance.
+- :class:`ErrorBus` — the parent backend's adapter: a bounded ring buffer
+  (last 200, backfilled to the Report tab on reconnect) plus an async
+  broadcast queue the WebSocket subscriber drains.
+- ``server.event_push.PushSink`` — the subprocess adapter (auto_host
+  nodeset servers, the eval subprocess): buffers envelopes and POSTs them
+  to the parent's ``/api/internal/events``, which republishes them on the
+  parent's ErrorBus. One envelope on both sides, so a subprocess node
+  failure or an eval episode's error reaches the Report tab exactly like
+  a local one.
+
+:class:`LogBridgeHandler` is the one ``logging.Handler`` that turns records
+into envelopes, over whichever sink the process has (INFO+ in the parent,
+WARNING+ in a subprocess).
+
+The envelope schema is mirrored in ``frontend/src/errors.ts``. This module
+is imported by Python 3.8 subprocesses: runtime code stays on the 3.8
+subset (annotations are strings under ``from __future__``).
 """
 
 from __future__ import annotations
@@ -27,15 +34,16 @@ import threading
 import time
 import traceback
 import uuid
+from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 Severity = Literal["error", "warning", "info", "debug"]
 Source = Literal["node", "graph", "api", "ws", "frontend", "plugin", "eval", "log"]
 
+_SEVERITIES = ("error", "warning", "info", "debug")
 _RING_CAP = 200
 _QUEUE_CAP = 500
 
@@ -58,6 +66,30 @@ class ErrorEnvelope:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ErrorEnvelope:
+        """The wire form back into an envelope: an unknown severity reads as
+        ``info``, a missing id / timestamp is minted here."""
+        severity = d.get("severity")
+        return cls(
+            id=str(d.get("id") or _new_id()),
+            ts=str(d.get("ts") or _now_iso()),
+            severity=severity if severity in _SEVERITIES else "info",  # type: ignore[arg-type]
+            source=d.get("source") or "node",
+            code=str(d.get("code") or "EVENT"),
+            title=str(d.get("title") or d.get("message") or d.get("code") or "event")[:80],
+            message=str(d.get("message") or ""),
+            scope=dict(d.get("scope") or {}),
+            details=dict(d.get("details") or {}),
+            hint=d.get("hint"),
+        )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    AsyncSub = Callable[[ErrorEnvelope], Awaitable[None]]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -67,14 +99,88 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-# ── Bus ──
+def _format_exc(exc: BaseException) -> str:
+    # Three-argument form: the one-argument form is Python 3.10+.
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
-AsyncSub = Callable[[ErrorEnvelope], Awaitable[None]]
+# ── Sink interface ──
 
 
-class ErrorBus:
-    """Pub/sub + ring buffer. One instance per process."""
+class EventSink(ABC):
+    """Where a process's events go. ``publish`` is the one abstract method;
+    ``from_exception`` / ``emit`` build the envelope and publish it;
+    ``flush`` is for adapters that batch (the in-process bus has nothing
+    to flush)."""
+
+    @abstractmethod
+    def publish(self, env: ErrorEnvelope) -> None:
+        """Accept one envelope. Thread-safe; must never raise into the caller."""
+
+    def flush(self) -> None:
+        """Deliver anything buffered. No-op by default."""
+        return None
+
+    def from_exception(
+        self,
+        exc: BaseException,
+        *,
+        source: Source,
+        code: str,
+        scope: dict[str, Any] | None = None,
+        hint: str | None = None,
+        severity: Severity = "error",
+        title: str | None = None,
+    ) -> ErrorEnvelope:
+        env = ErrorEnvelope(
+            id=_new_id(),
+            ts=_now_iso(),
+            severity=severity,
+            source=source,
+            code=code,
+            title=title or f"{type(exc).__name__}: {str(exc)[:80]}",
+            message=str(exc),
+            scope=dict(scope or {}),
+            details={"traceback": _format_exc(exc)},
+            hint=hint,
+        )
+        self.publish(env)
+        return env
+
+    def emit(
+        self,
+        *,
+        severity: Severity,
+        source: Source,
+        code: str,
+        title: str,
+        message: str = "",
+        scope: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
+        hint: str | None = None,
+    ) -> ErrorEnvelope:
+        """Publish a non-exception envelope (warnings, info, custom events)."""
+        env = ErrorEnvelope(
+            id=_new_id(),
+            ts=_now_iso(),
+            severity=severity,
+            source=source,
+            code=code,
+            title=title,
+            message=message,
+            scope=dict(scope or {}),
+            details=dict(details or {}),
+            hint=hint,
+        )
+        self.publish(env)
+        return env
+
+
+# ── Bus: the in-process adapter ──
+
+
+class ErrorBus(EventSink):
+    """Pub/sub + ring buffer. The parent backend's sink."""
 
     def __init__(self) -> None:
         self._ring: deque[ErrorEnvelope] = deque(maxlen=_RING_CAP)
@@ -117,60 +223,6 @@ class ErrorBus:
             with contextlib.suppress(RuntimeError):
                 self._loop.call_soon_threadsafe(self._queue.put_nowait, env)
 
-    def from_exception(
-        self,
-        exc: BaseException,
-        *,
-        source: Source,
-        code: str,
-        scope: dict[str, Any] | None = None,
-        hint: str | None = None,
-        severity: Severity = "error",
-        title: str | None = None,
-    ) -> ErrorEnvelope:
-        env = ErrorEnvelope(
-            id=_new_id(),
-            ts=_now_iso(),
-            severity=severity,
-            source=source,
-            code=code,
-            title=title or f"{type(exc).__name__}: {str(exc)[:80]}",
-            message=str(exc),
-            scope=dict(scope or {}),
-            details={"traceback": "".join(traceback.format_exception(exc))},
-            hint=hint,
-        )
-        self.publish(env)
-        return env
-
-    def emit(
-        self,
-        *,
-        severity: Severity,
-        source: Source,
-        code: str,
-        title: str,
-        message: str = "",
-        scope: dict[str, Any] | None = None,
-        details: dict[str, Any] | None = None,
-        hint: str | None = None,
-    ) -> ErrorEnvelope:
-        """Publish a non-exception envelope (warnings, info, custom events)."""
-        env = ErrorEnvelope(
-            id=_new_id(),
-            ts=_now_iso(),
-            severity=severity,
-            source=source,
-            code=code,
-            title=title,
-            message=message,
-            scope=dict(scope or {}),
-            details=dict(details or {}),
-            hint=hint,
-        )
-        self.publish(env)
-        return env
-
     # Consumer / inspection API
 
     def snapshot(self) -> list[ErrorEnvelope]:
@@ -192,14 +244,24 @@ class ErrorBus:
             return False
 
 
-_bus: ErrorBus | None = None
+_sink: EventSink | None = None
 
 
-def get_bus() -> ErrorBus:
-    global _bus
-    if _bus is None:
-        _bus = ErrorBus()
-    return _bus
+def get_bus() -> Any:
+    """The process's sink — an :class:`ErrorBus` unless :func:`set_sink`
+    installed another adapter (a subprocess's ``PushSink``). Typed ``Any``
+    because the parent-only callers (the Report API, the lifespan) use the
+    bus's ring and loop methods on it."""
+    global _sink
+    if _sink is None:
+        _sink = ErrorBus()
+    return _sink
+
+
+def set_sink(sink: EventSink) -> None:
+    """Install the process's sink (a subprocess, before anything publishes)."""
+    global _sink
+    _sink = sink
 
 
 # ── logging.Handler bridge ──
@@ -213,39 +275,35 @@ _LEVEL_MAP: dict[int, Severity] = {
     logging.CRITICAL: "error",
 }
 
-_BRIDGE_SKIP_LOGGERS = {
-    "agentcanvas.errors",  # avoid recursion from bus internals
-    "uvicorn.access",  # too noisy; uvicorn already logs to stderr
-    "uvicorn.error",
+# Loggers never bridged: the sinks' own (recursion), and the HTTP / server
+# stacks (noise, and the push adapter's own transport would recurse).
+_BRIDGE_SKIP_PREFIXES = (
+    "agentcanvas.errors",
+    "agentcanvas.event-push",
     "uvicorn",
     "httpx",
     "httpcore",
+    "urllib3",
     "asyncio",
     "watchfiles",
-    "watchfiles.main",
-}
+)
 
 
 class LogBridgeHandler(logging.Handler):
-    """Forward Python log records to the ErrorBus.
+    """Forward Python log records to the process's sink as envelopes.
 
-    Records below the configured level are dropped; records from
-    ``_BRIDGE_SKIP_LOGGERS`` are dropped to prevent feedback loops.
+    The one bridge for every process: INFO+ in the parent backend, WARNING+
+    in a subprocess. Records from ``_BRIDGE_SKIP_PREFIXES`` loggers are
+    dropped to prevent feedback loops.
     """
 
-    def __init__(self, bus: ErrorBus, level: int = logging.INFO) -> None:
+    def __init__(self, sink: EventSink, level: int = logging.INFO) -> None:
         super().__init__(level)
-        self._bus = bus
+        self._sink = sink
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.name in _BRIDGE_SKIP_LOGGERS:
+        if record.name.startswith(_BRIDGE_SKIP_PREFIXES):
             return
-        if record.name.startswith("agentcanvas.errors"):
-            return
-        # Coarse prefix skip: drop noisy library loggers without listing every child.
-        for prefix in ("uvicorn.", "httpx.", "httpcore.", "watchfiles."):
-            if record.name.startswith(prefix):
-                return
         severity = _LEVEL_MAP.get(record.levelno, "info")
         try:
             message = record.getMessage()
@@ -265,19 +323,20 @@ class LogBridgeHandler(logging.Handler):
             scope={"logger": record.name, "fn": record.funcName, "line": record.lineno},
             details=details,
         )
-        # Use the bus directly; do NOT route through publish() that touches the
-        # loop here — keep this handler hot path minimal.
-        self._bus.publish(env)
+        with contextlib.suppress(Exception):  # a handler never raises into logging
+            self._sink.publish(env)
 
 
-def install_log_bridge(level: int = logging.INFO) -> LogBridgeHandler:
-    """Attach a LogBridgeHandler to the root logger. Idempotent."""
-    bus = get_bus()
+def install_log_bridge(
+    level: int = logging.INFO, sink: EventSink | None = None
+) -> LogBridgeHandler:
+    """Attach a LogBridgeHandler over ``sink`` (default: the process's) to
+    the root logger. Idempotent."""
     root = logging.getLogger()
     for h in root.handlers:
         if isinstance(h, LogBridgeHandler):
             return h
-    handler = LogBridgeHandler(bus, level=level)
+    handler = LogBridgeHandler(sink if sink is not None else get_bus(), level=level)
     root.addHandler(handler)
     return handler
 
@@ -285,11 +344,13 @@ def install_log_bridge(level: int = logging.INFO) -> LogBridgeHandler:
 __all__ = [
     "ErrorBus",
     "ErrorEnvelope",
+    "EventSink",
     "LogBridgeHandler",
     "Severity",
     "Source",
     "get_bus",
     "install_log_bridge",
+    "set_sink",
 ]
 
 

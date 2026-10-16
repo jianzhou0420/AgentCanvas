@@ -125,11 +125,17 @@ def main() -> None:
 
     nodeset_cls = _import_class(file_path=args.file, module_name=args.module, class_name=args.cls)
 
-    # Move 3 (#54): forward this subprocess's WARNING+ logs to the executor so
-    # they surface on the canvas. No-op when AGENTCANVAS_EXECUTOR_URL is unset.
-    from . import event_push
+    # Move 3 (#54): this subprocess's events — handler failures and WARNING+
+    # logs — go to the parent through the PushSink so they surface on the
+    # canvas. No-op when AGENTCANVAS_EXECUTOR_URL is unset.
+    import os
 
-    event_push.install_log_bridge(nodeset=getattr(nodeset_cls, "name", args.cls))
+    from .event_push import install_push_sink
+
+    install_push_sink(
+        os.environ.get("AGENTCANVAS_EXECUTOR_URL"),
+        nodeset=getattr(nodeset_cls, "name", args.cls),
+    )
 
     from .auto_server_app import AutoServerApp
 

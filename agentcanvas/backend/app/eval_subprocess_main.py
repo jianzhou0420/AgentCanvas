@@ -45,6 +45,7 @@ from pathlib import Path
 
 import httpx
 
+from .errors import get_bus
 from .services.run_state_io import JobSpec, RunSummary, read_shared_urls, touch_done
 
 log = logging.getLogger("agentcanvas.eval-runner")
@@ -220,6 +221,7 @@ async def _run(args: argparse.Namespace) -> int:
     # graph.json / episodes/ land next to this summary.json.
     def _write_summary(_ep=None) -> None:
         RunSummary.from_run(run).write(run_dir)
+        get_bus().flush()  # episode boundary: push this episode's events to the parent
 
     runner = BatchEvalRunner(run, graph, run_dir=run_dir, on_episode=_write_summary)
     rc = 0
@@ -254,6 +256,11 @@ def main() -> int:
         help="Parent backend URL (for /api/registry/snapshot fetch). Currently unused if shared_urls.json is pre-written.",
     )
     args = parser.parse_args()
+    # This process's events — the executor's node failures, the runner's
+    # WARNING+ logs — reach the parent's Report tab through the PushSink.
+    from .server.event_push import install_push_sink
+
+    install_push_sink(args.backend_url, nodeset="eval")
     return asyncio.run(_run(args))
 
 
