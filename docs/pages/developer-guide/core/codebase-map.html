@@ -242,10 +242,10 @@
 
 <h3>3.1 Execution Pipeline</h3>
 <p>When the user presses <strong>Play</strong> on the canvas, this is the call chain:</p>
-<svg class="rxsvg" viewBox="0 0 700 230" role="img" aria-label="Call chain when the user presses Play. api/execution/run.py calls LoopRunner.run(), which flattens the graph, builds StateContainers, then calls GraphExecutor.execute(). The executor calls NODE_HANDLERS[type].forward() for each node, with hooks firing around every node.">
+<svg class="rxsvg" viewBox="0 0 700 230" role="img" aria-label="Call chain when the user presses Play. api/execution/run.py calls LoopRunner.run(), which builds a GraphRun and awaits it; GraphExecutor.run() flattens the graph, builds StateContainers and fires nodes. For each node the executor resolves the class through the node catalog (CATALOG.get(type)) and calls forward(), with hooks firing around every node.">
   <rect class="box" x="14" y="20" width="170" height="30" rx="6"/><text class="mono" x="99" y="40" text-anchor="middle">api/execution/run.py</text>
   <path class="edge" d="M184,35 L226,35"/>
-  <rect class="accent" x="228" y="20" width="170" height="30" rx="6"/><text class="at" x="313" y="40" text-anchor="middle">LoopRunner.run()</text>
+  <rect class="accent" x="228" y="20" width="170" height="30" rx="6"/><text class="at" x="313" y="40" text-anchor="middle">LoopRunner.run() → GraphRun</text>
 
   <path class="edge" d="M313,50 L313,72 L446,72 L446,80"/>
   <path class="edge" d="M313,50 L313,116 L446,116 L446,124"/>
@@ -255,21 +255,27 @@
   <rect class="accent" x="446" y="168" width="240" height="28" rx="6"/><text class="at" x="566" y="187" text-anchor="middle">GraphExecutor.execute()</text>
 
   <path class="edge" d="M566,196 L566,210 L313,210 L99,210 L99,196"/>
-  <rect class="box" x="14" y="168" width="170" height="28" rx="6"/><text class="mono" x="99" y="187" text-anchor="middle">NODE_HANDLERS.forward()</text>
+  <rect class="box" x="14" y="168" width="170" height="28" rx="6"/><text class="mono" x="99" y="187" text-anchor="middle">CATALOG.get(type)().forward()</text>
   <text class="dim" x="240" y="224" text-anchor="middle">hooks fire around each node firing</text>
 </svg>
 
 <h3>3.2 File by File</h3>
 
-<h3 class="file-entry"><code>loop_runner.py</code><span class="lines">216 lines</span></h3>
-<p>The outermost lifecycle shell — first thing called from the API. Owns the <strong>lifecycle</strong>: pause, stop, resume.</p>
+<h3 class="file-entry"><code>graph_run.py</code><span class="lines">439 lines</span></h3>
+<p>The one <strong>prepare + run</strong> pipeline every entry path (canvas Play, batch eval, the Graph SDK, the eval subprocess) goes through:</p>
 <ul>
-  <li>Receives a <code>GraphDefinition</code> JSON from the frontend</li>
-  <li>Calls <code>flatten_graph()</code> to expand composites into a flat graph</li>
-  <li>Builds <code>StateContainer</code> instances from the graph's container definitions</li>
-  <li>Creates a <code>GraphExecutor</code> and calls <code>.forward()</code></li>
-  <li>Manages pause/stop/resume via asyncio events</li>
-  <li><code>ExecutionPrinciples</code> dataclass configures batch eval mode</li>
+  <li><code>prepare_graph(registry, graph, worker_count=, shared_only=, on_failed=, on_unknown=, validate=)</code> — validate connectivity, load the graph's nodesets through the registry, warn-check wire types; returns a <code>PreparedGraph</code> (loaded / failed / unknown nodesets, env nodeset, global hooks). <code>NodesetLoadError</code> under the <code>"raise"</code> policies</li>
+  <li><code>GraphRun(graph, session=, logger=, env_panel_overrides=, server_url_overrides=)</code> — one <code>GraphExecutor</code> built for one run; <code>run(...)</code> drives it, <code>outcome()</code> harvests a <code>RunOutcome</code> (status, step count, outputs, metrics, node errors) at any time, including after a timeout</li>
+  <li><code>RunSession</code> — the <code>session</code> object the executor writes status / step / metrics into; <code>ExecutionPrinciples</code> (eval-mode switches) lives here</li>
+  <li><code>harvest_outputs</code> / <code>harvest_metrics</code> — read graph-scope <code>graphOut</code> sinks off the executor; <code>detect_env_nodeset</code></li>
+</ul>
+<h3 class="file-entry"><code>loop_runner.py</code><span class="lines">193 lines</span></h3>
+<p>The canvas Play runner — a <code>RunSession</code> that adds the <strong>lifecycle</strong>: pause, stop, resume. Process singleton via <code>get_loop_runner()</code>.</p>
+<ul>
+  <li>Receives a <code>GraphDefinition</code> from the API</li>
+  <li>Self-creates an <code>ExecutionLogger</code> at <code>outputs/runs/&lt;execution_id&gt;/</code> (and writes <code>graph.json</code>) when none is injected</li>
+  <li>Builds a <code>GraphRun</code> (<code>graph_run.py</code>) with itself as the session and awaits <code>graph_run.run()</code>, passing its stop / pause events</li>
+  <li>Manages pause/stop/resume via asyncio events; re-exports <code>ExecutionPrinciples</code></li>
 </ul>
 <p>Does not know <em>how</em> nodes fire — sets up the world and hands control to the executor.</p>
 
@@ -293,7 +299,7 @@
   <li><strong>Cycles</strong>: <code>IterOutNode</code> copies its inputs to the paired <code>IterInNode</code> and re-enqueues it</li>
   <li><strong>Termination</strong>: IterOut's <code>stop</code> input port goes true (Decide phase), step budget reached, stop event set, empty queue, or a node-raised <code>StopExecution</code></li>
 </ol>
-<p>Each node fires by calling <code>NODE_HANDLERS[node_type].forward(inputs, ctx)</code>.</p>
+<p>Each node fires by resolving its class through the node catalog (<code>CATALOG.get(node_type)</code>), instantiating it and calling <code>forward(inputs, ctx)</code>; required ports and consumer wire types come from <code>CATALOG.required_inputs</code> / <code>CATALOG.wire_type</code>.</p>
 
 <h3 class="file-entry"><code>scope_analysis.py</code><span class="lines">416 lines</span></h3>
 <p>Computes the <strong>scope forest</strong> before execution starts.</p>
@@ -303,19 +309,19 @@
   <li>Validates scope shape (inner scopes bounded by mandatory graphIn/graphOut) — feeds the executor's per-scope <code>_ScopeState</code></li>
 </ul>
 
-<h3 class="file-entry"><code>builtin_nodes.py</code><span class="lines">1,369 lines</span></h3>
-<p>The <strong>node handler registry</strong> and the home for all <strong>built-in framework nodes</strong> (see TODO #37).</p>
-<p><strong>Registry</strong>:</p>
+<h3 class="file-entry"><code>builtin_nodes.py</code><span class="lines">1,660 lines</span></h3>
+<p>The home for all <strong>built-in framework nodes</strong> (see TODO #37) and the process-wide <strong>node catalog instance</strong>.</p>
+<p><strong>Catalog</strong>:</p>
 <ul>
-  <li><code>NODE_HANDLERS: dict[str, type[BaseCanvasNode]]</code> — global registry mapping <code>node_type</code> string to Python class</li>
-  <li><code>register_node(cls)</code> — called by <code>WorkspaceComponentRegistry</code> when loading nodesets</li>
+  <li><code>CATALOG = NodeCatalog(_BUILTIN_NODES)</code> — the process-wide catalog (<code>node_type</code> → class, plus each instance's ports); the class lives in <code>components/catalog.py</code></li>
+  <li><code>register_node(cls)</code> — thin wrapper over <code>CATALOG.register</code>, used by tests and SDK demos; the registry calls <code>CATALOG.register</code> / <code>unregister</code> directly</li>
   <li><code>ExecutionContext</code> dataclass — mutable state passed to every node</li>
 </ul>
 <p><strong>Built-in node classes (14):</strong></p>
 <table>
 <tr><th>Node</th><th>What it does</th></tr>
 <tr><td><code>IterInNode</code> / <code>IterOutNode</code></td><td>Loop gates — IterOut sends data back to IterIn for next iteration; iterIn's left side captures run-start <code>initPorts</code>, iterOut's final side feeds the after-loop band</td></tr>
-<tr><td><code>LLMCallNode</code></td><td>Calls <code>llm_complete()</code> / <code>vlm_complete()</code> with a prompt, returns text</td></tr>
+<tr><td><code>LLMCallNode</code></td><td>Builds one <code>app.llm.Request</code> (prompt / images / history / sampling knobs) and calls <code>complete()</code>, returns text + candidates</td></tr>
 <tr><td><code>TextParseNode</code></td><td>Generic structured parser for LLM response text</td></tr>
 <tr><td><code>HistoryLogNode</code></td><td>Accumulates one TEXT entry per firing, emits the formatted history</td></tr>
 <tr><td><code>GraphInNode</code> / <code>GraphOutNode</code></td><td>Composite boundaries — parameter slot / return slot (formerly PortIn/PortOut); graphOut doubles as the sink that buffers <code>_last_inputs</code> for the <code>nav_step</code> broadcast</td></tr>
@@ -336,24 +342,17 @@
   <li><strong>Nodeset-owned / keyed containers</strong> — <code>BaseNodeSet.get_containers()</code> lets a nodeset own containers (with <code>allow_opaque</code> values and per-key evict for worker parallelism), alongside graph-level containers</li>
 </ul>
 
-<h3 class="file-entry"><code>eval_batch.py</code><span class="lines">827 lines</span></h3>
-<p>Wraps <code>LoopRunner</code> for <strong>batch evaluation</strong>:</p>
+<h3 class="file-entry"><code>eval_batch.py</code><span class="lines">790 lines</span></h3>
+<p>Drives a <code>GraphRun</code> per episode for <strong>batch evaluation</strong>:</p>
 <ul>
-  <li><code>BatchEvalRunner</code> takes a graph + episode iterator</li>
-  <li>For each episode: leases a <code>WorkerHandle</code> from <code>EnvWorkerPool</code>, creates a fresh <code>LoopRunner</code>, sets the episode, runs under <code>asyncio.wait_for(timeout=max_steps × per_step_budget_sec)</code>, collects metrics</li>
-  <li>At <code>worker_count&gt;1</code>: shared <code>asyncio.Queue</code> of episode indices drained by N coroutines under <code>asyncio.gather</code>, results aggregated under <code>asyncio.Lock</code>, sorted by <code>episode_index</code> before persistence</li>
+  <li><code>BatchEvalRunner(run, graph, run_dir=, on_episode=)</code> takes an <code>EvalRun</code> + graph; <code>on_episode</code> fires after each episode's aggregates refresh (the subprocess uses it to rewrite <code>summary.json</code>)</li>
+  <li>For each episode: on its worker's <code>Fleet</code> handle, sets the episode through the (tagged) env panel, builds a fresh <code>GraphRun</code>, runs under <code>asyncio.wait_for(timeout=step_budget × per_step_budget_sec)</code>, harvests the <code>RunOutcome</code>'s metrics (partial ones after a timeout)</li>
+  <li>At <code>worker_count&gt;1</code>: N contiguous chunks (<code>_partition_contiguous</code>), one <code>asyncio.Queue</code> per worker drained by N coroutines under <code>asyncio.gather</code>, results aggregated under <code>asyncio.Lock</code>, sorted by <code>episode_index</code> before persistence</li>
+  <li><code>resolve_per_step_budget(env_nodeset, override)</code> — resolves the per-step wall-clock budget</li>
   <li>Emits WS progress events (<code>eval_progress</code>, <code>eval_episode_done</code>) tagged with <code>worker_id</code></li>
   <li>Respects <code>ExecutionGuard</code> — only one eval or canvas run at a time</li>
 </ul>
 
-<h3 class="file-entry"><code>env_worker_pool.py</code><span class="lines">244 lines</span></h3>
-<p>Sits between <code>BatchEvalRunner</code> and <code>LoopRunner</code> (<a href="decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> PA-3 + PB).</p>
-<ul>
-  <li><code>EnvWorkerPool(worker_count=N, env_nodeset=name)</code> — async context manager. <code>__aenter__</code> populates N <code>WorkerHandle</code>s; at <code>worker_count&gt;1</code> each binds to a tagged <code>RemoteEnvPanelProxy</code> + tagged URL</li>
-  <li><code>acquire()</code> — async context manager that leases one <code>WorkerHandle</code> per episode</li>
-  <li><code>WorkerHandle</code> carries <code>env_panel_overrides</code> and <code>server_url_overrides</code> consumed by the leased <code>LoopRunner</code>'s executor for per-worker routing</li>
-  <li><code>resolve_per_step_budget(env_nodeset, override)</code> — resolves the per-step wall-clock budget</li>
-</ul>
 
 <h3 class="file-entry"><code>hooks.py</code><span class="lines">307 lines</span></h3>
 <p>Fires shell commands at graph/node boundaries — like git hooks for graph execution.</p>
@@ -368,7 +367,7 @@
 <p><code>PolicyEntry</code> dataclass: metadata for a loadable neural policy checkpoint (id, name, checkpoint path, config path). Used by <code>WorkspaceComponentRegistry</code> when scanning <code>workspace/policies/</code>.</p>
 
 <h3>3.3 Layering</h3>
-<svg class="rxsvg" viewBox="0 0 700 320" role="img" aria-label="Engine layering, top to bottom. LoopRunner is the lifecycle shell (pause/stop/resume). GraphExecutor is the firing engine (FIFO queue), supported by flatten, state containers, and hooks. builtin_nodes is the NODE_HANDLERS registry plus the 14 built-in node classes. BaseCanvasNode lives in components/bases.py. Separately, BatchEvalRunner is the multi-episode loop, spawned per-run as a subprocess by JobScheduler, creating a fresh LoopRunner per episode.">
+<svg class="rxsvg" viewBox="0 0 700 320" role="img" aria-label="Engine layering, top to bottom. LoopRunner is the lifecycle shell (pause/stop/resume) that builds a GraphRun per run. GraphExecutor is the firing engine (FIFO queue), supported by flatten, state containers, and hooks. builtin_nodes holds the process-wide node catalog (CATALOG) plus the 14 built-in node classes. BaseCanvasNode lives in components/bases.py. Separately, BatchEvalRunner is the multi-episode loop, spawned per-run as a subprocess by JobScheduler, creating a fresh GraphRun per episode.">
   <rect class="accent" x="250" y="14" width="200" height="30" rx="6"/><text class="at" x="350" y="34" text-anchor="middle">LoopRunner</text>
   <text class="dim" x="464" y="33">lifecycle shell (pause/stop/resume)</text>
   <path class="edge" d="M350,44 L350,58"/>
@@ -382,18 +381,18 @@
   <text class="dim" x="350" y="156" text-anchor="middle">pre-processing + runtime services</text>
 
   <path class="edge" d="M350,162 L350,176"/>
-  <rect class="accent" x="250" y="178" width="200" height="34" rx="6"/><text class="at" x="350" y="195" text-anchor="middle">builtin_nodes</text><text class="dim" x="350" y="207" text-anchor="middle">NODE_HANDLERS + 14 classes</text>
+  <rect class="accent" x="250" y="178" width="200" height="34" rx="6"/><text class="at" x="350" y="195" text-anchor="middle">builtin_nodes</text><text class="dim" x="350" y="207" text-anchor="middle">CATALOG + 14 classes</text>
   <path class="edge" d="M350,212 L350,226"/>
   <rect class="box" x="250" y="228" width="200" height="28" rx="6"/><text class="mono" x="350" y="247" text-anchor="middle">BaseCanvasNode (components/bases.py)</text>
 
   <line x1="14" y1="276" x2="686" y2="276" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>
   <rect class="box" x="14" y="286" width="200" height="28" rx="6"/><text class="mono" x="114" y="305" text-anchor="middle">BatchEvalRunner</text>
-  <text class="dim" x="230" y="304">multi-episode loop — JobScheduler spawns it per-run as a subprocess; fresh LoopRunner per episode</text>
+  <text class="dim" x="230" y="304">multi-episode loop — JobScheduler spawns it per-run as a subprocess; fresh GraphRun per episode</text>
 </svg>
 
 <div class="callout success">
   <strong>Key design</strong>
-  <strong>Scheduling is separated from execution.</strong> <code>GraphExecutor</code> decides <em>when</em> a node fires (input readiness). <code>NODE_HANDLERS</code> decides <em>what</em> happens (domain logic). Adding a new node type is just subclassing <code>BaseCanvasNode</code> in <code>workspace/</code> — the executor never changes.
+  <strong>Scheduling is separated from execution.</strong> <code>GraphExecutor</code> decides <em>when</em> a node fires (input readiness). The classes in the node catalog decide <em>what</em> happens (domain logic). Adding a new node type is just subclassing <code>BaseCanvasNode</code> in <code>workspace/</code> — the executor never changes.
 </div>
 
 <!-- 4 -->
@@ -403,8 +402,12 @@
 <table class="file-table">
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
 <tr><td><code>bases.py</code></td><td>554</td><td></td><td><strong>Base classes for all node authoring</strong> — <code>PortDef</code>, <code>ConfigField</code> (7 widget types incl. <code>port_list</code>), <code>DisplayField</code> (4 display types: image_viewer, log_list, metric_table, text_viewer), <code>NodeUIConfig</code>, <code>BaseCanvasNode</code> (abstract: <code>forward()</code>, ports, category, icon, <code>_self_log()</code>, <code>batched</code>/<code>batch_dim</code>), <code>BaseNodeSet</code> (loadable tool group; <code>server_python</code>, <code>parallelism</code>, <code>env_panel</code>, <code>default_per_step_budget_sec</code>, <code>replay_parser</code> ClassVars)</td></tr>
-<tr><td><code>registry.py</code></td><td>1,955</td><td></td><td><strong>WorkspaceComponentRegistry</strong> — scans <code>workspace/</code> subdirectories, imports Python files, discovers <code>BaseCanvasNode</code>/<code>BaseNodeSet</code> subclasses via <code>inspect</code>. Registers in <code>NODE_HANDLERS</code>. Handles load/unload lifecycle, server-mode auto-routing, hook file loading, graph auto-loading, <code>register_remote_nodeset</code> (subprocess attach to shared singletons), container-ownership checks</td></tr>
+<tr><td><code>registry.py</code></td><td>1,955</td><td></td><td><strong>WorkspaceComponentRegistry</strong> — scans <code>workspace/</code> subdirectories, imports Python files, discovers <code>BaseCanvasNode</code>/<code>BaseNodeSet</code> subclasses via <code>inspect</code>. Registers in the node catalog (<code>CATALOG</code>); builds every server through <code>Launcher</code>; implements <code>RegistryFacts</code> for admission. Handles load/unload lifecycle, server-mode auto-routing, hook file loading, graph auto-loading, <code>register_remote_nodeset</code> (subprocess attach to shared singletons), container-ownership checks</td></tr>
 <tr><td><code>env_panel.py</code></td><td>250</td><td></td><td><strong>BaseEnvPanel</strong> — control-plane panel base for env-side runtime knobs (suite / split / episode, play / pause / reset); declared via the <code>BaseNodeSet.env_panel</code> ClassVar, served at <code>/api/env-panels/*</code>, bridged into server-mode subprocesses by <code>RemoteEnvPanelProxy</code>. Renamed from "controller" 2026-06-11 (<a href="decisions/server/adr-server-002-base-controller.html">ADR-server-002</a>)</td></tr>
+<tr><td><code>catalog.py</code></td><td>184</td><td></td><td><strong>NodeCatalog</strong> — which node types exist in this process and what ports each instance has: <code>register</code> / <code>unregister</code>, <code>get</code>, <code>ports_of(type, config)</code> (the one rule: <code>_resolve_ports(config)</code> when the class has one, else the class lists), <code>required_inputs</code>, <code>wire_type</code>, <code>schema</code> / <code>schemas</code> (the <code>/node-schemas</code> feed). The process-wide instance is <code>builtin_nodes.CATALOG</code></td></tr>
+<tr><td><code>launcher.py</code></td><td>291</td><td></td><td><strong>Launcher</strong> — <code>vehicle_for(nodeset_cls, mode, worker_count)</code> routes a nodeset to local / native / container; <code>Launcher.build(...)</code> assembles the <code>BaseServer</code> or <code>ContainerServer</code> (<code>build_container_server</code>: path translation, mounts, executor-URL rewrite); <code>server_key</code>, <code>find_free_port</code>, <code>auto_host_command</code></td></tr>
+<tr><td><code>fleet.py</code></td><td>152</td><td></td><td><strong>Fleet</strong> — the N workers of a batch-eval run over the tagged env copies: one <code>WorkerHandle</code> per worker (<code>env_panel_overrides</code> + <code>server_url_overrides</code> for every <code>replicated</code> nodeset), <code>worker(k)</code>, teardown on exit (<a href="decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a>)</td></tr>
+<tr><td><code>facts.py</code></td><td>57</td><td></td><td><strong>RegistryFacts</strong> (abc) + <strong>NodesetFacts</strong> — the read-only view of the registry that admission needs (parallelism, loaded / hosted, source file + hash, author presets); the registry implements it, <code>ResourceStatsTracker</code> consumes it</td></tr>
 <tr><td><code>content_hash.py</code></td><td>95</td><td></td><td><strong>Content hashing for nodeset source trees</strong> — lets <code>/api/eval/v2/start</code> detect whether an <code>active_workspace_dir</code> overlay actually changed a <code>shared</code> nodeset's source vs. the frozen baseline</td></tr>
 <tr><td><code>__init__.py</code></td><td>24</td><td></td><td>Re-exports: <code>BaseCanvasNode</code>, <code>BaseNodeSet</code>, <code>PortDef</code>, <code>ConfigField</code>, <code>DisplayField</code>, <code>NodeUIConfig</code> — the public import path</td></tr>
 </table>
@@ -419,8 +422,9 @@
 <tr><td><code>auto_server_app.py</code></td><td>204</td><td></td><td><strong>AutoServerApp</strong> (server-side) — auto-generates a <code>ServerApp</code> from any <code>BaseNodeSet</code> by introspecting port shapes. Owns one <code>BatchedInferenceServer</code> per app; <code>_make_handler</code> dispatches <code>batched=True</code> nodes through the rendezvous</td></tr>
 <tr><td><code>batched_inference.py</code></td><td>196</td><td></td><td><strong>Batched-inference rendezvous tier</strong>. <code>BatchedInferenceServer</code> owns one <code>_BatchQueue</code> per <code>(function_name, config_hash)</code> — collects K parallel callers, calls underlying handler <strong>once</strong>, scatters K result slices. Pure-functional contract</td></tr>
 <tr><td><code>base_server.py</code></td><td>283</td><td></td><td><strong>BaseServer</strong> (framework-side) — launches subprocess, polls <code>/health</code>, handles start/stop/restart, fetches manifest. Manages process lifecycle and port allocation</td></tr>
-<tr><td><code>nodeset.py</code></td><td>192</td><td></td><td><strong>ServerNodeSet</strong> — combines <code>BaseNodeSet</code> + <code>BaseServer</code>: loadable group of canvas nodes backed by an external server process</td></tr>
-<tr><td><code>proxy.py</code></td><td>149</td><td></td><td><strong>Proxy node generator</strong> (bridge) — reads <code>ServerManifest</code> and auto-generates <code>BaseCanvasNode</code> subclasses whose <code>forward()</code> forwards inputs over HTTP. Canvas can't tell the difference</td></tr>
+<tr><td><code>client.py</code></td><td>347</td><td></td><td><strong>AutoHostClient</strong> (framework-side) — the one HTTP client against an auto_host: <code>call</code> / <code>call_sync</code> (msgpack or JSON, usage + log in the reply), env-panel calls, <code>manifest_sync</code>, <code>health</code>, <code>evict</code>, <code>container_op</code>; <code>CallError</code> / <code>ServerUnreachable</code></td></tr>
+<tr><td><code>invoke.py</code></td><td>151</td><td></td><td><strong>invoke</strong> (server-side) — the one function call behind <code>POST /call/{fn}</code> and the MCP <code>tools/call</code>: decode per port map, set the per-call log + usage buckets, run the handler, encode outputs or a <code>FireList</code></td></tr>
+<tr><td><code>proxy.py</code></td><td>149</td><td></td><td><strong>Proxy node generator</strong> (bridge) — reads <code>ServerManifest</code> and auto-generates <code>BaseCanvasNode</code> subclasses whose <code>forward()</code> forwards inputs over HTTP through <code>AutoHostClient</code> (per-worker URL override, hosted log + usage folded into the firing; a server error raises <code>CallError</code>). Canvas can't tell the difference</td></tr>
 <tr><td><code>manifest.py</code></td><td>93</td><td></td><td><strong>Manifest protocol types</strong> — <code>PortSchema</code>, <code>FunctionSchema</code>, <code>ServerManifest</code></td></tr>
 <tr><td><code>serialization.py</code></td><td>300</td><td></td><td><strong>Wire serialization</strong> — msgpack codec (<code>pack_body</code>/<code>unpack_body</code>, <a href="decisions/server/adr-server-004-transport-contract.html">ADR-server-004</a>): one <code>blob</code> ExtType carries raw <code>ndarray</code>/<code>torch.Tensor</code>/<code>PIL.Image</code> bytes with receiver-side degrade; JSON+base64 legacy path kept for the migration window</td></tr>
 <tr><td><code>event_push.py</code></td><td>144</td><td></td><td><strong>Subprocess → executor event push</strong> — forwards structured node logs + first-classed handler exceptions from a server-mode subprocess to the parent's <code>/api/internal/events</code>, so server-node errors surface on the canvas (roadmap #54 Move 3)</td></tr>
@@ -428,7 +432,7 @@
 <tr><td><code>_loopback_proxy.py</code></td><td>39</td><td></td><td><strong>Loopback proxy policy</strong> — keeps httpx calls to localhost auto-host children from being routed through a user's <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code> shell env</td></tr>
 <tr><td><code>auto_host.py</code></td><td>60</td><td></td><td><strong>CLI entry point</strong> — <code>python -m app.server.auto_host --file nodeset.py --class MyNodeSet --port 9200</code></td></tr>
 <tr><td><code>examples/habitat_server.py</code></td><td>230</td><td></td><td><strong>Reference example</strong> — hand-written <code>ServerApp</code> for Habitat-Sim (pre-dates <code>AutoServerApp</code>). Kept as documentation</td></tr>
-<tr><td><code>__init__.py</code></td><td>30</td><td></td><td>Re-exports: <code>AutoServerApp</code>, <code>BaseServer</code>, <code>ServerApp</code>, <code>ServerFunction</code>, <code>ServerNodeSet</code>, manifest types</td></tr>
+<tr><td><code>__init__.py</code></td><td>30</td><td></td><td>Re-exports: <code>AutoServerApp</code>, <code>AutoHostClient</code>, <code>BaseServer</code>, <code>ServerApp</code>, <code>ServerFunction</code>, manifest types</td></tr>
 </table>
 
 <!-- 6 -->
@@ -437,10 +441,12 @@
 <p>Self-contained package for the LLM/VLM subsystem. <code>__init__.py</code> re-exports the public API so external imports work unchanged.</p>
 <table class="file-table">
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
-<tr><td><code>__init__.py</code></td><td>34</td><td></td><td>Re-exports: <code>llm_complete</code>, <code>vlm_complete</code>, <code>get_llm_config</code>, <code>LLMConfig</code>, <code>get_profile_store</code>, <code>LLMProfile</code>, <code>PROVIDER_REGISTRY</code>, <code>resolve_provider_config</code></td></tr>
-<tr><td><code>call.py</code></td><td>251</td><td></td><td><strong>LLM/VLM call client</strong> — <code>llm_complete()</code> (text-only) and <code>vlm_complete()</code> (multimodal) via litellm. Resolves provider config from active profile using the 3-layer fallback chain (<a href="decisions/platform/adr-platform-003-layered-llm-config.html">ADR-platform-003</a>). Supports 100+ providers through litellm</td></tr>
+<tr><td><code>__init__.py</code></td><td>34</td><td></td><td>Re-exports: <code>complete</code>, <code>complete_sync</code>, <code>Request</code>, <code>Completion</code>, <code>llm_complete</code>, <code>vlm_complete</code> (+ <code>_n</code>), <code>get_llm_config</code>, <code>LLMConfig</code>, <code>get_profile_store</code>, <code>LLMProfile</code>, <code>PROVIDER_REGISTRY</code>, <code>resolve_provider_config</code>, <code>finalize_params</code>, <code>get_capabilities</code></td></tr>
+<tr><td><code>complete.py</code></td><td>421</td><td></td><td><strong>The completion module</strong> — <code>complete(config, Request) → Completion</code> (+ <code>complete_sync</code>): message builder, the rulebook over every parameter, provider-native <code>n</code> with a single-sample fill, usage accounting, timeout and strict-error policy. <code>Transport</code> (abc) is the wire seam; <code>LiteLLMTransport</code> is the production adapter (100+ providers through litellm)</td></tr>
+<tr><td><code>call.py</code></td><td>215</td><td></td><td><strong>Profile → LLMConfig</strong> (<code>get_llm_config</code> / <code>get_llm_config_direct</code>; <a href="decisions/platform/adr-platform-003-layered-llm-config.html">ADR-platform-003</a>) and the four thin wrappers <code>llm_complete</code> / <code>llm_complete_n</code> / <code>vlm_complete</code> / <code>vlm_complete_n</code> over <code>complete</code></td></tr>
+<tr><td><code>rulebook.py</code></td><td>215</td><td></td><td><strong>Parameter rulebook</strong> — verified per-(provider, model-family) facts (locked / required / range / unsupported / min_hint); <code>finalize_params</code> at call time, <code>get_capabilities</code> for the Settings UI</td></tr>
 <tr><td><code>profiles.py</code></td><td>157</td><td></td><td><strong>ProfileStore</strong> — persistent storage at <code>~/.agentcanvas/profiles.json</code>. Thread-safe with <code>RLock</code>. Mtime-based cache invalidation</td></tr>
-<tr><td><code>providers.py</code></td><td>117</td><td></td><td><strong>Provider registry</strong> — static dict mapping 24 provider IDs to <code>ProviderDef</code> (label, base_url, api_type, default_model, litellm_prefix). Covers: OpenAI, Anthropic, Google, Ollama, DeepSeek, Together, OpenRouter, Mistral, xAI, NVIDIA NIM, Hugging Face, Moonshot, and more</td></tr>
+<tr><td><code>providers.py</code></td><td>117</td><td></td><td><strong>Provider registry</strong> — static dict mapping 24 provider IDs to <code>ProviderDef</code> (label, base_url, api_type, default_model, litellm_prefix); <code>LLMConfig</code> (one resolved call target) and <code>API_TYPE_TO_LITELLM_PREFIX</code>. Covers: OpenAI, Anthropic, Google, Ollama, DeepSeek, Together, OpenRouter, Mistral, xAI, NVIDIA NIM, Hugging Face, Moonshot, and more</td></tr>
 <tr><td><code>key_validator.py</code></td><td>94</td><td></td><td><strong>API key validation</strong> — tests if an API key is valid via a minimal litellm completion request</td></tr>
 <tr><td><code>cli.py</code></td><td>478</td><td></td><td><strong>Standalone CLI tool</strong> — 8 argparse commands: <code>list</code>, <code>add</code>, <code>remove</code>, <code>set-active</code>, <code>test</code>, <code>show</code>, <code>setup</code>, <code>models</code></td></tr>
 </table>
@@ -476,8 +482,7 @@
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
 <tr><td><code>wire_types.py</code></td><td>443</td><td></td><td><strong>Wire type registry</strong> — 9 current types (<code>IMAGE</code>, <code>DEPTH</code>, <code>POSE</code>, <code>DISCRETE_ACTION</code>, <code>CONTROL</code>, <code>TEXT</code>, <code>BOOL</code>, <code>METRICS</code>, <code>ANY</code>) + 3 deprecated aliases (<code>ACTION</code>, <code>OBSERVATION</code>, <code>STEP_RESULT</code>) kept so legacy graphs load, + <code>LIST[T]</code> modifier, <code>WIRE_FORMAT_SPEC</code> canonical on-wire formats, display colours. Helpers: <code>image_to_base64()</code>, <code>depth_to_base64()</code>, <code>serialize_for_display()</code></td></tr>
 <tr><td><code>actions.py</code></td><td>40</td><td></td><td><strong>Action constants</strong> — <code>ACTION_STOP</code>, <code>ACTION_FORWARD</code>, <code>ACTION_TURN_LEFT</code>, <code>ACTION_TURN_RIGHT</code> (the VLN <code>Discrete(4)</code> space). <code>parse_action_from_text()</code> extracts an action from LLM output</td></tr>
-<tr><td><code>node_io.py</code></td><td>168</td><td></td><td><strong>Auto-generated node I/O schema</strong> — <code>NODE_IO_SCHEMA</code> + <code>REQUIRED_INPUTS</code> built lazily from the <code>NODE_HANDLERS</code> registry (no handler classes live here). Used by <code>GraphExecutor</code> for fan-in logic</td></tr>
-<tr><td><code>telemetry.py</code></td><td>25</td><td></td><td><strong>Per-node-firing accounting ContextVars</strong> — <code>_current_node_usage</code> (written by <code>llm_complete</code>/<code>vlm_complete</code>) and <code>_current_node_transport</code> (written by the server-proxy codec). The executor resets them around each firing and reads them back into the node's log entry; they live here so a pure-local run doesn't drag in litellm/numpy</td></tr>
+<tr><td><code>telemetry.py</code></td><td>25</td><td></td><td><strong>Per-node-firing accounting ContextVars</strong> — <code>_current_node_usage</code> (written by <code>app.llm.complete</code>), <code>_current_node_transport</code> (written by the server-proxy codec) and <code>_current_node_log</code> (a hosted node's <code>_self_log</code> buffer under <code>invoke</code>); <code>new_usage_bucket</code> / <code>merge_usage</code>. The executor resets them around each firing and reads them back into the node's log entry; they live here so a pure-local run doesn't drag in litellm/numpy</td></tr>
 <tr><td><code>__init__.py</code></td><td>9</td><td></td><td>Re-exports everything from the sibling modules</td></tr>
 </table>
 
@@ -487,8 +492,8 @@
 <p>Long-running backend-process services owned by the FastAPI lifespan: job scheduling, file watching, resource sampling.</p>
 <table class="file-table">
 <tr><th>File</th><th>Lines</th><th></th><th>Role</th></tr>
-<tr><td><code>job_scheduler.py</code></td><td>941</td><td></td><td><strong>JobScheduler</strong> — admission + FIFO queue + Popen pool for eval run subprocesses (<a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>). Singleton owned by <code>ProcessServices</code>; one <code>tick()</code> per second admits queued jobs through the per-resource measured gate (calibrated estimate vs measured free VRAM/RAM minus reservations; declared fallback) while the canvas <code>ExecutionGuard</code> lock is free; spawns <code>python -m app.eval_subprocess_main</code> with <code>PR_SET_PDEATHSIG</code></td></tr>
-<tr><td><code>resource_stats.py</code></td><td>739</td><td></td><td><strong>ResourceStatsTracker</strong> — per-owner resource attribution (VRAM per-PID from the sampler, RAM RSS from one /proc walk → shared server | job tree | external), per-run observation windows, calibration store (<code>outputs/system/resource_calibration.json</code>, EWMA + max per resource, source-hash keyed) and the admission estimator behind <code>GET /api/eval/v2/estimate</code></td></tr>
+<tr><td><code>job_scheduler.py</code></td><td>941</td><td></td><td><strong>JobScheduler</strong> — admission + FIFO queue + Popen pool for eval run subprocesses (<a href="decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>). Singleton owned by <code>ProcessServices</code>; one <code>tick()</code> per second admits queued jobs through the per-resource measured gate — the job's charge from <code>ResourceStatsTracker.charge</code> vs measured free VRAM/RAM minus reservations — while the canvas <code>ExecutionGuard</code> lock is free; spawns <code>python -m app.eval_subprocess_main</code> with <code>PR_SET_PDEATHSIG</code></td></tr>
+<tr><td><code>resource_stats.py</code></td><td>739</td><td></td><td><strong>ResourceStatsTracker</strong> — per-owner resource attribution (VRAM per-PID from the sampler, RAM RSS from one /proc walk → shared server | job tree | external), per-run observation windows, calibration store (<code>outputs/system/resource_calibration.json</code>, EWMA + max per resource, source-hash keyed) and the one admission charge ladder — <code>charge()</code>: calibrated / hint / declared / cold-start, or legacy without a sampler — behind <code>JobScheduler._admit</code> and <code>GET /api/eval/v2/estimate</code>; reads nodeset facts through the <code>RegistryFacts</code> seam</td></tr>
 <tr><td><code>graph_watcher.py</code></td><td>73</td><td></td><td><strong>Graph-directory watcher</strong> — pushes <code>graphs_changed</code> when graph JSON files change on disk, so coding-agent edits made outside the web UI show up in the Explorer without a manual refresh</td></tr>
 <tr><td><code>nodeset_watcher.py</code></td><td>156</td><td></td><td><strong>Nodeset-source watcher</strong> — hot-reloads nodeset <code>.py</code> edits without a backend restart; companion to <code>graph_watcher</code></td></tr>
 <tr><td><code>resource_sampler.py</code></td><td>346</td><td></td><td><strong>ResourceSampler</strong> — always-on ~1 Hz machine resource time-series written to <code>outputs/system/system-YYYYMMDD.jsonl</code>; feeds <code>/api/system/usage</code> + <code>/history</code> and the Monitor page (§17)</td></tr>

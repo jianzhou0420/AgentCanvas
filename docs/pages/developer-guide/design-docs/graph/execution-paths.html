@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Execution Paths — AgentCanvas</title>
-<meta name="description" content="LoopRunner, GraphExecutor, ExecutionGuard, JobScheduler, BatchEvalRunner — one engine, two entry paths">
+<meta name="description" content="GraphRun, GraphExecutor, LoopRunner, ExecutionGuard, JobScheduler, BatchEvalRunner — one engine, two entry paths">
 <meta property="og:title" content="Execution Paths — AgentCanvas">
-<meta property="og:description" content="LoopRunner, GraphExecutor, ExecutionGuard, JobScheduler, BatchEvalRunner — one engine, two entry paths">
+<meta property="og:description" content="GraphRun, GraphExecutor, LoopRunner, ExecutionGuard, JobScheduler, BatchEvalRunner — one engine, two entry paths">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentCanvas">
 <meta name="twitter:card" content="summary_large_image">
@@ -70,21 +70,21 @@
     <span class="sep">/</span>
     <span class="here">Execution Paths</span>
   </div>
-  <div class="last-updated">2026-07-05</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>Execution Paths</h1>
-  <p class="tagline">LoopRunner, GraphExecutor, ExecutionGuard, JobScheduler, BatchEvalRunner — one engine, two entry paths</p>
+  <p class="tagline">GraphRun, GraphExecutor, LoopRunner, ExecutionGuard, JobScheduler, BatchEvalRunner — one engine, two entry paths</p>
 </header>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <marker id="epa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
 </defs></svg>
 
-<p class="lede">Every graph run in AgentCanvas — whether you click <strong>▶ Play</strong> on the canvas or submit a <strong>batch-eval</strong> job — bottoms out in the same two-class engine: <code>LoopRunner.run()</code> driving <code>GraphExecutor.run()</code>. The two paths differ only in <em>how that LoopRunner is created and wrapped</em> — never in how nodes fire. This page is the class-by-class map of both paths and where they converge. For the firing engine itself see <a href="graph-executor.html">graph-executor</a>; for the eval harness internals (workers, parallelism, persistence) see <a href="batch-eval.html">batch-eval</a>; rationale in <a href="../../core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a> + <a href="../../core/decisions/platform/adr-platform-002-single-run-endpoint.html">ADR-platform-002</a>.</p>
+<p class="lede">Every graph run in AgentCanvas — whether you click <strong>▶ Play</strong> on the canvas or submit a <strong>batch-eval</strong> job — bottoms out in the same two-class engine: <code>GraphRun.run()</code> driving <code>GraphExecutor.run()</code>. The two paths differ only in <em>how that GraphRun is created and wrapped</em> — never in how nodes fire. This page is the class-by-class map of both paths and where they converge. For the firing engine itself see <a href="graph-executor.html">graph-executor</a>; for the eval harness internals (workers, parallelism, persistence) see <a href="batch-eval.html">batch-eval</a>; rationale in <a href="../../core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a> + <a href="../../core/decisions/platform/adr-platform-002-single-run-endpoint.html">ADR-platform-002</a>.</p>
 
-<p class="diagram-label"><strong>Two entries, one engine.</strong> Each lane is a real call chain (labelable <code>file·function</code>); both funnel into the shared <code>LoopRunner → GraphExecutor</code> band. Above the band the two paths differ; from the band down they are identical.</p>
-<svg class="rxsvg" viewBox="0 0 760 462" role="img" aria-label="Two execution entry paths converging on one engine. Left lane, Canvas Play: the UI Play button POSTs to /api/navigate/run (run.py run_loop), which acquires the canvas ExecutionGuard (state.py, returns 409 if an eval holds the lock), then calls get_loop_runner() to get the process-global singleton LoopRunner (principles=None, no per-worker overrides) and runs it as a fire-and-forget asyncio task. Right lane, Batch Eval: a POST to /api/eval/v2/start (eval.py start_eval_v2, via_subprocess defaults true) calls JobScheduler.submit, whose tick loop admits the job when the summed VRAM fits the budget and the canvas lock is free, then spawns a subprocess (eval_subprocess_main) that attaches the parent's shared singletons via register_remote_nodeset; inside it BatchEvalRunner.execute partitions episodes across an EnvWorkerPool of N WorkerHandles and builds a fresh LoopRunner per episode. Both lanes converge on the shared engine band: LoopRunner.run() drives GraphExecutor.run(), which fires the graph's nodes through a ready-queue — identical for both paths. From there tool nodes call out to AutoServerApp subprocesses where a BatchedInferenceServer coalesces K-way under eval. Two entries, one engine: canvas Play uses the singleton LoopRunner, eval builds a fresh LoopRunner per episode, and node firing is identical.">
+<p class="diagram-label"><strong>Two entries, one engine.</strong> Each lane is a real call chain (labelable <code>file·function</code>); both funnel into the shared <code>GraphRun → GraphExecutor</code> band. Above the band the two paths differ; from the band down they are identical.</p>
+<svg class="rxsvg" viewBox="0 0 760 462" role="img" aria-label="Two execution entry paths converging on one engine. Left lane, Canvas Play: the UI Play button POSTs to /api/navigate/run (run.py run_loop), which acquires the canvas ExecutionGuard (state.py, returns 409 if an eval holds the lock), then calls get_loop_runner() to get the process-global singleton LoopRunner (principles=None, no per-worker overrides) and runs it as a fire-and-forget asyncio task. Right lane, Batch Eval: a POST to /api/eval/v2/start (eval.py start_eval_v2, via_subprocess defaults true) calls JobScheduler.submit, whose tick loop admits the job when the summed VRAM fits the budget and the canvas lock is free, then spawns a subprocess (eval_subprocess_main) that attaches the parent's shared singletons via register_remote_nodeset; inside it BatchEvalRunner.execute partitions episodes across a Fleet of N WorkerHandles and builds a fresh GraphRun per episode. Both lanes converge on the shared engine band: GraphRun.run() drives GraphExecutor.run(), which fires the graph's nodes through a ready-queue — identical for both paths. From there tool nodes call out to AutoServerApp subprocesses where a BatchedInferenceServer coalesces K-way under eval. Two entries, one engine: canvas Play uses the singleton LoopRunner, which builds a GraphRun per Play; eval builds a fresh GraphRun per episode; node firing is identical.">
   <text class="dim" x="30" y="22">Canvas Play (UI ▶)</text>
   <text class="dim" x="430" y="22">Batch Eval (job)</text>
 
@@ -116,14 +116,14 @@
   <path class="edge" d="M580,182 L580,196"/>
   <rect class="box" x="430" y="198" width="300" height="54" rx="6"/>
   <text x="580" y="216" text-anchor="middle" font-size="12">BatchEvalRunner.execute</text>
-  <text class="dim" x="580" y="231" text-anchor="middle">EnvWorkerPool: N × WorkerHandle</text>
-  <text class="dim" x="580" y="246" text-anchor="middle">→ fresh LoopRunner per episode (eval_batch.py)</text>
+  <text class="dim" x="580" y="231" text-anchor="middle">Fleet: N × WorkerHandle</text>
+  <text class="dim" x="580" y="246" text-anchor="middle">→ fresh GraphRun per episode (eval_batch.py)</text>
 
   <!-- converge -->
   <path class="edge" d="M180,188 L286,286"/>
   <path class="edge" d="M580,252 L474,286"/>
   <rect class="accent" x="130" y="286" width="500" height="58" rx="8"/>
-  <text class="at" x="380" y="309" text-anchor="middle">LoopRunner.run()  →  GraphExecutor.run()</text>
+  <text class="at" x="380" y="309" text-anchor="middle">GraphRun.run()  →  GraphExecutor.run()</text>
   <text class="dim" x="380" y="328" text-anchor="middle">the shared engine — fires nodes via the ready-queue, identical both paths</text>
 
   <path class="edge" d="M380,344 L380,360"/>
@@ -131,7 +131,7 @@
   <text x="380" y="383" text-anchor="middle" font-size="12">tool nodes → AutoServerApp subprocess(es)</text>
   <text class="dim" x="380" y="399" text-anchor="middle">server/auto_server_app.py · BatchedInferenceServer (K-way, eval)</text>
 
-  <text class="dim" x="380" y="440" text-anchor="middle">Two entries, one engine — canvas Play uses the singleton LoopRunner; eval builds a fresh LoopRunner per episode. Node firing is identical.</text>
+  <text class="dim" x="380" y="440" text-anchor="middle">Two entries, one engine — canvas Play's singleton LoopRunner builds a GraphRun per Play; eval builds a fresh GraphRun per episode. Node firing is identical.</text>
 </svg>
 <hr>
 
@@ -141,15 +141,15 @@
 <li><strong>Canvas Play</strong> — an interactive <em>single</em> run you launch from the UI to watch an agent step live.</li>
 <li><strong>Batch Eval</strong> — a headless run of the same graph across <em>many</em> episodes, aggregated into metrics.</li>
 </ul>
-<p>Both reduce to one engine: a <code>LoopRunner</code> (the control-plane shell) calling <code>GraphExecutor.run()</code> (the firing engine). Everything that differs between the two paths lives <em>above</em> that call — in the <strong>wrapper classes</strong> that decide:</p>
+<p>Both reduce to one engine: a <code>GraphRun</code> (<code>graph_run.py · GraphRun</code> — one executor built for one run of one graph) calling <code>GraphExecutor.run()</code> (the firing engine). Everything that differs between the two paths lives <em>above</em> that call — in the <strong>wrapper classes</strong> that decide:</p>
 <ul>
 <li><strong>who is allowed to run</strong> — <code>ExecutionGuard</code> (canvas, single-tenant) vs <code>JobScheduler</code> (eval, VRAM-admitted);</li>
 <li><strong>where it runs</strong> — in the backend process (canvas) vs a spawned subprocess (eval, default);</li>
-<li><strong>which LoopRunner</strong> — a process-global <em>singleton</em> (canvas) vs a <em>fresh one per episode</em> (eval);</li>
+<li><strong>who builds the GraphRun</strong> — the process-global <em>singleton</em> <code>LoopRunner</code> (canvas) vs <code>BatchEvalRunner</code>, <em>fresh one per episode</em> (eval);</li>
 <li><strong>how calls are routed</strong> — none (canvas) vs per-worker <code>env_panel_overrides</code> / <code>server_url_overrides</code> (eval);</li>
 <li><strong>logging + eval flags</strong> — self-created canvas logger vs injected per-episode logger + <code>ExecutionPrinciples</code>.</li>
 </ul>
-<p>The name <code>LoopRunner</code> is slightly misleading: it has <em>no loop of its own</em> — the iteration lives entirely inside <code>GraphExecutor.run()</code> (the ready-queue). "Loop" names the loop it executes, not a loop in its body.</p>
+<p>The names <code>LoopRunner</code> / <code>GraphRun</code> are slightly misleading: neither has <em>a loop of its own</em> — the iteration lives entirely inside <code>GraphExecutor.run()</code> (the ready-queue). "Loop" names the loop it executes, not a loop in its body.</p>
 
 <h3 id="smallest">Smallest of each</h3>
 <p>The smallest canvas run is one POST carrying the whole graph; the smallest eval is a graph name + an episode count (everything else defaults):</p>
@@ -171,9 +171,9 @@ POST /api/eval/v2/start
 <thead><tr><th>Class</th><th>What it does</th><th>Where</th></tr></thead>
 <tbody>
 <tr>
-<td><code>LoopRunner</code></td>
-<td><strong>Control-plane shell</strong> around one execution. Holds the <code>stop</code>/<code>pause</code> <code>asyncio.Event</code>s and passes them into the executor; carries the per-worker routing overrides forward into a freshly-built <code>GraphExecutor</code>; manages the logger + (canvas) <code>graph.json</code> snapshot; applies <code>ExecutionPrinciples</code> (eval mode); doubles as the <code>session</code> object the executor writes <code>step</code>/<code>metrics</code> back into. <strong>No loop of its own.</strong></td>
-<td><code>loop_runner.py · LoopRunner.run</code></td>
+<td><code>GraphRun</code> + <code>RunSession</code></td>
+<td><strong>One executor for one run.</strong> <code>GraphRun</code> builds a fresh <code>GraphExecutor</code> carrying the logger and the per-worker routing overrides, <code>run()</code> passes the <code>stop</code>/<code>pause</code> <code>asyncio.Event</code>s, hooks and step budget into it, and <code>outcome()</code> reads status, step count, outputs and metrics back off the executor and session at any time. <code>RunSession</code> is the <code>session</code> object the executor writes <code>step</code>/<code>status</code>/<code>metrics</code> into and carries the <code>ExecutionPrinciples</code> (eval mode); the canvas <code>LoopRunner</code> is a <code>RunSession</code> that adds pause/stop/resume and the self-created canvas logger + <code>graph.json</code> snapshot. <strong>No loop of its own.</strong></td>
+<td><code>graph_run.py · GraphRun.run</code> · <code>loop_runner.py · LoopRunner.run</code></td>
 </tr>
 <tr>
 <td><code>GraphExecutor</code></td>
@@ -191,12 +191,12 @@ POST /api/eval/v2/start
 <li><strong><code>ExecutionGuard.acquire(ExecutionMode.canvas)</code></strong> (<code>state.py</code>) — the single-tenant lock. Canvas and eval are mutually exclusive; if an eval (in-process) holds it, the request returns <strong>409</strong>.</li>
 <li><strong><code>get_loop_runner()</code></strong> (<code>loop_runner.py</code>) — returns the <strong>process-global singleton</strong> <code>LoopRunner</code>. Constructed with defaults: <code>principles=None</code>, empty overrides, no injected logger.</li>
 <li><strong><code>asyncio.create_task(_run_and_release())</code></strong> — wraps <code>runner.run(graph, step_delay_ms, global_hooks=…)</code> and releases the guard in a <code>finally</code>. The HTTP call returns <code>{ok, execution_id}</code> <em>immediately</em>; the run continues in the background. The task handle is stored on <code>runner._task</code> here (see <a href="#6-deviations">§6</a>).</li>
-<li>Inside <code>runner.run()</code>: with no injected logger, <code>LoopRunner</code> self-creates an <code>ExecutionLogger</code> at <code>outputs/runs/&lt;execution_id&gt;/</code> and writes <code>graph.json</code> for replay, then builds a fresh <code>GraphExecutor</code> and <code>await</code>s it.</li>
+<li>Inside <code>runner.run()</code>: with no injected logger, <code>LoopRunner</code> self-creates an <code>ExecutionLogger</code> at <code>outputs/runs/&lt;execution_id&gt;/</code> and writes <code>graph.json</code> for replay, then builds a fresh <code>GraphRun</code> (which builds the <code>GraphExecutor</code>) and <code>await</code>s it.</li>
 <li><strong>Controls</strong> — <code>/run/pause</code>, <code>/run/stop</code>, <code>/run/status</code>, <code>/run/checkpoints</code>, <code>/run/restore/{step}</code> all operate on the <em>same singleton</em>. Pause/stop just flip the runner's <code>Event</code>s, which the in-flight executor polls between steps.</li>
 </ol>
 
 <h2 id="4-batch-eval-path"><span class="num">4.</span> Batch Eval path (many episodes, subprocess)</h2>
-<p>A queued, admission-gated, subprocess-isolated run that fans out over workers and builds one <code>LoopRunner</code> per episode. The class roster (top to bottom):</p>
+<p>A queued, admission-gated, subprocess-isolated run that fans out over workers and builds one <code>GraphRun</code> per episode. The class roster (top to bottom):</p>
 <table>
 <thead><tr><th>Class / entry</th><th>What it does</th><th>Where</th></tr></thead>
 <tbody>
@@ -204,8 +204,8 @@ POST /api/eval/v2/start
 <tr><td><code>JobScheduler</code></td><td>Backend singleton. <code>submit()</code> enqueues; a per-second <code>tick()</code> <strong>admits</strong> a job when its calibrated per-resource estimate (VRAM + RAM) fits measured free minus reservations <em>and</em> the canvas lock is free, then spawns the run as a subprocess.</td><td><code>services/job_scheduler.py · JobScheduler.submit</code></td></tr>
 <tr><td><code>eval_subprocess_main</code></td><td>Subprocess entry (<code>python -m app.eval_subprocess_main --run-dir …</code>). Reads the spec, <strong>attaches the parent backend's shared singletons</strong> (<code>register_remote_nodeset</code>) instead of reloading models, runs <code>BatchEvalRunner</code>, writes a <code>_DONE</code> marker on clean exit.</td><td><code>eval_subprocess_main.py · main</code></td></tr>
 <tr><td><code>BatchEvalRunner</code></td><td>Orchestrator. <code>execute()</code> partitions the episode indices into contiguous per-worker chunks (<code>_partition_contiguous</code>) and runs <code>asyncio.gather</code> over N <code>worker_loop</code> coroutines; aggregates metrics (<code>_compute_aggregate</code>); persists.</td><td><code>eval_batch.py · BatchEvalRunner.execute</code></td></tr>
-<tr><td><code>EnvWorkerPool</code> / <code>WorkerHandle</code></td><td>Async context manager holding N worker slots. Each <code>WorkerHandle</code> carries <code>env_panel_overrides</code> + <code>server_url_overrides</code>; <code>acquire_specific(worker_id)</code> pins a chunk to its own subprocess.</td><td><code>env_worker_pool.py · EnvWorkerPool</code></td></tr>
-<tr><td><code>LoopRunner</code> (per episode)</td><td>A <strong>fresh</strong> one per episode (Principle: each episode from scratch), built with the handle's overrides + an injected per-episode logger. Then the shared engine takes over (§2).</td><td><code>eval_batch.py · _run_one_episode</code></td></tr>
+<tr><td><code>Fleet</code> / <code>WorkerHandle</code></td><td>Async context manager routing N workers: on enter it builds one <code>WorkerHandle</code> per worker carrying <code>env_panel_overrides</code> + <code>server_url_overrides</code> for every <code>replicated</code> nodeset's tagged copy; <code>worker(k)</code> is worker k's handle, which its chunk stays pinned to; on exit it unloads the tagged copies.</td><td><code>components/fleet.py · Fleet</code></td></tr>
+<tr><td><code>GraphRun</code> (per episode)</td><td>A <strong>fresh</strong> one per episode (Principle: each episode from scratch), built with a <code>RunSession</code> carrying the eval <code>ExecutionPrinciples</code>, the handle's overrides + an injected per-episode logger. Then the shared engine takes over (§2).</td><td><code>eval_batch.py · _run_one_episode</code></td></tr>
 <tr><td><code>AutoServerApp</code> / <code>BatchedInferenceServer</code></td><td>Out-of-process nodeset host; under <code>worker_count&gt;1</code> a <code>shared</code> nodeset's server coalesces K callers into one forward pass.</td><td><code>server/auto_server_app.py</code></td></tr>
 <tr><td><code>ExecutionLogger</code> + <code>eval_storage</code></td><td>Per-episode node-firing JSONL + run-level <code>summary.json</code> + frozen <code>graph.json</code>.</td><td><code>logging/logger.py</code> + <code>eval_storage.py</code></td></tr>
 </tbody>
@@ -213,26 +213,26 @@ POST /api/eval/v2/start
 <p>This page stays at the class-roster level. For the eval internals — worker independence, the <code>replicated</code> vs <code>shared</code> parallelism contract, partial-result harvesting, and the on-disk layout — read <a href="batch-eval.html">batch-eval</a>.</p>
 
 <h2 id="5-converge-diverge"><span class="num">5.</span> Where the paths converge &amp; diverge</h2>
-<p>The convergence point is <code>LoopRunner.run()</code>. Everything <em>above</em> it differs; everything <em>from</em> it down (the engine, node firing, state, termination) is identical.</p>
+<p>The convergence point is <code>GraphRun.run()</code>. Everything <em>above</em> it differs; everything <em>from</em> it down (the engine, node firing, state, termination) is identical.</p>
 <table>
 <thead><tr><th></th><th>Canvas Play</th><th>Batch Eval</th></tr></thead>
 <tbody>
 <tr><td>Entry endpoint</td><td><code>/api/navigate/run</code></td><td><code>/api/eval/v2/start</code></td></tr>
 <tr><td>Admission</td><td><code>ExecutionGuard</code> (canvas) — 409 if busy</td><td><code>JobScheduler</code> (VRAM budget; default subprocess)</td></tr>
 <tr><td>Process</td><td>Backend process</td><td>Spawned subprocess (default)</td></tr>
-<tr><td>Which <code>LoopRunner</code></td><td><strong>singleton</strong> (<code>get_loop_runner()</code>)</td><td><strong>fresh per episode</strong> (<code>BatchEvalRunner</code>)</td></tr>
+<tr><td>Who builds the <code>GraphRun</code></td><td>the <strong>singleton</strong> <code>LoopRunner</code> (<code>get_loop_runner()</code>), one per Play</td><td><code>BatchEvalRunner</code>, <strong>fresh per episode</strong></td></tr>
 <tr><td><code>ExecutionPrinciples</code></td><td><code>None</code> (pausable, nav events on, no <code>source_tag</code>)</td><td><code>no_pause</code>, <code>suppress_nav_events</code>, <code>source_tag="eval"</code></td></tr>
 <tr><td>Per-worker overrides</td><td>none → proxy nodes hit baked URL</td><td><code>env_panel_overrides</code> / <code>server_url_overrides</code></td></tr>
 <tr><td>Logger</td><td>self-created (<code>outputs/runs/…</code>)</td><td>injected per-episode (<code>eval_runs/…/episodes/…</code>)</td></tr>
 <tr><td>Scale</td><td>1 run</td><td>N episodes × <code>worker_count</code> workers</td></tr>
-<tr><td colspan="3"><strong>From <code>LoopRunner.run()</code> down — identical</strong>: build a fresh <code>GraphExecutor</code>, fire nodes via the ready-queue, iterate, terminate.</td></tr>
+<tr><td colspan="3"><strong>From <code>GraphRun.run()</code> down — identical</strong>: build a fresh <code>GraphExecutor</code>, fire nodes via the ready-queue, iterate, terminate.</td></tr>
 </tbody>
 </table>
 
 <h2 id="6-deviations"><span class="num">6.</span> Where it deviates from the clean model</h2>
 
 <div class="callout warn">
-<strong><code>LoopRunner</code> has no loop.</strong> The mental model says "a runner runs a loop," but iteration lives entirely in <code>GraphExecutor.run()</code>'s ready-queue. <code>LoopRunner.run()</code> is a single <code>await self._executor.run(...)</code> plus setup. The name refers to the <em>agent</em> loop it executes, not its own control flow.
+<strong><code>LoopRunner</code> has no loop.</strong> The mental model says "a runner runs a loop," but iteration lives entirely in <code>GraphExecutor.run()</code>'s ready-queue. <code>LoopRunner.run()</code> is setup plus a single <code>await graph_run.run(...)</code>, which is itself one <code>await self.executor.run(...)</code>. The name refers to the <em>agent</em> loop it executes, not its own control flow.
 </div>
 
 <div class="callout warn">

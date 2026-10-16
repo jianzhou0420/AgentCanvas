@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">Container Launch</span>
   </div>
-  <div class="last-updated">2026-08-13</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>Container Launch</h1>
@@ -84,14 +84,14 @@
 <p class="lede"><strong>Container launch</strong> is one of server mode’s two launch vehicles (the other is <strong>Native Launch</strong>, a host subprocess on <code>server_python</code>): a nodeset that declares <code>server_image</code> is auto-hosted inside <code>docker run</code> instead of a native host process. The hard promise: <strong>the container serves the exact same protocol on the same kind of port, so everything downstream — proxy-node generation, env-panel bridge, multi-worker fan-out, the <code>/mcp</code> projection — is byte-identical to a conda-launched server, and images never contain framework code</strong> (the repo is bind-mounted read-only; the image carries only the model's dependencies). For the protocol itself and the conda path read <a href="server-mode.html">Server Mode</a>; for what a nodeset is read <a href="../components/nodesets.html">NodeSets</a>.</p>
 
 <p class="diagram-label"><strong>How the code launches a <code>server_image</code> nodeset.</strong></p>
-<svg class="rxsvg" viewBox="0 0 760 300" role="img" aria-label="Launch path. In the AgentCanvas process, registry.load_nodeset detects server_image and calls _build_container_server, which assembles a ContainerServer. ContainerServer.start spawns a foreground docker run as a direct child. Inside the container, the stock auto_host plus AutoServerApp run from the read-only repo mount at /opt/agentcanvas-workspace and serve manifest, call, health, and mcp on a port published to 127.0.0.1. BaseServer polls health and fetches the manifest over HTTP; proxy nodes are generated exactly as for a conda-launched server.">
+<svg class="rxsvg" viewBox="0 0 760 300" role="img" aria-label="Launch path. In the AgentCanvas process, registry.load_nodeset routes by vehicle_for (server_image means container) and Launcher.build calls build_container_server, which assembles a ContainerServer. ContainerServer.start spawns a foreground docker run as a direct child. Inside the container, the stock auto_host plus AutoServerApp run from the read-only repo mount at /opt/agentcanvas-workspace and serve manifest, call, health, and mcp on a port published to 127.0.0.1. BaseServer polls health and fetches the manifest over HTTP; proxy nodes are generated exactly as for a conda-launched server.">
   <rect class="ghost" x="12" y="34" width="330" height="250" rx="10"/>
   <text class="dim" x="24" y="26">AgentCanvas process</text>
   <rect class="accent" x="46" y="52" width="260" height="34" rx="7"/>
   <text class="at" x="176" y="74" text-anchor="middle">registry.load_nodeset</text>
   <text class="mono" x="176" y="102" text-anchor="middle">server_image set → mode="server"</text>
   <rect class="accent" x="46" y="116" width="260" height="34" rx="7"/>
-  <text class="at" x="176" y="138" text-anchor="middle">_build_container_server</text>
+  <text class="at" x="176" y="138" text-anchor="middle">Launcher.build → build_container_server</text>
   <text class="mono" x="176" y="166" text-anchor="middle">path translate · mounts · executor URL</text>
   <rect class="accent" x="46" y="180" width="260" height="34" rx="7"/>
   <text class="at" x="176" y="202" text-anchor="middle">ContainerServer.start()</text>
@@ -165,7 +165,7 @@ docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </
 </table>
 
 <h2 id="4-launch-pipeline"><span class="num">4.</span> Launch pipeline — what the registry assembles</h2>
-<p><code>registry.py · _build_container_server</code> turns the nodeset declaration into a <code>ContainerServer</code>; three translations happen there, and only there:</p>
+<p><code>components/launcher.py · build_container_server</code> (reached through <code>Launcher.build</code>, the one place the registry turns a nodeset class into a server) turns the nodeset declaration into a <code>ContainerServer</code>; three translations happen there, and only there:</p>
 <ul>
 <li><strong>Path translation.</strong> The repo root is mounted at <code>/opt/agentcanvas-workspace</code> (<code>container_server.py · WORKSPACE_MOUNT</code>); every host path riding the inner command line (<code>--file</code>) or <code>PYTHONPATH</code> is rewritten under that prefix. A source file outside the repo root is a hard <code>RuntimeError</code>, not a silently wrong path.</li>
 <li><strong>Mount resolution.</strong> <code>server_mounts</code> entries are expanded (<code>expandvars</code> + <code>expanduser</code>, relative → repo-root-relative) and appended after the repo mount; missing <code>:ro</code> host paths are skipped with a warning, missing rw host paths are created (output drops).</li>
@@ -204,7 +204,8 @@ docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </
 <tbody>
 <tr><td><code>app/server/container_server.py</code></td><td><code>ContainerServer</code>, <code>rootless_docker_env</code>, <code>container_name</code>, <code>image_exists</code>, <code>WORKSPACE_MOUNT</code></td></tr>
 <tr><td><code>app/components/bases.py</code></td><td><code>server_image</code> / <code>server_image_gpu</code> / <code>server_mounts</code> / <code>server_container_python</code> / <code>server_container_user</code> ClassVars</td></tr>
-<tr><td><code>app/components/registry.py</code></td><td>auto-route in <code>load_nodeset</code>; assembly in <code>_build_container_server</code>; shared launch loop in <code>_load_nodeset_as_server</code></td></tr>
+<tr><td><code>app/components/launcher.py</code></td><td><code>vehicle_for</code> (local / native / container routing), <code>Launcher.build</code>, assembly in <code>build_container_server</code></td></tr>
+<tr><td><code>app/components/registry.py</code></td><td>auto-route in <code>load_nodeset</code> via <code>vehicle_for</code>; shared launch loop in <code>_load_nodeset_as_server</code></td></tr>
 <tr><td><code>agentcanvas/backend/requirements-serve.txt</code></td><td>minimal in-image dependency set for running the stock <code>auto_host</code></td></tr>
 <tr><td><code>app/server/test_container_server.py</code> · <code>app/components/test_registry_container_mode.py</code></td><td>command-assembly and translation unit tests</td></tr>
 </tbody>

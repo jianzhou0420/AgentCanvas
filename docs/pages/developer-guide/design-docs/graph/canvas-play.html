@@ -71,7 +71,7 @@
     <span class="sep">/</span>
     <span class="here">Canvas Play</span>
   </div>
-  <div class="last-updated">2026-06-16</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>Canvas Play</h1>
@@ -86,7 +86,7 @@
 
 <p class="lede">Canvas Play is what happens when you click <strong>▶ Play</strong> on the canvas: one interactive run, watched live. It runs <strong>in the backend process itself</strong> — no subprocess — and is <strong>single-tenant</strong>: <code>ExecutionGuard</code> allows exactly one canvas run at a time, and the run is driven by a process-global <strong>singleton <code>LoopRunner</code></strong>. The HTTP call is fire-and-forget (it returns the moment the run starts), with every step streamed over WebSocket and pause / stop / checkpoint / restore hitting that same singleton. Its hard promise: it fires nodes through the <em>very same</em> <code>GraphExecutor</code> as batch eval, so what you watch on the canvas is bit-for-bit what an eval episode runs. For the eval path see <a href="batch-eval.html">batch-eval</a>; for the two paths side by side see <a href="execution-paths.html">execution-paths</a>; for the firing engine itself see <a href="graph-executor.html">graph-executor</a>.</p>
 <p class="diagram-label"><strong>One Play click, all in the backend process.</strong> The request acquires the canvas lock, grabs the singleton runner, and launches a fire-and-forget task; the engine drives the ready-queue with a throttle and live WS broadcasts back to the browser; the interactive controls (pause / stop / restore) re-enter the same singleton.</p>
-<svg class="rxsvg" viewBox="0 0 720 560" role="img" aria-label="Canvas Play runs entirely inside the backend process. A browser holding one open WebSocket clicks Play, which POSTs to /api/navigate/run (run.py run_loop). The handler acquires ExecutionGuard in canvas mode (409 if canvas or eval is already active; the holder is the literal string canvas), calls get_loop_runner() to get the process-global singleton LoopRunner (principles None, no per-worker overrides), and launches a fire-and-forget asyncio task (_run_and_release) so the HTTP call returns ok immediately while the run continues in the background. Inside, LoopRunner.run builds a fresh GraphExecutor that drives the ready-queue: a step_delay_ms throttle of 200 ms between root steps for live watchability, a pause_event wait and stop_event check between steps, and a state-container checkpoint per root step kept in memory up to 100. The engine broadcasts nav_status, nav_step, exec_log, and viewer_data events live over the WebSocket back to the browser canvas; because the run is in-process these reach the UI directly. The interactive controls pause, stop, and restore re-enter the same singleton runner. Tool nodes call the registry-owned AutoServerApp servers over HTTP with no per-worker tagging, the same servers canvas and eval share. The promise: node firing is identical to a batch-eval episode.">
+<svg class="rxsvg" viewBox="0 0 720 560" role="img" aria-label="Canvas Play runs entirely inside the backend process. A browser holding one open WebSocket clicks Play, which POSTs to /api/navigate/run (run.py run_loop). The handler acquires ExecutionGuard in canvas mode (409 if canvas or eval is already active; the holder is the literal string canvas), calls get_loop_runner() to get the process-global singleton LoopRunner (principles None, no per-worker overrides), and launches a fire-and-forget asyncio task (_run_and_release) so the HTTP call returns ok immediately while the run continues in the background. Inside, LoopRunner.run builds a fresh GraphRun, whose GraphExecutor drives the ready-queue: a step_delay_ms throttle of 200 ms between root steps for live watchability, a pause_event wait and stop_event check between steps, and a state-container checkpoint per root step kept in memory up to 100. The engine broadcasts nav_status, nav_step, exec_log, and viewer_data events live over the WebSocket back to the browser canvas; because the run is in-process these reach the UI directly. The interactive controls pause, stop, and restore re-enter the same singleton runner. Tool nodes call the registry-owned AutoServerApp servers over HTTP with no per-worker tagging, the same servers canvas and eval share. The promise: node firing is identical to a batch-eval episode.">
   <!-- Browser / client -->
   <rect class="ghost" x="486" y="16" width="216" height="74" rx="8"/>
   <text x="594" y="40" text-anchor="middle" font-size="12">Browser — Canvas UI</text>
@@ -154,7 +154,7 @@
 <ol>
 <li><strong>In-process.</strong> Unlike eval, there is no subprocess and no scheduler — the run executes as an <code>asyncio</code> task inside the backend itself (§ 2–§ 3). That's what makes it cheap to start and live to watch, and why it is single-tenant.</li>
 <li><strong>Single-tenant, one singleton.</strong> <code>ExecutionGuard</code> permits exactly one canvas (or eval) run at a time, and the run is driven by the one process-global <code>LoopRunner</code> from <code>get_loop_runner()</code>. Starting a new Play stops the current one (§ 2).</li>
-<li><strong>Same engine as eval.</strong> Below <code>LoopRunner.run()</code> the firing is identical to a batch-eval episode — the only differences are the wrapping (singleton vs fresh-per-episode, in-process vs subprocess, live vs suppressed). This is the page's hard promise (§ 4).</li>
+<li><strong>Same engine as eval.</strong> Below <code>GraphRun.run()</code> the firing is identical to a batch-eval episode — the only differences are the wrapping (singleton vs fresh-per-episode, in-process vs subprocess, live vs suppressed). This is the page's hard promise (§ 4).</li>
 </ol>
 <p>The smallest run is a single POST carrying the whole graph; it returns immediately, and the run continues in the background:</p>
 <pre class="hl">
@@ -177,7 +177,7 @@ POST<span class="w"> </span>/api/navigate/run
 <ol>
 <li><strong>Acquire the guard.</strong> <code>ExecutionGuard.acquire(ExecutionMode.canvas, "canvas")</code> → 409 on failure. Then <code>get_loop_runner()</code>, and if the singleton is mid-run, <code>await runner.stop()</code> it.</li>
 <li><strong>Parse + validate.</strong> <code>GraphDefinition.from_dict(req.loop_definition)</code> + <code>validate_graph_connectivity</code>; on a bad graph it releases the guard and returns 400.</li>
-<li><strong>Auto-load nodesets.</strong> <code>registry.ensure_nodesets_for_graph(graph)</code> (<code>worker_count=1</code>) makes sure every node type is in <code>NODE_HANDLERS</code> — idempotent, covers a cold start or a <code>--reload</code>-wiped registry. A load failure releases the guard and returns 500.</li>
+<li><strong>Auto-load nodesets.</strong> <code>registry.ensure_nodesets_for_graph(graph)</code> (<code>worker_count=1</code>) makes sure every node type is in the node catalog — idempotent, covers a cold start or a <code>--reload</code>-wiped registry. A load failure releases the guard and returns 500.</li>
 <li><strong>Wire-type check + hooks.</strong> <code>validate_edge_wire_types</code> (warn-only, ADR-027 staged) now that proxy classes are registered; <code>registry.get_global_hooks()</code>.</li>
 <li><strong>Fire-and-forget.</strong> Set <code>runner._execution_id</code>, clear the stop event, and launch the task — the HTTP call returns immediately while the run proceeds in the background:</li>
 </ol>
@@ -193,12 +193,12 @@ POST<span class="w"> </span>/api/navigate/run
 <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;</span><span class="s2">ok</span><span class="s2">&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">execution_id</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">req</span><span class="o">.</span><span class="n">execution_id</span><span class="p">}</span>
 </pre>
 <p>The guard is released in the task's <code>finally</code> — i.e. when <code>run()</code> returns — <em>or</em> explicitly by <code>POST /run/stop</code>. The one case where neither fires is a run paused while the browser closes; a liveness backstop handles it (§ 7).</p>
-<h2 id="4-inside-the-run"><span class="num">4.</span> Inside the run — <code>LoopRunner → GraphExecutor</code></h2>
+<h2 id="4-inside-the-run"><span class="num">4.</span> Inside the run — <code>LoopRunner → GraphRun → GraphExecutor</code></h2>
 <p><strong>The singleton <code>LoopRunner</code> is a thin control shell; the run is the executor.</strong> With <code>principles=None</code> (canvas mode), <code>LoopRunner.run</code> (<code>loop_runner.py · LoopRunner.run</code>):</p>
 <ul>
 <li><strong>Self-creates a logger.</strong> Eval injects a per-episode <code>ExecutionLogger</code>; canvas has none, so the runner builds one at <code>outputs/runs/&lt;execution_id&gt;/</code> and writes <code>graph.json</code> for replay.</li>
 <li><strong>Keeps the pause event live.</strong> Canvas does <em>not</em> set <code>no_pause</code>, so the runner's own <code>_pause_event</code> is used — the executor blocks on it between steps when you hit Pause.</li>
-<li><strong>Builds a fresh <code>GraphExecutor</code></strong> carrying empty overrides (no per-worker routing) and <code>await</code>s <code>executor.run(graph, session=self, step_delay_ms, stop_event, pause_event, global_hooks)</code>.</li>
+<li><strong>Builds a fresh <code>GraphRun</code></strong> (<code>graph_run.py · GraphRun</code>, which builds the <code>GraphExecutor</code>) with <code>session=self</code>, the logger and empty overrides (no per-worker routing), and <code>await</code>s <code>graph_run.run(step_delay_ms, global_hooks, step_budget_override, stop_event, pause_event)</code>.</li>
 </ul>
 <p>The executor (<code>graph_executor.py · GraphExecutor.run</code>) drives the ready-queue exactly as in eval, with two canvas-visible behaviours that eval turns off:</p>
 <ul>
@@ -263,7 +263,7 @@ POST<span class="w"> </span>/api/navigate/run
       <a class="toc-h2" href="#1-what-it-does">1. What it does</a>
       <a class="toc-h2" href="#2-single-tenant">2. One process, single-tenant</a>
       <a class="toc-h2" href="#3-request-path">3. The request path — run_loop</a>
-      <a class="toc-h2" href="#4-inside-the-run">4. Inside the run — LoopRunner → GraphExecutor</a>
+      <a class="toc-h2" href="#4-inside-the-run">4. Inside the run — LoopRunner → GraphRun → GraphExecutor</a>
       <a class="toc-h2" href="#5-live-observability">5. Live observability</a>
       <a class="toc-h2" href="#6-controls">6. Pause / stop / checkpoint / restore</a>
       <a class="toc-h2" href="#7-deviations">7. Where the code deviates from the mental model</a>

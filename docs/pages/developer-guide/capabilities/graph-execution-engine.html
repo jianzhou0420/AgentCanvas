@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">Graph Execution Engine</span>
   </div>
-  <div class="last-updated">2026-07-13</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">5</span>Graph Execution Engine</h1>
@@ -217,7 +217,7 @@
 <span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;run_start&quot;</span><span class="p">,</span> <span class="p">{</span><span class="o">...</span><span class="p">})</span>
 <span class="k">await</span> <span class="n">hook_runner</span><span class="o">.</span><span class="n">run_hooks</span><span class="p">(</span><span class="s2">&quot;GraphStart&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
 </code></pre></div>
-<p>Required ports are resolved per-instance: <code>_get_required_ports_for_node</code> merges class-level <code>get_required_inputs(type)</code> with anything <code>_resolve_ports(config)</code> marks <code>optional=False</code>, so configurable-port nodes (ADR-dataflow-003) like <code>iterIn</code>/<code>iterOut</code>/<code>llmCall</code> participate in both entry discovery and readiness.</p>
+<p>Required ports are resolved per-instance: <code>_get_required_ports_for_node</code> is <code>CATALOG.required_inputs(type, config)</code> — the catalog's one rule, <code>_resolve_ports(config)</code> when the class has one, else the class-level ports, a port required iff <code>optional=False</code> — so configurable-port nodes (ADR-dataflow-003) like <code>iterIn</code>/<code>iterOut</code>/<code>llmCall</code> participate in both entry discovery and readiness.</p>
 <h3 id="32-dataflow-loop"><span class="num">3.2</span> Dataflow Loop</h3>
 <div class="highlight"><pre><span></span><code><span class="k">while</span> <span class="n">ready_queue</span> <span class="ow">and</span> <span class="n">total_firings</span> <span class="o">&lt;</span> <span class="n">max_firings</span><span class="p">:</span>
     <span class="k">await</span> <span class="n">pause</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
@@ -264,11 +264,11 @@
 <h3 id="33-readiness-check"><span class="num">3.3</span> Readiness Check</h3>
 <p>A node is ready when:</p>
 <ul>
-<li><strong>Has required ports</strong>: all required ports (class-level ∪ instance-resolved) have data in <code>pending_inputs</code></li>
+<li><strong>Has required ports</strong>: all required ports (instance-resolved through the catalog) have data in <code>pending_inputs</code></li>
 <li><strong>All ports optional</strong>: fires when ANY data arrives — or, for <code>iterIn</code>, when <code>init_port_cache</code> has any values even if no loop inputs have arrived yet</li>
 </ul>
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">_is_ready</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
-    <span class="n">required</span> <span class="o">=</span> <span class="n">_get_required_ports_for_node</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>   <span class="c1"># class + _resolve_ports(config)</span>
+    <span class="n">required</span> <span class="o">=</span> <span class="n">_get_required_ports_for_node</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>   <span class="c1"># CATALOG.required_inputs(type, config)</span>
     <span class="k">if</span> <span class="n">required</span><span class="p">:</span>
         <span class="k">return</span> <span class="nb">all</span><span class="p">(</span><span class="n">p</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">required</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterIn&quot;</span> <span class="ow">and</span> <span class="n">node</span><span class="o">.</span><span class="n">init_port_cache</span><span class="p">:</span>
@@ -439,7 +439,7 @@
 <h3 id="74-checkpoints"><span class="num">7.4</span> Checkpoints</h3>
 <p>After the <code>step_end</code> signal fans out, the executor snapshots every container into <code>_checkpoints[step_counter]</code> (sliding window, max 100). <code>restore_step(n)</code> rewinds the containers, resets the step counter to <code>n</code>, and prunes future checkpoints. REST: <code>GET /run/checkpoints</code>, <code>POST /run/restore/{step}</code>.</p>
 <h2 id="8-worker-pool-overrides-adr-eval-002"><span class="num">8.</span> Worker-Pool Overrides (ADR-eval-002)</h2>
-<p>Each <code>GraphExecutor</code> carries two optional per-runner maps so worker-pool batch eval (<code>BatchEvalRunner</code> + <code>EnvWorkerPool</code>) can route unqualified lookups to its own tagged env subprocess instead of the global singleton:</p>
+<p>Each <code>GraphExecutor</code> carries two optional per-runner maps so worker fan-out batch eval (<code>BatchEvalRunner</code> + <code>Fleet</code>) can route unqualified lookups to its own tagged env subprocess instead of the global singleton:</p>
 <table>
 <thead>
 <tr>
@@ -457,7 +457,7 @@
 <tr>
 <td><code>server_url_overrides: {nodeset_name: url}</code></td>
 <td><code>executor.get_server_url(name)</code> — returns override or <code>None</code> to mean "use the URL baked into the proxy class closure"</td>
-<td><code>server/proxy.py::_make_forward</code> via <code>ctx._executor</code></td>
+<td><code>server/proxy.py::_make_forward</code> via <code>ctx._executor</code> (the resolved URL is handed to an <code>AutoHostClient</code>)</td>
 </tr>
 </tbody>
 </table>
@@ -657,7 +657,7 @@
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
-<td><code>NODE_HANDLERS</code> registry + all built-in node classes (IterIn/IterOut, LLMCall, viewer sinks, etc.)</td>
+<td><code>CATALOG</code> (the process-wide <code>NodeCatalog</code>) + all built-in node classes (IterIn/IterOut, LLMCall, viewer sinks, etc.)</td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/agent_loop/scope_analysis.py</code></td>
@@ -680,16 +680,20 @@
 <td><code>HookRunner</code>, hook event types, fail-open protocol</td>
 </tr>
 <tr>
-<td><code>agentcanvas/backend/app/agent_loop/env_worker_pool.py</code></td>
-<td><code>EnvWorkerPool</code>, <code>WorkerHandle</code> — worker-pool plumbing that supplies the per-runner overrides</td>
+<td><code>agentcanvas/backend/app/agent_loop/graph_run.py</code></td>
+<td><code>GraphRun</code> — one executor per run; <code>prepare_graph</code>; <code>RunOutcome</code> harvest</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/fleet.py</code></td>
+<td><code>Fleet</code>, <code>WorkerHandle</code> — worker fan-out plumbing that supplies the per-runner overrides</td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/graph_def.py</code></td>
 <td><code>GraphDefinition</code>, <code>validate_graph_connectivity()</code> — load-time rejection of required-but-unwired ports</td>
 </tr>
 <tr>
-<td><code>agentcanvas/backend/app/standard/node_io.py</code></td>
-<td><code>get_required_inputs()</code> — class-level required-port registry</td>
+<td><code>agentcanvas/backend/app/components/catalog.py</code></td>
+<td><code>NodeCatalog</code> — <code>ports_of</code> / <code>required_inputs</code> / <code>wire_type</code>, the one port rule the executor and the validators share</td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/standard/wire_types.py</code></td>
@@ -731,7 +735,7 @@
 <tr>
 <td>Instance-resolved required ports</td>
 <td>Done</td>
-<td><code>_get_required_ports_for_node</code> merges class + <code>_resolve_ports(config)</code> (ADR-dataflow-003)</td>
+<td><code>_get_required_ports_for_node</code> = <code>CATALOG.required_inputs(type, config)</code> — instance ports via <code>_resolve_ports(config)</code>, else class ports (ADR-dataflow-003)</td>
 </tr>
 <tr>
 <td>Two-pivot iteration</td>

@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">Batch Evaluation &amp; Job Queue</span>
   </div>
-  <div class="last-updated">2026-07-13</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header capability">
     <h1><span class="capability-num">7</span>Batch Evaluation &amp; Job Queue</h1>
@@ -84,7 +84,7 @@
   <marker id="bevA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--capability)"/></marker>
 </defs></svg>
 
-<svg class="rxsvg" viewBox="0 0 700 322" role="img" aria-label="Pipeline diagram. Top row: three submit sources — the Eval page GUI, the /experiment:run wrapper, and the SDK's batch_eval — all POST to /api/eval/v2/start, which feeds the JobScheduler. Notes: every session hits the same queue; the scheduler ticks once per second, FIFO plus priority, and admits a job only when no canvas Play is running, every per-resource estimate fits measured free memory minus reservations, and exclusive-GPU jobs run alone. A dashed spawn arrow drops into a container representing one subprocess per run — python -m app.eval_subprocess_main, armed with PDEATHSIG so it dies with the backend. Inside: BatchEvalRunner drives a fresh LoopRunner per episode through workers W0 to WK, writing summary.json, per-episode directories, and the _DONE marker. Caption inside: each episode directory is self-contained — log.jsonl, assets, episode.json — copy one directory and replay it anywhere. Bottom caption: a backend restart loses the queue and SIGTERMs running subprocesses, deliberately, so no orphan VRAM; a dead PID without _DONE reads as aborted.">
+<svg class="rxsvg" viewBox="0 0 700 322" role="img" aria-label="Pipeline diagram. Top row: three submit sources — the Eval page GUI, the /experiment:run wrapper, and the SDK's batch_eval — all POST to /api/eval/v2/start, which feeds the JobScheduler. Notes: every session hits the same queue; the scheduler ticks once per second, FIFO plus priority, and admits a job only when no canvas Play is running, every per-resource estimate fits measured free memory minus reservations, and exclusive-GPU jobs run alone. A dashed spawn arrow drops into a container representing one subprocess per run — python -m app.eval_subprocess_main, armed with PDEATHSIG so it dies with the backend. Inside: BatchEvalRunner drives a fresh GraphRun per episode through workers W0 to WK, writing summary.json, per-episode directories, and the _DONE marker. Caption inside: each episode directory is self-contained — log.jsonl, assets, episode.json — copy one directory and replay it anywhere. Bottom caption: a backend restart loses the queue and SIGTERMs running subprocesses, deliberately, so no orphan VRAM; a dead PID without _DONE reads as aborted.">
   <text x="10" y="18">submit — every session, one queue</text>
 
   <rect x="10" y="30" width="150" height="26" rx="6" class="box"/><text x="85" y="47" text-anchor="middle">Eval page (GUI)</text>
@@ -110,7 +110,7 @@
 
   <rect x="30" y="210" width="150" height="32" rx="7" class="accent"/><text x="105" y="230" text-anchor="middle" class="at">BatchEvalRunner</text>
   <path class="edge" d="M180,226 H208"/>
-  <rect x="210" y="210" width="190" height="32" rx="7" class="box"/><text x="305" y="230" text-anchor="middle" class="mono">fresh LoopRunner / episode</text>
+  <rect x="210" y="210" width="190" height="32" rx="7" class="box"/><text x="305" y="230" text-anchor="middle" class="mono">fresh GraphRun / episode</text>
   <path class="edge" d="M400,226 H428"/>
   <rect x="430" y="210" width="120" height="32" rx="7" class="box"/><text x="490" y="230" text-anchor="middle" class="mono">workers W0…WK</text>
   <path class="edge" d="M550,226 H573"/>
@@ -163,8 +163,8 @@
       <ul style="margin: 0; padding-left: 1.2rem; font-size:.9rem;">
         <li>Reads <code>spec.json</code> + <code>shared_urls.json</code> from its <code>run_dir</code>.</li>
         <li>Attaches to parent backend's shared singletons via <code>register_remote_nodeset</code> — no duplicate VRAM spend.</li>
-        <li>Iterates the episode list, leases one <code>WorkerHandle</code> per episode from <code>EnvWorkerPool</code> when <code>worker_count &gt; 1</code> (<a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a>).</li>
-        <li>Each episode runs through a fresh <code>LoopRunner</code> — same dataflow engine as canvas Play.</li>
+        <li>Iterates the episode list in N contiguous chunks, each pinned to its worker's <code>WorkerHandle</code> from the <code>Fleet</code> when <code>worker_count &gt; 1</code> (<a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a>).</li>
+        <li>Each episode runs through a fresh <code>GraphRun</code> — same dataflow engine as canvas Play.</li>
         <li>Per-episode <code>ExecutionLogger</code> → self-contained <code>episodes/ep{NNNN}/</code> on disk.</li>
         <li>Touches <code>_DONE</code> on clean exit; absence + dead PID ⇒ <code>aborted</code>.</li>
       </ul>
@@ -225,8 +225,8 @@
   <p>These belong topologically to <a href="isolated-runtime-environments.html">Capability 3 — Isolated Runtime Environments</a> (they're the same subprocess + HTTP plumbing scaled up). The eval-side view is short:</p>
 
   <ul>
-    <li><strong><code>worker_count = N</code></strong> ⇒ <code>EnvWorkerPool</code> spawns N tagged copies of every <em>env</em> nodeset (<code>parallelism="replicated"</code>) and registers <code>RemoteEnvPanelProxy</code> + tagged URL for each. Non-env nodesets stay singleton.</li>
-    <li>Each episode leases one <code>WorkerHandle</code> carrying <code>env_panel_overrides</code> + <code>server_url_overrides</code>. The leased <code>LoopRunner</code> consults those before the global registry — so <code>set_episode</code>/<code>play</code> and in-graph tool calls route to <em>that worker's</em> subprocess.</li>
+    <li><strong><code>worker_count = N</code></strong> ⇒ the registry spawns N tagged copies of every <code>parallelism="replicated"</code> nodeset and registers <code>RemoteEnvPanelProxy</code> + tagged URL for each; the <code>Fleet</code> (<code>components/fleet.py</code>) routes worker k to copy k. Shared nodesets stay singleton.</li>
+    <li>Each worker owns one <code>WorkerHandle</code> carrying <code>env_panel_overrides</code> + <code>server_url_overrides</code>. The episode's <code>GraphRun</code> consults those before the global registry — so <code>set_episode</code>/<code>play</code> and in-graph tool calls route to <em>that worker's</em> subprocess.</li>
     <li>For pure-functional nodesets (<code>parallelism="shared"</code>, e.g. VLM forward) one subprocess hosts a <code>BatchedInferenceServer</code>. K parallel callers' <code>forward()</code> submissions coalesce into one stacked forward pass; K result slices scatter back. Opt-in via <code>batched: ClassVar[bool] = True</code> + <code>batch_dim: ClassVar[str] = "&lt;input_port&gt;"</code> on the node class (<a href="../core/decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>).</li>
     <li><strong><code>worker_count = 1</code></strong> is bit-identical to single-worker — empty overrides, no tagged proxies, single shared subprocess for everything.</li>
   </ul>
@@ -295,11 +295,15 @@
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/agent_loop/eval_batch.py</code></td>
-        <td><code>EvalConfig</code>, <code>EvalRun</code>, <code>BatchEvalRunner</code> (imports <code>ExecutionPrinciples</code> from <code>loop_runner.py</code>, where it is defined); per-episode <code>LoopRunner</code> creation, <code>_run_one_episode</code> driving step-budget + per-episode timeout</td>
+        <td><code>EvalConfig</code>, <code>EvalRun</code>, <code>BatchEvalRunner(run, graph, run_dir=, on_episode=)</code>, <code>resolve_per_step_budget</code>; per-episode <code>GraphRun</code> creation, <code>_run_one_episode</code> driving step-budget + per-episode timeout</td>
       </tr>
       <tr>
-        <td><code>agentcanvas/backend/app/agent_loop/env_worker_pool.py</code></td>
-        <td><code>EnvWorkerPool</code>, <code>WorkerHandle</code> — N-handle lease/release (<a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a>)</td>
+        <td><code>agentcanvas/backend/app/agent_loop/graph_run.py</code></td>
+        <td><code>prepare_graph</code> (validate + load the graph's nodesets, with explicit failure policies), <code>GraphRun</code> / <code>RunSession</code> / <code>RunOutcome</code>, <code>ExecutionPrinciples</code></td>
+      </tr>
+      <tr>
+        <td><code>agentcanvas/backend/app/components/fleet.py</code></td>
+        <td><code>Fleet</code>, <code>WorkerHandle</code> — one handle per worker over the tagged copies (<a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a>)</td>
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/api/execution/eval.py</code></td>
@@ -329,9 +333,9 @@
   <table>
     <thead><tr><th>Item</th><th>Status</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td>Graph-driven eval (<code>BatchEvalRunner</code> over <code>LoopRunner</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a></td></tr>
-      <tr><td>Worker-pool fan-out (<code>EnvWorkerPool</code>, tagged proxies, <code>worker_count &gt; 1</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> PB</td></tr>
-      <tr><td>Batched inference tier (<code>BatchedInferenceServer</code>, <code>batched</code>/<code>batch_dim</code>)</td><td>Done</td><td>ADR-eval-002 PC; pure-functional contract enforced by <code>register_node</code></td></tr>
+      <tr><td>Graph-driven eval (<code>BatchEvalRunner</code> over <code>GraphRun</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a></td></tr>
+      <tr><td>Worker fan-out (<code>Fleet</code>, tagged proxies, <code>worker_count &gt; 1</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> PB</td></tr>
+      <tr><td>Batched inference tier (<code>BatchedInferenceServer</code>, <code>batched</code>/<code>batch_dim</code>)</td><td>Done</td><td>ADR-eval-002 PC; pure-functional contract enforced at registration (<code>NodeCatalog.register</code>)</td></tr>
       <tr><td>Subprocess-per-run scheduler (cross-session admission)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>; tick=1s, FIFO+priority</td></tr>
       <tr><td>Per-episode log layout (self-contained <code>ep{NNNN}/</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a></td></tr>
       <tr><td>Canvas-lock preemption</td><td>Done</td><td><code>ExecutionGuard.canvas</code> mode blocks new admissions</td></tr>

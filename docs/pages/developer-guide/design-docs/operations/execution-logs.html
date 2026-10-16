@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">Execution Logs</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>Execution Logs</h1>
@@ -512,24 +512,24 @@
 <h3 id="44-per-node-llm-usage-hook"><span class="num">4.4</span> Per-node LLM usage hook (ADR-observability-005)</h3>
 <p>Token usage and dollar cost are tracked <strong>per node firing</strong> without nodesets having to plumb them. The executor wraps every <code>node.forward()</code> with a ContextVar-scoped accumulator (<code>graph_executor.py · _fire_node</code>):</p>
 <pre class="hl"><span class="n">usage_bucket</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="p">{}</span>
-<span class="n">usage_token</span> <span class="o">=</span> <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">usage_bucket</span><span class="p">)</span>   <span class="c1"># call.py · _current_node_usage</span>
+<span class="n">usage_token</span> <span class="o">=</span> <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">usage_bucket</span><span class="p">)</span>   <span class="c1"># standard/telemetry.py · _current_node_usage</span>
 <span class="k">try</span><span class="p">:</span>
     <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">node</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span>
 <span class="k">finally</span><span class="p">:</span>
     <span class="n">_current_node_usage</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">usage_token</span><span class="p">)</span>
 </pre>
-<p>Inside the <code>forward()</code>, every <code>llm_complete</code> / <code>llm_complete_n</code> / <code>vlm_complete</code> call writes its <code>response.usage</code> + <code>litellm.completion_cost()</code> into the bucket via <code>_accumulate_usage()</code> (<code>call.py · _accumulate_usage</code>). The executor then emits one log entry per node with the aggregate attached:</p>
+<p>Inside the <code>forward()</code>, every completion round trip — <code>app.llm.complete</code>, which the <code>llm_complete</code> / <code>llm_complete_n</code> / <code>vlm_complete</code> / <code>vlm_complete_n</code> wrappers all reach — adds the usage its transport reported (<code>response.usage</code> + <code>litellm.completion_cost()</code> for the litellm adapter) into the bucket (<code>complete.py · _accumulate_usage</code>). The executor then emits one log entry per node with the aggregate attached:</p>
 <table>
 <thead><tr><th>Field</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td><code>calls</code></td><td>increments per <code>llm_complete</code>/<code>vlm_complete</code> invocation</td></tr>
+<tr><td><code>calls</code></td><td>increments per transport round trip (a native-<code>n</code> call counts once; each single-sample fill counts once)</td></tr>
 <tr><td><code>prompt_tokens</code> / <code>completion_tokens</code> / <code>total_tokens</code></td><td><code>response.usage</code> on each provider response</td></tr>
 <tr><td><code>cached_tokens</code></td><td><code>response.usage.prompt_tokens_details.cached_tokens</code> when present</td></tr>
 <tr><td><code>usd_cost</code></td><td><code>litellm.completion_cost(response)</code>; 0.0 for models litellm doesn't recognise (local Ollama, custom vLLM)</td></tr>
 <tr><td><code>model</code></td><td>first non-empty <code>response.model</code></td></tr>
 </tbody>
 </table>
-<p>Properties: <strong>voluntary</strong> (nodes that don't call the LLM helpers get an empty bucket), <strong>per firing</strong> (multi-scope graphs and iterated nodes get one entry per call site), and <strong>ContextVar-propagating</strong> (survives the internal <code>await</code> chain). Server-mode nodesets capture usage in the subprocess and surface it on the response so the framework can still attribute it to the proxy node. See <a href="llm-config-system.html#12-per-node-usage-hook">LLM Config §12</a> for the full contract.</p>
+<p>Properties: <strong>voluntary</strong> (nodes that don't call the LLM helpers get an empty bucket), <strong>per firing</strong> (multi-scope graphs and iterated nodes get one entry per call site), and <strong>ContextVar-propagating</strong> (survives the internal <code>await</code> chain). Server-mode nodesets capture usage in the subprocess (<code>server/invoke.py</code> sets the same ContextVar around the hosted handler) and return it in the <code>/call</code> reply's <code>usage</code> field; the proxy node folds it into the firing's bucket (<code>proxy.py · _make_forward</code> → <code>telemetry.merge_usage</code>), and the hosted node's <code>_self_log</code> entries ride back the same way (<code>log</code> field). See <a href="llm-config-system.html#12-per-node-usage-hook">LLM Config §12</a> for the full contract.</p>
 
 <h3 id="43-flush-points"><span class="num">4.3</span> Flush Points</h3>
 <p>The logger's write queue is flushed at three points:</p>

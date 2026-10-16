@@ -186,7 +186,7 @@ embodied agents too.</p>
   <li>Dataflow executor handling loops natively via IterIn/IterOut gates, with playback controls (play / pause / step / stop).</li>
   <li>Server-mode nodesets running in their own Python interpreters (Habitat 0.1.7 in <code>ac-vlnce</code> env, MatterSim in <code>ac-mp3d</code>), auto-generated proxy nodes from declared port surfaces.</li>
   <li>Real-time WebSocket streaming of observations / reasoning / actions / metrics, routed by <code>execution_id</code> for concurrent runs.</li>
-  <li>Multi-episode batch eval harness (<code>POST /api/eval/v2/start</code> → backend-owned <code>JobScheduler</code> spawns a subprocess-per-run <code>BatchEvalRunner</code> + <code>EnvWorkerPool</code>) replacing the retired <code>vlnworkspace.eval</code> Hydra CLI.</li>
+  <li>Multi-episode batch eval harness (<code>POST /api/eval/v2/start</code> → backend-owned <code>JobScheduler</code> spawns a subprocess-per-run <code>BatchEvalRunner</code> + <code>Fleet</code>) replacing the retired <code>vlnworkspace.eval</code> Hydra CLI.</li>
   <li>Graph SDK — the same graphs built and run as a Python library (<code>from agentcanvas import Graph</code>), pip-installable from the repo-root <code>pyproject.toml</code>, with catalog introspection, validation, run-event streaming, cassette record/replay, and graph → code compilation.</li>
   <li>Hot reload (<code>POST /api/components/reload</code>) for new node types without server restart.</li>
 </ul>
@@ -224,7 +224,7 @@ MatterSim/MP3D, SIMPLER, LIBERO) or real-world setups — no pipeline code requi
     <p>New nodes are Python classes inheriting <code>BaseCanvasNode</code> or <code>BaseNodeSet</code>. Drop the file into <code>workspace/</code>, the platform auto-discovers it at runtime. No framework changes needed. <a href="../capabilities/customizable-node-system.html">Capability page →</a></p>
     <details class="how">
       <summary>How</summary>
-      Authors subclass <code>BaseCanvasNode</code> and declare <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, <code>category</code>, <code>icon</code>, and <code>ui_config</code> as class variables, then implement <code>async forward(inputs, ctx) → dict</code>. The <code>WorkspaceComponentRegistry</code> scans <code>workspace/</code> subdirectories at startup (and on hot-reload via <code>POST /api/components/reload</code>), imports every <code>.py</code> file, collects concrete <code>BaseCanvasNode</code> subclasses, and registers them in <code>NODE_HANDLERS</code>. The frontend's <code>GenericBlockRenderer</code> renders any registered node automatically from its port and UI metadata — no custom <code>.tsx</code> component needed. For groups of related tools, authors subclass <code>BaseNodeSet</code> instead — a nodeset bundles multiple tools under shared <code>initialize()</code> / <code>shutdown()</code> lifecycle.
+      Authors subclass <code>BaseCanvasNode</code> and declare <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, <code>category</code>, <code>icon</code>, and <code>ui_config</code> as class variables, then implement <code>async forward(inputs, ctx) → dict</code>. The <code>WorkspaceComponentRegistry</code> scans <code>workspace/</code> subdirectories at startup (and on hot-reload via <code>POST /api/components/reload</code>), imports every <code>.py</code> file, collects concrete <code>BaseCanvasNode</code> subclasses, and registers them in the node catalog (<code>CATALOG</code>). The frontend's <code>GenericBlockRenderer</code> renders any registered node automatically from its port and UI metadata — no custom <code>.tsx</code> component needed. For groups of related tools, authors subclass <code>BaseNodeSet</code> instead — a nodeset bundles multiple tools under shared <code>initialize()</code> / <code>shutdown()</code> lifecycle.
     </details>
   </div>
 
@@ -233,7 +233,7 @@ MatterSim/MP3D, SIMPLER, LIBERO) or real-world setups — no pipeline code requi
     <p>Research tools often require conflicting Python environments (Habitat needs 3.8, SLAM needs ROS). Any <code>BaseNodeSet</code> can run in <strong>server mode</strong> in its own interpreter — zero extra server code. <a href="../capabilities/isolated-runtime-environments.html">Capability page →</a></p>
     <details class="how">
       <summary>How</summary>
-      When a nodeset is loaded with <code>mode="server"</code>, the <code>WorkspaceComponentRegistry</code> launches a subprocess using the nodeset's <code>server_python</code> interpreter. The subprocess runs <code>AutoServerApp</code>, which introspects the nodeset's tools — reading their <code>input_ports</code> and <code>output_ports</code> — and auto-generates an HTTP server with one endpoint per tool. The framework then fetches the server's manifest, generates <strong>proxy canvas nodes</strong> from it, and registers them in <code>NODE_HANDLERS</code>. From the canvas perspective, proxy nodes behave identically to local nodes — the researcher doesn't need to know whether a node runs in-process or in a remote subprocess.
+      When a nodeset is loaded with <code>mode="server"</code>, the <code>WorkspaceComponentRegistry</code> launches a subprocess using the nodeset's <code>server_python</code> interpreter. The subprocess runs <code>AutoServerApp</code>, which introspects the nodeset's tools — reading their <code>input_ports</code> and <code>output_ports</code> — and auto-generates an HTTP server with one endpoint per tool. The framework then fetches the server's manifest, generates <strong>proxy canvas nodes</strong> from it, and registers them in the node catalog. From the canvas perspective, proxy nodes behave identically to local nodes — the researcher doesn't need to know whether a node runs in-process or in a remote subprocess.
     </details>
   </div>
 
@@ -269,7 +269,7 @@ MatterSim/MP3D, SIMPLER, LIBERO) or real-world setups — no pipeline code requi
     <p>The same graph that runs on the canvas can be submitted as an eval job that scores it over hundreds of episodes. A backend-owned <code>JobScheduler</code> gates admission against a VRAM budget shared across all sessions; each admitted run is its own subprocess so backend restarts don't kill in-flight evals; per-episode logs and assets are self-contained on disk so a teammate can replay any single episode without re-running. <a href="../capabilities/batch-evaluation-job-queue.html">Capability page →</a></p>
     <details class="how">
       <summary>How</summary>
-      Two stacked layers (see <a href="../capabilities/batch-evaluation-job-queue.html">capability page</a>): Layer A is <code>JobScheduler</code> — singleton with a per-second <code>tick()</code> that admits queued jobs when their calibrated per-resource estimates (VRAM + RAM) fit measured free minus standing reservations (declared <code>marginal_vram_mb</code> as fallback) and canvas Play isn't holding the exclusive lock; spawns the admitted job as <code>python -m app.eval_subprocess_main --run-dir …</code> with <code>PR_SET_PDEATHSIG</code> so the kernel reaps orphans. Layer B is <code>BatchEvalRunner</code> in the subprocess — reads <code>spec.json</code>/<code>shared_urls.json</code>, attaches to the parent backend's shared singletons via <code>register_remote_nodeset</code> (no duplicate VRAM), iterates the episode list through fresh <code>LoopRunner</code> instances, leases <code>EnvWorkerPool.WorkerHandle</code>s when <code>worker_count &gt; 1</code>, and writes self-contained <code>episodes/ep{NNNN}/{log.jsonl, assets/, episode.json}</code>. Shared singletons are refcounted across consuming jobs; the scheduler auto-unloads only those it loaded itself, so canvas-loaded copies stay (ADR-eval-001/002/003/004 + ADR-server-003).
+      Two stacked layers (see <a href="../capabilities/batch-evaluation-job-queue.html">capability page</a>): Layer A is <code>JobScheduler</code> — singleton with a per-second <code>tick()</code> that admits queued jobs when their calibrated per-resource estimates (VRAM + RAM) fit measured free minus standing reservations (declared <code>marginal_vram_mb</code> as fallback) and canvas Play isn't holding the exclusive lock; spawns the admitted job as <code>python -m app.eval_subprocess_main --run-dir …</code> with <code>PR_SET_PDEATHSIG</code> so the kernel reaps orphans. Layer B is <code>BatchEvalRunner</code> in the subprocess — reads <code>spec.json</code>/<code>shared_urls.json</code>, attaches to the parent backend's shared singletons via <code>register_remote_nodeset</code> (no duplicate VRAM), iterates the episode list through fresh <code>GraphRun</code> instances, pins each worker's chunk to its <code>Fleet</code> <code>WorkerHandle</code> when <code>worker_count &gt; 1</code>, and writes self-contained <code>episodes/ep{NNNN}/{log.jsonl, assets/, episode.json}</code>. Shared singletons are refcounted across consuming jobs; the scheduler auto-unloads only those it loaded itself, so canvas-loaded copies stay (ADR-eval-001/002/003/004 + ADR-server-003).
     </details>
   </div>
 
@@ -360,7 +360,7 @@ MatterSim/MP3D, SIMPLER, LIBERO) or real-world setups — no pipeline code requi
   <tr>
     <td><strong>Node Handlers</strong></td>
     <td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code> + <code>workspace/nodesets/</code></td>
-    <td>14 built-in node types + nodeset-provided domain nodes, all registered in <code>NODE_HANDLERS</code></td>
+    <td>14 built-in node types + nodeset-provided domain nodes, all registered in the node catalog (<code>CATALOG</code>)</td>
   </tr>
   <tr>
     <td><strong>Env Nodesets</strong></td>
@@ -369,7 +369,7 @@ MatterSim/MP3D, SIMPLER, LIBERO) or real-world setups — no pipeline code requi
   </tr>
   <tr>
     <td><strong>Eval Harness</strong> (WIP)</td>
-    <td><code>app/services/job_scheduler.py</code> + <code>agent_loop/eval_batch.py</code> (<code>BatchEvalRunner</code>) + <code>env_worker_pool.py</code> + <code>POST /api/eval/v2</code> + frontend Eval page</td>
+    <td><code>app/services/job_scheduler.py</code> + <code>agent_loop/eval_batch.py</code> (<code>BatchEvalRunner</code>) + <code>agent_loop/graph_run.py</code> + <code>components/fleet.py</code> + <code>POST /api/eval/v2</code> + frontend Eval page</td>
     <td>Subprocess-per-run <code>JobScheduler</code> with cross-session measured resource admission (VRAM + RAM), worker-pool + batched-inference (ADR-eval-002/003/004). Replaces the retired <code>vlnworkspace.eval</code> Hydra CLI — Eval UI is still being built (Feature TODO F5).</td>
   </tr>
   <tr>

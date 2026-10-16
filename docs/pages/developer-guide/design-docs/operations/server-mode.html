@@ -71,7 +71,7 @@
     <span class="sep">/</span>
     <span class="here">Server Mode</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>Server Mode</h1>
@@ -123,7 +123,7 @@
     <span class="c1"># get_tools() returns the observe / step / evaluate nodes as usual</span>
 </pre>
 <p>Server mode has two launch vehicles: <strong>Native Launch</strong> — the default — spawns a host subprocess on the interpreter named by <code>server_python</code> (usually a conda env; <code>sys.executable</code> when unset), while <strong>Container Launch</strong> runs the same auto_host inside <code>docker run</code> for systems that cannot be a conda env at all (C++ stacks, GPL isolation) — same protocol, same downstream; see <a href="container-launch.html">Container Launch</a>.</p>
-<p>Load it and <code>env_habitat__observe</code>, <code>env_habitat__step</code>, … appear in the catalog as proxy nodes, backed by a subprocess running that interpreter. You only write a <code>ServerApp</code> by hand (§8) — or a <code>ServerNodeSet</code> — when you need a non-Python service, a custom protocol, or a remote machine. The auto-host machinery is §10.</p>
+<p>Load it and <code>env_habitat__observe</code>, <code>env_habitat__step</code>, … appear in the catalog as proxy nodes, backed by a subprocess running that interpreter. You only write a <code>ServerApp</code> by hand (§8) — registered through a <code>servers/*.yaml</code> entry — when you need a non-Python service, a custom protocol, or a remote machine. The auto-host machinery is §10.</p>
 <h2 id="3-two-sides-at-a-glance"><span class="num">3.</span> The two sides at a glance</h2>
 <p>A server-mode nodeset runs as two cooperating classes, one in each process:</p>
 <table>
@@ -566,7 +566,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <li>If the nodeset has an env panel, calls <code>_register_remote_env_panel</code> to fetch <code>/env-panel/info</code> and register a <code>RemoteEnvPanelProxy</code> locally.</li>
 </ol>
 <p>When to use manual <code>ServerApp</code> instead: non-Python servers, custom protocols, or servers that need logic beyond what <code>forward()</code> provides.</p>
-<p>There is also an <strong>ephemeral</strong> spawn path — <code>load_nodeset_ephemeral</code> / <code>unload_nodeset_ephemeral</code> (<code>registry.py</code>) — which starts a tagged auto-server <em>without</em> registering proxy node classes in the local <code>NODE_HANDLERS</code>. The subprocess-side eval bootstrap uses it: the worker already has the manifest baked in and only needs the live process, not a fresh round of proxy-class generation.</p>
+<p>There is also an <strong>ephemeral</strong> spawn path — <code>load_nodeset_ephemeral</code> / <code>unload_nodeset_ephemeral</code> (<code>registry.py</code>) — which starts a tagged auto-server (through the same <code>Launcher.build</code>, so <code>server_image</code> nodesets launch as containers here too) <em>without</em> registering proxy node classes in the local node catalog. The subprocess-side eval bootstrap uses it: the worker already has the manifest baked in and only needs the live process, not a fresh round of proxy-class generation.</p>
 <h3 id="104-auto-host-classvar-knobs"><span class="num">10.4</span> Auto-host ClassVar knobs</h3>
 <p>Two nodeset ClassVars steer how the registry spawns the server subprocess:</p>
 <table>
@@ -616,7 +616,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
   <td><strong><code>replicated</code></strong></td>
   <td>N (one per worker)</td>
   <td>N tagged env panels (<code>"env_X#0"</code> … <code>"env_X#N-1"</code>)</td>
-  <td>Env nodesets that own mutable per-episode state — <code>env_habitat</code>, <code>env_matterport3d</code>, <code>env_hmeqa</code>, <code>env_simpler</code>, <code>env_libero</code>. Routed via <code>EnvWorkerPool.WorkerHandle</code>'s <code>env_panel_overrides</code> + <code>server_url_overrides</code></td>
+  <td>Env nodesets that own mutable per-episode state — <code>env_habitat</code>, <code>env_matterport3d</code>, <code>env_hmeqa</code>, <code>env_simpler</code>, <code>env_libero</code>. Routed via the <code>Fleet</code>'s <code>WorkerHandle</code> (<code>env_panel_overrides</code> + <code>server_url_overrides</code>)</td>
 </tr>
 </tbody>
 </table>
@@ -630,7 +630,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <li>Proxy node classes are generated <strong>once</strong> from worker 0's manifest (all N subprocesses serve identical manifests). Worker 0's URL is baked into each proxy closure as the default; per-worker routing is added at call time (see PB-1.5).</li>
 </ul>
 <h3 id="112-per-worker-url-routing-pb-15"><span class="num">11.2</span> Per-worker URL routing (PB-1.5)</h3>
-<p>Each proxy node's <code>forward</code> method (generated in <code>proxy.py::_make_forward</code>) consults <code>ctx._executor.get_server_url(nodeset_name)</code> at call time. When the eval runner sets a per-worker URL override (e.g. pointing worker 2 to <code>http://localhost:9102</code>), the proxy uses that URL instead of the baked-in default. With no override (canvas Play / single-worker eval) behaviour is bit-identical to pre-PB-1.5.</p>
+<p>Each proxy node's <code>forward</code> method (generated in <code>proxy.py::_make_forward</code>) consults <code>ctx._executor.get_server_url(nodeset_name)</code> at call time and builds its <code>AutoHostClient</code> (<code>server/client.py</code>) against the resolved URL. When the eval runner sets a per-worker URL override (e.g. pointing worker 2 to <code>http://localhost:9102</code>), the proxy uses that URL instead of the baked-in default. With no override (canvas Play / single-worker eval) behaviour is bit-identical to pre-PB-1.5.</p>
 <h3 id="113-tagged-remoteenvpanelproxy"><span class="num">11.3</span> Tagged RemoteEnvPanelProxy</h3>
 <p>If the nodeset declares an <code>env_panel</code>, <code>_register_remote_env_panel</code> is called for each worker with <code>tag=k</code>. The resulting <code>RemoteEnvPanelProxy</code> gets <code>name = f"{nodeset_name}#{k}"</code> so each worker's canvas control panel can address its own subprocess via <code>get_env_panel(f"{nodeset_name}#{k}")</code>.</p>
 <p>Tagged registration raises on failure; the outer <code>try/except</code> block rolls back all already-started servers (see below).</p>
@@ -677,7 +677,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
     <span class="n">batched</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="n">batch_dim</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>   <span class="c1"># name of the input port carrying the batch axis</span>
 </pre>
-<p><code>batched = False</code> (default) — <code>_make_handler</code> creates a plain async handler that calls <code>tool.forward</code> once per request. <code>batched = True</code> — the handler submits to the shared <code>BatchedInferenceServer</code> and awaits its slice. <code>register_node</code> validates the combination at scan time.</p>
+<p><code>batched = False</code> (default) — <code>_make_handler</code> creates a plain async handler that calls <code>tool.forward</code> once per request. <code>batched = True</code> — the handler submits to the shared <code>BatchedInferenceServer</code> and awaits its slice. <code>NodeCatalog.register</code> validates the combination at scan time.</p>
 <p>The retired <code>policy_cma__forward</code> was the first node to opt in; today's user is <code>policy_adapter_vla__predict</code>.</p>
 <h3 id="124-handler-contract"><span class="num">12.4</span> Handler contract</h3>
 <p>A batched node's <code>forward</code> receives:</p>
@@ -728,9 +728,14 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <td><code>create_proxy_node()</code>, <code>generate_proxy_nodes()</code>, per-worker URL routing (PB-1.5)</td>
 </tr>
 <tr>
-<td><code>app/server/nodeset.py</code></td>
+<td><code>app/server/client.py</code></td>
 <td>Framework</td>
-<td><code>ServerNodeSet</code> — <code>BaseNodeSet</code> + <code>BaseServer</code> combined for YAML-registered servers</td>
+<td><code>AutoHostClient</code> — the one HTTP client every framework-side caller uses against an auto_host (<code>call</code> / panel / manifest / health / evict / container ops); <code>CallError</code> / <code>ServerUnreachable</code></td>
+</tr>
+<tr>
+<td><code>app/server/invoke.py</code></td>
+<td>Server</td>
+<td><code>invoke</code> — the one server-side function call behind <code>POST /call</code> and the MCP <code>tools/call</code>: decode, run the handler, capture its log + usage, encode</td>
 </tr>
 <tr>
 <td><code>app/server/batched_inference.py</code></td>

@@ -68,7 +68,7 @@
     <span class="sep">/</span>
     <span class="here">Customizable Node System</span>
   </div>
-  <div class="last-updated">2026-07-13</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">2</span>Customizable Node System</h1>
@@ -228,7 +228,7 @@
         <span class="n">PortDef</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;hidden_out&quot;</span><span class="p">,</span> <span class="n">wire_type</span><span class="o">=</span><span class="s2">&quot;ANY&quot;</span><span class="p">),</span>
     <span class="p">]</span>
 </code></pre></div>
-<p>Contract: the server is <strong>pure-functional</strong> — any per-call state (RNN hidden state, etc.) must travel on the wire as explicit input/output ports. <code>register_node()</code> validates at scan time that <code>batch_dim</code> names an actual input port.</p>
+<p>Contract: the server is <strong>pure-functional</strong> — any per-call state (RNN hidden state, etc.) must travel on the wire as explicit input/output ports. <code>NodeCatalog.register()</code> (<code>register_node()</code>) validates at scan time that <code>batch_dim</code> names an actual input port.</p>
 <h2 id="2-portdef-and-wiring"><span class="num">2.</span> PortDef and Wiring</h2>
 <p><em>Design doc: <a href="../design-docs/graph/wire-types.html">Wire Types</a></em></p>
 <p><code>PortDef</code> declares an input or output port. The <code>name</code> becomes the React Flow Handle ID on the frontend and the key in <code>inputs</code> / return dict on the backend.</p>
@@ -451,16 +451,16 @@
      b. Find concrete subclasses of the target base class
      c. Instantiate and register
 3. Pass 2 — active workspace overlay (Settings.active_workspace_dir, optional):
-   Same scan against the active dir. register_node()&#39;s last-write-wins on
-   NODE_HANDLERS gives Python-resource override; same for _discovered_nodesets.
+   Same scan against the active dir. CATALOG.register()&#39;s last-write-wins on
+   the node catalog gives Python-resource override; same for _discovered_nodesets.
    None / unset = no Pass 2 = bit-identical behaviour. (ADR-components-009)
 4. NodeSets: discovered but NOT eagerly loaded at scan time. They load via
    (a) explicit load_nodeset(name) from the NodeSet Manager page, or
    (b) ensure_nodesets_for_graph(graph_def) — auto-loads every nodeset
        referenced by a graph when the graph is opened or a run is
        dispatched (ADR-components-003).
-5. Nodes: registered immediately in NODE_HANDLERS
-6. Policies: registered in NODE_HANDLERS + policy registry
+5. Nodes: registered immediately in the node catalog (CATALOG)
+6. Policies: registered in the catalog + policy registry
 </code></pre></div>
 <p>Non-Python resources (graph JSON, <code>.exp.yaml</code>, <code>hooks.json</code>) are not scanned
 into a dict; they're looked up per-call via <code>resolve_graph_path(name)</code> /
@@ -468,9 +468,8 @@ into a dict; they're looked up per-call via <code>resolve_graph_path(name)</code
 fallthrough). <code>hooks.json</code> uses full-file override (no merge).</p>
 <h3 id="52-hot-reload"><span class="num">5.2</span> Hot Reload</h3>
 <div class="highlight"><pre><span></span><code>POST /api/components/reload
-  → WorkspaceComponentRegistry.unregister_all()
-  → WorkspaceComponentRegistry.scan_all()
-  → invalidate_cache()  # frontend re-fetches node schemas
+  → WorkspaceComponentRegistry.unregister_all()   # CATALOG.unregister for standalone types
+  → WorkspaceComponentRegistry.scan_all()         # CATALOG.register; no schema cache to invalidate — /node-schemas reads the catalog live
 </code></pre></div>
 <h2 id="6-frontend-rendering"><span class="num">6.</span> Frontend Rendering</h2>
 <p><em>Design doc: <a href="../design-docs/components/canvas-system.html">Canvas System</a></em></p>
@@ -500,7 +499,7 @@ fallthrough). <code>hooks.json</code> uses full-file override (no merge).</p>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/agent_loop/builtin_nodes.py</code></td>
-<td><code>NODE_HANDLERS</code> dict, <code>register_node()</code> (scan-time <code>batched</code>/<code>batch_dim</code> validation) — moved out of the retired <code>graph_executor.py</code> module</td>
+<td><code>CATALOG</code> (the process-wide <code>NodeCatalog</code>, seeded with the builtins) + <code>register_node()</code> wrapper — the catalog class itself, with registration (scan-time <code>batched</code>/<code>batch_dim</code> validation), <code>ports_of(type, config)</code> and <code>schema()</code>, lives in <code>app/components/catalog.py</code></td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/standard/wire_types.py</code></td>

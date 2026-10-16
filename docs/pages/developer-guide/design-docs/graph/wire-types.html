@@ -69,7 +69,7 @@
     <span class="sep">/</span>
     <span class="here">Wire Type System</span>
   </div>
-  <div class="last-updated">2026-06-16 12:00</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>Wire Type System</h1>
@@ -199,14 +199,14 @@
 <h2 id="7-where-enforced"><span class="num">7.</span> Validation — and where it actually happens</h2>
 
 <div class="callout">
-  <p><strong>Type compatibility is enforced at graph load and at the canvas, with runtime coverage staged.</strong> As of 2026-06-13 <code>validate_edge_wire_type</code> is wired into the backend load path via <code>validate_edge_wire_types</code> / <code>wire_type_report</code> — it is no longer dead code. Coverage is bounded by where a port's declared type can be <em>resolved</em>: builtin and <code>iterIn</code>/<code>iterOut</code> ports are always resolvable; a nodeset node's ports are only resolvable once its nodeset is loaded (its proxy class is registered in <code>NODE_HANDLERS</code>). An unresolved port is treated as allowed, so coverage degrades safely rather than producing false rejections.</p>
+  <p><strong>Type compatibility is enforced at graph load and at the canvas, with runtime coverage staged.</strong> As of 2026-06-13 <code>validate_edge_wire_type</code> is wired into the backend load path via <code>validate_edge_wire_types</code> / <code>wire_type_report</code> — it is no longer dead code. Coverage is bounded by where a port's declared type can be <em>resolved</em>: builtin and <code>iterIn</code>/<code>iterOut</code> ports are always resolvable; a nodeset node's ports are only resolvable once its nodeset is loaded (its proxy class is registered in the node catalog). An unresolved port is treated as allowed, so coverage degrades safely rather than producing false rejections.</p>
 </div>
 
 <p>What enforces what:</p>
 <ul>
   <li><strong>Canvas drag (frontend, live):</strong> <code>isCompatibleWireConnection</code> (<code>layoutUtils.ts</code>) runs inside <code>useFlowStore.onConnect</code> before an edge enters the store. On a mismatch the drag is <strong>silently dropped</strong> (React Flow snaps the wire back) — it mirrors the §6 algebra exactly, stripping <code>LIST[…]</code> before comparing inner types. <strong>One asymmetry vs the backend:</strong> it does <em>not</em> canonicalise deprecated aliases, so a legacy <code>ACTION</code> → migrated <code>DISCRETE_ACTION</code> edge — which the backend accepts via <code>canonical_wire_type</code> (§13) — is rejected on the canvas during the migration window.</li>
   <li><strong>Graph load (backend, hard 400):</strong> <code>validate_graph_connectivity</code> (<code>graph_def.py</code>) runs at <code>POST /api/navigate/run</code> and <code>POST /api/eval/v2/start</code>. Alongside its required-but-unwired-port check it now calls <code>validate_edge_wire_types</code>, raising HTTP 400 on a mismatch. At load time only builtin/iterIn types are resolvable (nodesets are loaded just after), so this layer hard-checks the builtin/iterIn edges.</li>
-  <li><strong>Runtime (backend, warn-only — staged):</strong> after <code>ensure_nodesets_for_graph</code> populates <code>NODE_HANDLERS</code>, the run/eval paths re-run <code>validate_edge_wire_types</code> over the <em>whole</em> graph (nodeset env↔method edges now resolvable) and <strong>log</strong> any mismatch. This is warn-only pending a clean-sweep before promotion to a hard 400.</li>
+  <li><strong>Runtime (backend, warn-only — staged):</strong> after <code>ensure_nodesets_for_graph</code> registers the proxy classes in the node catalog, the run/eval paths re-run <code>validate_edge_wire_types</code> over the <em>whole</em> graph (nodeset env↔method edges now resolvable) and <strong>log</strong> any mismatch. This is warn-only pending a clean-sweep before promotion to a hard 400.</li>
   <li><strong>Standalone dev tool:</strong> <code>python -m app.tools.validate_graph &lt;name|--all&gt;</code> statically imports each nodeset module to read its declared ports (no simulator, no GPU, no backend — heavy runtimes load lazily) and runs the same <code>wire_type_report</code> core. The dev endpoint <code>POST /api/graphs/validate</code> exposes the same check (non-raising; optional <code>?ensure</code> loads nodesets for full coverage).</li>
   <li><strong>Runtime value guards (opt-in):</strong> the <code>is_valid_*</code> guards in <code>wire_types.py</code> are advisory — a handler may call them to assert its inputs, but nothing enforces them automatically.</li>
 </ul>

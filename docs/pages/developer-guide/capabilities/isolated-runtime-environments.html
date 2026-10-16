@@ -68,7 +68,7 @@
     <span class="sep">/</span>
     <span class="here">Isolated Runtime Environments</span>
   </div>
-  <div class="last-updated">2026-08-13</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">3</span>Isolated Runtime Environments</h1>
@@ -166,7 +166,7 @@
      e. Serve HTTP: /manifest + /call/{fn} + /env-panel/* + /health
 6. Framework fetches /manifest from each subprocess
 7. Generate proxy canvas nodes from manifest
-8. Register proxy nodes in NODE_HANDLERS (once; proxies route to the right subprocess at call time)
+8. Register proxy nodes in the node catalog (once; proxies route to the right subprocess at call time)
 </code></pre></div>
 <h3 id="31-autoserverapp-introspection"><span class="num">3.1</span> AutoServerApp Introspection</h3>
 <p><code>AutoServerApp</code> reads each tool's <code>PortDef</code> declarations and converts them to <code>ServerFunction</code> entries:</p>
@@ -199,8 +199,8 @@ claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </s
 <p>After fetching the manifest, the framework generates <strong>proxy canvas nodes</strong> — <code>BaseCanvasNode</code> subclasses that forward <code>forward()</code> calls to the remote server via HTTP.</p>
 <div class="highlight"><pre><span></span><code>Canvas node forward()  →  HTTP POST /call/{fn}  →  subprocess: tool.forward()  →  HTTP response  →  return dict
 </code></pre></div>
-<p>Proxy nodes have the same <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, and <code>category</code> as the original tool. They're registered in <code>NODE_HANDLERS</code> exactly like local nodes, so the <code>GraphExecutor</code> treats them identically.</p>
-<p>At call time, a proxy checks the running executor for a per-worker <strong><code>server_url_overrides</code></strong> entry (ADR-eval-002 PB-1.5, <code>proxy.py::_make_forward</code>); if present, the request is routed to that worker's URL, otherwise it falls back to the globally-registered URL.</p>
+<p>Proxy nodes have the same <code>node_type</code>, <code>input_ports</code>, <code>output_ports</code>, and <code>category</code> as the original tool. They're registered in the node catalog exactly like local nodes, so the <code>GraphExecutor</code> treats them identically.</p>
+<p>At call time, a proxy checks the running executor for a per-worker <strong><code>server_url_overrides</code></strong> entry (ADR-eval-002 PB-1.5, <code>proxy.py::_make_forward</code>); if present, the request is routed to that worker's URL, otherwise it falls back to the globally-registered URL. The call itself goes through <code>AutoHostClient</code> (<code>server/client.py</code>) — the one HTTP client every framework-side caller of an auto_host uses — and a server-side error (<code>CallError</code>) or an unreachable server (<code>ServerUnreachable</code>) raises out of the proxy's <code>forward()</code>, so the firing is convicted like a local node's exception.</p>
 <h2 id="5-env-panel-bridging"><span class="num">5.</span> Env Panel Bridging</h2>
 <p>Env nodesets own mutable episode state (current split, current episode, last observation) that must live <strong>inside</strong> the subprocess where the simulator actually runs. ADR-server-002 formalises this with a generic <code>BaseEnvPanel</code> contract:</p>
 <ul>
@@ -221,7 +221,7 @@ claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </s
   │         └─ register N tagged RemoteEnvPanelProxy instances: &quot;{name}#0&quot;…&quot;{name}#{N-1}&quot;
   └─ non-env nodesets stay singleton (one subprocess, shared across workers)
 </code></pre></div>
-<p><code>EnvWorkerPool</code> then leases one <code>WorkerHandle</code> per episode; each handle carries:</p>
+<p>The <code>Fleet</code> (<code>components/fleet.py</code>) then gives each worker one <code>WorkerHandle</code>; each handle carries:</p>
 <ul>
 <li><strong><code>env_panel_overrides</code></strong> <code>{nodeset_name: tagged_proxy}</code> — consulted by <code>executor.get_env_panel(name)</code> before the global registry, so <code>set_episode</code>/<code>reset</code> calls hit the right subprocess</li>
 <li><strong><code>server_url_overrides</code></strong> <code>{nodeset_name: tagged_url}</code> — consulted by <code>executor.get_server_url(name)</code>, so in-graph tool calls from the proxy node hit the same subprocess</li>
@@ -306,8 +306,12 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <td><code>BaseServer</code> — subprocess lifecycle, health check, manifest fetch</td>
 </tr>
 <tr>
-<td><code>agentcanvas/backend/app/server/nodeset.py</code></td>
-<td><code>ServerNodeSet</code> — loadable group backed by an external server process</td>
+<td><code>agentcanvas/backend/app/server/client.py</code></td>
+<td><code>AutoHostClient</code> — the one framework-side HTTP client for an auto_host (<code>call</code>, panel, manifest, health, evict, container ops)</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/server/invoke.py</code></td>
+<td><code>invoke</code> — the one server-side function call behind <code>POST /call</code> and MCP <code>tools/call</code></td>
 </tr>
 <tr>
 <td><code>agentcanvas/backend/app/server/proxy.py</code></td>
@@ -338,8 +342,12 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <td><code>BaseEnvPanel</code> ABC + <code>RemoteEnvPanelProxy</code> (ADR-server-002)</td>
 </tr>
 <tr>
-<td><code>agentcanvas/backend/app/agent_loop/env_worker_pool.py</code></td>
-<td><code>EnvWorkerPool</code> + <code>WorkerHandle</code> — N-worker lease / release for batch eval</td>
+<td><code>agentcanvas/backend/app/components/launcher.py</code></td>
+<td><code>vehicle_for</code> + <code>Launcher.build</code> — local / native / container routing and server assembly</td>
+</tr>
+<tr>
+<td><code>agentcanvas/backend/app/components/fleet.py</code></td>
+<td><code>Fleet</code> + <code>WorkerHandle</code> — one handle per worker over the tagged copies, for batch eval</td>
 </tr>
 </tbody>
 </table>

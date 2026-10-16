@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">NodeSets</span>
   </div>
-  <div class="last-updated">2026-07-03 19:40</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>NodeSets</h1>
@@ -108,7 +108,7 @@
 
 <p>The same <code>BaseNodeSet</code> runs three ways. Which one is chosen is mostly automatic — it follows <code>server_python</code> and the eval worker count:</p>
 
-<svg class="rxsvg" viewBox="0 0 700 150" role="img" aria-label="Three server modes. Local: the nodeset runs in the framework process. Auto-hosted: setting server_python spawns a subprocess under that interpreter, and the framework talks to generated proxy nodes over HTTP. Manual ServerNodeSet: the nodeset also subclasses BaseServer and runs as an independent server the framework connects to.">
+<svg class="rxsvg" viewBox="0 0 700 150" role="img" aria-label="Three server modes. Local: the nodeset runs in the framework process. Auto-hosted: setting server_python spawns a subprocess under that interpreter, and the framework talks to generated proxy nodes over HTTP. Manual server: a hand-written ServerApp (or any foreign process speaking the manifest protocol) registered through a servers/*.yaml file; the framework connects to it and generates the same proxy nodes.">
   <rect x="8" y="34" width="210" height="84" rx="9" class="ghost"/><text x="22" y="26" class="dim at">Local</text>
   <rect x="28" y="60" width="170" height="36" rx="7" class="accent"/><text x="113" y="82" text-anchor="middle" class="at">nodeset in-process</text>
   <text x="113" y="112" text-anchor="middle" class="dim">same env · lowest latency</text>
@@ -119,7 +119,7 @@
   <path class="edge" d="M338,71 H360"/>
   <text x="350" y="112" text-anchor="middle" class="dim">server_python → auto_host · HTTP</text>
 
-  <rect x="480" y="34" width="212" height="84" rx="9" class="ghost"/><text x="494" y="26" class="dim at">Manual ServerNodeSet</text>
+  <rect x="480" y="34" width="212" height="84" rx="9" class="ghost"/><text x="494" y="26" class="dim at">Manual server (YAML)</text>
   <rect x="494" y="56" width="80" height="30" rx="6" class="box"/><text x="534" y="75" text-anchor="middle" class="mono">proxy</text>
   <rect x="596" y="56" width="84" height="30" rx="6" class="box"/><text x="638" y="75" text-anchor="middle" class="mono">your server</text>
   <path class="edge" d="M574,71 H596"/>
@@ -131,7 +131,7 @@
 <tbody>
 <tr><td><strong>Local</strong></td><td>Same conda env as the backend; lowest latency.</td><td>Default (<code>server_python = None</code>).</td></tr>
 <tr><td><strong>Auto-hosted</strong></td><td>Needs a different Python / env (habitat-sim 0.1.7, a model's deps).</td><td>Set <code>server_python</code> to that interpreter — the registry auto-routes to server mode and spawns the subprocess for you.</td></tr>
-<tr><td><strong>Manual ServerNodeSet</strong></td><td>Non-Python server, custom protocol, or a remote machine.</td><td>Subclass <code>BaseNodeSet</code> + <code>BaseServer</code> and run it yourself.</td></tr>
+<tr><td><strong>Manual server</strong></td><td>Non-Python server, custom protocol, or a remote machine.</td><td>Write the server (a <code>ServerApp</code>, or anything serving <code>/manifest</code> + <code>/call</code>), register it in <code>workspace/servers/*.yaml</code>; the registry starts it through <code>BaseServer</code> (or attaches to a running one) and generates proxy nodes.</td></tr>
 </tbody>
 </table>
 
@@ -201,9 +201,9 @@
 
 <div class="callout warning"><p><strong>Import-boundary gotcha.</strong> The framework process must be able to <em>import the NodeSet module</em> to read its <code>server_python</code> — so the heavy, env-specific imports (habitat_sim, torch with CUDA pinned to the other env) must be deferred inside <code>initialize()</code>/tool bodies, not at module top level. The framework imports the class; the subprocess does the heavy lifting. Server-mode proxy node types currently carry an <code>srv_</code> prefix internally (tracked as TODO #33) — graphs still bind the unprefixed <code>node_type</code>.</p></div>
 
-<h2 id="8-manual-server"><span class="num">8.</span> Manual ServerNodeSet</h2>
+<h2 id="8-manual-server"><span class="num">8.</span> Manual server (YAML-registered)</h2>
 
-<p>For a non-Python server, a custom wire protocol, or a model on another machine, subclass <code>BaseNodeSet</code> + <code>BaseServer</code> (<code>ServerNodeSet</code>) and run it yourself. The framework connects to it as a remote and generates the same proxy nodes. Key <code>BaseServer</code> ClassVars: <code>command</code> (<code>str | list[str]</code> — the argv-list form is preferred, no shell), <code>port</code>, <code>startup_timeout</code> (default <strong>1800s</strong>), <code>auto_restart</code>. No in-tree NodeSet uses this path today — auto-hosted covers every Python case — so treat it as the escape hatch for genuinely foreign servers.</p>
+<p>For a non-Python server, a custom wire protocol, or a model on another machine, write the server yourself and register it with a <code>workspace/servers/*.yaml</code> entry (<code>registry.py · _scan_and_register_servers</code> / <code>_load_server</code>): the registry starts it through a <code>BaseServer</code> (<code>command</code> as <code>str | list[str]</code> — the argv-list form is preferred, no shell; <code>port</code>, <code>startup_timeout</code> default <strong>1800s</strong>, <code>auto_restart</code>) or attaches to an already-running one, fetches its manifest and generates the same proxy nodes. The former <code>ServerNodeSet</code> class (<code>BaseNodeSet</code> + <code>BaseServer</code> in one) was removed with the auto_host client consolidation; no in-tree NodeSet used it — auto-hosted covers every Python case — so treat the YAML path as the escape hatch for genuinely foreign servers.</p>
 
 <h2 id="9-parallelism"><span class="num">9.</span> Parallelism (ADR-server-003)</h2>
 
@@ -263,7 +263,7 @@
       <a class="toc-h2" href="#5-lifecycle">5. Lifecycle hooks</a>
       <a class="toc-h2" href="#6-local-mode">6. Local mode</a>
       <a class="toc-h2" href="#7-auto-hosted">7. Auto-hosted mode</a>
-      <a class="toc-h2" href="#8-manual-server">8. Manual ServerNodeSet</a>
+      <a class="toc-h2" href="#8-manual-server">8. Manual server (YAML-registered)</a>
       <a class="toc-h2" href="#9-parallelism">9. Parallelism (ADR-server-003)</a>
       <a class="toc-h2" href="#10-registry-rest">10. Registry &amp; REST</a>
       <a class="toc-h2" href="#11-file-layout">11. File layout</a>

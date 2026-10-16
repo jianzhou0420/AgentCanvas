@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">LLM/VLM Configuration System</span>
   </div>
-  <div class="last-updated">2026-06-17</div>
+  <div class="last-updated">2026-10-16</div>
 </div>
   <header class="page-header designdoc">
   <h1>LLM/VLM Configuration System</h1>
@@ -89,7 +89,7 @@
 
 <p class="lede">The LLM/VLM configuration system lets any canvas node call any of 24 providers — OpenAI, Anthropic, Google, Ollama, and 20+ more — through one <code>litellm</code>-backed async API. A <strong>profile</strong> names a provider + model; API keys never live in the profile, they're read from the provider's standard env var at call time. Each node can pick its own profile, so a single graph can reason with GPT-4o, caption with Claude, and run cheap inference on local Ollama. Designed in ADR-platform-003, hardened in ADR-platform-006.</p>
 <p class="diagram-label"><strong>How a node gets its model — the whole call path.</strong> (§3 zooms into the <em>resolve config</em> step; §12 into the usage hook.)</p>
-<svg class="rxsvg" viewBox="0 0 720 300" role="img" aria-label="How a node gets its model. LLMCallNode.forward calls get_llm_config(profile) in call.py, which loads the profile via ProfileStore.get from profiles.json (no keys), merges provider defaults via resolve_provider_config from PROVIDER_REGISTRY, and reads the API key via get_provider_api_key from os.environ — producing an LLMConfig. The node then calls llm_complete or vlm_complete in call.py, which calls litellm.acompletion to the provider. The response token usage flows back through _accumulate_usage into the _current_node_usage ContextVar and is merged into the per-node log by _fire_node. If no profile is active or the env key is unset, get_llm_config returns None and the node returns a mock reply without calling litellm.">
+<svg class="rxsvg" viewBox="0 0 720 300" role="img" aria-label="How a node gets its model. LLMCallNode.forward calls get_llm_config(profile) in call.py, which loads the profile via ProfileStore.get from profiles.json (no keys), merges provider defaults via resolve_provider_config from PROVIDER_REGISTRY, and reads the API key via get_provider_api_key from os.environ — producing an LLMConfig. The node then builds a Request and calls complete in complete.py — the message builder, the rulebook over every parameter, native n plus the single-sample fallback, and the error policy all live there — whose LiteLLMTransport calls litellm.acompletion to the provider. The response token usage flows back through _accumulate_usage into the _current_node_usage ContextVar and is merged into the per-node log by _fire_node. If no profile is active or the env key is unset, get_llm_config returns None and the node returns a mock reply without calling litellm.">
   <rect class="box" x="10" y="96" width="132" height="110" rx="6"/>
   <text x="76" y="128" text-anchor="middle">LLMCallNode</text>
   <text class="mono" x="76" y="144" text-anchor="middle">.forward()</text>
@@ -114,11 +114,11 @@
   <path class="edge" d="M142,124 C 165,80 172,63 190,63"/>
   <text class="dim" x="168" y="104" text-anchor="middle">get_llm_config(profile)</text>
   <rect class="box" x="190" y="172" width="158" height="46" rx="6"/>
-  <text x="269" y="192" text-anchor="middle">llm_complete /</text>
-  <text class="mono" x="269" y="209" text-anchor="middle">vlm_complete · call.py</text>
+  <text x="269" y="192" text-anchor="middle">complete(Request)</text>
+  <text class="mono" x="269" y="209" text-anchor="middle">complete.py · rulebook · n</text>
   <rect class="box" x="400" y="172" width="160" height="46" rx="6"/>
-  <text x="480" y="194" text-anchor="middle">litellm.acompletion</text>
-  <text class="dim" x="480" y="210" text-anchor="middle">→ provider HTTP</text>
+  <text x="480" y="194" text-anchor="middle">LiteLLMTransport</text>
+  <text class="dim" x="480" y="210" text-anchor="middle">litellm.acompletion → provider HTTP</text>
   <path class="edge" d="M142,172 C 165,193 172,195 190,195"/>
   <path class="edge" d="M263,150 L263,172"/>
   <text class="dim" x="304" y="166" text-anchor="middle">resolved config</text>
@@ -291,7 +291,7 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
     <span class="n">api_type</span><span class="p">:</span> <span class="nb">str</span>         <span class="c1"># &quot;openai&quot; | &quot;anthropic&quot; | &quot;google&quot; | &quot;ollama&quot;</span>
     <span class="n">litellm_prefix</span><span class="p">:</span> <span class="nb">str</span>   <span class="c1"># litellm model prefix (e.g. &quot;openai&quot;, &quot;gemini&quot;, &quot;ollama_chat&quot;)</span>
 </pre>
-<p>Source: <code>app/llm/profiles.py</code>, <code>app/llm/call.py</code></p>
+<p>Source: <code>app/llm/profiles.py</code>, <code>app/llm/providers.py</code> (<code>LLMConfig</code>), <code>app/llm/call.py</code> (<code>get_llm_config</code>)</p>
 <h2 id="6-environment-variables"><span class="num">6.</span> Environment Variables</h2>
 <p>API keys are the <strong>only</strong> piece of config that comes from env vars — and they are <strong>per provider</strong>, named after each vendor's de-facto SDK convention. Profile metadata (provider / model / base_url / api_type) lives in <code>profiles.json</code>; there is no global <code>AGENTCANVAS_*</code> or <code>VLM_*</code> env-var fallback for those fields any more (removed in ADR-platform-006).</p>
 <h3 id="61-variable-names"><span class="num">6.1</span> Per-Provider Env Vars</h3>
@@ -514,9 +514,9 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
 </ul>
 <p>Source: <code>agentcanvas/frontend/src/components/SettingsModal.tsx</code></p>
 <h2 id="11-api-call-protocols"><span class="num">11.</span> API Call Protocols</h2>
-<p><code>app/llm/call.py</code> uses <code>litellm.acompletion</code> (no individual provider SDKs). Both text-only (<code>llm_complete</code>) and multimodal (<code>vlm_complete</code>) variants are supported, each with a multi-sample <code>*_n</code> counterpart (<code>llm_complete_n</code> / <code>vlm_complete_n</code>) for the OpenAI <code>n</code> parameter. litellm translates the unified OpenAI-format message structure to provider-native wire formats internally.</p>
+<p>One module makes every completion: <code>app/llm/complete.py · complete(config, Request)</code> → <code>Completion</code>. A <code>Request</code> carries the current user turn (<code>prompt</code> and/or base64 <code>images</code> with optional <code>image_labels</code>), the prior <code>history</code>, a <code>system_prompt</code>, and the sampling knobs (<code>n</code>, <code>temperature</code>, <code>max_tokens</code>, <code>stop</code>, <code>image_detail</code>, <code>image_mime</code>, <code>retries</code>); a <code>Completion</code> is up to <code>n</code> non-empty texts plus the rulebook <code>adjustments</code> the call actually made. Inside, once: the message builder, the rulebook applied to every parameter, provider-native <code>n</code> with a concurrent single-sample fill, usage accounting, the timeout policy and the strict-errors policy. The wire is the seam: <code>Transport</code> (abc) with <code>LiteLLMTransport</code> as the production adapter (<code>litellm.acompletion</code>, no individual provider SDKs; litellm translates the unified OpenAI-format message structure to provider-native wire formats) and a fake in the tests. The four historical helpers — text-only <code>llm_complete</code> / <code>llm_complete_n</code> and multimodal <code>vlm_complete</code> / <code>vlm_complete_n</code> (<code>app/llm/call.py</code>) — are thin wrappers that reshape their arguments onto one <code>Request</code>; vendored synchronous code (VoxPoser's LMP) uses <code>complete_sync</code>.</p>
 <h3 id="111-protocol-dispatch"><span class="num">11.1</span> Protocol Dispatch</h3>
-<p><code>api_type</code> (from <code>LLMConfig</code>) selects the litellm model prefix via <code>API_TYPE_TO_LITELLM_PREFIX</code>:</p>
+<p><code>LLMConfig.litellm_prefix</code> comes from the provider's registry entry (<code>providers.py · ProviderDef</code>); <code>API_TYPE_TO_LITELLM_PREFIX</code> (<code>providers.py</code>) is the fallback by <code>api_type</code> when no entry applies:</p>
 <table>
 <thead>
 <tr>
@@ -548,13 +548,13 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
 </tr>
 </tbody>
 </table>
-<p>The litellm model string is built as <code>{prefix}/{model}</code> and passed to <code>litellm.acompletion()</code>. litellm handles auth headers, endpoint routing, and protocol translation.</p>
-<h3 id="112-image-handling-vlm_complete"><span class="num">11.2</span> Image Handling (vlm_complete)</h3>
-<p><code>vlm_complete</code> takes a list of base64-encoded PNG/JPEG strings and builds an OpenAI-format multimodal content array (<code>image_url</code> blocks). litellm translates these to provider-native formats (Anthropic <code>source.type:base64</code>, Google <code>inline_data</code>, Ollama <code>images</code> array) automatically.</p>
+<p>The litellm model string is built as <code>{prefix}/{model}</code> by <code>LiteLLMTransport</code> and passed to <code>litellm.acompletion()</code>. litellm handles auth headers, endpoint routing, and protocol translation.</p>
+<h3 id="112-image-handling-vlm_complete"><span class="num">11.2</span> Image Handling (Request.images)</h3>
+<p>A <code>Request</code> with <code>images</code> (base64-encoded PNG/JPEG strings; <code>vlm_complete</code> is the wrapper) becomes an OpenAI-format multimodal user turn (<code>complete.py · build_messages</code>): the prompt text first, then each image as an <code>image_url</code> block, each preceded by its label when one is given — the same order on every path, single- or multi-sample. litellm translates these to provider-native formats (Anthropic <code>source.type:base64</code>, Google <code>inline_data</code>, Ollama <code>images</code> array) automatically.</p>
 <p>An optional <code>image_labels</code> list can interleave per-image text captions before each image (used by MapGPT's <code>gpt_infer</code> interleave shape).</p>
-<p>An optional <code>detail</code> argument (<code>"low"</code> / <code>"high"</code> / <code>"auto"</code>, default <code>"low"</code>) is forwarded into each <code>image_url</code> block as OpenAI's resolution hint: <code>"low"</code> caps every image at a single 512px tile (token-cheap), <code>"high"</code> enables multi-tile high-resolution analysis for fine spatial grounding. <code>vlm_complete_n</code> threads the same hint to every candidate. The builtin <code>llmCall</code> node surfaces this as a second config field — <code>image_detail</code> (<code>select</code>: <code>low</code> / <code>high</code> / <code>auto</code>, default <code>low</code>, <code>builtin_nodes.py · LLMCallNode</code>) — so a node whose vision task needs fine grounding (e.g. a viewpoint-picking navigator) can be set to <code>high</code> without touching code.</p>
-<p>If <code>images</code> is empty, <code>vlm_complete</code> falls back to <code>llm_complete</code> (text-only path).</p>
-<p><strong>Multi-sampling.</strong> <code>vlm_complete_n(..., n)</code> returns up to <code>n</code> candidate completions — the vision counterpart to <code>llm_complete_n</code>, used for self-consistency / multi-candidate planning. It first attempts provider-native <code>n</code> (the image prompt is then billed once for all samples); providers that ignore <code>n</code> for vision requests — notably Anthropic — collapse the response to a single choice, which is detected and the shortfall is filled with concurrent single-sample <code>vlm_complete</code> calls. The builtin <code>llmCall</code> node routes its image path through <code>vlm_complete_n</code> whenever <code>config.n &gt; 1</code> and exposes the candidates on the <code>responses</code> port.</p>
+<p>An optional <code>detail</code> argument (<code>Request.image_detail</code>: <code>"low"</code> / <code>"high"</code> / <code>"auto"</code>, default <code>"low"</code>) goes through the rulebook like every other parameter — where the provider ignores it (anthropic / google / ollama) it is dropped and logged as an adjustment — and otherwise lands on each <code>image_url</code> block as OpenAI's resolution hint: <code>"low"</code> caps every image at a single 512px tile (token-cheap), <code>"high"</code> enables multi-tile high-resolution analysis for fine spatial grounding. <code>vlm_complete_n</code> threads the same hint to every candidate. The builtin <code>llmCall</code> node surfaces this as a second config field — <code>image_detail</code> (<code>select</code>: <code>low</code> / <code>high</code> / <code>auto</code>, default <code>low</code>, <code>builtin_nodes.py · LLMCallNode</code>) — so a node whose vision task needs fine grounding (e.g. a viewpoint-picking navigator) can be set to <code>high</code> without touching code.</p>
+<p>If <code>images</code> is empty the user turn is plain text — the text-only path, same module.</p>
+<p><strong>Multi-sampling.</strong> <code>Request.n &gt; 1</code> (the <code>llm_complete_n</code> / <code>vlm_complete_n</code> wrappers) returns up to <code>n</code> candidate texts, used for self-consistency / multi-candidate planning — the same way on every path, text or vision. When the rulebook lets <code>n</code> through, <code>complete</code> first attempts provider-native <code>n</code> (the prompt is then billed once for all samples); a provider that returns fewer choices or rejects the native call leaves a shortfall, which is filled with concurrent single-sample calls. Where the rulebook says the provider ignores <code>n</code> (anthropic / ollama) the native attempt is skipped and all <code>n</code> samples are single-sample calls. The builtin <code>llmCall</code> node passes <code>config.n</code> on its one <code>Request</code> and exposes the candidates on the <code>responses</code> port.</p>
 <h3 id="113-timeouts"><span class="num">11.3</span> Timeouts</h3>
 <table>
 <thead>
@@ -598,22 +598,22 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
     <span class="n">image_labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Front view&quot;</span><span class="p">,</span> <span class="s2">&quot;Side view&quot;</span><span class="p">],</span>  <span class="c1"># optional</span>
 <span class="p">)</span>
 </pre>
-<p><strong>Temperature defaults are asymmetric and unstated at the call site.</strong> <code>llm_complete</code> / <code>llm_complete_n</code> default <code>temperature=0.7</code>; <code>vlm_complete</code> / <code>vlm_complete_n</code> default <code>temperature=0.3</code> (vision is run cooler). <code>max_tokens</code> has no default — pass it explicitly. Both are forwarded verbatim to <code>litellm.acompletion</code> with no per-model adjustment (see §11.5).</p>
-<p>Source: <code>app/llm/call.py</code></p>
-<h3 id="115-strict-errors-and-the-gpt-5-sharp-edge"><span class="num">11.5</span> Strict errors &amp; the gpt-5 sharp edge</h3>
-<p>By default every helper <strong>degrades gracefully</strong>: a litellm exception, timeout, or unparseable response makes <code>llm_complete</code> return <code>None</code> and the <code>*_n</code> variants return <code>[]</code>, so a misconfigured node renders a placeholder rather than crashing the run. Setting the env var <code>AGENTCANVAS_STRICT_ERRORS</code> (to <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>, read <strong>fresh on every call</strong> via <code>call.py · _strict_errors_enabled</code> — deliberately uncached, so env-worker subprocesses inherit the backend's launch-time setting) flips this: every helper <strong>re-raises</strong> instead. Eval and smoke runs set it so a silent empty response can't masquerade as a completed episode.</p>
+<p><strong>Sampling parameters are two-state.</strong> <code>temperature</code> and <code>max_tokens</code> default to <code>None</code> on every helper and on <code>Request</code>; <code>None</code> is omitted from the wire so the vendor's own default applies. Explicit values — together with <code>stop</code>, <code>n</code> and <code>image_detail</code> — pass the rulebook (<code>rulebook.py · finalize_params</code>) before the wire: locked values are forced, required ones injected (Anthropic's <code>max_tokens</code>), ranges clamped, unsupported ones dropped, and every deviation comes back on <code>Completion.adjustments</code> (the <code>llmCall</code> node logs them as <code>param_adjustments</code>).</p>
+<p>Source: <code>app/llm/complete.py</code>, <code>app/llm/rulebook.py</code>, <code>app/llm/call.py</code></p>
+<h3 id="115-strict-errors-and-the-gpt-5-sharp-edge"><span class="num">11.5</span> Strict errors &amp; the gpt-5 rule</h3>
+<p>By default every helper <strong>degrades gracefully</strong>: a litellm exception, timeout, or unparseable response makes <code>llm_complete</code> return <code>None</code> and the <code>*_n</code> variants return <code>[]</code>, so a misconfigured node renders a placeholder rather than crashing the run. Setting the env var <code>AGENTCANVAS_STRICT_ERRORS</code> (to <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>, read <strong>fresh on every call</strong> via <code>complete.py · strict_errors_enabled</code> — deliberately uncached, so env-worker subprocesses inherit the backend's launch-time setting) flips this: every helper <strong>re-raises</strong> instead. Eval and smoke runs set it so a silent empty response can't masquerade as a completed episode.</p>
 <div class="callout warn">
-<p><strong>Sharp edge — no gpt-5 / reasoning-model special-casing exists.</strong> <code>call.py</code> sends <code>temperature</code> unconditionally (default <code>0.7</code>). OpenAI reasoning models (the <code>gpt-5</code> family) reject any <code>temperature</code> other than <code>1.0</code> and return an empty / errored response. The shipped <code>profiles.json</code> currently ships <code>active: "gpt-5-nano"</code> — so out of the box, a default <code>llmCall</code> hits this and silently produces nothing (or raises under strict errors). Until the code grows a reasoning-model branch, the workaround is to either point the active profile at a non-reasoning model (<code>gpt-4o</code>, <code>gpt-4.1</code>) or override the model on the node. Tracked alongside memory <code>project_gpt5_llmcall_params</code>.</p>
+<p><strong>The gpt-5 family is a rulebook entry, not a sharp edge.</strong> OpenAI reasoning models (<code>gpt-5*</code>, <code>o1*</code> / <code>o3*</code> / <code>o4*</code>) accept only the default temperature and swallow small <code>max_tokens</code> in their reasoning budget. <code>rulebook.py</code> records that as verified facts: <code>temperature</code> is <code>locked</code> to <code>1.0</code> (an explicit other value is forced and logged as an adjustment; an unset one is never sent) and <code>max_tokens</code> carries a <code>min_hint</code> of 2000 that the Settings UI surfaces but the call never alters — so a node that pins <code>max_tokens=500</code> on gpt-5 can still get an empty reply. The same table drives <code>GET /api/providers/{id}/capabilities</code> (<code>rulebook.py · get_capabilities</code>).</p>
 </div>
 <h2 id="12-per-node-usage-hook"><span class="num">12.</span> Per-Node Usage Hook (ADR-observability-005)</h2>
-<p>Token usage and dollar cost are tracked <strong>per node firing</strong>, not per nodeset and not globally. Nodesets never need to plumb usage manually — the wiring is one ContextVar in <code>call.py</code> and one <code>set</code>/<code>reset</code> pair around <code>forward()</code> in the executor.</p>
-<pre class="hl"><span class="c1"># call.py · _current_node_usage</span>
+<p>Token usage and dollar cost are tracked <strong>per node firing</strong>, not per nodeset and not globally. Nodesets never need to plumb usage manually — the wiring is one ContextVar in <code>standard/telemetry.py</code>, one accumulator in <code>complete.py</code>, and one <code>set</code>/<code>reset</code> pair around <code>forward()</code> in the executor.</p>
+<pre class="hl"><span class="c1"># standard/telemetry.py · _current_node_usage (complete.py accumulates into it)</span>
 <span class="n">_current_node_usage</span><span class="p">:</span> <span class="n">contextvars</span><span class="o">.</span><span class="n">ContextVar</span><span class="p">[</span><span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="n">contextvars</span><span class="o">.</span><span class="n">ContextVar</span><span class="p">(</span>
     <span class="s2">&quot;_current_node_usage&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="kc">None</span>
 <span class="p">)</span>
 
-<span class="c1"># Every llm_complete / llm_complete_n / vlm_complete call inside a forward()</span>
-<span class="c1"># adds its response usage into this bucket via _accumulate_usage():</span>
+<span class="c1"># Every transport round trip made by complete() inside a forward() — the</span>
+<span class="c1"># llm_complete / vlm_complete wrappers included — adds its usage via _accumulate_usage():</span>
 <span class="c1">#   bucket[&quot;calls&quot;]              += 1</span>
 <span class="c1">#   bucket[&quot;prompt_tokens&quot;]      += response.usage.prompt_tokens</span>
 <span class="c1">#   bucket[&quot;completion_tokens&quot;]  += response.usage.completion_tokens</span>
@@ -634,12 +634,12 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
 </pre>
 <p>Properties of this design:</p>
 <ul>
-<li><strong>Voluntary, not invasive</strong> — nodes that don't call <code>llm_complete</code> get an empty bucket; nodes that call N times get one aggregated entry, not N events</li>
+<li><strong>Voluntary, not invasive</strong> — nodes that never call <code>complete</code> (or a wrapper) get an empty bucket; nodes that call N times get one aggregated entry, not N events</li>
 <li><strong>Per firing, not per node lifetime</strong> — multi-scope graphs and iterated nodes accumulate per call site, exactly what you want for cost reports</li>
-<li><strong>Works inside subprocesses</strong> — ContextVars propagate into asyncio tasks; the bucket survives any internal <code>await</code> chain. Server-mode nodesets (AutoServerApp) capture usage in the subprocess and surface it on the response, so the framework can still attribute it to the proxy node</li>
+<li><strong>Works inside subprocesses</strong> — ContextVars propagate into asyncio tasks; the bucket survives any internal <code>await</code> chain. Server-mode nodesets capture usage in the subprocess (<code>server/invoke.py</code> sets the same ContextVar around the hosted handler) and return it in the <code>/call</code> reply's <code>usage</code> field; the proxy node merges it into the firing's bucket (<code>proxy.py · _make_forward</code> → <code>telemetry.merge_usage</code>), so the framework attributes it to the proxy node</li>
 <li><strong>Cost may be zero</strong> for models litellm doesn't recognise (local Ollama, custom vLLM endpoints) — usage tokens still counted, <code>usd_cost</code> stays 0.0</li>
 </ul>
-<p>Source: <code>call.py · _current_node_usage</code> + <code>call.py · _accumulate_usage</code> (bucket + accumulator), <code>graph_executor.py · _fire_node</code> (set/reset around <code>forward()</code>), <code>call.py · _extract_usage</code> (response → usage dict).</p>
+<p>Source: <code>standard/telemetry.py · _current_node_usage</code> (the bucket) + <code>complete.py · _accumulate_usage</code> (the accumulator), <code>graph_executor.py · _fire_node</code> (set/reset around <code>forward()</code>), <code>complete.py · _extract_usage</code> (litellm response → usage dict, inside <code>LiteLLMTransport</code>).</p>
 <h2 id="13-key-files"><span class="num">13.</span> Key Files</h2>
 <table>
 <thead>
@@ -650,12 +650,20 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
 </thead>
 <tbody>
 <tr>
+<td><code>app/llm/complete.py</code></td>
+<td><code>Request</code> / <code>Completion</code>, <code>complete()</code> / <code>complete_sync()</code>, <code>build_messages</code>, the rulebook application, native <code>n</code> + fallback, usage accumulation, timeout and strict-error policy; <code>Transport</code> (abc) + <code>LiteLLMTransport</code></td>
+</tr>
+<tr>
 <td><code>app/llm/call.py</code></td>
-<td><code>LLMConfig</code>, <code>get_llm_config()</code>, <code>llm_complete()</code>/<code>vlm_complete()</code> + <code>_n</code> multi-sample variants, <code>_current_node_usage</code> ContextVar, litellm dispatch</td>
+<td><code>get_llm_config()</code> / <code>get_llm_config_direct()</code> (profile → <code>LLMConfig</code>), and the four thin wrappers <code>llm_complete()</code> / <code>llm_complete_n()</code> / <code>vlm_complete()</code> / <code>vlm_complete_n()</code></td>
+</tr>
+<tr>
+<td><code>app/llm/rulebook.py</code></td>
+<td><code>RULEBOOK</code> (verified per-provider / model-family parameter facts), <code>finalize_params()</code> (call time), <code>get_capabilities()</code> (edit time)</td>
 </tr>
 <tr>
 <td><code>app/llm/providers.py</code></td>
-<td><code>PROVIDER_REGISTRY</code> (24 providers, each with an <code>env_var</code>), <code>ProviderDef</code>, <code>get_provider_api_key()</code>, <code>resolve_provider_config()</code></td>
+<td><code>PROVIDER_REGISTRY</code> (24 providers, each with an <code>env_var</code>), <code>ProviderDef</code>, <code>LLMConfig</code>, <code>API_TYPE_TO_LITELLM_PREFIX</code>, <code>get_provider_api_key()</code>, <code>resolve_provider_config()</code></td>
 </tr>
 <tr>
 <td><code>app/llm/profiles.py</code></td>
@@ -671,7 +679,7 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
 </tr>
 <tr>
 <td><code>app/llm/__init__.py</code></td>
-<td>Re-exports: <code>get_llm_config</code>, <code>llm_complete</code>, <code>llm_complete_n</code>, <code>vlm_complete</code>, <code>vlm_complete_n</code>, <code>LLMConfig</code>, <code>LLMProfile</code>, <code>PROVIDER_REGISTRY</code>, <code>resolve_provider_config</code>, <code>get_profile_store</code></td>
+<td>Re-exports: <code>complete</code>, <code>complete_sync</code>, <code>Request</code>, <code>Completion</code>, <code>get_llm_config</code>, <code>llm_complete</code>, <code>llm_complete_n</code>, <code>vlm_complete</code>, <code>vlm_complete_n</code>, <code>LLMConfig</code>, <code>LLMProfile</code>, <code>PROVIDER_REGISTRY</code>, <code>resolve_provider_config</code>, <code>get_profile_store</code>, <code>finalize_params</code>, <code>get_capabilities</code></td>
 </tr>
 <tr>
 <td><code>app/api/platform/profiles.py</code></td>
@@ -736,10 +744,10 @@ python<span class="w"> </span>-m<span class="w"> </span>agentcanvas.backend.app<
       <a class="toc-h3" href="#102-behavior">10.2 Behavior</a>
       <a class="toc-h2" href="#11-api-call-protocols">11. API Call Protocols</a>
       <a class="toc-h3" href="#111-protocol-dispatch">11.1 Protocol Dispatch</a>
-      <a class="toc-h3" href="#112-image-handling-vlm_complete">11.2 Image Handling (vlm_complete)</a>
+      <a class="toc-h3" href="#112-image-handling-vlm_complete">11.2 Image Handling (Request.images)</a>
       <a class="toc-h3" href="#113-timeouts">11.3 Timeouts</a>
       <a class="toc-h3" href="#114-public-api">11.4 Public API</a>
-      <a class="toc-h3" href="#115-strict-errors-and-the-gpt-5-sharp-edge">11.5 Strict errors &amp; the gpt-5 sharp edge</a>
+      <a class="toc-h3" href="#115-strict-errors-and-the-gpt-5-sharp-edge">11.5 Strict errors &amp; the gpt-5 rule</a>
       <a class="toc-h2" href="#12-per-node-usage-hook">12. Per-Node Usage Hook (ADR-observability-005)</a>
       <a class="toc-h2" href="#13-key-files">13. Key Files</a>
     </nav>
