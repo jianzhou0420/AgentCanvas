@@ -93,7 +93,7 @@
     <span class="sep">/</span>
     <span class="here">General Policy Adapter</span>
   </div>
-  <div class="last-updated">2026-07-04</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header guide">
   <h1>General Policy Adapter</h1>
@@ -278,7 +278,7 @@
 <li><code>ensure_policy(policy_module, checkpoint_path, num_inference_steps)</code> — owned by <code>predict</code>'s config; builds the GPU policy and loads weights. First call is the expensive one (Pi0 does JAX→PT conversion + <code>torch.compile</code>; <code>default_per_step_budget_sec = 60</code>).</li>
 <li><code>_cached_info</code> — the <code>CanonicalInfo</code> captured from the first canonical seen by stage 2; stage 4's <code>model_to_canonical(model_output, info)</code> reads it (the robot adapter that used to provide it lives across the process boundary now).</li>
 </ul>
-<p><code>predict</code> keeps <code>batched=True</code> (BatchedInferenceServer rendezvous; the TF SavedModel path pins batch=1, so the K-flush is unrolled — the win is one model on GPU, not throughput). RT-1's recurrent <code>policy_state</code> threads through the optional <code>policy_state_in/out</code> ports; Pi0/SmolVLA/DP/DROID-DP are stateless. The subprocess env sets <code>TF_USE_LEGACY_KERAS=1</code>, <code>TF_FORCE_GPU_ALLOW_GROWTH=true</code>, and prepends the conda env's <code>lib/</code> to <code>LD_LIBRARY_PATH</code>.</p>
+<p><code>predict</code> is <code>serialized=True</code> (one forward in flight under the host's inference lock; the TF SavedModel path pins batch=1 anyway — the win is one model on GPU, not throughput). RT-1's recurrent <code>policy_state</code> threads through the optional <code>policy_state_in/out</code> ports; Pi0/SmolVLA/DP/DROID-DP are stateless. The subprocess env sets <code>TF_USE_LEGACY_KERAS=1</code>, <code>TF_FORCE_GPU_ALLOW_GROWTH=true</code>, and prepends the conda env's <code>lib/</code> to <code>LD_LIBRARY_PATH</code>.</p>
 
 <h3 id="43-policy_adapter_vlnce"><span class="num">4.3</span> <code>policy_adapter_vlnce</code> — VLN-CE model side</h3>
 <p><code>workspace/nodesets/policy/policy_adapter_vlnce/</code>, server mode on <code>ac-vlnce</code> (Python 3.8, habitat-sim 0.1.7; <code>server_python</code> ← <code>$VLNCE_PYTHON</code>), <code>parallelism = "shared"</code>, singleton <code>VlnceManager</code>. Its chain entry is <strong>stage 2</strong> (<code>adapt_canonical_to_model</code>), which owns the single <code>variant</code> select and primes everything in one pass, in an order that preserves the pre-split device placement:</p>
@@ -288,7 +288,7 @@
 <li><code>ensure_policy(spec.policy, checkpoint_path)</code> — strict checkpoint load, <code>.to(device).eval()</code>.</li>
 <li><code>canonical_to_model(canonical, hidden_in)</code> — vlnce_baselines <code>obs_transforms</code> + CMA-vocab tokenization, tensors built on the (already-loaded) policy's device.</li>
 </ol>
-<p><code>predict</code> stays config-less and <code>batched=False</code> (§8). The recurrent <code>hidden</code> dict ({rnn_states, prev_actions, not_done_masks}) rides the <code>hidden_in/out</code> ports through the loop pivots.</p>
+<p><code>predict</code> stays config-less and <code>serialized=False</code> (§8). The recurrent <code>hidden</code> dict ({rnn_states, prev_actions, not_done_masks}) rides the <code>hidden_in/out</code> ports through the loop pivots.</p>
 
 <table>
 <thead>
@@ -335,7 +335,7 @@
 <tr><td>Canonical action → env</td><td>continuous components → <code>(K,7)</code> chunk (TEXT JSON); stage 5 needs <code>current_state</code> for delta-action robots</td><td>discrete index → <code>ACTION</code> int (0–3 R2R, 0–5 RxR)</td></tr>
 <tr><td>Recurrent state on the wire</td><td>RT-1 <code>policy_state</code> (<code>policy_state_in/out</code>); others stateless</td><td>RNN <code>hidden</code> = {rnn_states, prev_actions, not_done_masks}</td></tr>
 <tr><td>Config placement</td><td><strong>distributed</strong>: <code>robot</code> on env_adapter stages 1 &amp; 5, <code>model</code> on stage 2, <code>policy</code> + checkpoint on predict</td><td><strong>bundled</strong>: one <code>variant</code> dropdown on stage 2 (12 R2R-CE baselines) primes model + policy; <code>env_family</code> select on stage 1 is independent</td></tr>
-<tr><td><code>predict</code> batching</td><td><code>batched=True</code> — BatchedInferenceServer rendezvous (batch=1 loop; win is GPU memory)</td><td><code>batched=False</code> — see §8</td></tr>
+<tr><td><code>predict</code> serialization</td><td><code>serialized=True</code> — one call at a time under the host's inference lock (batch=1; win is GPU memory)</td><td><code>serialized=False</code> — see §8</td></tr>
 <tr><td>Shipped models</td><td>Pi0, SmolVLA, Diffusion Policy, DROID-DP, RT-1-X</td><td>CMA, Seq2Seq</td></tr>
 </tbody>
 </table>

@@ -69,7 +69,7 @@
     <span class="sep">/</span>
     <span class="here">Base Canvas Node</span>
   </div>
-  <div class="last-updated">2026-10-16</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header designdoc">
   <h1>Base Canvas Node</h1>
@@ -141,7 +141,7 @@
 <tr><td><code>children</code></td><td><code>None</code></td><td><code>GraphDefinition</code> subgraph for composites.</td></tr>
 <tr><td><code>config_schema</code> / <code>default_config</code></td><td><code>{}</code></td><td>The node's config contract and its drop-time defaults.</td></tr>
 <tr><td><code>ui_config</code></td><td><code>NodeUIConfig()</code></td><td>How the generic renderer draws it (§7).</td></tr>
-<tr><td><code>batched</code> / <code>batch_dim</code></td><td><code>False</code> / <code>""</code></td><td>Batched-inference opt-in (§10, ADR-028).</td></tr>
+<tr><td><code>serialized</code></td><td><code>False</code></td><td>Server-mode opt-in: one call at a time under the host's inference lock (§10).</td></tr>
 </tbody>
 </table>
 
@@ -213,9 +213,9 @@
 
 <p>The bridge to the canvas is one endpoint: <code>GET /api/components/node-schemas</code> returns <code>CATALOG.schemas()</code> (<code>components/catalog.py · NodeCatalog.schema</code>) — per node, <code>{type, display_name, description, category, icon, kind, ports_mode, config_schema, default_config, ui_config, input_ports[], output_ports[]}</code> — each port serialised as <code>{name, wire_type, description, optional}</code>. That JSON is everything the generic renderer needs; how the frontend turns it into a rendered node is <a href="canvas-system.html">Canvas System</a>'s subject.</p>
 
-<h2 id="10-batched"><span class="num">10.</span> Batched inference</h2>
+<h2 id="10-serialized"><span class="num">10.</span> Serialized calls</h2>
 
-<p>A neural-policy node that should run K parallel rollouts through one GPU batch opts in by setting <code>batched = True</code> and <code>batch_dim = "&lt;input port name&gt;"</code> (<a href="../core/decisions/index.html">ADR-028</a>). The registry then swaps the in-process handler for a <code>BatchedClient</code>: K worker callers rendezvous in a <code>BatchedInferenceServer</code>, and the node's <code>forward()</code> is invoked once per flush with inputs stacked along <code>batch_dim</code>. The server is pure-functional — any per-call state (RNN hidden states) must travel on the wire as explicit ports, not on <code>self</code>. <code>register_node</code> validates the two attributes at scan time.</p>
+<p>A neural-policy node that must not run two forwards on its device at once — while K eval workers call it concurrently through one <code>parallelism="shared"</code> server-mode subprocess — opts in with <code>serialized = True</code>. The hosting <code>AutoServerApp</code> then wraps the node's handler in its single inference lock (<code>server/auto_server_app.py · _make_handler</code>; the lock is created lazily inside the running loop); every other node's calls stay concurrent, and in local mode the flag has no effect. The server is pure-functional — any per-call state (RNN hidden states) must travel on the wire as explicit ports, not on <code>self</code>. (The batched-inference rendezvous this replaced — <code>batched</code> / <code>batch_dim</code>, ADR-eval-002 PC — was removed 2026-10-17: its one consumer unrolled every batch sequentially, so the lock was all it provided.)</p>
 
 <h2 id="11-dynamic-firelist"><span class="num">11.</span> DynamicFireListNode — the spawner</h2>
 
@@ -240,7 +240,7 @@
 
 <h2 id="12-registration"><span class="num">12.</span> Registration &amp; boundaries</h2>
 
-<p>A subclass becomes live by being in a scanned directory: built-ins seed the process-wide catalog in <code>builtin_nodes.py</code> (<code>CATALOG = NodeCatalog(_BUILTIN_NODES)</code>); workspace nodes are added by <code>CATALOG.register(cls)</code> (last-write-wins on <code>node_type</code>, with the batched-attribute validation of §10; <code>register_node(cls)</code> is the same call). The catalog also owns the one rule for an instance's ports — <code>ports_of(type, config)</code> honours <code>_resolve_ports</code> and falls back to the class lists — which the executor, the validators and the SDK all ask. How discovery, the catalog, and rendering work as a <em>system</em> is <a href="canvas-system.html">Canvas System</a>; bundling several nodes with a shared lifecycle and an env panel is <a href="nodesets.html">NodeSets</a>. This page is just the one class.</p>
+<p>A subclass becomes live by being in a scanned directory: built-ins seed the process-wide catalog in <code>builtin_nodes.py</code> (<code>CATALOG = NodeCatalog(_BUILTIN_NODES)</code>); workspace nodes are added by <code>CATALOG.register(cls)</code> (last-write-wins on <code>node_type</code>; <code>register_node(cls)</code> is the same call). The catalog also owns the one rule for an instance's ports — <code>ports_of(type, config)</code> honours <code>_resolve_ports</code> and falls back to the class lists — which the executor, the validators and the SDK all ask. How discovery, the catalog, and rendering work as a <em>system</em> is <a href="canvas-system.html">Canvas System</a>; bundling several nodes with a shared lifecycle and an env panel is <a href="nodesets.html">NodeSets</a>. This page is just the one class.</p>
 
 <h2 id="13-cookbook"><span class="num">13.</span> Cookbook</h2>
 
@@ -273,7 +273,7 @@
       <a class="toc-h2" href="#7-ui">7. NodeUIConfig, ConfigField, DisplayField</a>
       <a class="toc-h2" href="#8-forward">8. forward() &amp; ctx in depth</a>
       <a class="toc-h2" href="#9-schema-endpoint">9. The schema the frontend consumes</a>
-      <a class="toc-h2" href="#10-batched">10. Batched inference</a>
+      <a class="toc-h2" href="#10-serialized">10. Serialized calls</a>
       <a class="toc-h2" href="#11-dynamic-firelist">11. DynamicFireListNode — the spawner</a>
       <a class="toc-h2" href="#12-registration">12. Registration &amp; boundaries</a>
       <a class="toc-h2" href="#13-cookbook">13. Cookbook</a>

@@ -60,7 +60,7 @@
     <span class="sep">/</span>
     <span class="here">VLA Support Status</span>
   </div>
-  <div class="last-updated">2026-10-16</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header designdoc">
   <h1>VLA Support Status</h1>
@@ -236,10 +236,10 @@
 <li><code>worker_count &gt; 1</code> spawns N tagged env subprocesses; each <code>WorkerHandle</code> carries <code>env_panel_overrides</code> + <code>server_url_overrides</code></li>
 <li>Per-episode timeout: <code>max_steps × per_step_budget_sec</code> — for VLA-heavy graphs the policy node typically dominates, so set <code>default_per_step_budget_sec</code> on the env nodeset accordingly</li>
 </ul>
-<h3 id="63-batchedinferenceserver-parallelism-adr-eval-002-pc-adr-server-003"><span class="num">6.3</span> BatchedInferenceServer + parallelism (ADR-eval-002 PC, ADR-server-003)</h3>
+<h3 id="63-serialized-calls-parallelism-adr-server-003"><span class="num">6.3</span> Serialized calls + parallelism (ADR-server-003)</h3>
 <ul>
-<li><strong><code>policy_adapter_vla</code> nodes are good batched-inference candidates</strong> (one GPU forward across K callers), but verify whether each <code>policies/&lt;name&gt;.py::predict</code> is pure-functional (per-call state on explicit ports) before opting in <code>batched=True, batch_dim=...</code></li>
-<li><strong>Env parallelism</strong> (<code>BaseNodeSet.parallelism</code>) — robosuite/MuJoCo/SAPIEN sims are stateful and thread-affine, so <strong>LIBERO and SIMPLER stay <code>replicated</code></strong>; the policy subprocess is the natural place to put <code>parallelism="shared"</code> once batched is opted in</li>
+<li><strong><code>policy_adapter_vla__predict</code> is <code>serialized = True</code></strong> (one forward in flight under the host's inference lock while K workers share the subprocess); each <code>policies/&lt;name&gt;.py::predict</code> must stay pure-functional (per-call state on explicit ports) for that to be safe</li>
+<li><strong>Env parallelism</strong> (<code>BaseNodeSet.parallelism</code>) — robosuite/MuJoCo/SAPIEN sims are stateful and thread-affine, so <strong>LIBERO and SIMPLER stay <code>replicated</code></strong>; the policy subprocess is the natural place to put <code>parallelism="shared"</code>, with <code>serialized</code> keeping one forward in flight</li>
 </ul>
 <h3 id="64-sapien-simpler-stability-gotchas"><span class="num">6.4</span> SAPIEN / SIMPLER stability gotchas</h3>
 <p>SIMPLER eval has known stability cliffs in the upstream stack. Working around them is a hard requirement, not optional:</p>
@@ -357,7 +357,7 @@
       <a class="toc-h2" href="#6-eval-infrastructure">6. Eval Infrastructure</a>
       <a class="toc-h3" href="#61-smoke-runners">6.1 Smoke runners</a>
       <a class="toc-h3" href="#62-batchevalrunner-envworkerpool-adr-eval-002">6.2 BatchEvalRunner + Fleet (ADR-eval-002)</a>
-      <a class="toc-h3" href="#63-batchedinferenceserver-parallelism-adr-eval-002-pc-adr-server-003">6.3 BatchedInferenceServer + parallelism (ADR-eval-002 PC, ADR-server-003)</a>
+      <a class="toc-h3" href="#63-serialized-calls-parallelism-adr-server-003">6.3 Serialized calls + parallelism (ADR-server-003)</a>
       <a class="toc-h3" href="#64-sapien-simpler-stability-gotchas">6.4 SAPIEN / SIMPLER stability gotchas</a>
       <a class="toc-h2" href="#7-known-gaps">7. Known Gaps</a>
       <a class="toc-h2" href="#8-landscape">8. Landscape — representative methods &amp; frontier</a>

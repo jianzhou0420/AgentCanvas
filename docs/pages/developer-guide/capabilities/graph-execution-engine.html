@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">Graph Execution Engine</span>
   </div>
-  <div class="last-updated">2026-10-16</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">5</span>Graph Execution Engine</h1>
@@ -163,8 +163,8 @@
 <td><code>{port_name: value}</code> buffer — cleared after node fires</td>
 </tr>
 <tr>
-<td><strong><code>port_slots</code></strong></td>
-<td>iterIn-only dict — one slot per synthesised port (<code>init_&lt;X&gt;</code> / <code>iterout_&lt;X&gt;</code>); written by run-start init edges and the iterOut transfer, read on every iterIn fire; <code>persist=false</code> slots clear after the fire (ADR-dataflow-008)</td>
+<td><strong><code>carry</code></strong> (<code>LoopCarry</code>)</td>
+<td>iterIn-only — the loop-carried slots, one per synthesised port (<code>init_&lt;X&gt;</code> / <code>iterout_&lt;X&gt;</code>); written by run-start init edges (<code>write</code>) and the iterOut hand-off (<code>handoff</code>), read on every iterIn fire (<code>fire_inputs</code>); <code>persist=false</code> slots clear after the fire (<code>after_fire</code>, ADR-dataflow-008). Lives in <code>agent_loop/pivots.py</code></td>
 </tr>
 <tr>
 <td><strong>Adjacency map</strong></td>
@@ -231,7 +231,7 @@
     <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;iterIn&quot;</span><span class="p">:</span>
         <span class="n">broadcast_signal</span><span class="p">(</span><span class="s2">&quot;step_start&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="n">step_counter</span> <span class="o">+</span> <span class="mi">1</span><span class="p">})</span>
 
-    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_fire_node</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">session</span><span class="p">)</span>   <span class="c1"># runs Pre/PostNodeExecute hooks</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_fire</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">session</span><span class="p">)</span>   <span class="c1"># the one error policy; wraps _fire_node (Pre/PostNodeExecute hooks)</span>
     <span class="n">total_firings</span> <span class="o">+=</span> <span class="mi">1</span>
 
     <span class="c1"># iterOut: per-scope step counter + checkpoint + nav_step + transfer to paired iterIn</span>
@@ -276,7 +276,7 @@
     <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">pending_inputs</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span>
 </code></pre></div>
 <h3 id="34-hooks-around-each-firing"><span class="num">3.4</span> Hooks Around Each Firing</h3>
-<p><code>_fire_node</code> wraps <code>instance.forward(fire_inputs, ctx)</code> with two user-extensible hooks:</p>
+<p><code>_fire</code> (the one error policy — bus event, <code>node_errors</code> ledger, <code>{"error": …}</code> result or strict re-raise) calls <code>_fire_node</code>, which wraps <code>instance.forward(fire_inputs, ctx)</code> with two user-extensible hooks:</p>
 <table>
 <thead>
 <tr>
@@ -328,7 +328,7 @@
 <li><strong><code>initPorts</code></strong> (authored on iterIn) — run-start values written by ordinary canvas edges into <code>init_&lt;name&gt;</code> handles; <code>persist=true</code> slots re-emit every iteration, <code>persist=false</code> slots are one-shot (iter 0 only)</li>
 <li><strong>paired <code>iterOut.ports</code></strong> — written each iteration by the executor transfer into <code>iterout_&lt;name&gt;</code> slots</li>
 </ul>
-<p>Handle ids on iterIn are always-prefixed so the two writers never collide: <code>init_X</code> for init values, <code>iterout_X</code> for loop-carry values. All slots live in <code>NodeInstance.port_slots</code>; at fire time the populated slots become the fire inputs.</p>
+<p>Handle ids on iterIn are always-prefixed so the two writers never collide: <code>init_X</code> for init values, <code>iterout_X</code> for loop-carry values. All slots live in <code>NodeInstance.carry</code> — a <code>LoopCarry</code> (<code>agent_loop/pivots.py</code>); at fire time the populated slots become the fire inputs.</p>
 <p>An entry node is queued iff <code>type != "iterIn" AND no incoming edges AND no required input ports</code>. Required-but-unwired ports are rejected at the API boundary by <code>validate_graph_connectivity()</code> (see <code>graph_def.py</code>), so the executor never silently fails to fire an entry node.</p>
 <h2 id="5-list-typed-ports-adr-dataflow-005"><span class="num">5.</span> List-Typed Ports (ADR-dataflow-005)</h2>
 <p>Any wire type <code>T</code> can be wrapped as <code>LIST[T]</code> on a consumer port. Producers stay scalar; the executor applies coercion at a single port-binding seam (<code>_route_value_to_port</code>):</p>
@@ -482,7 +482,7 @@
 <h3 id="104-scope-re-entry-graphout-latch"><span class="num">10.4</span> Scope re-entry + graphOut latch</h3>
 <ul>
 <li><strong>Scope re-entry</strong>: when an outer scope's <code>iterOut</code> re-queues its paired <code>iterIn</code> and that brings an inner scope's <code>iter_in</code> back onto the ready queue, the executor resets the inner <code>_ScopeState</code> (<code>terminated = False</code>, <code>step_counter = 0</code>). This makes inner scopes function-call-shaped: each outer iteration re-runs the inner loop from scratch.</li>
-<li><strong>graphOut latch</strong>: when a <code>graphOut</code> node lives inside a non-root scope, it <em>buffers</em> its incoming <code>value</code> into <code>state["latched_value"]</code> (flushed by <code>_propagate_graphout_latches</code>) instead of propagating immediately. On the owning scope's termination, the buffered value is flushed to outer-scope downstream — preserves the "scope returns its last value" semantics across iteration boundaries.</li>
+<li><strong>graphOut latch</strong>: when a <code>graphOut</code> node lives inside a non-root scope, it <em>buffers</em> its incoming <code>value</code> into <code>state["latched_value"]</code> (<code>pivots.graphout_latch</code>, flushed by <code>_propagate_graphout_latches</code>) instead of propagating immediately. On the owning scope's termination, the buffered value is flushed to outer-scope downstream — preserves the "scope returns its last value" semantics across iteration boundaries.</li>
 </ul>
 <h3 id="105-termination-is-per-scope"><span class="num">10.5</span> Stop is per-scope</h3>
 <p>In a multi-scope graph, each scope's halt signal lives on its own iterOut's <code>stop</code> input — structurally bound to the right loop. An inner scope's stop ends <em>only</em> that scope (its final side emits, the outer loop continues); only the root scope's stop ends the run.</p>

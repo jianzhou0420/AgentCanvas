@@ -70,7 +70,7 @@
     <span class="sep">/</span>
     <span class="here">Batch Evaluation &amp; Job Queue</span>
   </div>
-  <div class="last-updated">2026-10-16</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header capability">
     <h1><span class="capability-num">7</span>Batch Evaluation &amp; Job Queue</h1>
@@ -177,7 +177,7 @@
   <p>Every run gets a directory at <code>outputs/eval_runs/{run_id}/</code> where <code>run_id</code> is a second-precision timestamp (e.g. <code>20260518_143052</code>; collisions get <code>_2</code>, <code>_3</code>, … appended). The layout is shared between the backend (writer of inputs) and the subprocess (writer of outputs):</p>
 
   <pre class="diagram">outputs/eval_runs/{run_id}/
-├── spec.json          ← backend writes pre-spawn: full JobSpec + GraphDefinition.to_dict()
+├── spec.json          ← backend writes pre-spawn: JobSpec.to_dict() — eval · scheduling · graph · active_workspace_dir
 ├── shared_urls.json   ← backend writes pre-spawn: {nodeset_name: auto_host_url}
 ├── graph.json         ← BatchEvalRunner writes: run-level graph snapshot
 ├── summary.json       ← subprocess writes: running snapshot, per-episode rows, terminal
@@ -194,7 +194,7 @@
   <h2 id="4-jobscheduler"><span class="num">4.</span> JobScheduler — Admission &amp; Lifecycle</h2>
 
   <h3 id="41-submit"><span class="num">4.1</span> Submit</h3>
-  <p><code>JobScheduler.submit(spec)</code> validates the spec, allocates a fresh <code>run_id</code>, writes <code>spec.json</code> + <code>shared_urls.json</code> into the run dir, and enqueues a <code>_QueuedJob</code>. <strong>It does not spawn</strong> — admission is the next tick's responsibility, so even a same-second flood of submits is serialised.</p>
+  <p><code>JobScheduler.submit(spec, shared_urls=…)</code> validates the <code>JobSpec</code>, allocates a fresh <code>run_id</code>, writes <code>spec.json</code> + <code>shared_urls.json</code> into the run dir, and enqueues a <code>_QueuedJob</code>. <strong>It does not spawn</strong> — admission is the next tick's responsibility, so even a same-second flood of submits is serialised.</p>
   <p><code>spec</code> shape (assembled by <code>api/execution/eval.py</code>):</p>
   <pre><code>{
   "eval":     { graph_name, selectors, dataset, split,
@@ -203,9 +203,9 @@
                 episode_indices, episode_selectors },
   "scheduling": { marginal_vram_mb, exclusive_gpu, priority },
   "graph":    GraphDefinition.to_dict(),
-  "_shared_urls": { nodeset_name: auto_host_url },  # also split out to shared_urls.json
   "active_workspace_dir": str | None,                # architect-skill overlay
 }</code></pre>
+  <p>The shared-nodeset URL table is deliberately not in the spec — it is the parent's runtime knowledge, passed to <code>submit</code> as an argument and written next to the spec as <code>shared_urls.json</code> (<code>services/run_state_io.py · JobSpec</code>).</p>
 
   <h3 id="42-tick"><span class="num">4.2</span> Tick — admission rule</h3>
   <p>One <code>tick()</code> per second from the FastAPI lifespan. For each queued job, in priority order:</p>
@@ -221,13 +221,13 @@
   <p><code>POST /api/eval/v2/runs/{run_id}/cancel</code> from any session terminates the subprocess via <code>SIGTERM → SIGKILL</code>. <code>summary.json</code> stays whatever the subprocess wrote last; absence of <code>_DONE</code> + dead PID is detected by the next status read as <code>aborted</code>.</p>
   <p>The scheduler refcounts shared nodesets per consuming job. When a run terminates (clean, aborted, cancelled), each shared nodeset it consumed loses one refcount. Nodesets the scheduler itself loaded for that job (tracked in <code>_shared_loaded_by_jobs</code>) get auto-unloaded at refcount-zero on the next tick. Singletons loaded via canvas Play <em>do not</em> get touched by this path — refcount drops to zero but the entry is not in the auto-unload set.</p>
 
-  <h2 id="5-worker-pool"><span class="num">5.</span> Worker Pool &amp; Batched Inference</h2>
+  <h2 id="5-worker-pool"><span class="num">5.</span> Worker Pool &amp; Serialized Inference</h2>
   <p>These belong topologically to <a href="isolated-runtime-environments.html">Capability 3 — Isolated Runtime Environments</a> (they're the same subprocess + HTTP plumbing scaled up). The eval-side view is short:</p>
 
   <ul>
     <li><strong><code>worker_count = N</code></strong> ⇒ the registry spawns N tagged copies of every <code>parallelism="replicated"</code> nodeset and registers <code>RemoteEnvPanelProxy</code> + tagged URL for each; the <code>Fleet</code> (<code>components/fleet.py</code>) routes worker k to copy k. Shared nodesets stay singleton.</li>
     <li>Each worker owns one <code>WorkerHandle</code> carrying <code>env_panel_overrides</code> + <code>server_url_overrides</code>. The episode's <code>GraphRun</code> consults those before the global registry — so <code>set_episode</code>/<code>play</code> and in-graph tool calls route to <em>that worker's</em> subprocess.</li>
-    <li>For pure-functional nodesets (<code>parallelism="shared"</code>, e.g. VLM forward) one subprocess hosts a <code>BatchedInferenceServer</code>. K parallel callers' <code>forward()</code> submissions coalesce into one stacked forward pass; K result slices scatter back. Opt-in via <code>batched: ClassVar[bool] = True</code> + <code>batch_dim: ClassVar[str] = "&lt;input_port&gt;"</code> on the node class (<a href="../core/decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>).</li>
+    <li>For pure-functional nodesets (<code>parallelism="shared"</code>, e.g. VLM forward) one subprocess serves all K workers. A node that must not run two forwards on its device at once sets <code>serialized: ClassVar[bool] = True</code>; the hosting <code>AutoServerApp</code> then takes its calls one at a time under its single inference lock, every other node's calls stay concurrent (<a href="../core/decisions/server/adr-server-003-env-parallelism-contract.html">ADR-server-003</a>; the batched rendezvous of ADR-eval-002 PC was retired 2026-10-17).</li>
     <li><strong><code>worker_count = 1</code></strong> is bit-identical to single-worker — empty overrides, no tagged proxies, single shared subprocess for everything.</li>
   </ul>
 
@@ -287,15 +287,19 @@
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/services/run_state_io.py</code></td>
-        <td>File protocol shared between scheduler (parent) and runner (subprocess) — <code>write_spec</code> / <code>write_shared_urls</code> / <code>read_summary</code>, atomic write helpers, full run-dir schema doc at top of file</td>
+        <td>The typed run files shared between scheduler (parent) and runner (subprocess) — <code>JobSpec</code> (<code>spec.json</code>), <code>RunSummary</code> (<code>summary.json</code>), <code>write_shared_urls</code> / <code>read_shared_urls</code>, <code>touch_done</code>, atomic write helpers; full run-dir schema doc at top of file</td>
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/eval_subprocess_main.py</code></td>
         <td>Subprocess entry — <code>python -m app.eval_subprocess_main --run-dir …</code>; reads <code>spec.json</code> + <code>shared_urls.json</code>, attaches to parent's shared singletons, invokes <code>BatchEvalRunner.execute()</code>, touches <code>_DONE</code></td>
       </tr>
       <tr>
+        <td><code>agentcanvas/backend/app/agent_loop/eval_config.py</code></td>
+        <td><code>EvalConfig</code> — the run's eval settings and the one place their defaults live (re-exported by <code>eval_batch.py</code>)</td>
+      </tr>
+      <tr>
         <td><code>agentcanvas/backend/app/agent_loop/eval_batch.py</code></td>
-        <td><code>EvalConfig</code>, <code>EvalRun</code>, <code>BatchEvalRunner(run, graph, run_dir=, on_episode=)</code>, <code>resolve_per_step_budget</code>; per-episode <code>GraphRun</code> creation, <code>_run_one_episode</code> driving step-budget + per-episode timeout</td>
+        <td><code>EvalRun</code>, <code>BatchEvalRunner(run, graph, run_dir=, on_episode=)</code>, <code>resolve_per_step_budget</code>; per-episode <code>GraphRun</code> creation, <code>_run_one_episode</code> driving step-budget + per-episode timeout</td>
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/agent_loop/graph_run.py</code></td>
@@ -307,7 +311,7 @@
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/api/execution/eval.py</code></td>
-        <td><code>/api/eval/v2/*</code> endpoints (start / stop / status / runs / queue / cancel / introspect / export). Assembles <code>spec</code> dict, calls <code>JobScheduler.submit</code></td>
+        <td><code>/api/eval/v2/*</code> endpoints (start / stop / status / runs / queue / cancel / introspect / export). Builds one <code>EvalConfig</code> + <code>JobSpec</code>, calls <code>JobScheduler.submit(spec, shared_urls=…)</code></td>
       </tr>
       <tr>
         <td><code>agentcanvas/backend/app/api/execution/eval_storage.py</code></td>
@@ -335,7 +339,7 @@
     <tbody>
       <tr><td>Graph-driven eval (<code>BatchEvalRunner</code> over <code>GraphRun</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-001-graph-driven-batch-eval.html">ADR-eval-001</a></td></tr>
       <tr><td>Worker fan-out (<code>Fleet</code>, tagged proxies, <code>worker_count &gt; 1</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-002-worker-pool-and-batched-inference.html">ADR-eval-002</a> PB</td></tr>
-      <tr><td>Batched inference tier (<code>BatchedInferenceServer</code>, <code>batched</code>/<code>batch_dim</code>)</td><td>Done</td><td>ADR-eval-002 PC; pure-functional contract enforced at registration (<code>NodeCatalog.register</code>)</td></tr>
+      <tr><td>Serialized inference (<code>serialized</code> ClassVar, one lock per <code>AutoServerApp</code>)</td><td>Done</td><td>Replaced the ADR-eval-002 PC batched tier 2026-10-17; pure-functional contract (per-call state on explicit ports)</td></tr>
       <tr><td>Subprocess-per-run scheduler (cross-session admission)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-003-subprocess-job-scheduler.html">ADR-eval-003</a>; tick=1s, FIFO+priority</td></tr>
       <tr><td>Per-episode log layout (self-contained <code>ep{NNNN}/</code>)</td><td>Done</td><td><a href="../core/decisions/eval/adr-eval-004-per-episode-log-layout.html">ADR-eval-004</a></td></tr>
       <tr><td>Canvas-lock preemption</td><td>Done</td><td><code>ExecutionGuard.canvas</code> mode blocks new admissions</td></tr>
@@ -370,7 +374,7 @@
       <a class="toc-h3" href="#41-submit">4.1 Submit</a>
       <a class="toc-h3" href="#42-tick">4.2 Tick — admission rule</a>
       <a class="toc-h3" href="#43-cancel">4.3 Cancel + auto-unload</a>
-      <a class="toc-h2" href="#5-worker-pool">5. Worker Pool &amp; Batched Inference</a>
+      <a class="toc-h2" href="#5-worker-pool">5. Worker Pool &amp; Serialized Inference</a>
       <a class="toc-h2" href="#6-per-episode-logs">6. Per-Episode Logs</a>
       <a class="toc-h2" href="#7-eval-page-gui">7. The Eval Page (GUI)</a>
       <a class="toc-h2" href="#8-api">8. HTTP API</a>

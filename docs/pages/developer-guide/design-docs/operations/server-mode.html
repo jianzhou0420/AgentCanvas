@@ -71,7 +71,7 @@
     <span class="sep">/</span>
     <span class="here">Server Mode</span>
   </div>
-  <div class="last-updated">2026-10-16</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header designdoc">
   <h1>Server Mode</h1>
@@ -123,7 +123,7 @@
     <span class="c1"># get_tools() returns the observe / step / evaluate nodes as usual</span>
 </pre>
 <p>Server mode has two launch vehicles: <strong>Native Launch</strong> — the default — spawns a host subprocess on the interpreter named by <code>server_python</code> (usually a conda env; <code>sys.executable</code> when unset), while <strong>Container Launch</strong> runs the same auto_host inside <code>docker run</code> for systems that cannot be a conda env at all (C++ stacks, GPL isolation) — same protocol, same downstream; see <a href="container-launch.html">Container Launch</a>.</p>
-<p>Load it and <code>env_habitat__observe</code>, <code>env_habitat__step</code>, … appear in the catalog as proxy nodes, backed by a subprocess running that interpreter. You only write a <code>ServerApp</code> by hand (§8) — registered through a <code>servers/*.yaml</code> entry — when you need a non-Python service, a custom protocol, or a remote machine. The auto-host machinery is §10.</p>
+<p>Load it and <code>env_habitat__observe</code>, <code>env_habitat__step</code>, … appear in the catalog as proxy nodes, backed by a subprocess running that interpreter. Every server the framework runs is built this way, by the <code>Launcher</code> from the NodeSet's ClassVars (§5); a server launched by another process is attached by URL (§9). The auto-host machinery is §10; <code>ServerApp</code>, the base the auto-host builds on, is §8.</p>
 <h2 id="3-two-sides-at-a-glance"><span class="num">3.</span> The two sides at a glance</h2>
 <p>A server-mode nodeset runs as two cooperating classes, one in each process:</p>
 <table>
@@ -222,164 +222,27 @@
 <li><strong>Does not</strong> retroactively protect orphans that existed before this mechanism was deployed — they need a one-time manual cleanup.</li>
 </ul>
 <p>The framework-side <code>stop()</code> (§4.3) remains the primary cleanup path; PDEATHSIG is the kernel-level backstop for the fraction of crash modes where <code>stop()</code> does not get to run.</p>
-<h2 id="5-yaml-config"><span class="num">5.</span> YAML Config</h2>
-<p>Servers are registered via YAML files in <code>workspace/servers/</code>:</p>
-<pre class="hl"><span class="c1"># workspace/servers/habitat.yaml</span>
-<span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:9100</span>
-<span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">          </span><span class="c1"># false to skip during scan</span>
-<span class="nt">managed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">          </span><span class="c1"># true = framework starts/stops the process</span>
-<span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">-m</span><span class="nv"> </span><span class="s">app.server.examples.habitat_server</span><span class="nv"> </span><span class="s">--port</span><span class="nv"> </span><span class="s">9100&quot;</span>
-<span class="nt">working_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/path/to/vlnworkspace/agentcanvas/backend</span>
-<span class="nt">startup_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">    </span><span class="c1"># seconds to wait for /health</span>
-<span class="nt">auto_restart</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">    </span><span class="c1"># restart on crash</span>
-</pre>
+<h2 id="5-yaml-config"><span class="num">5.</span> Where a server comes from — the Launcher</h2>
+<p>There is no file-based server registration. Every server-mode process the registry runs is built by <code>Launcher.build</code> (<code>server/launcher.py</code>) from the NodeSet's own ClassVars, and the framework attaches to it through the same <code>BaseServer</code> + <code>AutoHostClient</code> pair whichever vehicle launched it:</p>
 <table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Required</th>
-<th>Default</th>
-<th>Purpose</th>
-</tr>
-</thead>
+<thead><tr><th>Vehicle</th><th>Selected by</th><th>What runs</th></tr></thead>
 <tbody>
-<tr>
-<td><code>url</code></td>
-<td>yes</td>
-<td>—</td>
-<td>Base URL of the server</td>
-</tr>
-<tr>
-<td><code>enabled</code></td>
-<td>no</td>
-<td><code>true</code></td>
-<td>Skip if false</td>
-</tr>
-<tr>
-<td><code>managed</code></td>
-<td>no</td>
-<td><code>false</code></td>
-<td>Framework starts/stops the process</td>
-</tr>
-<tr>
-<td><code>command</code></td>
-<td>if managed</td>
-<td>—</td>
-<td>Bash command to start the service</td>
-</tr>
-<tr>
-<td><code>working_dir</code></td>
-<td>no</td>
-<td>—</td>
-<td>Working directory for subprocess</td>
-</tr>
-<tr>
-<td><code>port</code></td>
-<td>no</td>
-<td>—</td>
-<td>Port the service binds (parsed from <code>url</code> if omitted)</td>
-</tr>
-<tr>
-<td><code>host</code></td>
-<td>no</td>
-<td>—</td>
-<td>Host override for the subprocess bind</td>
-</tr>
-<tr>
-<td><code>description</code></td>
-<td>no</td>
-<td><code>""</code></td>
-<td>Human label surfaced in <code>GET /api/components/servers</code></td>
-</tr>
-<tr>
-<td><code>startup_timeout</code></td>
-<td>no</td>
-<td><code>30</code> (YAML)</td>
-<td>Seconds to wait for <code>/health</code>. <strong>Path-dependent default:</strong> the YAML scan uses <code>30</code>; auto-hosted nodesets fall back to the <code>BaseServer</code> class default <code>1800</code> (30 min, sized for HF weight downloads) via <code>getattr(nodeset_cls, "startup_timeout", 1800)</code></td>
-</tr>
-<tr>
-<td><code>auto_restart</code></td>
-<td>no</td>
-<td><code>false</code></td>
-<td>Restart on crash</td>
-</tr>
+<tr><td><strong>Native Launch</strong> (default)</td><td><code>server_python</code> — an interpreter path (<code>sys.executable</code> when unset)</td><td><code>python -m app.server.auto_host --module|--file … --class … --port …</code> as a direct child, PDEATHSIG-armed (§4.4)</td></tr>
+<tr><td><strong>Container Launch</strong></td><td><code>server_image</code> — an image name (with <code>server_image_gpu</code>, <code>server_mounts</code>, <code>server_container_python</code>, <code>server_container_user</code>)</td><td>The same auto_host inside <code>docker run</code> — see <a href="container-launch.html">Container Launch</a> (ADR-server-005)</td></tr>
 </tbody>
 </table>
-<h3 id="51-three-deployment-modes"><span class="num">5.1</span> Three deployment modes</h3>
-<table>
-<thead>
-<tr>
-<th>Mode</th>
-<th>Config</th>
-<th>Who starts the process</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Managed</strong></td>
-<td><code>managed: true</code>, <code>command: ...</code></td>
-<td>Framework calls <code>subprocess.Popen(command)</code></td>
-</tr>
-<tr>
-<td><strong>Manual</strong></td>
-<td><code>managed: false</code> (or omitted)</td>
-<td>User starts server themselves, framework connects</td>
-</tr>
-<tr>
-<td><strong>Remote</strong></td>
-<td><code>url: http://gpu-machine:9100</code></td>
-<td>Process runs on another machine entirely</td>
-</tr>
-</tbody>
-</table>
-<p>All three share the same manifest protocol and proxy node generation.</p>
+<p>The remaining knobs — <code>server_env</code>, the class-level <code>startup_timeout</code> (default <code>1800</code> s, sized for HF weight downloads) — are ClassVars too (§10.4). The YAML-registered manual-server path (<code>workspace/servers/*.yaml</code>, <code>managed</code> / <code>command</code>, the <code>/api/components/servers*</code> endpoints, <code>app/server/examples/</code>) was deleted on 2026-10-17: no in-tree NodeSet used it, auto-hosting covers every Python case, and a foreign process is attached by URL instead (§9).</p>
 <h2 id="6-rest-api-on-agentcanvas"><span class="num">6.</span> REST API (on AgentCanvas)</h2>
+<p>Server lifecycle is a NodeSet operation, mounted under <code>/api/components</code> (<code>app/api/platform/components.py</code>):</p>
 <table>
-<thead>
-<tr>
-<th>Endpoint</th>
-<th>Method</th>
-<th>Purpose</th>
-</tr>
-</thead>
+<thead><tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr></thead>
 <tbody>
-<tr>
-<td><code>/api/components/servers</code></td>
-<td>GET</td>
-<td>List all servers with live status</td>
-</tr>
-<tr>
-<td><code>/api/components/servers/{name}/start</code></td>
-<td>POST</td>
-<td>Start a managed server</td>
-</tr>
-<tr>
-<td><code>/api/components/servers/{name}/stop</code></td>
-<td>POST</td>
-<td>Stop a managed server</td>
-</tr>
-<tr>
-<td><code>/api/components/servers/{name}/restart</code></td>
-<td>POST</td>
-<td>Restart a managed server</td>
-</tr>
+<tr><td><code>/api/components/nodesets</code></td><td>GET</td><td>Discovered NodeSets with their loaded status</td></tr>
+<tr><td><code>/api/components/nodesets/{name}/load?mode=server</code></td><td>POST</td><td>Launch the NodeSet as a server-mode subprocess (default <code>mode=local</code>); a loaded NodeSet is reloaded — this is also the Manager page's restart</td></tr>
+<tr><td><code>/api/components/nodesets/{name}/unload</code></td><td>POST</td><td>Stop the subprocess, deregister its proxy nodes and env panel</td></tr>
+<tr><td><code>/api/components/nodesets/ensure</code></td><td>POST</td><td>Load every NodeSet a list of node types needs (server mode auto-selected per NodeSet)</td></tr>
 </tbody>
 </table>
-<h3 id="example-response-from-get-apicomponentsservers">Example response from <code>GET /api/components/servers</code>:</h3>
-<pre class="hl"><span class="p">[</span>
-<span class="w">  </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;habitat&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Habitat-Sim VLN-CE environment&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://localhost:9100&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;connected&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;connected&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;auto_restart&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;env_habitat__observe&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;env_habitat__step&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">...</span><span class="p">]</span>
-<span class="w">  </span><span class="p">}</span>
-<span class="p">]</span>
-</pre>
 <h2 id="7-manifest-protocol-on-the-server"><span class="num">7.</span> Manifest Protocol (on the server)</h2>
 <p>Every server exposes these endpoints:</p>
 <table>
@@ -414,7 +277,7 @@
 <h3 id="72-dynamic-fire-list-over-the-wire"><span class="num">7.2</span> Dynamic Fire-List over the wire</h3>
 <p>A server-side <code>DynamicFireListNode</code> emits a variable number of child firings, not a fixed output dict. To carry that across HTTP, the server serializes the result as a single envelope <code>{"__firelist__": {...}}</code> (<code>server_app.py · call_function</code>); the proxy's <code>forward</code> detects the marker and unwraps it back into a fire-list (<code>proxy.py · forward</code>). This keeps the dynamic-fan-out node type working identically in local and server modes — the executor sees the same fire-list either way. No node-author action is required; the envelope is internal to the serialization boundary.</p>
 <h3 id="73-reverse-channel-log-error-push"><span class="num">7.3</span> Reverse channel: log/error push</h3>
-<p>A subprocess is otherwise write-only over <code>/call</code>, so its logs and handler errors never reached the canvas — a handler exception was demoted to a swallowed <code>{"error": ...}</code> value by the proxy. The subprocess now POSTs structured events back to the executor's <code>POST /api/internal/events</code> (<code>server/event_push.py</code> buffers + flushes at call boundaries; <code>api/execution/internal_events.py</code> receives), which republishes each on the <code>ErrorBus</code> → <code>error_event</code> WebSocket frame, so server-node logs/errors surface on the canvas like local-node ones. Handler exceptions are <strong>first-classed</strong> (pushed with node/execution scope + traceback) instead of being swallowed; a WARNING+ logging bridge forwards general subprocess logs. The executor base URL is handed to each subprocess via <code>AGENTCANVAS_EXECUTOR_URL</code> (resolved from Settings); the channel is a no-op when unset. See roadmap #54.</p>
+<p>A subprocess is otherwise write-only over <code>/call</code>, so its logs and handler errors would never reach the canvas. Every process publishes to one <code>EventSink</code> interface (<code>errors.py · get_bus()</code>); a subprocess's adapter is the <code>PushSink</code> (<code>server/event_push.py</code>): it buffers <code>ErrorEnvelope</code>s and POSTs them to the parent's <code>POST /api/internal/events</code> (<code>api/execution/internal_events.py</code>), which republishes each on the parent's <code>ErrorBus</code> → <code>error_event</code> WebSocket frame — the same envelope a local-node failure uses, so the Report tab shows both alike. Producers are the ordinary ones: <code>invoke.py</code> publishes a handler exception with <code>get_bus().from_exception(...)</code> (node / execution scope + traceback) and flushes at the call boundary; the one <code>LogBridgeHandler</code> forwards WARNING+ records. An <code>error</code> envelope is flushed at once, the rest at the next <code>/call</code> or episode boundary or when the buffer fills; a failed push is dropped — observability never breaks execution. <code>install_push_sink(url, nodeset=…)</code> is called by <code>auto_host</code> (URL from <code>AGENTCANVAS_EXECUTOR_URL</code>, set by the registry) and by the eval subprocess (its <code>--backend-url</code>, flushing after every episode); without a URL the process keeps its in-process bus. See roadmap #54.</p>
 <h2 id="8-serverapp-building-the-service"><span class="num">8.</span> ServerApp (building the service)</h2>
 <p>Server authors subclass <code>ServerApp</code> to build the HTTP service:</p>
 <pre class="hl"><span class="kn">from</span><span class="w"> </span><span class="nn">app.server</span><span class="w"> </span><span class="kn">import</span> <span class="n">ServerApp</span><span class="p">,</span> <span class="n">ServerFunction</span><span class="p">,</span> <span class="n">PortSchema</span>
@@ -480,57 +343,8 @@
 </tbody>
 </table>
 <p>These routes are only mounted when <code>get_env_panel_instance()</code> returns non-None. For <code>AutoServerApp</code>, the env panel is instantiated in <code>__init__</code> from <code>nodeset_cls.env_panel</code> (so <code>_build_app</code> can see it at app-construction time, before <code>on_startup</code> runs). On the AgentCanvas side, <code>_register_remote_env_panel</code> fetches <code>/env-panel/info</code> and registers a <code>RemoteEnvPanelProxy</code> that forwards every <code>BaseEnvPanel</code> call over HTTP — making the canvas control panel work identically in local and server modes.</p>
-<h2 id="9-habitat-example"><span class="num">9.</span> Habitat Example</h2>
-<p>Two classes in <code>app/server/examples/habitat_server.py</code>:</p>
-<h3 id="91-habitatapp-serverapp-the-actual-service"><span class="num">9.1</span> HabitatApp (ServerApp) — the actual service</h3>
-<p>Wraps <code>HabitatEnvManager</code> methods as server functions:</p>
-<table>
-<thead>
-<tr>
-<th>Function</th>
-<th>In</th>
-<th>Out</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>observe</code></td>
-<td>(seed)</td>
-<td>rgb (IMAGE), depth (DEPTH)</td>
-</tr>
-<tr>
-<td><code>step</code></td>
-<td>action (ACTION)</td>
-<td>rgb, depth, pose, action, done, metrics</td>
-</tr>
-<tr>
-<td><code>get_state</code></td>
-<td>(seed)</td>
-<td>pose (POSE)</td>
-</tr>
-<tr>
-<td><code>episode_info</code></td>
-<td>(seed)</td>
-<td>instruction (TEXT), episode_id (TEXT)</td>
-</tr>
-<tr>
-<td><code>panorama</code></td>
-<td>(seed)</td>
-<td>composite (IMAGE), scene (TEXT)</td>
-</tr>
-</tbody>
-</table>
-<p>Run directly: <code>python -m app.server.examples.habitat_server --port 9100</code></p>
-<h3 id="92-habitatserver-baseserver-the-process-manager"><span class="num">9.2</span> HabitatServer (BaseServer) — the process manager</h3>
-<p>Defines Habitat-specific launch properties:</p>
-<pre class="hl"><span class="k">class</span><span class="w"> </span><span class="nc">HabitatServer</span><span class="p">(</span><span class="n">BaseServer</span><span class="p">):</span>
-    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;habitat&quot;</span>
-    <span class="n">port</span> <span class="o">=</span> <span class="mi">9100</span>
-    <span class="n">startup_timeout</span> <span class="o">=</span> <span class="mi">60</span>   <span class="c1"># Habitat init loads 3D scenes — slow</span>
-    <span class="n">command</span> <span class="o">=</span> <span class="s2">&quot;python -m app.server.examples.habitat_server --port 9100&quot;</span>
-    <span class="n">working_dir</span> <span class="o">=</span> <span class="s2">&quot;.../agentcanvas/backend&quot;</span>
-</pre>
-<p>Used by <code>WorkspaceComponentRegistry</code> when YAML has <code>managed: true</code>.</p>
+<h2 id="9-habitat-example"><span class="num">9.</span> Attaching a running server — <code>register_remote_nodeset</code></h2>
+<p>A server another process already launched is attached by URL: <code>registry.py · register_remote_nodeset(name, url)</code> fetches its <code>/manifest</code>, generates the same proxy node classes (§10.3) pointed at that URL, and installs a <code>_RemoteAutoServerShim</code> whose <code>stop()</code> is a no-op, so the borrowed process outlives the borrower. The eval subprocess uses it for every shared singleton the parent backend has up (<code>shared_urls.json</code> — <a href="../graph/batch-eval.html">Batch Eval</a> §4), which is how a 14 GB model loads once and serves every run. A hand-written <code>ServerApp</code> (§8) that speaks <code>/manifest</code> + <code>/call</code> is attached the same way, programmatically; there is no REST route or file that registers one.</p>
 <h2 id="10-auto-generated-servers-adr-server-001"><span class="num">10.</span> Auto-Generated Servers (ADR-server-001)</h2>
 <p>Instead of manually writing a <code>ServerApp</code> subclass, any <code>BaseNodeSet</code> can be auto-hosted in server mode. <code>AutoServerApp</code> is the canonical path — it introspects the nodeset's nodes and auto-generates <code>ServerFunction</code> entries from their <code>input_ports</code>/<code>output_ports</code>. It is also responsible for instantiating and hosting the nodeset's <code>BaseEnvPanel</code> (if declared) via the env panel bridge.</p>
 <h3 id="101-how-it-works"><span class="num">10.1</span> How It Works</h3>
@@ -539,7 +353,7 @@
 <li><code>AutoServerApp</code> converts each <code>PortDef</code> → <code>PortSchema</code> automatically and serves the standard <code>/manifest</code>, <code>/call/{fn}</code>, <code>/health</code> protocol.</li>
 <li>If <code>nodeset_cls.env_panel</code> is set, it is instantiated in <code>__init__</code> and the <code>/env-panel/*</code> routes are mounted via <code>ServerApp._build_app</code>.</li>
 </ol>
-<p><code>AutoServerApp.on_startup</code> initialises the nodeset (<code>await self._nodeset.initialize()</code>) and starts the <code>BatchedInferenceServer</code>. <code>on_shutdown</code> drains the batched server then shuts down the nodeset.</p>
+<p><code>AutoServerApp.on_startup</code> initialises the nodeset (<code>await self._nodeset.initialize()</code>, reusing the instance <code>get_functions()</code> built the handlers over) and builds its owned containers; <code>on_shutdown</code> shuts the nodeset down and clears them.</p>
 <h3 id="102-cli-usage"><span class="num">10.2</span> CLI Usage</h3>
 <pre class="hl">
 <span class="c1"># By dotted module path (preferred for package nodesets with __init__.py):</span>
@@ -562,10 +376,10 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <li>Picks a free port.</li>
 <li>Spawns <code>python -m app.server.auto_host --file … --class … --port …</code>.</li>
 <li>Waits for <code>/health</code>, fetches <code>/manifest</code>.</li>
-<li>Generates proxy nodes — identical to YAML-based servers.</li>
+<li>Generates proxy nodes under the same <code>node_type</code>s as local mode.</li>
 <li>If the nodeset has an env panel, calls <code>_register_remote_env_panel</code> to fetch <code>/env-panel/info</code> and register a <code>RemoteEnvPanelProxy</code> locally.</li>
 </ol>
-<p>When to use manual <code>ServerApp</code> instead: non-Python servers, custom protocols, or servers that need logic beyond what <code>forward()</code> provides.</p>
+<p>A hand-written <code>ServerApp</code> (§8) is only for a service that cannot be a NodeSet at all; it is attached by URL (§9), never launched by the registry.</p>
 <p>There is also an <strong>ephemeral</strong> spawn path — <code>load_nodeset_ephemeral</code> / <code>unload_nodeset_ephemeral</code> (<code>registry.py</code>) — which starts a tagged auto-server (through the same <code>Launcher.build</code>, so <code>server_image</code> nodesets launch as containers here too) <em>without</em> registering proxy node classes in the local node catalog. The subprocess-side eval bootstrap uses it: the worker already has the manifest baked in and only needs the live process, not a fresh round of proxy-class generation.</p>
 <h3 id="104-auto-host-classvar-knobs"><span class="num">10.4</span> Auto-host ClassVar knobs</h3>
 <p>Two nodeset ClassVars steer how the registry spawns the server subprocess:</p>
@@ -592,7 +406,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 </table>
 <h2 id="11-worker-pool-multi-server-adr-eval-002-pb"><span class="num">11.</span> Worker-Pool Multi-Server (ADR-eval-002 PB)</h2>
 <p>For parallel evaluation, the registry can spawn <strong>N independent subprocesses</strong> for the same nodeset, each on its own port. This is controlled by the <code>worker_count</code> parameter on <code>load_nodeset</code> and <code>ensure_nodesets_for_graph</code>.</p>
-<pre class="hl"><span class="c1"># Spawn 4 parallel env workers (e.g. for batched eval)</span>
+<pre class="hl"><span class="c1"># Spawn 4 parallel env workers (e.g. for a worker-pool eval)</span>
 <span class="k">await</span> <span class="n">registry</span><span class="o">.</span><span class="n">load_nodeset</span><span class="p">(</span><span class="s2">&quot;env_habitat&quot;</span><span class="p">,</span> <span class="n">worker_count</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 </pre>
 <p><code>worker_count &gt; 1</code> forces <code>mode="server"</code> regardless of the request — fan-out only makes sense for isolated subprocesses.</p>
@@ -636,57 +450,17 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <p>Tagged registration raises on failure; the outer <code>try/except</code> block rolls back all already-started servers (see below).</p>
 <h3 id="114-rollback-on-partial-failure"><span class="num">11.4</span> Rollback on partial failure</h3>
 <p>If any worker fails to start or its <code>RemoteEnvPanelProxy</code> registration fails, the registry stops all already-started workers, removes their <code>_auto_servers</code> entries, and de-registers their proxy node types before re-raising the exception — leaving no half-initialised state.</p>
-<h2 id="12-batched-inference-adr-eval-002-pc"><span class="num">12.</span> Batched Inference (ADR-eval-002 PC)</h2>
-<p>For GPU-heavy nodes like <code>policy_adapter_vla__predict</code>, sending one sample per HTTP request wastes throughput. The batched inference tier rendezvous K concurrent requests inside the server subprocess, calls the underlying handler <strong>once</strong> with all K samples stacked, then scatters K result slices back to the K awaiting callers.</p>
-<p>The rendezvous is <strong>server-side</strong> (inside the <code>AutoServerApp</code> subprocess) because that is where K concurrent proxy calls from K <code>LoopRunner</code> instances naturally converge. This avoids a separate inference-server subprocess — one <code>AutoServerApp</code> per nodeset, one subprocess, one <code>/health</code>.</p>
-<h3 id="121-batchedinferenceserver"><span class="num">12.1</span> BatchedInferenceServer</h3>
-<p><code>BatchedInferenceServer</code> lives inside each <code>AutoServerApp</code> instance. It lazily creates one <code>_BatchQueue</code> per batch key. Handlers are registered eagerly at <code>get_functions()</code> time via <code>_make_handler</code> when <code>type(tool).batched</code> is <code>True</code>.</p>
-<p>Key constants:</p>
-<table>
-<thead>
-<tr>
-<th>Symbol</th>
-<th>Value</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>SAMPLES_KEY</code></td>
-<td><code>"_samples"</code></td>
-<td>Marker: <code>tool.forward</code> receives <code>{_samples: [inputs_dict, ...]}</code></td>
-</tr>
-<tr>
-<td><code>OUTPUTS_KEY</code></td>
-<td><code>"_outputs"</code></td>
-<td>Marker: <code>tool.forward</code> returns <code>{_outputs: [outputs_dict, ...]}</code></td>
-</tr>
-<tr>
-<td><code>flush_timeout_ms</code></td>
-<td><code>50</code> (default)</td>
-<td>Milliseconds to wait before flushing a partial batch</td>
-</tr>
-</tbody>
-</table>
-<h3 id="122-batch-key-and-flush-rule"><span class="num">12.2</span> Batch key and flush rule</h3>
-<p>The batch key is <code>(function_name, config_hash)</code> where <code>config_hash</code> is an 8-char SHA-1 of the sorted JSON config. Two callers with equivalent configs (any key order) share a batch queue. Two policy nodes pointing at different checkpoints get separate queues.</p>
-<p>The flush timer is a <strong>restart-on-each-submit</strong> timer: each new submission cancels and restarts the <code>flush_timeout_ms</code> countdown. A late caller joins the in-flight batch instead of forcing a partial flush early — keeping the rendezvous correct even when workers arrive at uneven times.</p>
-<h3 id="123-node-opt-in"><span class="num">12.3</span> Node opt-in</h3>
-<p>Two <code>ClassVar</code> fields on <code>BaseCanvasNode</code> control batching:</p>
-<pre class="hl"><span class="k">class</span><span class="w"> </span><span class="nc">PolicyCMAForward</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
-    <span class="n">batched</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
-    <span class="n">batch_dim</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>   <span class="c1"># name of the input port carrying the batch axis</span>
+<h2 id="12-serialized-calls"><span class="num">12.</span> Serialized calls — one inference lock</h2>
+<p>K eval workers calling a <code>parallelism="shared"</code> nodeset converge on one <code>AutoServerApp</code> subprocess, and a GPU node such as <code>policy_adapter_vla__predict</code> must not run two forwards on that device at once. The app holds one <code>asyncio.Lock</code> for exactly that (<code>auto_server_app.py · _get_inference_lock</code>, created lazily inside the server's running loop — the Python 3.8 envs that host some nodesets bind a <code>Lock</code> to the loop current at construction time).</p>
+<h3 id="121-node-opt-in"><span class="num">12.1</span> Node opt-in</h3>
+<pre class="hl"><span class="k">class</span><span class="w"> </span><span class="nc">PredictTool</span><span class="p">(</span><span class="n">BaseCanvasNode</span><span class="p">):</span>
+    <span class="n">serialized</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>   <span class="c1"># one forward in flight on this subprocess&#x27;s device</span>
 </pre>
-<p><code>batched = False</code> (default) — <code>_make_handler</code> creates a plain async handler that calls <code>tool.forward</code> once per request. <code>batched = True</code> — the handler submits to the shared <code>BatchedInferenceServer</code> and awaits its slice. <code>NodeCatalog.register</code> validates the combination at scan time.</p>
-<p>The retired <code>policy_cma__forward</code> was the first node to opt in; today's user is <code>policy_adapter_vla__predict</code>.</p>
-<h3 id="124-handler-contract"><span class="num">12.4</span> Handler contract</h3>
-<p>A batched node's <code>forward</code> receives:</p>
-<pre class="hl"><span class="n">inputs</span> <span class="o">=</span> <span class="p">{</span><span class="n">SAMPLES_KEY</span><span class="p">:</span> <span class="p">[</span><span class="n">inputs_dict_0</span><span class="p">,</span> <span class="n">inputs_dict_1</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">inputs_dict_K</span><span class="o">-</span><span class="mi">1</span><span class="p">]}</span>
-</pre>
-<p>and must return:</p>
-<pre class="hl"><span class="p">{</span><span class="n">OUTPUTS_KEY</span><span class="p">:</span> <span class="p">[</span><span class="n">outputs_dict_0</span><span class="p">,</span> <span class="n">outputs_dict_1</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">outputs_dict_K</span><span class="o">-</span><span class="mi">1</span><span class="p">]}</span>
-</pre>
-<p>The list lengths must match. The node owns per-port stacking semantics (e.g. torch tensors stacked along <code>batch_dim</code>, lists of dicts gathered as lists). RNN hidden states must travel as explicit <code>hidden_in</code>/<code>hidden_out</code> ports so they ride the wire and remain with the caller across steps — the server holds no per-worker state.</p>
+<p><code>serialized = False</code> (default) — <code>_make_handler</code> returns a plain async handler and the node's calls run concurrently. <code>serialized = True</code> — the handler is wrapped in <code>async with inference_lock()</code>; <code>_make_handler</code> raises at <code>get_functions()</code> time if no lock provider was given. In local mode the flag has no effect.</p>
+<h3 id="122-handler-contract"><span class="num">12.2</span> Handler contract</h3>
+<p>The server is pure-functional: it holds no per-caller state between calls, so RNN hidden states travel as explicit <code>hidden_in</code> / <code>hidden_out</code> ports and remain with the caller across steps. Today's user is <code>policy_adapter_vla__predict</code> (one <code>model_batch</code> per call).</p>
+<h3 id="123-what-this-replaced"><span class="num">12.3</span> What this replaced</h3>
+<p>Until 2026-10-17 this section was the batched-inference rendezvous of ADR-eval-002 PC (<code>BatchedInferenceServer</code>, one <code>_BatchQueue</code> per <code>(function_name, config_hash)</code>, a 50 ms restart-on-submit flush timer, <code>batched</code> / <code>batch_dim</code> on the node, <code>SAMPLES_KEY</code> / <code>OUTPUTS_KEY</code> stacking). Its one consumer unrolled every batch sequentially, so the lock was all it provided; the tier was deleted and the lock kept.</p>
 <h2 id="13-file-reference"><span class="num">13.</span> File Reference</h2>
 <table>
 <thead>
@@ -705,7 +479,7 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <tr>
 <td><code>app/server/auto_server_app.py</code></td>
 <td>Server</td>
-<td><code>AutoServerApp</code> — canonical auto-host for any <code>BaseNodeSet</code>; owns <code>BatchedInferenceServer</code></td>
+<td><code>AutoServerApp</code> — canonical auto-host for any <code>BaseNodeSet</code>; holds the one inference lock for <code>serialized</code> nodes</td>
 </tr>
 <tr>
 <td><code>app/server/base_server.py</code></td>
@@ -738,24 +512,19 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <td><code>invoke</code> — the one server-side function call behind <code>POST /call</code> and the MCP <code>tools/call</code>: decode, run the handler, capture its log + usage, encode</td>
 </tr>
 <tr>
-<td><code>app/server/batched_inference.py</code></td>
+<td><code>app/server/event_push.py</code></td>
 <td>Server</td>
-<td><code>BatchedInferenceServer</code>, <code>_BatchQueue</code>, <code>BatchedClient</code>, <code>SAMPLES_KEY</code>/<code>OUTPUTS_KEY</code></td>
-</tr>
-<tr>
-<td><code>app/server/examples/habitat_server.py</code></td>
-<td>Both</td>
-<td><code>HabitatApp</code> + <code>HabitatServer</code></td>
+<td><code>PushSink</code> — the subprocess <code>EventSink</code> adapter; <code>install_push_sink(url, nodeset=, log_level=)</code> (§7.3)</td>
 </tr>
 <tr>
 <td><code>app/components/registry.py</code></td>
 <td>Framework</td>
-<td><code>_load_nodeset_as_server(worker_count=N)</code>, <code>_register_remote_env_panel</code>, <code>_scan_and_register_servers()</code></td>
+<td><code>_load_nodeset_as_server(worker_count=N)</code>, <code>_register_remote_env_panel</code>, <code>register_remote_nodeset(name, url)</code></td>
 </tr>
 <tr>
 <td><code>app/api/platform/components.py</code></td>
 <td>Framework</td>
-<td>REST endpoints for server management (mounted at <code>/api/components</code>)</td>
+<td>REST endpoints for NodeSet load (<code>?mode=server</code>) / unload / ensure (mounted at <code>/api/components</code>)</td>
 </tr>
 <tr>
 <td><code>app/server/_loopback_proxy.py</code></td>
@@ -766,11 +535,6 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
 <td><code>app/server/auto_host.py</code></td>
 <td>Framework</td>
 <td>CLI entry point for auto-hosted servers (<code>--module</code>/<code>--file</code>, <code>--class</code>, <code>--port</code>, <code>--host</code>)</td>
-</tr>
-<tr>
-<td><code>workspace/servers/*.yaml</code></td>
-<td>Config</td>
-<td>Server registration + lifecycle config</td>
 </tr>
 </tbody>
 </table>
@@ -795,19 +559,15 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
       <a class="toc-h3" href="#42-how-start-works">4.2 How start() works</a>
       <a class="toc-h3" href="#43-how-stop-works">4.3 How stop() works</a>
       <a class="toc-h3" href="#44-crash-safe-cleanup">4.4 Crash-safe cleanup</a>
-      <a class="toc-h2" href="#5-yaml-config">5. YAML Config</a>
-      <a class="toc-h3" href="#51-three-deployment-modes">5.1 Three deployment modes</a>
+      <a class="toc-h2" href="#5-yaml-config">5. Where a server comes from — the Launcher</a>
       <a class="toc-h2" href="#6-rest-api-on-agentcanvas">6. REST API (on AgentCanvas)</a>
-      <a class="toc-h3" href="#example-response-from-get-apicomponentsservers">Example response from GET /api/components/servers:</a>
       <a class="toc-h2" href="#7-manifest-protocol-on-the-server">7. Manifest Protocol (on the server)</a>
       <a class="toc-h3" href="#71-wire-type-serialization">7.1 Wire type serialization</a>
       <a class="toc-h3" href="#72-dynamic-fire-list-over-the-wire">7.2 Dynamic Fire-List over the wire</a>
       <a class="toc-h3" href="#73-reverse-channel-log-error-push">7.3 Reverse channel: log/error push</a>
       <a class="toc-h2" href="#8-serverapp-building-the-service">8. ServerApp (building the service)</a>
       <a class="toc-h3" href="#81-env-panel-bridge-routes-adr-server-002">8.1 Env panel bridge routes (ADR-server-002)</a>
-      <a class="toc-h2" href="#9-habitat-example">9. Habitat Example</a>
-      <a class="toc-h3" href="#91-habitatapp-serverapp-the-actual-service">9.1 HabitatApp (ServerApp) — the actual service</a>
-      <a class="toc-h3" href="#92-habitatserver-baseserver-the-process-manager">9.2 HabitatServer (BaseServer) — the process manager</a>
+      <a class="toc-h2" href="#9-habitat-example">9. Attaching a running server — register_remote_nodeset</a>
       <a class="toc-h2" href="#10-auto-generated-servers-adr-server-001">10. Auto-Generated Servers (ADR-server-001)</a>
       <a class="toc-h3" href="#101-how-it-works">10.1 How It Works</a>
       <a class="toc-h3" href="#102-cli-usage">10.2 CLI Usage</a>
@@ -819,11 +579,10 @@ python<span class="w"> </span>-m<span class="w"> </span>app.server.auto_host<spa
       <a class="toc-h3" href="#112-per-worker-url-routing-pb-15">11.2 Per-worker URL routing (PB-1.5)</a>
       <a class="toc-h3" href="#113-tagged-remoteenvpanelproxy">11.3 Tagged RemoteEnvPanelProxy</a>
       <a class="toc-h3" href="#114-rollback-on-partial-failure">11.4 Rollback on partial failure</a>
-      <a class="toc-h2" href="#12-batched-inference-adr-eval-002-pc">12. Batched Inference (ADR-eval-002 PC)</a>
-      <a class="toc-h3" href="#121-batchedinferenceserver">12.1 BatchedInferenceServer</a>
-      <a class="toc-h3" href="#122-batch-key-and-flush-rule">12.2 Batch key and flush rule</a>
-      <a class="toc-h3" href="#123-node-opt-in">12.3 Node opt-in</a>
-      <a class="toc-h3" href="#124-handler-contract">12.4 Handler contract</a>
+      <a class="toc-h2" href="#12-serialized-calls">12. Serialized calls — one inference lock</a>
+      <a class="toc-h3" href="#121-node-opt-in">12.1 Node opt-in</a>
+      <a class="toc-h3" href="#122-handler-contract">12.2 Handler contract</a>
+      <a class="toc-h3" href="#123-what-this-replaced">12.3 What this replaced</a>
       <a class="toc-h2" href="#13-file-reference">13. File Reference</a>
     </nav>
   </div>

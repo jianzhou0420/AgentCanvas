@@ -73,7 +73,7 @@
     <span class="sep">/</span>
     <span class="here">Execution Logs &amp; Live Views</span>
   </div>
-  <div class="last-updated">2026-10-16</div>
+  <div class="last-updated">2026-10-17</div>
 </div>
   <header class="page-header capability">
   <h1><span class="capability-num">6</span>Execution Logs &amp; Live Views</h1>
@@ -137,12 +137,12 @@
   <figcaption style="font-size:.85em;opacity:.75;margin-top:.5rem">A CMA VLN-CE eval episode in the Logs tab — 50 steps, 553 firings, 7.9&thinsp;s. Each row is one node firing: thumbnails for image ports, the chosen action as a badge, wall time on the right.</figcaption>
 </figure>
 <h3 id="12-error-reporting"><span class="num">1.2</span> Error reporting (<code>error_event</code>)</h3>
-<p>The <code>ErrorBus</code> (ADR-observability-004, <code>agentcanvas/backend/app/errors.py</code>) is the unified event channel for everything the user needs to <em>see</em> about a run going wrong — distinct from the structured per-firing capture that <code>exec_log</code> provides. Producers covered today:</p>
+<p>Every process publishes <code>ErrorEnvelope</code>s to one <code>EventSink</code> (ADR-observability-004, <code>agentcanvas/backend/app/errors.py · get_bus()</code>) — the unified event channel for everything the user needs to <em>see</em> about a run going wrong, distinct from the structured per-firing capture that <code>exec_log</code> provides. Two adapters: the parent backend's <code>ErrorBus</code> (ring buffer + async fan-out, below) and the subprocess <code>PushSink</code> (<code>server/event_push.py</code> — auto_host nodeset servers and the eval subprocess buffer envelopes and POST them to the parent's <code>/api/internal/events</code>, which republishes them on the parent's bus; an <code>error</code> envelope is flushed at once, the rest at every <code>/call</code> or episode boundary). Producers covered today:</p>
 <ul>
-<li><strong>Per-node executor catch</strong> (<code>graph_executor.py · _fire_node</code>) — wraps <code>_fire_node()</code>; envelope carries <code>scope = {node_id, node_type, origin, step, execution_id}</code>.</li>
+<li><strong>Per-node executor catch</strong> (<code>graph_executor.py · _fire</code> → <code>_report_node_error</code>) — the one fire seam wraps <code>_fire_node()</code>; a raised exception publishes <code>NODE_EXEC_FAIL</code>, a returned <code>{"error": …}</code> result <code>NODE_RESULT_ERROR</code>; envelope carries <code>scope = {node_id, node_type, origin, step, execution_id}</code>. In the eval subprocess the same catch reaches the parent through the <code>PushSink</code>.</li>
 <li><strong>Graph-level executor catch</strong> (<code>graph_executor.py · run</code>) — top-level <code>try/except</code> around the run loop; envelope carries <code>scope = {step, execution_id}</code>.</li>
 <li><strong>FastAPI global <code>Exception</code> handler</strong> (<code>main.py</code>) — uncaught HTTP route exceptions; envelope carries <code>scope = {endpoint, method}</code> and is also returned as the 500 body so the frontend HTTP wrapper can recover the same <code>id</code>.</li>
-<li><strong><code>LogBridgeHandler</code></strong> — installed on the root logger at INFO+; every <code>log.info / warning / error / exception</code> becomes an envelope with <code>source="log"</code>. Skips <code>agentcanvas.errors</code> + uvicorn / httpx / httpcore / watchfiles / asyncio prefixes to avoid feedback loops + noise.</li>
+<li><strong><code>LogBridgeHandler</code></strong> — the one <code>logging</code> bridge, installed on the root logger over whichever sink the process has (INFO+ in the parent, WARNING+ in a subprocess); every <code>log.info / warning / error / exception</code> becomes an envelope with <code>source="log"</code>. Skips <code>agentcanvas.errors</code> / <code>agentcanvas.event-push</code> + uvicorn / httpx / httpcore / urllib3 / asyncio / watchfiles prefixes to avoid feedback loops + noise.</li>
 </ul>
 <p>Bus dispatch is async over a 500-deep queue: <code>publish()</code> does one ring-buffer append (lock-protected) + <code>loop.call_soon_threadsafe(queue.put_nowait, env)</code>, so producers stay loop-agnostic and thread-safe. A single dispatcher coroutine started in the FastAPI lifespan drains the queue and fans out to subscribers; the WS bridge subscriber emits each envelope as <code>{type: "error_event", data: envelope.to_dict()}</code> over <code>/ws</code>. The 200-entry ring buffer is exposed at <code>GET /api/errors</code> for backfill — the frontend calls it on every WS (re)connect to recover envelopes published while the socket was down.</p>
 
